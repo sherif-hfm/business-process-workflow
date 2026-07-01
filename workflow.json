@@ -1,0 +1,46 @@
+{
+  "id": 1,
+  "name": "Purchase Request Approval",
+  "initialStepId": 1,
+  "steps": [
+    {
+      "id": 1,
+      "name": "Draft",
+      "type": "start",
+      "actions": [
+        { "id": 101, "name": "Submit for approval", "toStepId": 2 }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Pending Manager Approval",
+      "type": "task",
+      "actions": [
+        { "id": 201, "name": "Approve", "toStepId": 3 },
+        { "id": 202, "name": "Reject", "toStepId": 5 },
+        { "id": 203, "name": "Return to draft", "toStepId": 1 }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Pending Finance Approval",
+      "type": "task",
+      "actions": [
+        { "id": 301, "name": "Approve", "toStepId": 4 },
+        { "id": 302, "name": "Reject", "toStepId": 5 }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Approved",
+      "type": "end",
+      "actions": []
+    },
+    {
+      "id": 5,
+      "name": "Rejected",
+      "type": "end",
+      "actions": []
+    }
+  ]
+}
