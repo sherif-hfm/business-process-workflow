@@ -116,6 +116,28 @@
   .row { display: flex; gap: 8px; }
   .row > * { flex: 1; }
   .badge { font-size: 11px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(59, 130, 246, .16);
+    border: 1px solid rgba(59, 130, 246, .45);
+    color: #bfdbfe;
+    border-radius: 999px;
+    padding: 3px 7px;
+    font-size: 12px;
+  }
+  .chip button {
+    width: auto;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: #bfdbfe;
+    font-size: 12px;
+    line-height: 1;
+  }
+  .chip button:hover { background: rgba(191, 219, 254, .16); }
 
   /* SVG node styling */
   .node rect {
@@ -129,10 +151,29 @@
   .node.selected rect { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: #cbd5e1; font-size: 11px; }
+  .node .roles { fill: var(--muted); font-size: 10px; }
+
+  .phase rect.body {
+    fill: rgba(59, 130, 246, .08);
+    stroke: #64748b;
+    stroke-width: 2;
+    stroke-dasharray: 8 5;
+    cursor: grab;
+  }
+  .phase.selected rect.body { stroke: #fff; stroke-width: 3; }
+  .phase text { fill: #cbd5e1; font-size: 13px; pointer-events: none; user-select: none; }
+  .phase .pid { fill: var(--muted); font-size: 11px; }
+  .phase .resize {
+    fill: var(--accent);
+    stroke: #bfdbfe;
+    stroke-width: 1;
+    cursor: nwse-resize;
+  }
 
   .edge path { fill: none; stroke: #64748b; stroke-width: 2; cursor: pointer; }
   .edge.selected path { stroke: var(--amber); stroke-width: 3; }
   .edge text { fill: #cbd5e1; font-size: 11px; cursor: pointer; }
+  .edge .roles { fill: var(--muted); font-size: 10px; }
   .edge .lblbg { fill: var(--bg); opacity: .85; }
 </style>
 </head>
@@ -141,6 +182,7 @@
   <h1>Workflow Editor</h1>
   <input id="wfName" class="wf-name" placeholder="Workflow name" />
   <button id="addStepBtn" class="primary">+ Add Step</button>
+  <button id="addPhaseBtn">+ Add Phase</button>
   <button id="connectBtn">Connect Action</button>
   <div class="spacer"></div>
   <button id="newBtn">New</button>
@@ -162,6 +204,7 @@
           <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
         </marker>
       </defs>
+      <g id="phases"></g>
       <g id="edges"></g>
       <g id="nodes"></g>
     </svg>
@@ -173,13 +216,18 @@
 
 <script>
 const NODE_W = 170, NODE_H = 64;
+const MIN_PHASE_W = 220, MIN_PHASE_H = 150;
+const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 let model = newModel();
-let selected = null;          // {kind:'step'|'action', stepId, actionId}
+let selected = null;          // {kind:'step'|'action'|'phase', stepId, actionId, phaseId}
 let connectMode = false;
 let connectSource = null;     // step id when picking target
 let drag = null;              // {id, dx, dy}
+let phaseDrag = null;         // {id, dx, dy, stepOffsets}
+let phaseResize = null;       // {id, dx, dy}
 
 const svg = document.getElementById('svg');
+const phasesG = document.getElementById('phases');
 const nodesG = document.getElementById('nodes');
 const edgesG = document.getElementById('edges');
 const inspector = document.getElementById('inspector');
@@ -191,10 +239,14 @@ function newModel() {
     id: 1,
     name: "New Workflow",
     initialStepId: null,
+    phases: [],
     steps: []
   };
 }
 
+function nextPhaseId() {
+  return model.phases.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+}
 function nextStepId() {
   return model.steps.reduce((m, s) => Math.max(m, s.id), 0) + 1;
 }
@@ -205,7 +257,20 @@ function nextActionId(step) {
   while (ids.includes(n)) n++;
   return n;
 }
+function nextVariableId(owner) {
+  return (owner.variables || []).reduce((m, v) => Math.max(m, v.id), 0) + 1;
+}
+function getPhase(id) { return model.phases.find(p => p.id === id); }
 function getStep(id) { return model.steps.find(s => s.id === id); }
+function normalizeRoles(roles) {
+  if (Array.isArray(roles)) return roles.map(role => String(role).trim()).filter(Boolean);
+  if (typeof roles === "string" && roles.trim()) return [roles.trim()];
+  return [];
+}
+function roleSummary(roles, maxLength = 28) {
+  const text = normalizeRoles(roles).join(", ");
+  return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
+}
 
 /* ---------- Sample seed ---------- */
 function seedSample() {
@@ -213,14 +278,37 @@ function seedSample() {
     id: 1,
     name: "Purchase Request Approval",
     initialStepId: 1,
+    phases: [
+      { id: 1, name: "Submission", x: 40, y: 20, w: 260, h: 260 },
+      { id: 2, name: "Approval", x: 320, y: 20, w: 560, h: 260 },
+      { id: 3, name: "Resolution", x: 320, y: 260, w: 560, h: 180 }
+    ],
     steps: [
-      { id: 1, name: "Draft", type: "start", x: 80,  y: 60,  actions: [{ id: 101, name: "Submit", toStepId: 2 }] },
-      { id: 2, name: "Pending Manager", type: "task", x: 360, y: 60,
-        actions: [{ id: 201, name: "Approve", toStepId: 3 }, { id: 202, name: "Reject", toStepId: 5 }, { id: 203, name: "Return", toStepId: 1 }] },
-      { id: 3, name: "Pending Finance", type: "task", x: 640, y: 60,
-        actions: [{ id: 301, name: "Approve", toStepId: 4 }, { id: 302, name: "Reject", toStepId: 5 }] },
-      { id: 4, name: "Approved", type: "end", x: 640, y: 280, actions: [] },
-      { id: 5, name: "Rejected", type: "end", x: 360, y: 280, actions: [] }
+      { id: 1, name: "Draft", type: "start", phaseId: 1, x: 80,  y: 60, roles: ["Requester"],
+        variables: [
+          { id: 1, name: "requester", dataType: "string", isArray: false, required: true }
+        ],
+        actions: [
+        { id: 101, name: "Submit", toStepId: 2, roles: ["Requester"], variables: [
+          { id: 1, name: "amount", dataType: "number", isArray: false, required: true },
+          { id: 2, name: "attachments", dataType: "string", isArray: true, required: false }
+        ] }
+      ] },
+      { id: 2, name: "Pending Manager", type: "task", phaseId: 2, x: 360, y: 60, roles: ["Manager"],
+        actions: [
+          { id: 201, name: "Approve", toStepId: 3, roles: ["Manager"] },
+          { id: 202, name: "Reject", toStepId: 5, roles: ["Manager"], variables: [
+            { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
+          ] },
+          { id: 203, name: "Return", toStepId: 1, roles: ["Manager"] }
+        ] },
+      { id: 3, name: "Pending Finance", type: "task", phaseId: 2, x: 640, y: 60, roles: ["Finance"],
+        actions: [
+          { id: 301, name: "Approve", toStepId: 4, roles: ["Finance"] },
+          { id: 302, name: "Reject", toStepId: 5, roles: ["Finance"] }
+        ] },
+      { id: 4, name: "Approved", type: "end", phaseId: 3, x: 640, y: 300, roles: [], actions: [] },
+      { id: 5, name: "Rejected", type: "end", phaseId: 3, x: 360, y: 300, roles: [], actions: [] }
     ]
   };
 }
@@ -244,10 +332,32 @@ function borderPoint(step, tx, ty) {
 /* ---------- Rendering ---------- */
 function render() {
   wfNameInput.value = model.name || "";
+  renderPhases();
   renderEdges();
   renderNodes();
   renderInspector();
   renderHint();
+}
+
+function renderPhases() {
+  phasesG.innerHTML = "";
+  for (const phase of model.phases) {
+    const g = el("g", { class: `phase ${isSel('phase', phase.id) ? 'selected' : ''}`,
+                        transform: `translate(${phase.x},${phase.y})`, "data-id": phase.id });
+    g.appendChild(el("rect", { class: "body", width: phase.w, height: phase.h, rx: 12, ry: 12 }));
+    const idText = el("text", { x: 12, y: 20, class: "pid" });
+    idText.textContent = `#${phase.id}`;
+    g.appendChild(idText);
+    const nameText = el("text", { x: 12, y: 42, "font-weight": "600" });
+    nameText.textContent = phase.name;
+    g.appendChild(nameText);
+    const handle = el("rect", { class: "resize", x: phase.w - 14, y: phase.h - 14, width: 10, height: 10, rx: 2 });
+    handle.addEventListener("pointerdown", (e) => onPhaseResizePointerDown(e, phase));
+    g.appendChild(handle);
+
+    g.addEventListener("pointerdown", (e) => onPhasePointerDown(e, phase));
+    phasesG.appendChild(g);
+  }
 }
 
 function renderNodes() {
@@ -262,6 +372,12 @@ function renderNodes() {
     const nameText = el("text", { x: NODE_W / 2, y: 42, "text-anchor": "middle", "font-weight": "600" });
     nameText.textContent = step.name;
     g.appendChild(nameText);
+    const roles = roleSummary(step.roles);
+    if (roles) {
+      const rolesText = el("text", { x: NODE_W / 2, y: 58, class: "roles", "text-anchor": "middle" });
+      rolesText.textContent = roles;
+      g.appendChild(rolesText);
+    }
 
     g.addEventListener("pointerdown", (e) => onNodePointerDown(e, step));
     nodesG.appendChild(g);
@@ -299,6 +415,12 @@ function renderEdges() {
       const t = el("text", { x: lx, y: ly - 4, "text-anchor": "middle" });
       t.textContent = label;
       g.appendChild(t);
+      const roles = roleSummary(action.roles);
+      if (roles) {
+        const roleText = el("text", { x: lx, y: ly + 9, class: "roles", "text-anchor": "middle" });
+        roleText.textContent = roles;
+        g.appendChild(roleText);
+      }
 
       g.addEventListener("click", (e) => { e.stopPropagation(); select('action', step.id, action.id); });
       edgesG.appendChild(g);
@@ -312,7 +434,7 @@ function renderHint() {
       ? "<b>Connect mode:</b> click the <b>source</b> step."
       : "<b>Connect mode:</b> now click the <b>target</b> step.";
   } else {
-    hintEl.innerHTML = "Drag steps to move. Click a step or an action arrow to edit it.";
+    hintEl.innerHTML = "Drag steps to move. Drag phases to move grouped steps. Click a step, phase, or action arrow to edit it.";
   }
 }
 
@@ -322,11 +444,13 @@ function renderInspector() {
   if (!selected) {
     inspector.innerHTML = `<h2>Workflow</h2>
       <p class="empty-note">Select a step or action to edit it.<br><br>
+      Phases: <b>${model.phases.length}</b><br>
       Steps: <b>${model.steps.length}</b><br>
       Actions: <b>${model.steps.reduce((n, s) => n + s.actions.length, 0)}</b></p>`;
     addInitialSelector();
     return;
   }
+  if (selected.kind === 'phase') return renderPhaseInspector();
   if (selected.kind === 'step') return renderStepInspector();
   return renderActionInspector();
 }
@@ -349,6 +473,41 @@ function renderStepInspector() {
   inspector.innerHTML = `<h2>Step #${step.id}</h2>`;
   field("Name", "text", step.name, v => { step.name = v; renderNodes(); renderEdges(); });
   selectField("Type", ["start", "task", "end"], step.type, v => { step.type = v; render(); });
+  selectField("Phase", [{ value: "", label: "— none —" }].concat(
+    model.phases.map(p => ({ value: p.id, label: `#${p.id} ${p.name}` }))
+  ), step.phaseId ?? "", v => {
+    step.phaseId = v ? +v : null;
+    render();
+  });
+  rolesField(step, () => { renderNodes(); renderEdges(); });
+
+  if (step.type === "start") {
+    step.variables = step.variables || [];
+
+    const variablesTitle = document.createElement("h2");
+    variablesTitle.textContent = "Variables";
+    variablesTitle.style.marginTop = "16px";
+    inspector.appendChild(variablesTitle);
+
+    const hint = document.createElement("p");
+    hint.className = "empty-note";
+    hint.textContent = "Variables on this start step are the data required to start the workflow.";
+    inspector.appendChild(hint);
+
+    if (step.variables.length === 0) {
+      const p = document.createElement("p");
+      p.className = "empty-note";
+      p.textContent = "No variables for this step.";
+      inspector.appendChild(p);
+    }
+    step.variables.forEach(variable => variableRow(step, variable));
+
+    const addVariableBtn = document.createElement("button");
+    addVariableBtn.textContent = "+ Add variable";
+    addVariableBtn.style.marginTop = "8px";
+    addVariableBtn.onclick = () => addVariable(step);
+    inspector.appendChild(addVariableBtn);
+  }
 
   const actionsTitle = document.createElement("h2");
   actionsTitle.textContent = "Actions";
@@ -377,7 +536,7 @@ function renderStepInspector() {
   addBtn.textContent = "+ Add action";
   addBtn.style.marginTop = "8px";
   addBtn.onclick = () => {
-    const a = { id: nextActionId(step), name: "action", toStepId: step.id };
+    const a = { id: nextActionId(step), name: "action", toStepId: step.id, roles: [], variables: [] };
     step.actions.push(a);
     select('action', step.id, a.id);
   };
@@ -391,15 +550,67 @@ function renderStepInspector() {
   inspector.appendChild(del);
 }
 
+function renderPhaseInspector() {
+  const phase = getPhase(selected.phaseId);
+  if (!phase) { selected = null; return renderInspector(); }
+  const stepCount = model.steps.filter(s => s.phaseId === phase.id).length;
+  inspector.innerHTML = `<h2>Phase #${phase.id}</h2>
+    <p class="badge" style="margin-top:-6px">${stepCount} step${stepCount === 1 ? "" : "s"} in this phase</p>`;
+  field("Name", "text", phase.name, v => { phase.name = v; renderPhases(); });
+  field("Width", "number", phase.w, v => {
+    phase.w = Math.max(MIN_PHASE_W, Math.round(+v || MIN_PHASE_W));
+    renderPhases();
+  });
+  field("Height", "number", phase.h, v => {
+    phase.h = Math.max(MIN_PHASE_H, Math.round(+v || MIN_PHASE_H));
+    renderPhases();
+  });
+
+  const del = document.createElement("button");
+  del.textContent = "Delete phase";
+  del.className = "danger";
+  del.style.cssText = "margin-top:16px;width:100%";
+  del.onclick = () => deletePhase(phase.id);
+  inspector.appendChild(del);
+}
+
 function renderActionInspector() {
   const step = getStep(selected.stepId);
   const action = step && step.actions.find(a => a.id === selected.actionId);
   if (!action) { selected = null; return renderInspector(); }
+  action.variables = action.variables || [];
   inspector.innerHTML = `<h2>Action #${action.id}</h2>
     <p class="badge" style="margin-top:-6px">From step #${step.id} (${step.name})</p>`;
   field("Name", "text", action.name, v => { action.name = v; renderEdges(); });
   selectField("Goes to step", model.steps.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
               action.toStepId, v => { action.toStepId = +v; renderEdges(); });
+  rolesField(action, () => renderEdges());
+
+  const variablesTitle = document.createElement("h2");
+  variablesTitle.textContent = "Variables";
+  variablesTitle.style.marginTop = "16px";
+  inspector.appendChild(variablesTitle);
+
+  if (step.id === model.initialStepId) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "Variables on this start action are the data required to start the workflow.";
+    inspector.appendChild(p);
+  }
+
+  if (action.variables.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No variables for this action.";
+    inspector.appendChild(p);
+  }
+  action.variables.forEach(variable => variableRow(action, variable));
+
+  const addVariableBtn = document.createElement("button");
+  addVariableBtn.textContent = "+ Add variable";
+  addVariableBtn.style.marginTop = "8px";
+  addVariableBtn.onclick = () => addVariable(action);
+  inspector.appendChild(addVariableBtn);
 
   const del = document.createElement("button");
   del.textContent = "Delete action";
@@ -434,15 +645,135 @@ function selectField(label, options, value, onChange) {
   f.appendChild(sel);
   inspector.appendChild(f);
 }
+function variableRow(owner, variable) {
+  const box = document.createElement("div");
+  box.className = "field";
+  box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+  const badge = document.createElement("div");
+  badge.className = "badge";
+  badge.textContent = `variable #${variable.id}`;
+  box.appendChild(badge);
+
+  const nameField = document.createElement("div");
+  nameField.className = "field";
+  nameField.style.marginTop = "8px";
+  nameField.innerHTML = "<label>Name</label>";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = variable.name;
+  nameInput.oninput = () => { variable.name = nameInput.value; };
+  nameField.appendChild(nameInput);
+  box.appendChild(nameField);
+
+  const typeField = document.createElement("div");
+  typeField.className = "field";
+  typeField.innerHTML = "<label>Data type</label>";
+  const typeSelect = document.createElement("select");
+  typeSelect.innerHTML = VARIABLE_DATA_TYPES
+    .map(type => `<option value="${type}" ${type === variable.dataType ? "selected" : ""}>${type}</option>`)
+    .join("");
+  typeSelect.onchange = () => { variable.dataType = typeSelect.value; };
+  typeField.appendChild(typeSelect);
+  box.appendChild(typeField);
+
+  box.appendChild(variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; }));
+  box.appendChild(variableCheckbox("Required", variable.required, checked => { variable.required = checked; }));
+
+  const del = document.createElement("button");
+  del.textContent = "Delete variable";
+  del.className = "danger";
+  del.style.width = "100%";
+  del.onclick = () => {
+    owner.variables = owner.variables.filter(v => v.id !== variable.id);
+    renderInspector();
+  };
+  box.appendChild(del);
+
+  inspector.appendChild(box);
+}
+function variableCheckbox(label, checked, onChange) {
+  const f = document.createElement("div");
+  f.className = "field";
+
+  const lbl = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.style.width = "auto";
+  input.style.marginRight = "6px";
+  input.onchange = () => onChange(input.checked);
+  lbl.appendChild(input);
+  lbl.appendChild(document.createTextNode(label));
+  f.appendChild(lbl);
+
+  return f;
+}
+function rolesField(owner, onChange) {
+  owner.roles = normalizeRoles(owner.roles);
+
+  const f = document.createElement("div");
+  f.className = "field";
+  f.innerHTML = "<label>Roles</label>";
+
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  owner.roles.forEach((role, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.appendChild(document.createTextNode(role));
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "x";
+    removeBtn.title = `Remove ${role}`;
+    removeBtn.onclick = () => {
+      owner.roles.splice(i, 1);
+      onChange();
+      renderInspector();
+    };
+    chip.appendChild(removeBtn);
+    chips.appendChild(chip);
+  });
+  f.appendChild(chips);
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Add role, press Enter";
+  input.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== ",") return;
+    e.preventDefault();
+    const role = input.value.trim();
+    if (!role || owner.roles.includes(role)) return;
+    owner.roles.push(role);
+    onChange();
+    renderInspector();
+  };
+  f.appendChild(input);
+
+  inspector.appendChild(f);
+}
+function addVariable(owner) {
+  owner.variables = owner.variables || [];
+  owner.variables.push({
+    id: nextVariableId(owner),
+    name: "variable",
+    dataType: "string",
+    isArray: false,
+    required: false
+  });
+  renderInspector();
+}
 
 /* ---------- Selection ---------- */
 function isSel(kind, stepId, actionId) {
   if (!selected || selected.kind !== kind) return false;
+  if (kind === 'phase') return selected.phaseId === stepId;
   if (kind === 'step') return selected.stepId === stepId;
   return selected.stepId === stepId && selected.actionId === actionId;
 }
 function select(kind, stepId, actionId) {
-  selected = { kind, stepId, actionId };
+  selected = kind === 'phase' ? { kind, phaseId: stepId } : { kind, stepId, actionId };
   render();
 }
 function clearSelection() { selected = null; render(); }
@@ -461,20 +792,83 @@ function onNodePointerDown(e, step) {
   svg.setPointerCapture(e.pointerId);
 }
 
-svg.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const step = getStep(drag.id);
+function onPhasePointerDown(e, phase) {
+  if (connectMode) return;
+  e.stopPropagation();
+  select('phase', phase.id);
   const pt = svgPoint(e);
-  step.x = Math.round(pt.x - drag.dx);
-  step.y = Math.round(pt.y - drag.dy);
-  renderNodes(); renderEdges();
+  phaseDrag = {
+    id: phase.id,
+    dx: pt.x - phase.x,
+    dy: pt.y - phase.y,
+    stepOffsets: model.steps
+      .filter(s => s.phaseId === phase.id)
+      .map(s => ({ id: s.id, dx: s.x - phase.x, dy: s.y - phase.y }))
+  };
+  svg.setPointerCapture(e.pointerId);
+}
+
+function onPhaseResizePointerDown(e, phase) {
+  if (connectMode) return;
+  e.stopPropagation();
+  select('phase', phase.id);
+  const pt = svgPoint(e);
+  phaseResize = { id: phase.id, dx: phase.x + phase.w - pt.x, dy: phase.y + phase.h - pt.y };
+  svg.setPointerCapture(e.pointerId);
+}
+
+svg.addEventListener("pointermove", (e) => {
+  const pt = svgPoint(e);
+  if (drag) {
+    const step = getStep(drag.id);
+    step.x = Math.round(pt.x - drag.dx);
+    step.y = Math.round(pt.y - drag.dy);
+    renderNodes(); renderEdges();
+    return;
+  }
+  if (phaseDrag) {
+    const phase = getPhase(phaseDrag.id);
+    phase.x = Math.round(pt.x - phaseDrag.dx);
+    phase.y = Math.round(pt.y - phaseDrag.dy);
+    phaseDrag.stepOffsets.forEach(offset => {
+      const step = getStep(offset.id);
+      if (step) {
+        step.x = phase.x + offset.dx;
+        step.y = phase.y + offset.dy;
+      }
+    });
+    renderPhases(); renderNodes(); renderEdges();
+    return;
+  }
+  if (phaseResize) {
+    const phase = getPhase(phaseResize.id);
+    phase.w = Math.max(MIN_PHASE_W, Math.round(pt.x - phase.x + phaseResize.dx));
+    phase.h = Math.max(MIN_PHASE_H, Math.round(pt.y - phase.y + phaseResize.dy));
+    renderPhases();
+  }
 });
-svg.addEventListener("pointerup", () => { drag = null; });
+svg.addEventListener("pointerup", () => {
+  if (drag) assignStepPhase(drag.id);
+  drag = null;
+  phaseDrag = null;
+  phaseResize = null;
+  renderInspector();
+});
 svg.addEventListener("pointerdown", (e) => { if (e.target === svg && !connectMode) clearSelection(); });
 
 function svgPoint(e) {
   const r = svg.getBoundingClientRect();
   return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function assignStepPhase(stepId) {
+  const step = getStep(stepId);
+  if (!step) return;
+  const c = center(step);
+  const phase = [...model.phases].reverse().find(p =>
+    c.x >= p.x && c.x <= p.x + p.w && c.y >= p.y && c.y <= p.y + p.h
+  );
+  step.phaseId = phase ? phase.id : null;
 }
 
 /* ---------- Connect mode ---------- */
@@ -484,7 +878,7 @@ function handleConnectClick(step) {
     renderHint();
   } else {
     const src = getStep(connectSource);
-    const a = { id: nextActionId(src), name: "action", toStepId: step.id };
+    const a = { id: nextActionId(src), name: "action", toStepId: step.id, roles: [], variables: [] };
     src.actions.push(a);
     connectSource = null;
     setConnectMode(false);
@@ -498,11 +892,24 @@ function setConnectMode(on) {
   renderHint();
 }
 
-/* ---------- Steps add/delete ---------- */
+/* ---------- Phases and steps add/delete ---------- */
+function addPhase() {
+  const id = nextPhaseId();
+  const phase = { id, name: "New Phase", x: 60 + (model.phases.length % 4) * 40,
+                  y: 40 + (model.phases.length % 4) * 40, w: 300, h: 220 };
+  model.phases.push(phase);
+  select('phase', id);
+}
 function addStep() {
   const id = nextStepId();
+  const phase = selected?.kind === 'phase' ? getPhase(selected.phaseId) : null;
   const step = { id, name: "New Step", type: model.steps.length === 0 ? "start" : "task",
-                 x: 100 + (model.steps.length % 5) * 60, y: 120 + (model.steps.length % 5) * 40, actions: [] };
+                 phaseId: phase?.id ?? null,
+                 x: phase ? phase.x + 30 : 100 + (model.steps.length % 5) * 60,
+                 y: phase ? phase.y + 60 : 120 + (model.steps.length % 5) * 40,
+                 roles: [],
+                 variables: [],
+                 actions: [] };
   model.steps.push(step);
   if (model.initialStepId == null) model.initialStepId = id;
   select('step', id);
@@ -514,14 +921,45 @@ function deleteStep(id) {
   if (model.initialStepId === id) model.initialStepId = model.steps[0]?.id ?? null;
   clearSelection();
 }
+function deletePhase(id) {
+  model.phases = model.phases.filter(p => p.id !== id);
+  model.steps.forEach(s => { if (s.phaseId === id) s.phaseId = null; });
+  clearSelection();
+}
 
 /* ---------- Save / Load ---------- */
-function save() {
+function defaultFileName() {
+  return (model.name || "workflow").replace(/\s+/g, "_").toLowerCase() + ".json";
+}
+
+async function save() {
   const data = JSON.stringify(model, null, 2);
+
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: defaultFileName(),
+        types: [{
+          description: "JSON files",
+          accept: { "application/json": [".json"] }
+        }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(data);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      alert("Could not save JSON file: " + err.message);
+      return;
+    }
+  }
+
+  alert("Your browser does not support direct file saving. The JSON will be downloaded instead.");
   const blob = new Blob([data], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = (model.name || "workflow").replace(/\s+/g, "_").toLowerCase() + ".json";
+  a.download = defaultFileName();
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -531,16 +969,41 @@ function loadFromObject(obj) {
     id: obj.id ?? 1,
     name: obj.name ?? "Workflow",
     initialStepId: obj.initialStepId ?? obj.initialStep ?? null,
+    phases: (obj.phases || []).map((p, i) => ({
+      id: p.id,
+      name: p.name ?? p.label ?? `Phase ${p.id}`,
+      x: typeof p.x === "number" ? p.x : 60 + (i % 4) * 280,
+      y: typeof p.y === "number" ? p.y : 40 + Math.floor(i / 4) * 220,
+      w: typeof p.w === "number" ? p.w : 300,
+      h: typeof p.h === "number" ? p.h : 220
+    })),
     steps: (obj.steps || []).map((s, i) => ({
       id: s.id,
       name: s.name ?? s.label ?? `Step ${s.id}`,
       type: s.type ?? "task",
+      phaseId: s.phaseId ?? null,
       x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
       y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
+      roles: normalizeRoles(s.roles ?? s.role),
+      variables: (s.variables || []).map(v => ({
+        id: v.id,
+        name: v.name ?? v.label ?? `Variable ${v.id}`,
+        dataType: v.dataType ?? "string",
+        isArray: !!v.isArray,
+        required: !!v.required
+      })),
       actions: (s.actions || []).map(a => ({
         id: a.id,
         name: a.name ?? a.label ?? "action",
-        toStepId: a.toStepId ?? a.next ?? null
+        toStepId: a.toStepId ?? a.next ?? null,
+        roles: normalizeRoles(a.roles ?? a.role),
+        variables: (a.variables || []).map(v => ({
+          id: v.id,
+          name: v.name ?? v.label ?? `Variable ${v.id}`,
+          dataType: v.dataType ?? "string",
+          isArray: !!v.isArray,
+          required: !!v.required
+        }))
       }))
     }))
   };
@@ -556,6 +1019,7 @@ function el(tag, attrs) {
 
 /* ---------- Wire up toolbar ---------- */
 document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addStep(); };
+document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addPhase(); };
 document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
 document.getElementById("saveBtn").onclick = save;
 document.getElementById("newBtn").onclick = () => {
@@ -579,6 +1043,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (connectMode) setConnectMode(false); else clearSelection(); }
   if (e.key === "Delete" && selected) {
     if (selected.kind === 'step') deleteStep(selected.stepId);
+    else if (selected.kind === 'phase') deletePhase(selected.phaseId);
     else {
       const s = getStep(selected.stepId);
       if (s) { s.actions = s.actions.filter(a => a.id !== selected.actionId); select('step', s.id); }
@@ -587,7 +1052,6 @@ window.addEventListener("keydown", (e) => {
 });
 
 /* ---------- Init ---------- */
-seedSample();
 render();
 </script>
 </body>

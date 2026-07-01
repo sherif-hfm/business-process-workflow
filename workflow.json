@@ -2,44 +2,148 @@
   "id": 1,
   "name": "Purchase Request Approval",
   "initialStepId": 1,
+  "phases": [
+    {
+      "id": 1,
+      "name": "Submission",
+      "x": 29,
+      "y": 95,
+      "w": 1082,
+      "h": 172
+    },
+    {
+      "id": 2,
+      "name": "Approval",
+      "x": 31,
+      "y": 305,
+      "w": 1273,
+      "h": 162
+    },
+    {
+      "id": 3,
+      "name": "Resolution",
+      "x": 28,
+      "y": 506,
+      "w": 1435,
+      "h": 150
+    }
+  ],
   "steps": [
     {
       "id": 1,
       "name": "Draft",
       "type": "start",
+      "phaseId": 1,
+      "x": 69,
+      "y": 155,
+      "roles": [
+        "user"
+      ],
+      "variables": [],
       "actions": [
-        { "id": 101, "name": "Submit for approval", "toStepId": 2 }
+        {
+          "id": 101,
+          "name": "Submit",
+          "toStepId": 2,
+          "roles": [],
+          "variables": []
+        }
       ]
     },
     {
       "id": 2,
-      "name": "Pending Manager Approval",
+      "name": "Pending Manager",
       "type": "task",
+      "phaseId": 2,
+      "x": 71,
+      "y": 360,
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "variables": [],
       "actions": [
-        { "id": 201, "name": "Approve", "toStepId": 3 },
-        { "id": 202, "name": "Reject", "toStepId": 5 },
-        { "id": 203, "name": "Return to draft", "toStepId": 1 }
+        {
+          "id": 201,
+          "name": "Approve",
+          "toStepId": 3,
+          "roles": [],
+          "variables": []
+        },
+        {
+          "id": 202,
+          "name": "Reject",
+          "toStepId": 5,
+          "roles": [],
+          "variables": []
+        }
       ]
     },
     {
       "id": 3,
-      "name": "Pending Finance Approval",
+      "name": "Pending Finance",
       "type": "task",
+      "phaseId": 2,
+      "x": 352,
+      "y": 364,
+      "roles": [],
+      "variables": [],
       "actions": [
-        { "id": 301, "name": "Approve", "toStepId": 4 },
-        { "id": 302, "name": "Reject", "toStepId": 5 }
+        {
+          "id": 301,
+          "name": "Approve",
+          "toStepId": 4,
+          "roles": [],
+          "variables": []
+        },
+        {
+          "id": 302,
+          "name": "Reject",
+          "toStepId": 5,
+          "roles": [],
+          "variables": []
+        }
       ]
     },
     {
       "id": 4,
       "name": "Approved",
       "type": "end",
+      "phaseId": 3,
+      "x": 328,
+      "y": 561,
+      "roles": [],
+      "variables": [],
       "actions": []
     },
     {
       "id": 5,
       "name": "Rejected",
       "type": "end",
+      "phaseId": 3,
+      "x": 68,
+      "y": 564,
+      "roles": [],
+      "variables": [],
+      "actions": []
+    },
+    {
+      "id": 6,
+      "name": "New Step",
+      "type": "start",
+      "phaseId": 1,
+      "x": 649,
+      "y": 144,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "reqno",
+          "dataType": "number",
+          "isArray": false,
+          "required": true
+        }
+      ],
       "actions": []
     }
   ]
