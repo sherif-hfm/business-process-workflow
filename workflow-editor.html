@@ -284,7 +284,7 @@ function seedSample() {
       { id: 3, name: "Resolution", x: 320, y: 260, w: 560, h: 180 }
     ],
     steps: [
-      { id: 1, name: "Draft", type: "start", phaseId: 1, x: 80,  y: 60, roles: ["Requester"],
+      { id: 1, name: "Draft", type: "start", phaseId: 1, x: 80,  y: 60, roles: ["Requester"], requiresClaim: false,
         variables: [
           { id: 1, name: "requester", dataType: "string", isArray: false, required: true }
         ],
@@ -294,7 +294,7 @@ function seedSample() {
           { id: 2, name: "attachments", dataType: "string", isArray: true, required: false }
         ] }
       ] },
-      { id: 2, name: "Pending Manager", type: "task", phaseId: 2, x: 360, y: 60, roles: ["Manager"],
+      { id: 2, name: "Pending Manager", type: "task", phaseId: 2, x: 360, y: 60, roles: ["Manager"], requiresClaim: false,
         actions: [
           { id: 201, name: "Approve", toStepId: 3, roles: ["Manager"] },
           { id: 202, name: "Reject", toStepId: 5, roles: ["Manager"], variables: [
@@ -302,13 +302,13 @@ function seedSample() {
           ] },
           { id: 203, name: "Return", toStepId: 1, roles: ["Manager"] }
         ] },
-      { id: 3, name: "Pending Finance", type: "task", phaseId: 2, x: 640, y: 60, roles: ["Finance"],
+      { id: 3, name: "Pending Finance", type: "task", phaseId: 2, x: 640, y: 60, roles: ["Finance"], requiresClaim: false,
         actions: [
           { id: 301, name: "Approve", toStepId: 4, roles: ["Finance"] },
           { id: 302, name: "Reject", toStepId: 5, roles: ["Finance"] }
         ] },
-      { id: 4, name: "Approved", type: "end", phaseId: 3, x: 640, y: 300, roles: [], actions: [] },
-      { id: 5, name: "Rejected", type: "end", phaseId: 3, x: 360, y: 300, roles: [], actions: [] }
+      { id: 4, name: "Approved", type: "end", phaseId: 3, x: 640, y: 300, roles: [], requiresClaim: false, actions: [] },
+      { id: 5, name: "Rejected", type: "end", phaseId: 3, x: 360, y: 300, roles: [], requiresClaim: false, actions: [] }
     ]
   };
 }
@@ -472,7 +472,12 @@ function renderStepInspector() {
   if (!step) { selected = null; return renderInspector(); }
   inspector.innerHTML = `<h2>Step #${step.id}</h2>`;
   field("Name", "text", step.name, v => { step.name = v; renderNodes(); renderEdges(); });
-  selectField("Type", ["start", "task", "end"], step.type, v => { step.type = v; render(); });
+  selectField("Type", ["start", "task", "end"], step.type, v => {
+    step.type = v;
+    if (v === "end") step.requiresClaim = false;
+    else step.requiresClaim = step.requiresClaim ?? false;
+    render();
+  });
   selectField("Phase", [{ value: "", label: "— none —" }].concat(
     model.phases.map(p => ({ value: p.id, label: `#${p.id} ${p.name}` }))
   ), step.phaseId ?? "", v => {
@@ -480,6 +485,12 @@ function renderStepInspector() {
     render();
   });
   rolesField(step, () => { renderNodes(); renderEdges(); });
+  if (step.type !== "end") {
+    step.requiresClaim = step.requiresClaim ?? false;
+    inspector.appendChild(
+      variableCheckbox("Requires claim", step.requiresClaim, checked => { step.requiresClaim = checked; })
+    );
+  }
 
   if (step.type === "start") {
     step.variables = step.variables || [];
@@ -908,6 +919,7 @@ function addStep() {
                  x: phase ? phase.x + 30 : 100 + (model.steps.length % 5) * 60,
                  y: phase ? phase.y + 60 : 120 + (model.steps.length % 5) * 40,
                  roles: [],
+                 requiresClaim: false,
                  variables: [],
                  actions: [] };
   model.steps.push(step);
@@ -985,6 +997,7 @@ function loadFromObject(obj) {
       x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
       y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
       roles: normalizeRoles(s.roles ?? s.role),
+      requiresClaim: s.requiresClaim ?? false,
       variables: (s.variables || []).map(v => ({
         id: v.id,
         name: v.name ?? v.label ?? `Variable ${v.id}`,

@@ -89,6 +89,8 @@ A node in the workflow. `type` is one of `start`, `task`, or `end`.
   "type": "start",             // "start" | "task" | "end"
   "phaseId": 1,                // owning phase id, or null
   "x": 69, "y": 155,           // top-left position on canvas
+  "roles": [ "Requester" ],    // free-text candidate roles allowed to act on this step
+  "requiresClaim": false,      // if true, one user must claim the step before acting (design-time intent; not shown for end steps)
   "variables": [ /* Variable[] */ ], // shown for start steps: data to start the workflow
   "actions":   [ /* Action[]   */ ]  // outgoing edges (end steps have none)
 }
@@ -103,6 +105,7 @@ Action ids are conventionally `stepId * 100 + n` (e.g. step 2 -> 201, 202).
   "id": 101,
   "name": "Submit",
   "toStepId": 2,               // target step id
+  "roles": [ "Requester" ],    // free-text roles allowed to take this action
   "variables": [ /* Variable[] */ ] // data captured when the action is taken
 }
 ```
@@ -138,6 +141,15 @@ Typed data attached to a start step or an action.
 - **Load is tolerant**: `loadFromObject()` accepts alternate field names
   (`label` for `name`, `initialStep`, `next` for `toStepId`) and backfills
   missing coordinates so older/partial JSON still renders.
+- **Roles**: steps and actions carry a free-text `roles` string array (candidate
+  roles). `loadFromObject()` normalizes it via `normalizeRoles()`, migrating a
+  legacy singular `role` string into an array and defaulting to `[]`. Roles are
+  edited with the `rolesField()` chip editor and shown as small labels on nodes
+  and edges.
+- **Requires claim**: steps carry a boolean `requiresClaim` (design-time intent
+  only; enforcement is a runtime concern that lives outside this editor). It
+  defaults to `false`, is hidden for `end` steps, and is forced `false` when a
+  step's type becomes `end`.
 
 ---
 
