@@ -78,6 +78,11 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
+        if (step.RequiresClaim && string.IsNullOrWhiteSpace(instance.ClaimedBy))
+        {
+            return [];
+        }
+
         return step.Actions;
     }
 
@@ -100,7 +105,8 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The current step cannot be claimed.");
         }
 
-        if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != user)
+        var normalizedUser = NormalizeUser(user);
+        if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != normalizedUser)
         {
             throw new WorkflowDomainException($"The current step is already claimed by '{instance.ClaimedBy}'.");
         }
@@ -109,7 +115,7 @@ public sealed class WorkflowEngineService(
             instance.Id,
             instance.CurrentStepId,
             instance.Status,
-            string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim(),
+            normalizedUser,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -159,6 +165,8 @@ public sealed class WorkflowEngineService(
         {
             throw new WorkflowDomainException("The requested action is not available from the current step.");
         }
+
+        EnsureActionAllowedByClaim(step, instance, performedBy);
 
         ValidateVariableValues(action.Variables, variableValues);
         foreach (var variable in action.Variables)
@@ -356,6 +364,30 @@ public sealed class WorkflowEngineService(
     private static StepModel GetStep(WorkflowModel definition, int stepId) =>
         definition.Steps.SingleOrDefault(s => s.Id == stepId)
         ?? throw new WorkflowDomainException($"Step #{stepId} was not found in workflow '{definition.Name}'.");
+
+    private static void EnsureActionAllowedByClaim(
+        StepModel step,
+        WorkflowInstanceRecord instance,
+        string? performedBy)
+    {
+        if (!step.RequiresClaim)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(instance.ClaimedBy))
+        {
+            throw new WorkflowDomainException("The current step must be claimed before taking an action.");
+        }
+
+        if (instance.ClaimedBy != NormalizeUser(performedBy))
+        {
+            throw new WorkflowDomainException($"Only '{instance.ClaimedBy}' can take actions on this step.");
+        }
+    }
+
+    private static string NormalizeUser(string? user) =>
+        string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
 
     private static void ValidateVariableValues(
         IReadOnlyList<VariableModel> variables,

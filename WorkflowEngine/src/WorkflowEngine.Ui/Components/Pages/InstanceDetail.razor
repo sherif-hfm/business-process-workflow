@@ -47,6 +47,17 @@ else
 
     <section class="mb-4">
         <h2 class="h4">Available actions</h2>
+        @if (currentStep?.RequiresClaim == true && instance.Status == "running")
+        {
+            if (string.IsNullOrWhiteSpace(instance.ClaimedBy))
+            {
+                <div class="alert alert-info">Claim this step before taking an action.</div>
+            }
+            else if (!CanTakeActions)
+            {
+                <div class="alert alert-info">This step is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take actions.</div>
+            }
+        }
         @if (currentStep is null || currentStep.Actions.Count == 0 || currentStep.Type == WorkflowStepTypes.End)
         {
             <p>No user actions are available.</p>
@@ -78,7 +89,9 @@ else
                                     </div>
                                 }
 
-                                <button class="btn btn-primary" @onclick="() => TakeActionAsync(action)">Take action</button>
+                                <button class="btn btn-primary"
+                                        disabled="@(!CanTakeActions)"
+                                        @onclick="() => TakeActionAsync(action)">Take action</button>
                             </div>
                         </div>
                     </div>
@@ -164,6 +177,31 @@ else
     private StepModel? CurrentStep =>
         instance?.Workflow.Definition.Steps.SingleOrDefault(s => s.Id == instance.CurrentStepId);
 
+    private bool CanTakeActions
+    {
+        get
+        {
+            if (instance is null || instance.Status != "running")
+            {
+                return false;
+            }
+
+            var step = CurrentStep;
+            if (step is null || step.Type == WorkflowStepTypes.End)
+            {
+                return false;
+            }
+
+            if (!step.RequiresClaim)
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
+                && instance.ClaimedBy == NormalizeUser(actingAs);
+        }
+    }
+
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
     private async Task LoadAsync()
@@ -236,6 +274,9 @@ else
     }
 
     private static string Key(int actionId, string variableName) => $"{actionId}:{variableName}";
+
+    private static string NormalizeUser(string? user) =>
+        string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
 
     private static string FormatJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.String ? element.GetString() ?? string.Empty : element.GetRawText();
