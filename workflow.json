@@ -34,15 +34,23 @@
       "name": "Request Submission",
       "type": "start",
       "phaseId": 1,
-      "x": 67,
-      "y": 154,
+      "x": 79,
+      "y": 153,
       "roles": [
         "user"
       ],
       "requiresClaim": false,
       "autoAdvance": true,
       "nextStepId": 2,
-      "variables": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "req-no",
+          "dataType": "number",
+          "isArray": false,
+          "required": true
+        }
+      ],
       "actions": []
     },
     {
@@ -132,28 +140,6 @@
       "autoAdvance": false,
       "nextStepId": null,
       "variables": [],
-      "actions": []
-    },
-    {
-      "id": 6,
-      "name": "New Step",
-      "type": "start",
-      "phaseId": 1,
-      "x": 649,
-      "y": 144,
-      "roles": [],
-      "requiresClaim": false,
-      "autoAdvance": false,
-      "nextStepId": null,
-      "variables": [
-        {
-          "id": 1,
-          "name": "reqno",
-          "dataType": "number",
-          "isArray": false,
-          "required": true
-        }
-      ],
       "actions": []
     }
   ]

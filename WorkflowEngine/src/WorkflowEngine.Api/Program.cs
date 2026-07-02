@@ -29,6 +29,10 @@ app.Use(async (context, next) =>
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Workflow Engine API v1");
+    });
 
     using var scope = app.Services.CreateScope();
     var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
@@ -43,7 +47,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.MapGet("/", () => Results.Redirect("/openapi/v1.json"));
+app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapWorkflowDefinitionEndpoints();
 app.MapWorkflowInstanceEndpoints();
 
