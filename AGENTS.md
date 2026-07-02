@@ -16,6 +16,7 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 | --- | --- |
 | `workflow-editor.html` | The entire application: markup, CSS, and JS in one file. |
 | `workflow.json` | A sample/exported workflow ("Purchase Request Approval") used as example data. It matches the JSON format the editor saves and loads. |
+| `WorkflowEngine/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
 | `AGENTS.md` | This document. |
 
 To run it, open `workflow-editor.html` directly in a modern browser. No install,
@@ -50,6 +51,53 @@ Everything lives in `workflow-editor.html`. The key pieces:
   on load.
 
 There are no automated tests. Validation is manual, in-browser.
+
+---
+
+## Runtime engine (`WorkflowEngine/`)
+
+`WorkflowEngine/` is a separate .NET 10 solution for running workflow instances
+from the JSON definitions produced by the editor. It preserves the editor's JSON
+format rather than normalizing the definition into step/action tables.
+
+Projects:
+
+- `src/WorkflowEngine.Api` - API layer: Minimal API endpoints, OpenAPI, startup
+  composition, development migration/seed.
+- `src/WorkflowEngine.Service` - Service layer: workflow engine behavior,
+  definition validation, service interfaces, repository ports, and DI extension.
+- `src/WorkflowEngine.Infrastructure` - Infrastructure layer: EF Core,
+  PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations, and
+  unit of work.
+- `src/WorkflowEngine.Shared` - shared DTOs and C# model for the editor JSON.
+- `src/WorkflowEngine.Ui` - Blazor Server UI that calls the API through a typed
+  `HttpClient`.
+
+Storage follows the hybrid design:
+
+- Workflow definitions are immutable/versioned JSONB snapshots in
+  `workflow_definitions`.
+- Runtime state is normalized in `workflow_instances`, `instance_variables`, and
+  `instance_history`.
+- Instance transitions run in a database transaction and lock the instance row
+  with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
+- `autoAdvance` steps immediately follow `nextStepId` and write an
+  `auto-advance` history row. A hop limit guards against cycles.
+- Roles are retained in the definition JSON but are not enforced by the current
+  API/UI.
+
+To run locally from `WorkflowEngine/`:
+
+```powershell
+docker compose up -d
+dotnet run --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj --launch-profile http
+dotnet run --project .\src\WorkflowEngine.Ui\WorkflowEngine.Ui.csproj --launch-profile http
+```
+
+The API listens on `http://localhost:5017` and the UI on
+`http://localhost:5152` by default. In development, the API applies EF
+migrations and seeds the root `workflow.json` as the first published definition
+when the database is empty.
 
 ---
 
@@ -179,5 +227,6 @@ Typed data attached to a start step or an action.
 - **Change canvas visuals**: edit the `<style>` block (CSS variables live in
   `:root`; node/phase/edge styling is grouped by class).
 
-Keep everything in the single HTML file unless there is a strong reason to split
-it. Preserve the no-dependency, no-build nature of the project.
+Keep editor changes in the single HTML file unless there is a strong reason to
+split it. Preserve the editor's no-dependency, no-build nature. Runtime engine
+changes belong under `WorkflowEngine/`.

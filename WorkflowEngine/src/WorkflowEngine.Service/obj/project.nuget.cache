@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "aucdJGPFvYg=",
+  "success": true,
+  "projectFilePath": "D:\\projects2026\\business process workflow\\WorkflowEngine\\src\\WorkflowEngine.Service\\WorkflowEngine.Service.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\user\\.nuget\\packages\\microsoft.extensions.dependencyinjection.abstractions\\10.0.9\\microsoft.extensions.dependencyinjection.abstractions.10.0.9.nupkg.sha512"
+  ],
+  "logs": []
+}

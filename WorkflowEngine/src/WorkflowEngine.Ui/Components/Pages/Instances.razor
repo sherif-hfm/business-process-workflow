@@ -1,0 +1,85 @@
+@page "/instances"
+@rendermode InteractiveServer
+@inject WorkflowApiClient Api
+
+<PageTitle>Instances</PageTitle>
+
+<h1>Instances</h1>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+<div class="d-flex gap-2 align-items-end mb-3">
+    <div>
+        <label class="form-label">Status</label>
+        <select class="form-select" @bind="status">
+            <option value="">All</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+        </select>
+    </div>
+    <button class="btn btn-outline-primary" @onclick="LoadAsync">Refresh</button>
+</div>
+
+@if (instances is null)
+{
+    <p>Loading...</p>
+}
+else if (instances.Count == 0)
+{
+    <p>No instances found.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Instance</th>
+                <th>Workflow</th>
+                <th>Current step</th>
+                <th>Status</th>
+                <th>Claimed by</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var instance in instances)
+            {
+                <tr>
+                    <td>#@instance.Id</td>
+                    <td>@instance.WorkflowName v@instance.WorkflowVersion</td>
+                    <td>@instance.CurrentStepName</td>
+                    <td>@instance.Status</td>
+                    <td>@(instance.ClaimedBy ?? "-")</td>
+                    <td class="text-end">
+                        <a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<InstanceSummaryDto>? instances;
+    private string? status = "running";
+    private string? error;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            error = null;
+            instances = await Api.GetInstancesAsync(status);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+}

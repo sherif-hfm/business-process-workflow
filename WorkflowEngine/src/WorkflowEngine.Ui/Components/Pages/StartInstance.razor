@@ -1,0 +1,126 @@
+@page "/workflows/{WorkflowId:long}/start"
+@rendermode InteractiveServer
+@using System.Text.Json
+@inject WorkflowApiClient Api
+@inject NavigationManager Navigation
+
+<PageTitle>Start Workflow</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@if (workflow is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    var startStep = workflow.Definition.Steps.SingleOrDefault(s => s.Id == workflow.Definition.InitialStepId);
+
+    <h1>Start @workflow.Name</h1>
+    <p class="text-muted">Version @workflow.Version. Initial step: <strong>@startStep?.Name</strong></p>
+
+    <div class="mb-3">
+        <label class="form-label">Started by</label>
+        <input class="form-control" @bind="startedBy" placeholder="optional user name" />
+    </div>
+
+    @if (startStep is not null && startStep.Variables.Count > 0)
+    {
+        <h2 class="h4">Start variables</h2>
+        @foreach (var variable in startStep.Variables)
+        {
+            <div class="mb-3">
+                <label class="form-label">
+                    @variable.Name
+                    <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                    @if (variable.Required)
+                    {
+                        <span class="text-danger">*</span>
+                    }
+                </label>
+                <input class="form-control" value="@GetInput(variable.Name)" @oninput="e => SetInput(variable.Name, e.Value?.ToString())" />
+            </div>
+        }
+    }
+
+    <button class="btn btn-primary" @onclick="StartAsync">Start instance</button>
+    <a class="btn btn-link" href="workflows">Back</a>
+}
+
+@code {
+    [Parameter]
+    public long WorkflowId { get; set; }
+
+    private WorkflowDetailDto? workflow;
+    private readonly Dictionary<string, string?> inputs = [];
+    private string? startedBy = "user";
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        workflow = await Api.GetWorkflowAsync(WorkflowId);
+    }
+
+    private string? GetInput(string name) => inputs.TryGetValue(name, out var value) ? value : null;
+
+    private void SetInput(string name, string? value) => inputs[name] = value;
+
+    private async Task StartAsync()
+    {
+        if (workflow is null)
+        {
+            return;
+        }
+
+        try
+        {
+            error = null;
+            var startStep = workflow.Definition.Steps.Single(s => s.Id == workflow.Definition.InitialStepId);
+            var variables = BuildPayload(startStep.Variables);
+            var instance = await Api.StartInstanceAsync(new StartInstanceRequest(workflow.Id, startedBy, variables));
+            if (instance is not null)
+            {
+                Navigation.NavigateTo($"/instances/{instance.Id}");
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private Dictionary<string, JsonElement> BuildPayload(IEnumerable<VariableModel> variables)
+    {
+        var payload = new Dictionary<string, JsonElement>();
+        foreach (var variable in variables)
+        {
+            if (!inputs.TryGetValue(variable.Name, out var raw) || string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            payload[variable.Name] = ToJsonElement(variable, raw);
+        }
+
+        return payload;
+    }
+
+    private static JsonElement ToJsonElement(VariableModel variable, string raw)
+    {
+        if (variable.IsArray)
+        {
+            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return JsonSerializer.SerializeToElement(values);
+        }
+
+        return variable.DataType switch
+        {
+            WorkflowVariableTypes.Number when decimal.TryParse(raw, out var number) => JsonSerializer.SerializeToElement(number),
+            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
+            _ => JsonSerializer.SerializeToElement(raw)
+        };
+    }
+}

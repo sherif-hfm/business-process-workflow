@@ -1,0 +1,94 @@
+@page "/workflows"
+@rendermode InteractiveServer
+@using System.Text.Json
+@inject WorkflowApiClient Api
+
+<PageTitle>Workflow Definitions</PageTitle>
+
+<h1>Workflow Definitions</h1>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+<section class="mb-4">
+    <h2 class="h4">Import editor JSON</h2>
+    <p class="text-muted">Paste the JSON exported by <code>workflow-editor.html</code>. Imported workflows are published by default so they can be started immediately.</p>
+    <textarea class="form-control mb-2" rows="10" @bind="workflowJson" placeholder="Paste workflow.json here"></textarea>
+    <button class="btn btn-primary" @onclick="ImportAsync">Import and publish</button>
+</section>
+
+<section>
+    <h2 class="h4">Latest definitions</h2>
+    @if (workflows is null)
+    {
+        <p>Loading...</p>
+    }
+    else if (workflows.Count == 0)
+    {
+        <p>No workflow definitions found. Start the API once with PostgreSQL available to seed the sample workflow.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Version</th>
+                    <th>Published</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var workflow in workflows)
+                {
+                    <tr>
+                        <td>@workflow.Name</td>
+                        <td>@workflow.Version</td>
+                        <td>@(workflow.IsPublished ? "Yes" : "No")</td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{workflow.Id}/start")">Start</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@code {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private IReadOnlyList<WorkflowSummaryDto>? workflows;
+    private string? workflowJson;
+    private string? error;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        error = null;
+        workflows = await Api.GetWorkflowsAsync();
+    }
+
+    private async Task ImportAsync()
+    {
+        try
+        {
+            error = null;
+            var definition = JsonSerializer.Deserialize<WorkflowModel>(workflowJson ?? string.Empty, JsonOptions)
+                ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
+            await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: true));
+            workflowJson = null;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+}

@@ -1,0 +1,258 @@
+@page "/instances/{InstanceId:long}"
+@rendermode InteractiveServer
+@using System.Text.Json
+@inject WorkflowApiClient Api
+@inject NavigationManager Navigation
+
+<PageTitle>Instance Detail</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@if (instance is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    var currentStep = CurrentStep;
+
+    <h1>Instance #@instance.Id</h1>
+    <p class="text-muted">@instance.Workflow.Name v@instance.Workflow.Version</p>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h2 class="h4">@instance.CurrentStepName</h2>
+            <p>Status: <strong>@instance.Status</strong></p>
+            <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
+            <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
+
+            @if (instance.Status == "running" && currentStep?.RequiresClaim == true)
+            {
+                <div class="d-flex gap-2 mb-3">
+                    <input class="form-control" style="max-width: 260px" @bind="actingAs" placeholder="claim as" />
+                    <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim</button>
+                    <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                </div>
+            }
+
+            @if (instance.Status == "running")
+            {
+                <button class="btn btn-outline-danger" @onclick="CancelAsync">Cancel instance</button>
+            }
+        </div>
+    </div>
+
+    <section class="mb-4">
+        <h2 class="h4">Available actions</h2>
+        @if (currentStep is null || currentStep.Actions.Count == 0 || currentStep.Type == WorkflowStepTypes.End)
+        {
+            <p>No user actions are available.</p>
+        }
+        else
+        {
+            <div class="row">
+                @foreach (var action in currentStep.Actions)
+                {
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h3 class="h5">@action.Name</h3>
+                                <p class="text-muted">Moves to step #@action.ToStepId</p>
+                                @foreach (var variable in action.Variables)
+                                {
+                                    <div class="mb-2">
+                                        <label class="form-label">
+                                            @variable.Name
+                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                                            @if (variable.Required)
+                                            {
+                                                <span class="text-danger">*</span>
+                                            }
+                                        </label>
+                                        <input class="form-control"
+                                               value="@GetActionInput(action.Id, variable.Name)"
+                                               @oninput="e => SetActionInput(action.Id, variable.Name, e.Value?.ToString())" />
+                                    </div>
+                                }
+
+                                <button class="btn btn-primary" @onclick="() => TakeActionAsync(action)">Take action</button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h4">Variables</h2>
+        @if (instance.Variables.Count == 0)
+        {
+            <p>No variables captured.</p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Action</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var variable in instance.Variables)
+                    {
+                        <tr>
+                            <td>@variable.VariableName</td>
+                            <td>@(variable.SourceActionId?.ToString() ?? "start")</td>
+                            <td><code>@FormatJson(variable.Value)</code></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2 class="h4">History</h2>
+        @if (instance.History.Count == 0)
+        {
+            <p>No transitions yet.</p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Action</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in instance.History)
+                    {
+                        <tr>
+                            <td>@item.PerformedAt.LocalDateTime</td>
+                            <td>#@item.FromStepId</td>
+                            <td>#@item.ToStepId</td>
+                            <td>@(item.ActionId?.ToString() ?? "-")</td>
+                            <td>@item.Note</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    private InstanceDetailDto? instance;
+    private readonly Dictionary<string, string?> actionInputs = [];
+    private string? actingAs = "user";
+    private string? error;
+
+    private StepModel? CurrentStep =>
+        instance?.Workflow.Definition.Steps.SingleOrDefault(s => s.Id == instance.CurrentStepId);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        instance = await Api.GetInstanceAsync(InstanceId);
+    }
+
+    private async Task ClaimAsync() => await RefreshFrom(async () =>
+        instance = await Api.ClaimAsync(InstanceId, new ClaimRequest(actingAs)));
+
+    private async Task UnclaimAsync() => await RefreshFrom(async () =>
+        instance = await Api.UnclaimAsync(InstanceId));
+
+    private async Task CancelAsync()
+    {
+        await RefreshFrom(async () =>
+        {
+            await Api.CancelAsync(InstanceId);
+            Navigation.NavigateTo("/instances");
+        });
+    }
+
+    private async Task TakeActionAsync(ActionModel action)
+    {
+        await RefreshFrom(async () =>
+        {
+            var variables = BuildPayload(action);
+            instance = await Api.TakeActionAsync(
+                InstanceId,
+                action.Id,
+                new TakeActionRequest(actingAs, variables));
+        });
+    }
+
+    private async Task RefreshFrom(Func<Task> action)
+    {
+        try
+        {
+            error = null;
+            await action();
+            instance ??= await Api.GetInstanceAsync(InstanceId);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private string? GetActionInput(int actionId, string variableName) =>
+        actionInputs.TryGetValue(Key(actionId, variableName), out var value) ? value : null;
+
+    private void SetActionInput(int actionId, string variableName, string? value) =>
+        actionInputs[Key(actionId, variableName)] = value;
+
+    private Dictionary<string, JsonElement> BuildPayload(ActionModel action)
+    {
+        var payload = new Dictionary<string, JsonElement>();
+        foreach (var variable in action.Variables)
+        {
+            var raw = GetActionInput(action.Id, variable.Name);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            payload[variable.Name] = ToJsonElement(variable, raw);
+        }
+
+        return payload;
+    }
+
+    private static string Key(int actionId, string variableName) => $"{actionId}:{variableName}";
+
+    private static string FormatJson(JsonElement element) =>
+        element.ValueKind == JsonValueKind.String ? element.GetString() ?? string.Empty : element.GetRawText();
+
+    private static JsonElement ToJsonElement(VariableModel variable, string raw)
+    {
+        if (variable.IsArray)
+        {
+            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return JsonSerializer.SerializeToElement(values);
+        }
+
+        return variable.DataType switch
+        {
+            WorkflowVariableTypes.Number when decimal.TryParse(raw, out var number) => JsonSerializer.SerializeToElement(number),
+            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
+            _ => JsonSerializer.SerializeToElement(raw)
+        };
+    }
+}
