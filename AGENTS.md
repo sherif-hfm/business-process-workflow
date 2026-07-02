@@ -40,7 +40,8 @@ Everything lives in `workflow-editor.html`. The key pieces:
 - **Interaction**: Pointer events on the SVG drive dragging steps, dragging
   phases (which moves their contained steps), and resizing phases.
   "Connect mode" lets the user click a source step then a target step to create
-  an action edge between them.
+  an action edge between them (if the source step is `autoAdvance`, connect mode
+  sets its `nextStepId` instead of creating an action).
 - **Persistence**: `save()` serializes `model` to pretty-printed JSON (uses the
   File System Access API `showSaveFilePicker` when available, otherwise falls
   back to a download). Loading reads a JSON file and normalizes it through
@@ -91,8 +92,10 @@ A node in the workflow. `type` is one of `start`, `task`, or `end`.
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles allowed to act on this step
   "requiresClaim": false,      // if true, one user must claim the step before acting (design-time intent; not shown for end steps)
+  "autoAdvance": false,        // if true, step is a pass-through: on entry it follows nextStepId with no user action (design-time intent; hidden/forced false for end steps; mutually exclusive with requiresClaim)
+  "nextStepId": null,          // direct target step id, used only when autoAdvance is true (nullable)
   "variables": [ /* Variable[] */ ], // shown for start steps: data to start the workflow
-  "actions":   [ /* Action[]   */ ]  // outgoing edges (end steps have none)
+  "actions":   [ /* Action[]   */ ]  // outgoing edges (end steps have none); kept but hidden while autoAdvance is true
 }
 ```
 
@@ -134,7 +137,8 @@ Typed data attached to a start step or an action.
   per step (`step.id * 100 + n`).
 - **Start step**: `model.initialStepId` marks the entry point. Deleting that step
   reassigns it to the first remaining step (or null).
-- **Referential cleanup**: deleting a step also removes any actions pointing to it;
+- **Referential cleanup**: deleting a step also removes any actions pointing to it
+  and nulls out any `nextStepId` that referenced it;
   deleting a phase nulls out `phaseId` on its steps.
 - **Phase assignment is geometric**: on drag end, a step's `phaseId` is set based
   on which phase its center lands in (`assignStepPhase`).
@@ -150,6 +154,16 @@ Typed data attached to a start step or an action.
   only; enforcement is a runtime concern that lives outside this editor). It
   defaults to `false`, is hidden for `end` steps, and is forced `false` when a
   step's type becomes `end`.
+- **Auto-advance**: steps carry a boolean `autoAdvance` and a nullable
+  `nextStepId` (design-time intent only). When `autoAdvance` is `true` the step is
+  a pass-through that follows `nextStepId` with no user action: its `actions` are
+  preserved but hidden (in the inspector and on the canvas) and a single dashed
+  "auto" edge is drawn to `nextStepId` instead. It defaults to `false`, is
+  hidden/forced `false` for `end` steps, and is mutually exclusive with
+  `requiresClaim` (enabling it forces `requiresClaim` to `false`, and the roles /
+  requires-claim controls are hidden while it is on). Nodes show an `AUTO` marker
+  in their header. `nextStepId` is set via the "Goes to step" inspector dropdown
+  or connect mode.
 
 ---
 
