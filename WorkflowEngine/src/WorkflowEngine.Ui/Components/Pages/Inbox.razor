@@ -1,0 +1,101 @@
+@page "/inbox"
+@rendermode InteractiveServer
+@inject WorkflowApiClient Api
+
+<PageTitle>Inbox</PageTitle>
+
+<h1>Inbox</h1>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+<div class="d-flex flex-wrap gap-2 align-items-end mb-3">
+    <div>
+        <label class="form-label">User</label>
+        <input class="form-control" @bind="user" placeholder="e.g. alice" />
+    </div>
+    <div>
+        <label class="form-label">Roles</label>
+        <input class="form-control" @bind="roles" placeholder="e.g. Approver,Manager" />
+    </div>
+    <button class="btn btn-primary" @onclick="LoadAsync">Search</button>
+</div>
+
+@if (items is null)
+{
+    <p>Enter a user and roles, then search.</p>
+}
+else if (items.Count == 0)
+{
+    <p>No inbox items found.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Instance</th>
+                <th>Workflow</th>
+                <th>Current step</th>
+                <th>Step roles</th>
+                <th>Claimed by</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in items)
+            {
+                <tr>
+                    <td>#@item.InstanceId</td>
+                    <td>@item.WorkflowName</td>
+                    <td>@item.CurrentStepName</td>
+                    <td>@(item.StepRoles.Count == 0 ? "(any)" : string.Join(", ", item.StepRoles))</td>
+                    <td>@(item.ClaimedBy ?? "-")</td>
+                    <td>
+                        @if (item.CanAct)
+                        {
+                            <span class="badge text-bg-success">Ready to act</span>
+                        }
+                        else if (item.CanClaim)
+                        {
+                            <span class="badge text-bg-warning">Can claim</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-secondary">View only</span>
+                        }
+                    </td>
+                    <td class="text-end">
+                        <a class="btn btn-sm btn-outline-primary" href="@($"instances/{item.InstanceId}")">Open</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<InboxItemDto>? items;
+    private string user = string.Empty;
+    private string roles = string.Empty;
+    private string? error;
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            error = null;
+            items = null;
+            var roleList = roles
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            items = await Api.GetInboxAsync(user, roleList);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+}

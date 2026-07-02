@@ -38,6 +38,11 @@ public interface IWorkflowEngineService
         string? status,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
+        string? user,
+        IReadOnlyCollection<string> roles,
+        CancellationToken cancellationToken);
+
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<ActionModel>> GetAvailableActionsAsync(long id, CancellationToken cancellationToken);

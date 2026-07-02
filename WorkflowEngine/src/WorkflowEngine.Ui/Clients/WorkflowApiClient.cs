@@ -32,6 +32,27 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await httpClient.GetFromJsonAsync<IReadOnlyList<InstanceSummaryDto>>(url, cancellationToken) ?? [];
     }
 
+    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
+        string? user,
+        IEnumerable<string> roles,
+        CancellationToken cancellationToken = default)
+    {
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(user))
+        {
+            query.Add($"user={Uri.EscapeDataString(user)}");
+        }
+
+        var joined = string.Join(',', roles);
+        if (!string.IsNullOrWhiteSpace(joined))
+        {
+            query.Add($"roles={Uri.EscapeDataString(joined)}");
+        }
+
+        var url = "/api/instances/inbox" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
+        return await httpClient.GetFromJsonAsync<IReadOnlyList<InboxItemDto>>(url, cancellationToken) ?? [];
+    }
+
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
 

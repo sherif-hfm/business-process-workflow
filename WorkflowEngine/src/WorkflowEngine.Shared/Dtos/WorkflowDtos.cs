@@ -75,3 +75,18 @@ public sealed record InstanceHistoryDto(
     Dictionary<string, JsonElement>? Payload,
     string? Note,
     DateTimeOffset PerformedAt);
+
+public sealed record InboxItemDto(
+    long InstanceId,
+    long WorkflowId,
+    string WorkflowName,
+    int CurrentStepId,
+    string CurrentStepName,
+    IReadOnlyList<string> StepRoles,
+    bool RequiresClaim,
+    string? ClaimedBy,
+    bool ClaimedByMe,
+    bool CanClaim,
+    bool CanAct,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);

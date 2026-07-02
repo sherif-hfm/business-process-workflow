@@ -28,6 +28,16 @@ public static class WorkflowInstanceEndpoints
             CancellationToken cancellationToken) =>
             Results.Ok(await service.ListInstancesAsync(status, cancellationToken)));
 
+        group.MapGet("/inbox", async (
+            string? user,
+            string? roles,
+            IWorkflowEngineService service,
+            CancellationToken cancellationToken) =>
+            Results.Ok(await service.GetInboxAsync(
+                user,
+                roles?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [],
+                cancellationToken)));
+
         group.MapGet("/{id:long}", async (
             long id,
             IWorkflowEngineService service,

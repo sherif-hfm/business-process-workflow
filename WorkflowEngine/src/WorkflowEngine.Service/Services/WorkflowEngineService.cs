@@ -58,6 +58,79 @@ public sealed class WorkflowEngineService(
         return result;
     }
 
+    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
+        string? user,
+        IReadOnlyCollection<string> roles,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUser = NormalizeUser(user);
+        var normalizedRoles = roles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var instances = await runtime.ListInstancesAsync(WorkflowInstanceStatuses.Running, cancellationToken);
+        var definitionIds = instances.Select(i => i.WorkflowDefinitionId).Distinct().ToList();
+        var workflows = new Dictionary<long, WorkflowDefinitionRecord>(definitionIds.Count);
+
+        foreach (var definitionId in definitionIds)
+        {
+            var workflow = await definitions.GetAsync(definitionId, cancellationToken)
+                ?? throw new WorkflowDomainException($"Workflow definition #{definitionId} was not found.");
+            workflows[definitionId] = workflow;
+        }
+
+        var result = new List<InboxItemDto>();
+
+        foreach (var instance in instances)
+        {
+            var workflow = workflows[instance.WorkflowDefinitionId];
+            var step = GetStep(workflow.Definition, instance.CurrentStepId);
+
+            if (step.Type == WorkflowStepTypes.End || step.AutoAdvance)
+            {
+                continue;
+            }
+
+            var claimedByMe = instance.ClaimedBy == normalizedUser;
+            var claimedByOther = !string.IsNullOrWhiteSpace(instance.ClaimedBy) && !claimedByMe;
+            var roleMatch = step.Roles.Count == 0
+                || step.Roles.Any(r => normalizedRoles.Contains(r));
+
+            if (!roleMatch && !claimedByMe)
+            {
+                continue;
+            }
+
+            if (step.RequiresClaim && claimedByOther)
+            {
+                continue;
+            }
+
+            var canClaim = step.RequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
+            var canAct = claimedByMe || (!step.RequiresClaim && roleMatch);
+
+            result.Add(new InboxItemDto(
+                instance.Id,
+                workflow.Id,
+                workflow.Name,
+                step.Id,
+                step.Name,
+                step.Roles,
+                step.RequiresClaim,
+                instance.ClaimedBy,
+                claimedByMe,
+                canClaim,
+                canAct,
+                instance.CreatedAt,
+                instance.UpdatedAt));
+        }
+
+        return result
+            .OrderBy(i => i.CreatedAt)
+            .ToList();
+    }
+
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>
         BuildDetailAsync(id, cancellationToken);
 
