@@ -82,9 +82,47 @@ Storage follows the hybrid design:
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - `autoAdvance` steps immediately follow `nextStepId` and write an
-  `auto-advance` history row. A hop limit guards against cycles.
-- Roles are retained in the definition JSON but are not enforced by the current
-  API/UI.
+  `auto-advance` history row. A hop limit (`steps.Count + 1`) guards against
+  cycles.
+- `requiresClaim` **is** enforced at runtime: such a step must be claimed
+  (`POST /claim`) before its actions are available or can be taken, only the
+  claiming user may act, and the claim is released on transition. `unclaim`
+  clears it. Claim ownership is tracked on `workflow_instances.claimed_by`
+  (users default to `anonymous` when unspecified).
+- Required `variables` are validated when starting an instance (start-step
+  variables) and when taking an action (action variables); missing required
+  values are rejected.
+- Instances move through `Running`, `Completed` (on entering an `end` step), and
+  `Cancelled` (`POST /cancel`) statuses.
+- Roles are retained in the definition JSON but are **not** enforced by the
+  current API/UI.
+
+Definitions are versioned: `POST /api/workflows` creates v1, `PUT
+/api/workflows/{id}` creates a new immutable version, and only a *published*
+definition can start instances.
+
+### HTTP API
+
+- `WorkflowDefinitionEndpoints` (`/api/workflows`): `GET /` (latest per
+  definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
+  `POST /{id}/publish`, `DELETE /{id}`.
+- `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start),
+  `GET /?status=`, `GET /{id}`, `GET /{id}/actions` (available actions),
+  `POST /{id}/claim`, `POST /{id}/unclaim`,
+  `POST /{id}/actions/{actionId}` (take action), `POST /{id}/cancel`.
+- `WorkflowDomainException` maps to problem responses for invalid operations
+  (unpublished workflow, missing variable, bad claim, unavailable action, etc.).
+
+### Blazor UI pages
+
+- `/workflows` (`Workflows.razor`) - list definitions.
+- `/workflows/{id}/start` (`StartInstance.razor`) - fill start variables and
+  launch an instance.
+- `/instances` (`Instances.razor`) - list instances, filterable by status.
+- `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take actions,
+  view variables and history.
+
+The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
 
 To run locally from `WorkflowEngine/`:
 
