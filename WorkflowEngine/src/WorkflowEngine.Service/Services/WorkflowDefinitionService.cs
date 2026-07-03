@@ -143,6 +143,15 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                     throw new WorkflowDomainException(
                         $"Exclusive gateway #{node.Id} must have a default flow or a condition on every non-default flow.");
                 }
+
+                foreach (var flow in outgoing.Where(f => !f.IsDefault && !string.IsNullOrWhiteSpace(f.Condition)))
+                {
+                    if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+                    }
+                }
             }
 
             ValidateVariables(node.Variables, $"flow node #{node.Id}");

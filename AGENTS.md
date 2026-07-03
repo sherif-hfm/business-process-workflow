@@ -98,9 +98,16 @@ Storage follows the hybrid design:
   `start`, `automatic`, or `gateway` note.
 - **Exclusive gateways** evaluate outgoing flows: the first flow whose
   `condition` is true wins; otherwise the `isDefault` flow is taken; if neither
-  matches the transition fails. Conditions use a minimal language
-  (`SequenceFlowConditionEvaluator`): `variable op literal` with
-  `== != < <= > >=`, or a bare variable name (truthy check).
+  matches the transition fails. Conditions are evaluated by
+  `SequenceFlowConditionEvaluator` using [NCalc](https://github.com/ncalc/ncalc):
+  instance variables are exposed as parameters and the full NCalc grammar is
+  supported (comparisons `== != < <= > >=`, boolean `and`/`or`, arithmetic,
+  parentheses, quoted string literals). String comparisons are case-insensitive;
+  the result is coerced to a boolean so a bare variable name still works as a
+  truthiness check (non-zero numbers / non-empty strings are truthy). An optional
+  `${ ... }` wrapper is stripped, and invalid or unresolvable expressions
+  evaluate to `false`. Conditions are also parse-checked when a definition is
+  created/updated.
 - `requiresClaim` **is** enforced at runtime: such a `userTask` must be claimed
   (`POST /claim`) before its flows are available or can be taken, only the
   claiming user may act, and the claim is released on transition. `unclaim`
@@ -282,7 +289,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
-| `sequenceFlow.condition` | Condition Expression | Minimal `var op literal` / bare-truthy language on gateway flows. |
+| `sequenceFlow.condition` | Condition Expression | NCalc expression on gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
@@ -297,9 +304,11 @@ when extending the model so new features stay close to BPMN terminology.
 - **No message/timer/signal events.** Only plain (none) start and end events.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
-- **Minimal condition language.** `variable op literal` (`== != < <= > >=`) or a
-  bare variable truthiness check. Anything richer (functions, boolean operators)
-  is future work.
+- **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
+  comparisons (`== != < <= > >=`), boolean operators (`and`/`or`), arithmetic,
+  parentheses, functions, and quoted string literals are all supported (a bare
+  variable name is still a truthiness check). DMN-style decision tables remain
+  out of scope.
 - **Integer ids, JSON (not BPMN XML).** Flow nodes and sequence flows use integer
   ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
 - **Node roles are enforced** at runtime (against JWT role claims); an empty

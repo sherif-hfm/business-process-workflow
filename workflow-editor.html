@@ -756,7 +756,7 @@ function renderFlowInspector() {
     });
     const condHint = document.createElement("p");
     condHint.className = "empty-note";
-    condHint.textContent = 'e.g. "amount > 1000" or "approved". Leave empty for the default flow.';
+    condHint.textContent = 'NCalc expression, e.g. amount > 1000 and region == \'EU\', or a bare variable like approved. Leave empty for the default flow.';
     inspector.appendChild(condHint);
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
