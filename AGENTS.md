@@ -5,6 +5,12 @@ workflows in the browser. Users lay out **steps** (nodes) inside **phases**
 (swimlane-style containers), connect steps with **actions** (directed edges),
 attach typed **variables**, and save/load the whole model as JSON.
 
+The model is a simplified, BPMN 2.0-inspired subset: steps are typed as
+`startEvent`, `userTask`, `task`, or `endEvent`, drawn with BPMN-style shapes
+(event circles, task rounded rectangles). See [BPMN alignment](#bpmn-alignment)
+for how the editor's vocabulary maps to the BPMN standard and what is
+intentionally simplified.
+
 There is no build step, no server, and no external libraries. Everything runs
 client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 
@@ -41,8 +47,9 @@ Everything lives in `workflow-editor.html`. The key pieces:
 - **Interaction**: Pointer events on the SVG drive dragging steps, dragging
   phases (which moves their contained steps), and resizing phases.
   "Connect mode" lets the user click a source step then a target step to create
-  an action edge between them (if the source step is `autoAdvance`, connect mode
-  sets its `nextStepId` instead of creating an action).
+  an action edge between them. For pass-through steps (a `startEvent` or an
+  automatic `task`), connect mode sets the source's `nextStepId` instead of
+  creating an action.
 - **Persistence**: `save()` serializes `model` to pretty-printed JSON (uses the
   File System Access API `showSaveFilePicker` when available, otherwise falls
   back to a download). Loading reads a JSON file and normalizes it through
@@ -81,19 +88,20 @@ Storage follows the hybrid design:
   `instance_history`.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
-- `autoAdvance` steps immediately follow `nextStepId` and write an
-  `auto-advance` history row. A hop limit (`steps.Count + 1`) guards against
-  cycles.
+- Automatic `task` steps immediately follow `nextStepId` and write an
+  `automatic` history row. A hop limit (`steps.Count + 1`) guards against
+  cycles. Legacy JSON with `autoAdvance: true` is migrated to `type: "task"` on
+  load.
 - `requiresClaim` **is** enforced at runtime: such a step must be claimed
   (`POST /claim`) before its actions are available or can be taken, only the
   claiming user may act, and the claim is released on transition. `unclaim`
   clears it. Claim ownership is tracked on `workflow_instances.claimed_by`
   (users default to `anonymous` when unspecified).
-- Required `variables` are validated when starting an instance (start-step
-  variables) and when taking an action (action variables); missing required
+- Required `variables` are validated when starting an instance (chosen start
+  event variables) and when taking an action (action variables); missing required
   values are rejected.
-- Instances move through `Running`, `Completed` (on entering an `end` step), and
-  `Cancelled` (`POST /cancel`) statuses.
+- Instances move through `Running`, `Completed` (on entering an `endEvent`
+  step), and `Cancelled` (`POST /cancel`) statuses.
 - Roles are retained in the definition JSON but are **not** enforced by the
   current API/UI.
 
@@ -147,7 +155,7 @@ The workflow is a plain JSON object. See `workflow.json` for a real example.
 {
   "id": 1,
   "name": "Purchase Request Approval",
-  "initialStepId": 1,          // id of the start step (nullable)
+  "initialStepId": 1,          // id of the start event step (nullable)
   "phases": [ /* Phase[] */ ],
   "steps":  [ /* Step[]  */ ]
 }
@@ -167,23 +175,42 @@ inside a phase are assigned to it (`step.phaseId`).
 ```
 
 ### Step
-A node in the workflow. `type` is one of `start`, `task`, or `end`.
+A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`, or
+`endEvent` (BPMN-inspired, simplified).
 
 ```jsonc
 {
   "id": 1,
   "name": "Draft",
-  "type": "start",             // "start" | "task" | "end"
+  "type": "startEvent",        // "startEvent" | "userTask" | "task" | "endEvent"
   "phaseId": 1,                // owning phase id, or null
   "x": 69, "y": 155,           // top-left position on canvas
-  "roles": [ "Requester" ],    // free-text candidate roles allowed to act on this step
-  "requiresClaim": false,      // if true, one user must claim the step before acting (design-time intent; not shown for end steps)
-  "autoAdvance": false,        // if true, step is a pass-through: on entry it follows nextStepId with no user action (design-time intent; hidden/forced false for end steps; mutually exclusive with requiresClaim)
-  "nextStepId": null,          // direct target step id, used only when autoAdvance is true (nullable)
-  "variables": [ /* Variable[] */ ], // shown for start steps: data to start the workflow
-  "actions":   [ /* Action[]   */ ]  // outgoing edges (end steps have none); kept but hidden while autoAdvance is true
+  "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
+  "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
+  "nextStepId": 2,             // target for startEvent and automatic task (nullable)
+  "variables": [ /* Variable[] */ ], // start event: data required to start the workflow
+  "actions":   [ /* Action[]   */ ]  // outgoing edges (userTask only); none on startEvent/endEvent/task
 }
 ```
+
+Step kinds:
+
+- **`startEvent`** (was `start`): workflow entry; circle on canvas. Has start
+  `variables` and a single `nextStepId` (no actions). Auto-advances into
+  `nextStepId` when an instance is started.
+- **`userTask`** (was `task`): human step; rounded rectangle with user-task
+  marker. Has `roles`, `actions`, optional `requiresClaim`.
+- **`task`**: automatic pass-through (was `autoAdvance: true`); rounded
+  rectangle with AUTO marker. Follows `nextStepId` on entry with no user action.
+- **`endEvent`** (was `end`): terminal; thick-ring circle. No outgoing actions.
+
+A workflow may define multiple `startEvent` steps. `initialStepId` is the
+default start event. `POST /api/instances` accepts optional `startStepId` to
+force a different start event; that event's variables are collected.
+
+Legacy JSON using `start` / `task` / `end` and `autoAdvance` is migrated on
+load in both the editor and the .NET engine (legacy start actions become
+`nextStepId` plus merged variables).
 
 ### Action
 A directed transition from one step to another (rendered as an edge/arrow).
@@ -200,7 +227,7 @@ Action ids are conventionally `stepId * 100 + n` (e.g. step 2 -> 201, 202).
 ```
 
 ### Variable
-Typed data attached to a start step or an action.
+Typed data attached to a start event or an action.
 
 ```jsonc
 {
@@ -214,15 +241,64 @@ Typed data attached to a start step or an action.
 
 ---
 
+## BPMN alignment
+
+The model is a deliberately small subset of BPMN 2.0. Names and shapes follow
+the standard where practical; runtime semantics are simplified. Use this mapping
+when extending the model so new features stay close to BPMN terminology.
+
+### Concept mapping
+
+| This project | BPMN 2.0 concept | Notes / simplifications |
+| --- | --- | --- |
+| `step` (node) | Flow node | Umbrella term for events and tasks. |
+| `type: "startEvent"` | None Start Event | Single entry marker per flow; drawn as a thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). |
+| `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
+| `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task/Service Task without an implementation. |
+| `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
+| `action` (edge) | Sequence Flow + user decision | A named outgoing transition a user selects. BPMN would split this into a sequence flow plus a gateway when there are multiple choices. |
+| `phase` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
+| `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
+| `variables` | Data Object / Property | Typed data captured at the start event or on an action. |
+| `requiresClaim` | User Task "claim" (assignee) | Runtime-enforced single-owner locking; not a distinct BPMN element. |
+| `nextStepId` (auto/start) | Unconditional Sequence Flow | Direct, no-decision transition used by `startEvent` and automatic `task`. |
+
+### Intentional deviations from BPMN
+
+- **No gateways.** Branching is expressed as multiple `actions` on a `userTask`.
+  There is no exclusive/parallel/inclusive gateway element yet.
+- **No message/timer/signal events.** Only plain (none) start and end events
+  exist.
+- **No pools / collaboration.** Phases are lanes only; there is no multi-party
+  pool or message flow.
+- **Sequence flow is embedded.** Edges live inside a step's `actions` (or its
+  `nextStepId`) rather than as first-class flow objects with their own ids.
+- **Roles are advisory** in the definition and only `requiresClaim` ownership is
+  enforced at runtime.
+
+### If you add BPMN-aligned features later
+
+- Prefer BPMN names for new step types/elements (e.g. `serviceTask`,
+  `exclusiveGateway`, `timerStartEvent`) and add matching shapes.
+- Keep the JSON tolerant: extend `loadFromObject()` (editor) and
+  `WorkflowModelMigrator` (.NET) so older documents still load.
+- Update `WorkflowStepTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
+  `IsUserTask`) and `ValidateDefinition` together so the engine and editor agree.
+
+---
+
 ## Key conventions & invariants
 
-- **Node/phase sizing**: steps are a fixed `NODE_W` x `NODE_H` (170 x 64).
-  Phases have minimums `MIN_PHASE_W` x `MIN_PHASE_H` (220 x 150).
+- **Node/phase sizing**: user tasks and automatic tasks use `NODE_W` x `NODE_H`
+  (170 x 64) rounded rectangles. Start/end events use `EVENT_D` (56) circles with
+  the name label below. Phases have minimums `MIN_PHASE_W` x `MIN_PHASE_H`
+  (220 x 150).
 - **ID generation**: `nextStepId`, `nextPhaseId`, `nextActionId`, and
   `nextVariableId` derive new ids from existing max ids. Action ids are namespaced
   per step (`step.id * 100 + n`).
-- **Start step**: `model.initialStepId` marks the entry point. Deleting that step
-  reassigns it to the first remaining step (or null).
+- **Start event**: `model.initialStepId` marks the default start event (must be a
+  `startEvent`). Multiple start events are allowed. Deleting the default
+  reassigns it to the first remaining start event (or null).
 - **Referential cleanup**: deleting a step also removes any actions pointing to it
   and nulls out any `nextStepId` that referenced it;
   deleting a phase nulls out `phaseId` on its steps.
@@ -236,20 +312,15 @@ Typed data attached to a start step or an action.
   legacy singular `role` string into an array and defaulting to `[]`. Roles are
   edited with the `rolesField()` chip editor and shown as small labels on nodes
   and edges.
-- **Requires claim**: steps carry a boolean `requiresClaim` (design-time intent
-  only; enforcement is a runtime concern that lives outside this editor). It
-  defaults to `false`, is hidden for `end` steps, and is forced `false` when a
-  step's type becomes `end`.
-- **Auto-advance**: steps carry a boolean `autoAdvance` and a nullable
-  `nextStepId` (design-time intent only). When `autoAdvance` is `true` the step is
-  a pass-through that follows `nextStepId` with no user action: its `actions` are
-  preserved but hidden (in the inspector and on the canvas) and a single dashed
-  "auto" edge is drawn to `nextStepId` instead. It defaults to `false`, is
-  hidden/forced `false` for `end` steps, and is mutually exclusive with
-  `requiresClaim` (enabling it forces `requiresClaim` to `false`, and the roles /
-  requires-claim controls are hidden while it is on). Nodes show an `AUTO` marker
-  in their header. `nextStepId` is set via the "Goes to step" inspector dropdown
-  or connect mode.
+- **Requires claim**: `userTask` steps carry a boolean `requiresClaim`
+  (design-time intent; enforced at runtime in `WorkflowEngine/`). Hidden for
+  other step types.
+- **Automatic task**: `type: "task"` follows `nextStepId` on entry with no user
+  action. A dashed "auto" edge is drawn on the canvas. Legacy `autoAdvance:
+  true` migrates to `type: "task"`.
+- **Start event flow**: `type: "startEvent"` uses `nextStepId` (solid "start"
+  edge on canvas). No actions. On instance start the engine collects that event's
+  variables then auto-advances via `nextStepId`.
 
 ---
 
@@ -259,8 +330,9 @@ Typed data attached to a start step or an action.
   `render*Inspector` function (UI), the `loadFromObject` normalizer (persistence),
   and `seedSample` if the example should show it. `save()` needs no change since
   it serializes `model` directly.
-- **Add a new step type**: extend the `selectField("Type", [...])` options in
-  `renderStepInspector`, and add matching CSS under `.node.<type> rect`.
+- **Add a new step type**: extend `STEP_TYPE_OPTIONS` in `renderStepInspector`,
+  add matching CSS under `.node.<type>`, and update `WorkflowStepTypes` in the
+  .NET shared model.
 - **Add a new variable data type**: append to the `VARIABLE_DATA_TYPES` array.
 - **Change canvas visuals**: edit the `<style>` block (CSS variables live in
   `:root`; node/phase/edge styling is grouped by class).

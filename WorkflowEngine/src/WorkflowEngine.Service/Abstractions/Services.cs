@@ -31,6 +31,7 @@ public interface IWorkflowEngineService
     Task<InstanceDetailDto> StartInstanceAsync(
         long workflowId,
         string? startedBy,
+        int? startStepId,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 

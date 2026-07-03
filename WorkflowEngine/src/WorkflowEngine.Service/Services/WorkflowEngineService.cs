@@ -15,18 +15,27 @@ public sealed class WorkflowEngineService(
     public async Task<InstanceDetailDto> StartInstanceAsync(
         long workflowId,
         string? startedBy,
+        int? startStepId,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
         var workflow = await GetPublishedWorkflowAsync(workflowId, cancellationToken);
-        var initialStep = GetStep(workflow.Definition, workflow.Definition.InitialStepId!.Value);
-        ValidateVariableValues(initialStep.Variables, variableValues);
+        var resolvedStartStepId = startStepId ?? workflow.Definition.InitialStepId
+            ?? throw new WorkflowDomainException("Workflow has no default start event.");
+
+        var startStep = GetStep(workflow.Definition, resolvedStartStepId);
+        if (!WorkflowStepTypes.IsStart(startStep.Type))
+        {
+            throw new WorkflowDomainException($"Step #{resolvedStartStepId} is not a start event.");
+        }
+
+        ValidateVariableValues(startStep.Variables, variableValues);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.AddInstanceAsync(workflow.Id, initialStep.Id, startedBy, cancellationToken);
+        var instance = await runtime.AddInstanceAsync(workflow.Id, startStep.Id, startedBy, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        foreach (var variable in initialStep.Variables)
+        foreach (var variable in startStep.Variables)
         {
             if (TryGetValue(variableValues, variable.Name, out var value))
             {
@@ -87,7 +96,7 @@ public sealed class WorkflowEngineService(
             var workflow = workflows[instance.WorkflowDefinitionId];
             var step = GetStep(workflow.Definition, instance.CurrentStepId);
 
-            if (step.Type == WorkflowStepTypes.End || step.AutoAdvance)
+            if (WorkflowStepTypes.IsEnd(step.Type) || WorkflowStepTypes.IsAutomatic(step.Type) || WorkflowStepTypes.IsStart(step.Type))
             {
                 continue;
             }
@@ -146,7 +155,7 @@ public sealed class WorkflowEngineService(
 
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var step = GetStep(workflow.Definition, instance.CurrentStepId);
-        if (step.Type == WorkflowStepTypes.End || step.AutoAdvance)
+        if (WorkflowStepTypes.IsEnd(step.Type) || WorkflowStepTypes.IsAutomatic(step.Type) || WorkflowStepTypes.IsStart(step.Type))
         {
             return [];
         }
@@ -234,7 +243,7 @@ public sealed class WorkflowEngineService(
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var step = GetStep(workflow.Definition, instance.CurrentStepId);
         var action = step.Actions.SingleOrDefault(a => a.Id == actionId);
-        if (action is null || step.AutoAdvance || step.Type == WorkflowStepTypes.End)
+        if (action is null || WorkflowStepTypes.IsAutomatic(step.Type) || WorkflowStepTypes.IsEnd(step.Type) || WorkflowStepTypes.IsStart(step.Type))
         {
             throw new WorkflowDomainException("The requested action is not available from the current step.");
         }
@@ -262,7 +271,7 @@ public sealed class WorkflowEngineService(
             cancellationToken);
 
         var nextStep = GetStep(workflow.Definition, action.ToStepId);
-        var nextStatus = nextStep.Type == WorkflowStepTypes.End
+        var nextStatus = WorkflowStepTypes.IsEnd(nextStep.Type)
             ? WorkflowInstanceStatuses.Completed
             : WorkflowInstanceStatuses.Running;
 
@@ -319,20 +328,23 @@ public sealed class WorkflowEngineService(
             }
 
             var currentStep = GetStep(definition, instance.CurrentStepId);
-            if (!currentStep.AutoAdvance)
+            if (!WorkflowStepTypes.IsAutomatic(currentStep.Type) && !WorkflowStepTypes.IsStart(currentStep.Type))
             {
                 return instance;
             }
 
             if (currentStep.NextStepId is null)
             {
-                throw new WorkflowDomainException($"Auto-advance step #{currentStep.Id} is missing nextStepId.");
+                var kind = WorkflowStepTypes.IsStart(currentStep.Type) ? "Start event" : "Automatic task";
+                throw new WorkflowDomainException($"{kind} #{currentStep.Id} is missing nextStepId.");
             }
 
             var nextStep = GetStep(definition, currentStep.NextStepId.Value);
-            var nextStatus = nextStep.Type == WorkflowStepTypes.End
+            var nextStatus = WorkflowStepTypes.IsEnd(nextStep.Type)
                 ? WorkflowInstanceStatuses.Completed
                 : WorkflowInstanceStatuses.Running;
+
+            var note = WorkflowStepTypes.IsStart(currentStep.Type) ? "start" : "automatic";
 
             await runtime.AddHistoryAsync(
                 instance.Id,
@@ -341,7 +353,7 @@ public sealed class WorkflowEngineService(
                 nextStep.Id,
                 performedBy,
                 null,
-                "auto-advance",
+                note,
                 cancellationToken);
 
             instance = instance with
@@ -355,7 +367,7 @@ public sealed class WorkflowEngineService(
             await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
         }
 
-        throw new WorkflowDomainException("Auto-advance cycle detected.");
+        throw new WorkflowDomainException("Automatic task cycle detected.");
     }
 
     private async Task<InstanceDetailDto?> BuildDetailAsync(long id, CancellationToken cancellationToken)

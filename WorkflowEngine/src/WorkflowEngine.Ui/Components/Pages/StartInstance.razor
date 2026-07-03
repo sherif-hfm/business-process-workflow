@@ -17,20 +17,40 @@
 }
 else
 {
-    var startStep = workflow.Definition.Steps.SingleOrDefault(s => s.Id == workflow.Definition.InitialStepId);
+    var startEvents = workflow.Definition.Steps.Where(s => s.Type == WorkflowStepTypes.StartEvent).ToList();
+    var selectedStep = startEvents.SingleOrDefault(s => s.Id == selectedStartStepId);
 
     <h1>Start @workflow.Name</h1>
-    <p class="text-muted">Version @workflow.Version. Initial step: <strong>@startStep?.Name</strong></p>
+    <p class="text-muted">Version @workflow.Version</p>
+
+    @if (startEvents.Count > 1)
+    {
+        <div class="mb-3">
+            <label class="form-label">Start event</label>
+            <select class="form-select" @bind="selectedStartStepId" @bind:after="OnStartEventChanged">
+                @foreach (var startEvent in startEvents)
+                {
+                    <option value="@startEvent.Id">
+                        #@startEvent.Id @startEvent.Name@(startEvent.Id == workflow.Definition.InitialStepId ? " (default)" : "")
+                    </option>
+                }
+            </select>
+        </div>
+    }
+    else if (selectedStep is not null)
+    {
+        <p class="text-muted">Start event: <strong>@selectedStep.Name</strong></p>
+    }
 
     <div class="mb-3">
         <label class="form-label">Started by</label>
         <input class="form-control" @bind="startedBy" placeholder="optional user name" />
     </div>
 
-    @if (startStep is not null && startStep.Variables.Count > 0)
+    @if (selectedStep is not null && selectedStep.Variables.Count > 0)
     {
         <h2 class="h4">Start variables</h2>
-        @foreach (var variable in startStep.Variables)
+        @foreach (var variable in selectedStep.Variables)
         {
             <div class="mb-3">
                 <label class="form-label">
@@ -56,13 +76,17 @@ else
 
     private WorkflowDetailDto? workflow;
     private readonly Dictionary<string, string?> inputs = [];
+    private int? selectedStartStepId;
     private string? startedBy = "user";
     private string? error;
 
     protected override async Task OnInitializedAsync()
     {
         workflow = await Api.GetWorkflowAsync(WorkflowId);
+        selectedStartStepId = workflow?.Definition.InitialStepId;
     }
+
+    private void OnStartEventChanged() => inputs.Clear();
 
     private string? GetInput(string name) => inputs.TryGetValue(name, out var value) ? value : null;
 
@@ -70,7 +94,7 @@ else
 
     private async Task StartAsync()
     {
-        if (workflow is null)
+        if (workflow is null || selectedStartStepId is null)
         {
             return;
         }
@@ -78,9 +102,13 @@ else
         try
         {
             error = null;
-            var startStep = workflow.Definition.Steps.Single(s => s.Id == workflow.Definition.InitialStepId);
+            var startStep = workflow.Definition.Steps.Single(s => s.Id == selectedStartStepId);
             var variables = BuildPayload(startStep.Variables);
-            var instance = await Api.StartInstanceAsync(new StartInstanceRequest(workflow.Id, startedBy, variables));
+            var instance = await Api.StartInstanceAsync(new StartInstanceRequest(
+                workflow.Id,
+                startedBy,
+                selectedStartStepId,
+                variables));
             if (instance is not null)
             {
                 Navigation.NavigateTo($"/instances/{instance.Id}");

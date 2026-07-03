@@ -50,7 +50,7 @@ public sealed class StepModel
     public string Name { get; set; } = string.Empty;
 
     [JsonPropertyName("type")]
-    public string Type { get; set; } = WorkflowStepTypes.Task;
+    public string Type { get; set; } = WorkflowStepTypes.UserTask;
 
     [JsonPropertyName("phaseId")]
     public int? PhaseId { get; set; }
@@ -118,9 +118,29 @@ public sealed class VariableModel
 
 public static class WorkflowStepTypes
 {
-    public const string Start = "start";
+    public const string StartEvent = "startEvent";
+    public const string EndEvent = "endEvent";
+    public const string UserTask = "userTask";
     public const string Task = "task";
-    public const string End = "end";
+
+    public static bool IsStart(string type) =>
+        type is StartEvent or LegacyStart;
+
+    public static bool IsEnd(string type) =>
+        type is EndEvent or LegacyEnd;
+
+    public static bool IsUserTask(string type) =>
+        type is UserTask;
+
+    public static bool IsAutomatic(string type) =>
+        string.Equals(type, Task, StringComparison.Ordinal);
+
+    public static bool IsSupported(string type) =>
+        type is StartEvent or EndEvent or UserTask or Task;
+
+    private const string LegacyStart = "start";
+    private const string LegacyTask = "task";
+    private const string LegacyEnd = "end";
 }
 
 public static class WorkflowVariableTypes

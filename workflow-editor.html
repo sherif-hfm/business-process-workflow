@@ -140,18 +140,26 @@
   .chip button:hover { background: rgba(191, 219, 254, .16); }
 
   /* SVG node styling */
+  .node rect, .node circle.body {
+    cursor: grab;
+  }
   .node rect {
     rx: 10; ry: 10;
     stroke-width: 2;
-    cursor: grab;
   }
-  .node.start rect { fill: #14532d; stroke: var(--green); }
-  .node.end rect   { fill: #450a0a; stroke: var(--red); }
-  .node.task rect  { fill: #1e3a5f; stroke: var(--accent); }
-  .node.selected rect { stroke: #fff; stroke-width: 3; }
+  .node circle.body { stroke-width: 2; }
+  .node.startEvent circle.body { fill: #14532d; stroke: var(--green); }
+  .node.endEvent circle.body   { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
+  .node.userTask rect { fill: #1e3a5f; stroke: var(--accent); }
+  .node.task rect     { fill: #1e293b; stroke: #64748b; }
+  .node.selected rect,
+  .node.selected circle.body { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: #cbd5e1; font-size: 11px; }
   .node .roles { fill: var(--muted); font-size: 10px; }
+  .node .event-name { font-size: 12px; }
+  .node .user-marker circle { fill: #bfdbfe; stroke: #bfdbfe; }
+  .node .user-marker path { fill: none; stroke: #bfdbfe; stroke-width: 1.5; }
 
   .phase rect.body {
     fill: rgba(59, 130, 246, .08);
@@ -217,7 +225,20 @@
 
 <script>
 const NODE_W = 170, NODE_H = 64;
+const EVENT_D = 56;
 const MIN_PHASE_W = 220, MIN_PHASE_H = 150;
+const STEP_TYPE = {
+  START_EVENT: "startEvent",
+  END_EVENT: "endEvent",
+  USER_TASK: "userTask",
+  TASK: "task"
+};
+const STEP_TYPE_OPTIONS = [
+  { value: STEP_TYPE.START_EVENT, label: "Start Event" },
+  { value: STEP_TYPE.END_EVENT, label: "End Event" },
+  { value: STEP_TYPE.USER_TASK, label: "User Task" },
+  { value: STEP_TYPE.TASK, label: "Task (automatic)" }
+];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 let model = newModel();
 let selected = null;          // {kind:'step'|'action'|'phase', stepId, actionId, phaseId}
@@ -272,6 +293,89 @@ function roleSummary(roles, maxLength = 28) {
   const text = normalizeRoles(roles).join(", ");
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
+function isEventType(type) {
+  return type === STEP_TYPE.START_EVENT || type === STEP_TYPE.END_EVENT;
+}
+function isAutomaticType(type) {
+  return type === STEP_TYPE.TASK;
+}
+function isUserTaskType(type) {
+  return type === STEP_TYPE.USER_TASK;
+}
+function isStartEventType(type) {
+  return type === STEP_TYPE.START_EVENT;
+}
+function isEndEventType(type) {
+  return type === STEP_TYPE.END_EVENT;
+}
+function typeLabel(type) {
+  const match = STEP_TYPE_OPTIONS.find(o => o.value === type);
+  return match ? match.label : type;
+}
+function nodeSize(step) {
+  if (isEventType(step.type)) return { w: EVENT_D, h: EVENT_D };
+  return { w: NODE_W, h: NODE_H };
+}
+function isPassThroughType(type) {
+  return isAutomaticType(type) || isStartEventType(type);
+}
+function applyTypeInvariants(step) {
+  if (isEndEventType(step.type)) {
+    step.requiresClaim = false;
+    step.nextStepId = null;
+    step.actions = [];
+    step.variables = step.variables || [];
+  } else if (isAutomaticType(step.type)) {
+    step.requiresClaim = false;
+    step.roles = [];
+    step.actions = [];
+    step.variables = [];
+  } else if (isUserTaskType(step.type)) {
+    step.nextStepId = null;
+    step.variables = step.variables || [];
+  } else if (isStartEventType(step.type)) {
+    step.requiresClaim = false;
+    step.roles = [];
+    step.actions = [];
+    step.variables = step.variables || [];
+  }
+}
+function migrateStartEventActions(step) {
+  if (!isStartEventType(step.type) || !step.actions?.length) return;
+  const first = step.actions[0];
+  if (step.nextStepId == null) step.nextStepId = first.toStepId;
+  const existing = new Set((step.variables || []).map(v => v.name.toLowerCase()));
+  for (const v of first.variables || []) {
+    if (!existing.has(v.name.toLowerCase())) {
+      step.variables.push(v);
+      existing.add(v.name.toLowerCase());
+    }
+  }
+  step.actions = [];
+}
+function isLegacyDocument(obj) {
+  return (obj.steps || []).some(s => s.type === "start" || s.type === "end" || s.autoAdvance);
+}
+function migrateLegacyType(step, legacyDoc) {
+  if (!legacyDoc) return step.type ?? STEP_TYPE.USER_TASK;
+  const t = step.type ?? "task";
+  if (t === "start") return STEP_TYPE.START_EVENT;
+  if (t === "end") return STEP_TYPE.END_EVENT;
+  if (t === "task" && step.autoAdvance) return STEP_TYPE.TASK;
+  if (t === "task") return STEP_TYPE.USER_TASK;
+  return t;
+}
+function appendUserTaskMarker(g) {
+  const icon = el("g", { class: "user-marker", transform: "translate(8,8)" });
+  icon.appendChild(el("circle", { cx: 5, cy: 4, r: 3 }));
+  icon.appendChild(el("path", { d: "M1 14 Q5 10 9 14" }));
+  g.appendChild(icon);
+}
+function appendAutomaticMarker(g) {
+  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
+  t.textContent = "AUTO";
+  g.appendChild(t);
+}
 
 /* ---------- Sample seed ---------- */
 function seedSample() {
@@ -285,17 +389,15 @@ function seedSample() {
       { id: 3, name: "Resolution", x: 320, y: 260, w: 560, h: 180 }
     ],
     steps: [
-      { id: 1, name: "Draft", type: "start", phaseId: 1, x: 80,  y: 60, roles: ["Requester"], requiresClaim: false,
+      { id: 1, name: "Draft", type: "startEvent", phaseId: 1, x: 80,  y: 60, roles: [], requiresClaim: false,
+        nextStepId: 2,
         variables: [
-          { id: 1, name: "requester", dataType: "string", isArray: false, required: true }
+          { id: 1, name: "requester", dataType: "string", isArray: false, required: true },
+          { id: 2, name: "amount", dataType: "number", isArray: false, required: true },
+          { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
         ],
-        actions: [
-        { id: 101, name: "Submit", toStepId: 2, roles: ["Requester"], variables: [
-          { id: 1, name: "amount", dataType: "number", isArray: false, required: true },
-          { id: 2, name: "attachments", dataType: "string", isArray: true, required: false }
-        ] }
-      ] },
-      { id: 2, name: "Pending Manager", type: "task", phaseId: 2, x: 360, y: 60, roles: ["Manager"], requiresClaim: false,
+        actions: [] },
+      { id: 2, name: "Pending Manager", type: "userTask", phaseId: 2, x: 360, y: 60, roles: ["Manager"], requiresClaim: false,
         actions: [
           { id: 201, name: "Approve", toStepId: 3, roles: ["Manager"] },
           { id: 202, name: "Reject", toStepId: 5, roles: ["Manager"], variables: [
@@ -303,25 +405,33 @@ function seedSample() {
           ] },
           { id: 203, name: "Return", toStepId: 1, roles: ["Manager"] }
         ] },
-      { id: 3, name: "Pending Finance", type: "task", phaseId: 2, x: 640, y: 60, roles: ["Finance"], requiresClaim: false,
+      { id: 3, name: "Pending Finance", type: "userTask", phaseId: 2, x: 640, y: 60, roles: ["Finance"], requiresClaim: false,
         actions: [
           { id: 301, name: "Approve", toStepId: 4, roles: ["Finance"] },
           { id: 302, name: "Reject", toStepId: 5, roles: ["Finance"] }
         ] },
-      { id: 4, name: "Approved", type: "end", phaseId: 3, x: 640, y: 300, roles: [], requiresClaim: false, actions: [] },
-      { id: 5, name: "Rejected", type: "end", phaseId: 3, x: 360, y: 300, roles: [], requiresClaim: false, actions: [] }
+      { id: 4, name: "Approved", type: "endEvent", phaseId: 3, x: 640, y: 300, roles: [], requiresClaim: false, actions: [] },
+      { id: 5, name: "Rejected", type: "endEvent", phaseId: 3, x: 360, y: 300, roles: [], requiresClaim: false, actions: [] }
     ]
   };
 }
 
 /* ---------- Geometry ---------- */
-function center(step) { return { x: step.x + NODE_W / 2, y: step.y + NODE_H / 2 }; }
+function center(step) {
+  const size = nodeSize(step);
+  return { x: step.x + size.w / 2, y: step.y + size.h / 2 };
+}
 
-// intersection of line from rect center toward target point with rect border
+// intersection of line from shape center toward target point with shape border
 function borderPoint(step, tx, ty) {
   const c = center(step);
   const dx = tx - c.x, dy = ty - c.y;
   if (dx === 0 && dy === 0) return c;
+  if (isEventType(step.type)) {
+    const r = EVENT_D / 2;
+    const scale = r / Math.sqrt(dx * dx + dy * dy);
+    return { x: c.x + dx * scale, y: c.y + dy * scale };
+  }
   const hw = NODE_W / 2, hh = NODE_H / 2;
   const scale = Math.min(
     hw / Math.abs(dx || 1e-9),
@@ -366,18 +476,34 @@ function renderNodes() {
   for (const step of model.steps) {
     const g = el("g", { class: `node ${step.type} ${isSel('step', step.id) ? 'selected' : ''}`,
                         transform: `translate(${step.x},${step.y})`, "data-id": step.id });
-    g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 10, ry: 10 }));
-    const idText = el("text", { x: 10, y: 18, class: "nid" });
-    idText.textContent = `#${step.id} · ${step.type}${model.initialStepId === step.id ? " · START" : ""}${step.autoAdvance ? " · AUTO" : ""}`;
-    g.appendChild(idText);
-    const nameText = el("text", { x: NODE_W / 2, y: 42, "text-anchor": "middle", "font-weight": "600" });
-    nameText.textContent = step.name;
-    g.appendChild(nameText);
-    const roles = step.autoAdvance ? "" : roleSummary(step.roles);
-    if (roles) {
-      const rolesText = el("text", { x: NODE_W / 2, y: 58, class: "roles", "text-anchor": "middle" });
-      rolesText.textContent = roles;
-      g.appendChild(rolesText);
+    const marker = model.initialStepId === step.id ? " · START" : "";
+    if (isEventType(step.type)) {
+      const r = EVENT_D / 2;
+      g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
+      const idText = el("text", { x: r, y: EVENT_D + 12, class: "nid", "text-anchor": "middle" });
+      idText.textContent = `#${step.id} · ${typeLabel(step.type)}${marker}`;
+      g.appendChild(idText);
+      const nameText = el("text", { x: r, y: EVENT_D + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
+      nameText.textContent = step.name;
+      g.appendChild(nameText);
+    } else {
+      g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 10, ry: 10 }));
+      const idText = el("text", { x: 10, y: 18, class: "nid" });
+      idText.textContent = `#${step.id} · ${typeLabel(step.type)}${marker}`;
+      g.appendChild(idText);
+      const nameText = el("text", { x: NODE_W / 2, y: 42, "text-anchor": "middle", "font-weight": "600" });
+      nameText.textContent = step.name;
+      g.appendChild(nameText);
+      if (isUserTaskType(step.type)) {
+        const roles = roleSummary(step.roles);
+        if (roles) {
+          const rolesText = el("text", { x: NODE_W / 2, y: 58, class: "roles", "text-anchor": "middle" });
+          rolesText.textContent = roles;
+          g.appendChild(rolesText);
+        }
+        appendUserTaskMarker(g);
+      }
+      if (isAutomaticType(step.type)) appendAutomaticMarker(g);
     }
 
     g.addEventListener("pointerdown", (e) => onNodePointerDown(e, step));
@@ -388,16 +514,16 @@ function renderNodes() {
 function renderEdges() {
   edgesG.innerHTML = "";
   for (const step of model.steps) {
-    if (step.autoAdvance) {
+    if (isPassThroughType(step.type)) {
       const target = getStep(step.nextStepId);
       if (!target) continue;
-      const g = el("g", { class: `edge auto ${isSel('step', step.id) ? 'selected' : ''}`,
+      const isAuto = isAutomaticType(step.type);
+      const g = el("g", { class: `edge ${isAuto ? "auto" : "start"} ${isSel('step', step.id) ? 'selected' : ''}`,
                           "data-step": step.id });
       let d, lx, ly;
+      const size = nodeSize(step);
       if (step.id === target.id) {
-        // self loop
-        const c = center(step);
-        const x = step.x + NODE_W, y = step.y + NODE_H / 2;
+        const x = step.x + size.w, y = step.y + size.h / 2;
         d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
         lx = x + 60; ly = y;
       } else {
@@ -409,7 +535,7 @@ function renderEdges() {
       const sel = isSel('step', step.id);
       g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
 
-      const label = "auto";
+      const label = isAuto ? "auto" : "start";
       const bg = el("rect", { class: "lblbg", x: lx - label.length * 3.6 - 4, y: ly - 16,
                               width: label.length * 7.2 + 8, height: 16, rx: 4 });
       g.appendChild(bg);
@@ -427,10 +553,9 @@ function renderEdges() {
       const g = el("g", { class: `edge ${isSel('action', step.id, action.id) ? 'selected' : ''}`,
                           "data-step": step.id, "data-action": action.id });
       let d, lx, ly;
+      const size = nodeSize(step);
       if (step.id === target.id) {
-        // self loop
-        const c = center(step);
-        const x = step.x + NODE_W, y = step.y + NODE_H / 2;
+        const x = step.x + size.w, y = step.y + size.h / 2;
         d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
         lx = x + 60; ly = y;
       } else {
@@ -492,10 +617,11 @@ function renderInspector() {
 function addInitialSelector() {
   const f = document.createElement("div");
   f.className = "field";
-  f.innerHTML = `<label>Initial (start) step</label>`;
+  f.innerHTML = `<label>Default start event</label>`;
   const sel = document.createElement("select");
+  const startEvents = model.steps.filter(s => isStartEventType(s.type));
   sel.innerHTML = `<option value="">— none —</option>` +
-    model.steps.map(s => `<option value="${s.id}" ${model.initialStepId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
+    startEvents.map(s => `<option value="${s.id}" ${model.initialStepId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
   sel.onchange = () => { model.initialStepId = sel.value ? +sel.value : null; render(); };
   f.appendChild(sel);
   inspector.appendChild(f);
@@ -504,24 +630,12 @@ function addInitialSelector() {
 function renderStepInspector() {
   const step = getStep(selected.stepId);
   if (!step) { selected = null; return renderInspector(); }
-  if (step.type === "end") {
-    step.requiresClaim = false;
-    step.autoAdvance = false;
-  } else {
-    step.requiresClaim = step.requiresClaim ?? false;
-    step.autoAdvance = !!step.autoAdvance;
-  }
+  applyTypeInvariants(step);
   inspector.innerHTML = `<h2>Step #${step.id}</h2>`;
   field("Name", "text", step.name, v => { step.name = v; renderNodes(); renderEdges(); });
-  selectField("Type", ["start", "task", "end"], step.type, v => {
+  selectField("Type", STEP_TYPE_OPTIONS, step.type, v => {
     step.type = v;
-    if (v === "end") {
-      step.requiresClaim = false;
-      step.autoAdvance = false;
-    } else {
-      step.requiresClaim = step.requiresClaim ?? false;
-      step.autoAdvance = !!step.autoAdvance;
-    }
+    applyTypeInvariants(step);
     render();
   });
   selectField("Phase", [{ value: "", label: "— none —" }].concat(
@@ -530,39 +644,30 @@ function renderStepInspector() {
     step.phaseId = v ? +v : null;
     render();
   });
-  if (step.type !== "end") {
-    inspector.appendChild(
-      variableCheckbox("Auto-advance (no user action)", step.autoAdvance, checked => {
-        step.autoAdvance = checked;
-        if (checked) step.requiresClaim = false;
-        render();
-      })
-    );
-    if (step.autoAdvance) {
-      selectField("Goes to step", [{ value: "", label: "— none —" }].concat(
-        model.steps.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` }))
-      ), step.nextStepId ?? "", v => {
-        step.nextStepId = v ? +v : null;
-        render();
-      });
-    }
-    if (step.autoAdvance && step.nextStepId == null) {
+  if (isPassThroughType(step.type)) {
+    selectField("Goes to step", [{ value: "", label: "— none —" }].concat(
+      model.steps.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` }))
+    ), step.nextStepId ?? "", v => {
+      step.nextStepId = v ? +v : null;
+      render();
+    });
+    if (step.nextStepId == null) {
       const p = document.createElement("p");
       p.className = "empty-note";
-      p.textContent = "Select the step this auto-advances to.";
+      p.textContent = isStartEventType(step.type)
+        ? "Select the step this start event advances to on instance start."
+        : "Select the step this automatic task advances to.";
       inspector.appendChild(p);
     }
   }
-  if (!step.autoAdvance) {
+  if (isUserTaskType(step.type)) {
     rolesField(step, () => { renderNodes(); renderEdges(); });
-  }
-  if (step.type !== "end" && !step.autoAdvance) {
     inspector.appendChild(
       variableCheckbox("Requires claim", step.requiresClaim, checked => { step.requiresClaim = checked; })
     );
   }
 
-  if (step.type === "start") {
+  if (isStartEventType(step.type)) {
     step.variables = step.variables || [];
 
     const variablesTitle = document.createElement("h2");
@@ -572,7 +677,7 @@ function renderStepInspector() {
 
     const hint = document.createElement("p");
     hint.className = "empty-note";
-    hint.textContent = "Variables on this start step are the data required to start the workflow.";
+    hint.textContent = "Variables on the start event are the data required to start the workflow.";
     inspector.appendChild(hint);
 
     if (step.variables.length === 0) {
@@ -590,7 +695,7 @@ function renderStepInspector() {
     inspector.appendChild(addVariableBtn);
   }
 
-  if (!step.autoAdvance) {
+  if (isUserTaskType(step.type)) {
     const actionsTitle = document.createElement("h2");
     actionsTitle.textContent = "Actions";
     actionsTitle.style.marginTop = "16px";
@@ -961,7 +1066,7 @@ function handleConnectClick(step) {
     renderHint();
   } else {
     const src = getStep(connectSource);
-    if (src.autoAdvance) {
+    if (isPassThroughType(src.type)) {
       src.nextStepId = step.id;
       connectSource = null;
       setConnectMode(false);
@@ -993,18 +1098,17 @@ function addPhase() {
 function addStep() {
   const id = nextStepId();
   const phase = selected?.kind === 'phase' ? getPhase(selected.phaseId) : null;
-  const step = { id, name: "New Step", type: model.steps.length === 0 ? "start" : "task",
+  const step = { id, name: "New Step", type: model.steps.length === 0 ? STEP_TYPE.START_EVENT : STEP_TYPE.USER_TASK,
                  phaseId: phase?.id ?? null,
                  x: phase ? phase.x + 30 : 100 + (model.steps.length % 5) * 60,
                  y: phase ? phase.y + 60 : 120 + (model.steps.length % 5) * 40,
                  roles: [],
                  requiresClaim: false,
-                 autoAdvance: false,
                  nextStepId: null,
                  variables: [],
                  actions: [] };
   model.steps.push(step);
-  if (model.initialStepId == null) model.initialStepId = id;
+  if (isStartEventType(step.type) && model.initialStepId == null) model.initialStepId = id;
   select('step', id);
 }
 function deleteStep(id) {
@@ -1014,7 +1118,10 @@ function deleteStep(id) {
     s.actions = s.actions.filter(a => a.toStepId !== id);
     if (s.nextStepId === id) s.nextStepId = null;
   });
-  if (model.initialStepId === id) model.initialStepId = model.steps[0]?.id ?? null;
+  if (model.initialStepId === id) {
+    const nextDefault = model.steps.find(s => isStartEventType(s.type));
+    model.initialStepId = nextDefault?.id ?? null;
+  }
   clearSelection();
 }
 function deletePhase(id) {
@@ -1060,7 +1167,7 @@ async function save() {
   URL.revokeObjectURL(a.href);
 }
 function loadFromObject(obj) {
-  // normalize + add positions if missing
+  const legacy = isLegacyDocument(obj);
   model = {
     id: obj.id ?? 1,
     name: obj.name ?? "Workflow",
@@ -1073,25 +1180,9 @@ function loadFromObject(obj) {
       w: typeof p.w === "number" ? p.w : 300,
       h: typeof p.h === "number" ? p.h : 220
     })),
-    steps: (obj.steps || []).map((s, i) => ({
-      id: s.id,
-      name: s.name ?? s.label ?? `Step ${s.id}`,
-      type: s.type ?? "task",
-      phaseId: s.phaseId ?? null,
-      x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
-      y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
-      roles: normalizeRoles(s.roles ?? s.role),
-      requiresClaim: (s.type ?? "task") === "end" || !!s.autoAdvance ? false : (s.requiresClaim ?? false),
-      autoAdvance: (s.type ?? "task") === "end" ? false : !!s.autoAdvance,
-      nextStepId: s.nextStepId ?? null,
-      variables: (s.variables || []).map(v => ({
-        id: v.id,
-        name: v.name ?? v.label ?? `Variable ${v.id}`,
-        dataType: v.dataType ?? "string",
-        isArray: !!v.isArray,
-        required: !!v.required
-      })),
-      actions: (s.actions || []).map(a => ({
+    steps: (obj.steps || []).map((s, i) => {
+      const type = migrateLegacyType(s, legacy);
+      let actions = (s.actions || []).map(a => ({
         id: a.id,
         name: a.name ?? a.label ?? "action",
         toStepId: a.toStepId ?? a.next ?? null,
@@ -1103,8 +1194,56 @@ function loadFromObject(obj) {
           isArray: !!v.isArray,
           required: !!v.required
         }))
-      }))
-    }))
+      }));
+      let nextStepId = s.nextStepId ?? null;
+      let variables = (s.variables || []).map(v => ({
+        id: v.id,
+        name: v.name ?? v.label ?? `Variable ${v.id}`,
+        dataType: v.dataType ?? "string",
+        isArray: !!v.isArray,
+        required: !!v.required
+      }));
+      if (legacy && s.type === "start" && actions.length > 0) {
+        const first = actions[0];
+        if (nextStepId == null) nextStepId = first.toStepId;
+        const existing = new Set(variables.map(v => v.name.toLowerCase()));
+        for (const v of first.variables || []) {
+          const name = (v.name ?? v.label ?? `Variable ${v.id}`).toLowerCase();
+          if (!existing.has(name)) {
+            variables.push({
+              id: v.id,
+              name: v.name ?? v.label ?? `Variable ${v.id}`,
+              dataType: v.dataType ?? "string",
+              isArray: !!v.isArray,
+              required: !!v.required
+            });
+            existing.add(name);
+          }
+        }
+        actions = [];
+      } else if (legacy && s.type === "start" && s.autoAdvance && nextStepId != null) {
+        actions = [];
+      }
+      const step = {
+        id: s.id,
+        name: s.name ?? s.label ?? `Step ${s.id}`,
+        type,
+        phaseId: s.phaseId ?? null,
+        x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
+        y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
+        roles: normalizeRoles(s.roles ?? s.role),
+        requiresClaim: isEndEventType(type) || isPassThroughType(type)
+          ? false
+          : (s.requiresClaim ?? false),
+        nextStepId: isPassThroughType(type) ? nextStepId : null,
+        variables,
+        actions: isEndEventType(type) ? [] : actions
+      };
+      migrateStartEventActions(step);
+      if (isPassThroughType(type)) step.actions = [];
+      applyTypeInvariants(step);
+      return step;
+    })
   };
   clearSelection();
 }

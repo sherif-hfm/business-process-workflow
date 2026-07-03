@@ -17,6 +17,7 @@ public static class WorkflowInstanceEndpoints
             var instance = await service.StartInstanceAsync(
                 request.WorkflowId,
                 request.StartedBy,
+                request.StartStepId,
                 request.Variables,
                 cancellationToken);
             return Results.Created($"/api/instances/{instance.Id}", instance);

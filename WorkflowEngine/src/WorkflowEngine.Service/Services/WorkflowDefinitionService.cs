@@ -25,6 +25,7 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
         bool publish,
         CancellationToken cancellationToken)
     {
+        WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
@@ -44,6 +45,7 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             return null;
         }
 
+        WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
@@ -74,6 +76,12 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             throw new WorkflowDomainException("Workflow initialStepId must reference an existing step.");
         }
 
+        var initialStep = definition.Steps.Single(s => s.Id == definition.InitialStepId);
+        if (!WorkflowStepTypes.IsStart(initialStep.Type))
+        {
+            throw new WorkflowDomainException("Workflow initialStepId must reference a start event.");
+        }
+
         var stepIds = definition.Steps.Select(s => s.Id).ToHashSet();
         foreach (var step in definition.Steps)
         {
@@ -82,22 +90,40 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                 throw new WorkflowDomainException($"Step #{step.Id} name is required.");
             }
 
-            if (step.Type is not (WorkflowStepTypes.Start or WorkflowStepTypes.Task or WorkflowStepTypes.End))
+            if (!WorkflowStepTypes.IsSupported(step.Type))
             {
                 throw new WorkflowDomainException($"Step #{step.Id} has an unsupported type '{step.Type}'.");
             }
 
-            if (step.Type == WorkflowStepTypes.End && step.Actions.Count > 0)
+            if (WorkflowStepTypes.IsEnd(step.Type) && step.Actions.Count > 0)
             {
-                throw new WorkflowDomainException($"End step #{step.Id} cannot have outgoing actions.");
+                throw new WorkflowDomainException($"End event #{step.Id} cannot have outgoing actions.");
             }
 
-            if (step.AutoAdvance)
+            if (WorkflowStepTypes.IsAutomatic(step.Type))
             {
                 if (step.NextStepId is null || !stepIds.Contains(step.NextStepId.Value))
                 {
-                    throw new WorkflowDomainException($"Auto-advance step #{step.Id} must reference an existing nextStepId.");
+                    throw new WorkflowDomainException($"Automatic task #{step.Id} must reference an existing nextStepId.");
                 }
+            }
+
+            if (WorkflowStepTypes.IsStart(step.Type))
+            {
+                if (step.Actions.Count > 0)
+                {
+                    throw new WorkflowDomainException($"Start event #{step.Id} cannot have outgoing actions.");
+                }
+
+                if (step.NextStepId is null || !stepIds.Contains(step.NextStepId.Value))
+                {
+                    throw new WorkflowDomainException($"Start event #{step.Id} must reference an existing nextStepId.");
+                }
+            }
+
+            if (WorkflowStepTypes.IsUserTask(step.Type) && step.NextStepId is not null)
+            {
+                throw new WorkflowDomainException($"User task #{step.Id} cannot use nextStepId.");
             }
 
             foreach (var action in step.Actions)

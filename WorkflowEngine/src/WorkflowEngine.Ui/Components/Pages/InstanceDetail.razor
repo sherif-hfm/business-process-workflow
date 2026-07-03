@@ -58,7 +58,7 @@ else
                 <div class="alert alert-info">This step is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take actions.</div>
             }
         }
-        @if (currentStep is null || currentStep.Actions.Count == 0 || currentStep.Type == WorkflowStepTypes.End)
+        @if (currentStep is null || currentStep.Actions.Count == 0 || WorkflowStepTypes.IsEnd(currentStep.Type) || WorkflowStepTypes.IsAutomatic(currentStep.Type) || WorkflowStepTypes.IsStart(currentStep.Type))
         {
             <p>No user actions are available.</p>
         }
@@ -187,7 +187,7 @@ else
             }
 
             var step = CurrentStep;
-            if (step is null || step.Type == WorkflowStepTypes.End)
+            if (step is null || WorkflowStepTypes.IsEnd(step.Type) || WorkflowStepTypes.IsAutomatic(step.Type) || WorkflowStepTypes.IsStart(step.Type))
             {
                 return false;
             }

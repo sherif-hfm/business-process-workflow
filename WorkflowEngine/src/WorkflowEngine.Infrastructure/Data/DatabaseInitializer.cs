@@ -39,6 +39,8 @@ public sealed class DatabaseInitializer(AppDbContext dbContext)
             return;
         }
 
+        WorkflowModelMigrator.Normalize(workflow);
+
         dbContext.WorkflowDefinitions.Add(new WorkflowDefinitionEntity
         {
             Name = workflow.Name,

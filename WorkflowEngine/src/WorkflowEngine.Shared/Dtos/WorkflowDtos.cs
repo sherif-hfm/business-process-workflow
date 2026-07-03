@@ -25,6 +25,7 @@ public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publis
 public sealed record StartInstanceRequest(
     long WorkflowId,
     string? StartedBy,
+    int? StartStepId,
     Dictionary<string, JsonElement>? Variables);
 
 public sealed record ClaimRequest(string? User);

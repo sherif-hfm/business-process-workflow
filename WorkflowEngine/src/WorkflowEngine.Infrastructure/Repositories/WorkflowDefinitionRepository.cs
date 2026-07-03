@@ -74,6 +74,9 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext) : IWork
         return affected > 0;
     }
 
-    private static WorkflowDefinitionRecord ToRecord(WorkflowDefinitionEntity entity) =>
-        new(entity.Id, entity.Name, entity.Version, entity.Definition, entity.IsPublished, entity.CreatedAt);
+    private static WorkflowDefinitionRecord ToRecord(WorkflowDefinitionEntity entity)
+    {
+        WorkflowModelMigrator.Normalize(entity.Definition);
+        return new(entity.Id, entity.Name, entity.Version, entity.Definition, entity.IsPublished, entity.CreatedAt);
+    }
 }
