@@ -111,8 +111,20 @@ Storage follows the hybrid design:
   required values are rejected.
 - Instances move through `Running`, `Completed` (on entering an `endEvent`), and
   `Cancelled` (`POST /cancel`) statuses.
-- Roles are retained in the definition JSON but are **not** enforced by the
-  current API/UI.
+- **Node roles are enforced** at runtime for `userTask` nodes. The caller's
+  identity and roles come from a validated JWT (name + role claims), not from
+  request fields. A `userTask` with a non-empty `roles` list can only be
+  claimed/acted on by a caller holding one of those roles; an empty `roles` list
+  is open to anyone. `GetAvailableFlowsAsync` hides flows when the role does not
+  match; `ClaimAsync`/`TakeFlowAsync` reject with a `WorkflowDomainException`.
+  Sequence-flow `roles` are still advisory (not enforced).
+- Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
+  using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
+  `/api/instances` group. The Blazor UI mints its own token from the `/token`
+  page (`DevTokenFactory` + `TokenState`) so a tester can switch user/roles on
+  the fly; `AuthTokenHandler` attaches it as a `Bearer` header. For production,
+  swap `AddJwtBearer` to a real OIDC identity provider and remove the UI minting
+  page.
 
 Definitions are versioned: `POST /api/workflows` creates v1, `PUT
 /api/workflows/{id}` creates a new immutable version, and only a *published*
@@ -290,8 +302,9 @@ when extending the model so new features stay close to BPMN terminology.
   is future work.
 - **Integer ids, JSON (not BPMN XML).** Flow nodes and sequence flows use integer
   ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
-- **Roles are advisory** in the definition; only `requiresClaim` ownership is
-  enforced at runtime.
+- **Node roles are enforced** at runtime (against JWT role claims); an empty
+  `roles` list means open to anyone. Sequence-flow `roles` remain advisory, and
+  `requiresClaim` ownership is enforced on top of the role check.
 
 ### If you add BPMN-aligned features later
 

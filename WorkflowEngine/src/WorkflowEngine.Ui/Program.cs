@@ -1,5 +1,6 @@
 using WorkflowEngine.Ui.Components;
 using WorkflowEngine.Ui.Clients;
+using WorkflowEngine.Ui.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -7,12 +8,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+builder.Services.AddSingleton<TokenState>();
+builder.Services.AddSingleton<DevTokenFactory>();
+builder.Services.AddTransient<AuthTokenHandler>();
+
 builder.Services.AddHttpClient<WorkflowApiClient>(client =>
 {
     var baseUrl = builder.Configuration["WorkflowApi:BaseUrl"]
         ?? "http://localhost:5017";
     client.BaseAddress = new Uri(baseUrl);
-});
+})
+.AddHttpMessageHandler<AuthTokenHandler>();
 
 var app = builder.Build();
 

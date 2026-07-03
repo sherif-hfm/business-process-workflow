@@ -14,11 +14,12 @@ public sealed class WorkflowEngineService(
 {
     public async Task<InstanceDetailDto> StartInstanceAsync(
         long workflowId,
-        string? startedBy,
+        ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
+        var startedBy = actor.User;
         var workflow = await GetPublishedWorkflowAsync(workflowId, cancellationToken);
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
             ?? throw new WorkflowDomainException("Workflow has no default start event.");
@@ -70,15 +71,11 @@ public sealed class WorkflowEngineService(
     }
 
     public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
-        string? user,
-        IReadOnlyCollection<string> roles,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
-        var normalizedUser = NormalizeUser(user);
-        var normalizedRoles = roles
-            .Where(r => !string.IsNullOrWhiteSpace(r))
-            .Select(r => r.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var normalizedUser = NormalizeUser(actor.User);
+        var normalizedRoles = NormalizeRoles(actor.Roles);
 
         var instances = await runtime.ListInstancesAsync(WorkflowInstanceStatuses.Running, cancellationToken);
         var definitionIds = instances.Select(i => i.WorkflowDefinitionId).Distinct().ToList();
@@ -105,8 +102,7 @@ public sealed class WorkflowEngineService(
 
             var claimedByMe = instance.ClaimedBy == normalizedUser;
             var claimedByOther = !string.IsNullOrWhiteSpace(instance.ClaimedBy) && !claimedByMe;
-            var roleMatch = node.Roles.Count == 0
-                || node.Roles.Any(r => normalizedRoles.Contains(r));
+            var roleMatch = RoleAllowed(node, normalizedRoles);
 
             if (!roleMatch && !claimedByMe)
             {
@@ -147,6 +143,7 @@ public sealed class WorkflowEngineService(
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
         long id,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         var instance = await runtime.GetInstanceAsync(id, cancellationToken);
@@ -162,6 +159,11 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
+        if (!RoleAllowed(node, NormalizeRoles(actor.Roles)))
+        {
+            return [];
+        }
+
         if (node.RequiresClaim && string.IsNullOrWhiteSpace(instance.ClaimedBy))
         {
             return [];
@@ -172,7 +174,7 @@ public sealed class WorkflowEngineService(
 
     public async Task<InstanceDetailDto?> ClaimAsync(
         long id,
-        string? user,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
@@ -189,7 +191,9 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The current flow node cannot be claimed.");
         }
 
-        var normalizedUser = NormalizeUser(user);
+        EnsureRoleAllowed(node, actor);
+
+        var normalizedUser = NormalizeUser(actor.User);
         if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != normalizedUser)
         {
             throw new WorkflowDomainException($"The current flow node is already claimed by '{instance.ClaimedBy}'.");
@@ -226,10 +230,11 @@ public sealed class WorkflowEngineService(
     public async Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
         int flowId,
-        string? performedBy,
+        ActorContext actor,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
+        var performedBy = actor.User;
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
@@ -250,6 +255,7 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
 
+        EnsureRoleAllowed(node, actor);
         EnsureActionAllowedByClaim(node, instance, performedBy);
 
         ValidateVariableValues(flow.Variables, variableValues);
@@ -532,6 +538,25 @@ public sealed class WorkflowEngineService(
 
     private static string NormalizeUser(string? user) =>
         string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
+
+    private static HashSet<string> NormalizeRoles(IReadOnlyCollection<string> roles) =>
+        roles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // Node roles are advisory candidate roles; an empty set means the task is open to anyone.
+    private static bool RoleAllowed(FlowNodeModel node, IReadOnlySet<string> roles) =>
+        node.Roles.Count == 0 || node.Roles.Any(roles.Contains);
+
+    private static void EnsureRoleAllowed(FlowNodeModel node, ActorContext actor)
+    {
+        if (!RoleAllowed(node, NormalizeRoles(actor.Roles)))
+        {
+            throw new WorkflowDomainException(
+                $"'{NormalizeUser(actor.User)}' does not have a role permitted to act on this flow node.");
+        }
+    }
 
     private static void ValidateVariableValues(
         IReadOnlyList<VariableModel> variables,

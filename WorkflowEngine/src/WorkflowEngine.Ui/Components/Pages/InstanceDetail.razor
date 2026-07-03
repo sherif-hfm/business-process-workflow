@@ -1,8 +1,10 @@
 @page "/instances/{InstanceId:long}"
 @rendermode InteractiveServer
 @using System.Text.Json
+@using WorkflowEngine.Ui.Auth
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
+@inject TokenState Token
 
 <PageTitle>Instance Detail</PageTitle>
 
@@ -29,11 +31,16 @@ else
             <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
             <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
 
+            <p>Acting as: <strong>@ActingUser</strong>
+                <span class="text-muted">
+                    (@(Token.CurrentRoles.Count == 0 ? "no roles" : string.Join(", ", Token.CurrentRoles)))
+                </span>
+            </p>
+
             @if (instance.Status == "running" && currentNode?.RequiresClaim == true)
             {
                 <div class="d-flex gap-2 mb-3">
-                    <input class="form-control" style="max-width: 260px" @bind="actingAs" placeholder="claim as" />
-                    <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim</button>
+                    <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
                     <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
                 </div>
             }
@@ -172,8 +179,9 @@ else
     private InstanceDetailDto? instance;
     private IReadOnlyList<SequenceFlowModel> availableFlows = [];
     private readonly Dictionary<string, string?> flowInputs = [];
-    private string? actingAs = "user";
     private string? error;
+
+    private string ActingUser => NormalizeUser(Token.CurrentUser);
 
     private FlowNodeModel? CurrentNode =>
         instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
@@ -199,7 +207,7 @@ else
             }
 
             return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
-                && instance.ClaimedBy == NormalizeUser(actingAs);
+                && instance.ClaimedBy == ActingUser;
         }
     }
 
@@ -212,7 +220,7 @@ else
     }
 
     private async Task ClaimAsync() => await RefreshFrom(async () =>
-        instance = await Api.ClaimAsync(InstanceId, new ClaimRequest(actingAs)));
+        instance = await Api.ClaimAsync(InstanceId));
 
     private async Task UnclaimAsync() => await RefreshFrom(async () =>
         instance = await Api.UnclaimAsync(InstanceId));
@@ -234,7 +242,7 @@ else
             instance = await Api.TakeFlowAsync(
                 InstanceId,
                 flow.Id,
-                new TakeFlowRequest(actingAs, variables));
+                new TakeFlowRequest(variables));
         });
     }
 

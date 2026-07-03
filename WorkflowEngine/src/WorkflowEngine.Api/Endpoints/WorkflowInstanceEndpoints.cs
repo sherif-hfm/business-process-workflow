@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
 
@@ -7,16 +8,19 @@ public static class WorkflowInstanceEndpoints
 {
     public static IEndpointRouteBuilder MapWorkflowInstanceEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/instances").WithTags("Workflow Instances");
+        var group = app.MapGroup("/api/instances")
+            .WithTags("Workflow Instances")
+            .RequireAuthorization();
 
         group.MapPost("/", async (
             StartInstanceRequest request,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
             var instance = await service.StartInstanceAsync(
                 request.WorkflowId,
-                request.StartedBy,
+                ToActor(principal),
                 request.StartEventId,
                 request.Variables,
                 cancellationToken);
@@ -30,14 +34,10 @@ public static class WorkflowInstanceEndpoints
             Results.Ok(await service.ListInstancesAsync(status, cancellationToken)));
 
         group.MapGet("/inbox", async (
-            string? user,
-            string? roles,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            Results.Ok(await service.GetInboxAsync(
-                user,
-                roles?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [],
-                cancellationToken)));
+            Results.Ok(await service.GetInboxAsync(ToActor(principal), cancellationToken)));
 
         group.MapGet("/{id:long}", async (
             long id,
@@ -50,17 +50,18 @@ public static class WorkflowInstanceEndpoints
 
         group.MapGet("/{id:long}/flows", async (
             long id,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            Results.Ok(await service.GetAvailableFlowsAsync(id, cancellationToken)));
+            Results.Ok(await service.GetAvailableFlowsAsync(id, ToActor(principal), cancellationToken)));
 
         group.MapPost("/{id:long}/claim", async (
             long id,
-            ClaimRequest request,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
-            var instance = await service.ClaimAsync(id, request.User, cancellationToken);
+            var instance = await service.ClaimAsync(id, ToActor(principal), cancellationToken);
             return instance is null ? Results.NotFound() : Results.Ok(instance);
         });
 
@@ -77,13 +78,14 @@ public static class WorkflowInstanceEndpoints
             long id,
             int flowId,
             TakeFlowRequest request,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
             var instance = await service.TakeFlowAsync(
                 id,
                 flowId,
-                request.PerformedBy,
+                ToActor(principal),
                 request.Variables,
                 cancellationToken);
             return instance is null ? Results.NotFound() : Results.Ok(instance);
@@ -96,5 +98,15 @@ public static class WorkflowInstanceEndpoints
             await service.CancelAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
 
         return app;
+    }
+
+    private static ActorContext ToActor(ClaimsPrincipal principal)
+    {
+        var user = principal.Identity?.Name
+            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var roles = principal.FindAll(ClaimTypes.Role)
+            .Select(claim => claim.Value)
+            .ToArray();
+        return new ActorContext(user, roles);
     }
 }

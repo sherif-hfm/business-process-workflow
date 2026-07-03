@@ -42,11 +42,6 @@ else
         <p class="text-muted">Start event: <strong>@selectedNode.Name</strong></p>
     }
 
-    <div class="mb-3">
-        <label class="form-label">Started by</label>
-        <input class="form-control" @bind="startedBy" placeholder="optional user name" />
-    </div>
-
     @if (selectedNode is not null && selectedNode.Variables.Count > 0)
     {
         <h2 class="h4">Start variables</h2>
@@ -77,7 +72,6 @@ else
     private WorkflowDetailDto? workflow;
     private readonly Dictionary<string, string?> inputs = [];
     private int? selectedStartEventId;
-    private string? startedBy = "user";
     private string? error;
 
     protected override async Task OnInitializedAsync()
@@ -106,7 +100,6 @@ else
             var variables = BuildPayload(startEvent.Variables);
             var instance = await Api.StartInstanceAsync(new StartInstanceRequest(
                 workflow.Id,
-                startedBy,
                 selectedStartEventId,
                 variables));
             if (instance is not null)

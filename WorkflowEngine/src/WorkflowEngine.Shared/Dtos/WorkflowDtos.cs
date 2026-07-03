@@ -24,14 +24,10 @@ public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publis
 
 public sealed record StartInstanceRequest(
     long WorkflowId,
-    string? StartedBy,
     int? StartEventId,
     Dictionary<string, JsonElement>? Variables);
 
-public sealed record ClaimRequest(string? User);
-
 public sealed record TakeFlowRequest(
-    string? PerformedBy,
     Dictionary<string, JsonElement>? Variables);
 
 public sealed record InstanceSummaryDto(

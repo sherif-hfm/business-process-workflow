@@ -33,26 +33,10 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await httpClient.GetFromJsonAsync<IReadOnlyList<InstanceSummaryDto>>(url, cancellationToken) ?? [];
     }
 
-    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
-        string? user,
-        IEnumerable<string> roles,
-        CancellationToken cancellationToken = default)
-    {
-        var query = new List<string>();
-        if (!string.IsNullOrWhiteSpace(user))
-        {
-            query.Add($"user={Uri.EscapeDataString(user)}");
-        }
-
-        var joined = string.Join(',', roles);
-        if (!string.IsNullOrWhiteSpace(joined))
-        {
-            query.Add($"roles={Uri.EscapeDataString(joined)}");
-        }
-
-        var url = "/api/instances/inbox" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
-        return await httpClient.GetFromJsonAsync<IReadOnlyList<InboxItemDto>>(url, cancellationToken) ?? [];
-    }
+    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<IReadOnlyList<InboxItemDto>>(
+            "/api/instances/inbox",
+            cancellationToken) ?? [];
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
@@ -73,12 +57,9 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }
 
-    public async Task<InstanceDetailDto?> ClaimAsync(
-        long id,
-        ClaimRequest request,
-        CancellationToken cancellationToken = default)
+    public async Task<InstanceDetailDto?> ClaimAsync(long id, CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync($"/api/instances/{id}/claim", request, cancellationToken);
+        var response = await httpClient.PostAsync($"/api/instances/{id}/claim", null, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }
