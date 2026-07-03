@@ -44,12 +44,16 @@ public interface IWorkflowEngineService
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<InstanceSummaryDto>> ListInstancesAsync(
+    Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
+    Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken);
 
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);

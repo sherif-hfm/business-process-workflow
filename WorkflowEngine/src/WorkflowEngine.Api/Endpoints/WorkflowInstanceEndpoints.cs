@@ -29,15 +29,25 @@ public static class WorkflowInstanceEndpoints
 
         group.MapGet("/", async (
             string? status,
+            int? page,
+            int? pageSize,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            Results.Ok(await service.ListInstancesAsync(status, cancellationToken)));
+        {
+            var (p, s) = NormalizePaging(page, pageSize);
+            return Results.Ok(await service.ListInstancesAsync(status, p, s, cancellationToken));
+        });
 
         group.MapGet("/inbox", async (
+            int? page,
+            int? pageSize,
             ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            Results.Ok(await service.GetInboxAsync(ToActor(principal), cancellationToken)));
+        {
+            var (p, s) = NormalizePaging(page, pageSize);
+            return Results.Ok(await service.GetInboxAsync(ToActor(principal), p, s, cancellationToken));
+        });
 
         group.MapGet("/{id:long}", async (
             long id,
@@ -98,6 +108,21 @@ public static class WorkflowInstanceEndpoints
             await service.CancelAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
 
         return app;
+    }
+
+    private const int DefaultPageSize = 50;
+    private const int MaxPageSize = 200;
+
+    private static (int Page, int PageSize) NormalizePaging(int? page, int? pageSize)
+    {
+        var normalizedPage = page is > 0 ? page.Value : 1;
+        var normalizedPageSize = pageSize switch
+        {
+            null or <= 0 => DefaultPageSize,
+            > MaxPageSize => MaxPageSize,
+            _ => pageSize.Value
+        };
+        return (normalizedPage, normalizedPageSize);
     }
 
     private static ActorContext ToActor(ClaimsPrincipal principal)

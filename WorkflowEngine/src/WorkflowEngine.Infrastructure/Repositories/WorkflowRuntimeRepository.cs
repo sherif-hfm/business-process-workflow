@@ -3,6 +3,8 @@ using WorkflowEngine.Infrastructure.Data;
 using WorkflowEngine.Infrastructure.Entities;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
+using WorkflowEngine.Shared.Dtos;
+using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Infrastructure.Repositories;
 
@@ -10,7 +12,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 {
     public async Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
-        int currentStepId,
+        CurrentNodeSnapshot node,
         string? startedBy,
         CancellationToken cancellationToken)
     {
@@ -18,7 +20,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var entity = new WorkflowInstanceEntity
         {
             WorkflowDefinitionId = workflowDefinitionId,
-            CurrentStepId = currentStepId,
+            CurrentStepId = node.Id,
+            CurrentNodeName = node.Name,
+            CurrentNodeType = node.Type,
+            CurrentNodeRoles = node.Roles.ToList(),
+            CurrentRequiresClaim = node.RequiresClaim,
             Status = WorkflowInstanceStatuses.Running,
             StartedBy = startedBy,
             CreatedAt = now,
@@ -30,8 +36,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return ToRecord(entity);
     }
 
-    public async Task<IReadOnlyList<WorkflowInstanceRecord>> ListInstancesAsync(
+    public async Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken)
     {
         var query = dbContext.WorkflowInstances.AsNoTracking();
@@ -40,10 +48,124 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             query = query.Where(i => i.Status == status);
         }
 
+        var totalCount = await query.LongCountAsync(cancellationToken);
+
         var entities = await query
             .OrderByDescending(i => i.UpdatedAt)
+            .ThenByDescending(i => i.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
-        return entities.Select(ToRecord).ToList();
+
+        var items = await ToListItemsAsync(entities, cancellationToken);
+        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+    }
+
+    public async Task<PagedResult<InstanceListItem>> ListInboxAsync(
+        string user,
+        IReadOnlyCollection<string> roles,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        // Roles are matched case-insensitively (mirrors the in-memory role check),
+        // so compare lower-cased node roles against lower-cased actor roles.
+        var lowerRoles = roles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r.Trim().ToLowerInvariant())
+            .Distinct()
+            .ToArray();
+
+        var running = WorkflowInstanceStatuses.Running;
+        var userTask = BpmnFlowNodeTypes.UserTask;
+
+        var totalCount = await dbContext.Database
+            .SqlQuery<long>($"""
+                SELECT COUNT(*) AS "Value"
+                FROM workflow_instances
+                WHERE "Status" = {running}
+                  AND "CurrentNodeType" = {userTask}
+                  AND (
+                        "ClaimedBy" = {user}
+                     OR (
+                          ( cardinality("CurrentNodeRoles") = 0
+                            OR EXISTS (
+                                SELECT 1 FROM unnest("CurrentNodeRoles") AS node_role
+                                WHERE lower(node_role) = ANY({lowerRoles})
+                            ) )
+                          AND NOT ("CurrentRequiresClaim"
+                                   AND "ClaimedBy" IS NOT NULL
+                                   AND "ClaimedBy" <> {user})
+                        )
+                      )
+                """)
+            .SingleAsync(cancellationToken);
+
+        var skip = (page - 1) * pageSize;
+        var entities = await dbContext.WorkflowInstances
+            .FromSqlInterpolated($"""
+                SELECT * FROM workflow_instances
+                WHERE "Status" = {running}
+                  AND "CurrentNodeType" = {userTask}
+                  AND (
+                        "ClaimedBy" = {user}
+                     OR (
+                          ( cardinality("CurrentNodeRoles") = 0
+                            OR EXISTS (
+                                SELECT 1 FROM unnest("CurrentNodeRoles") AS node_role
+                                WHERE lower(node_role) = ANY({lowerRoles})
+                            ) )
+                          AND NOT ("CurrentRequiresClaim"
+                                   AND "ClaimedBy" IS NOT NULL
+                                   AND "ClaimedBy" <> {user})
+                        )
+                      )
+                ORDER BY "UpdatedAt" DESC, "Id" DESC
+                LIMIT {pageSize} OFFSET {skip}
+                """)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        var items = await ToListItemsAsync(entities, cancellationToken);
+        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+    }
+
+    private async Task<IReadOnlyList<InstanceListItem>> ToListItemsAsync(
+        IReadOnlyList<WorkflowInstanceEntity> entities,
+        CancellationToken cancellationToken)
+    {
+        if (entities.Count == 0)
+        {
+            return [];
+        }
+
+        // Fetch only the definition name/version (never the JSONB body) for the
+        // bounded set of definitions referenced by this page.
+        var definitionIds = entities.Select(e => e.WorkflowDefinitionId).Distinct().ToList();
+        var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(d => definitionIds.Contains(d.Id))
+            .Select(d => new { d.Id, d.Name, d.Version })
+            .ToDictionaryAsync(d => d.Id, cancellationToken);
+
+        return entities.Select(e =>
+        {
+            definitions.TryGetValue(e.WorkflowDefinitionId, out var definition);
+            return new InstanceListItem(
+                e.Id,
+                e.WorkflowDefinitionId,
+                definition?.Name ?? string.Empty,
+                definition?.Version ?? 0,
+                e.CurrentStepId,
+                e.CurrentNodeName,
+                e.CurrentNodeType,
+                e.CurrentNodeRoles,
+                e.CurrentRequiresClaim,
+                e.Status,
+                e.ClaimedBy,
+                e.StartedBy,
+                e.CreatedAt,
+                e.UpdatedAt);
+        }).ToList();
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken)
@@ -74,6 +196,30 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(i => i.CurrentStepId, currentStepId)
+                    .SetProperty(i => i.Status, status)
+                    .SetProperty(i => i.ClaimedBy, claimedBy)
+                    .SetProperty(i => i.UpdatedAt, now),
+                cancellationToken);
+    }
+
+    public async Task UpdateInstanceNodeAsync(
+        long id,
+        CurrentNodeSnapshot node,
+        string status,
+        string? claimedBy,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var roles = node.Roles.ToList();
+        await dbContext.WorkflowInstances
+            .Where(i => i.Id == id)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(i => i.CurrentStepId, node.Id)
+                    .SetProperty(i => i.CurrentNodeName, node.Name)
+                    .SetProperty(i => i.CurrentNodeType, node.Type)
+                    .SetProperty(i => i.CurrentNodeRoles, roles)
+                    .SetProperty(i => i.CurrentRequiresClaim, node.RequiresClaim)
                     .SetProperty(i => i.Status, status)
                     .SetProperty(i => i.ClaimedBy, claimedBy)
                     .SetProperty(i => i.UpdatedAt, now),

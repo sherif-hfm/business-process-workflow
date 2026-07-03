@@ -33,7 +33,7 @@ public sealed class WorkflowEngineService(
         ValidateVariableValues(startEvent.Variables, variableValues);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.AddInstanceAsync(workflow.Id, startEvent.Id, startedBy, cancellationToken);
+        var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), startedBy, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         foreach (var variable in startEvent.Variables)
@@ -53,89 +53,58 @@ public sealed class WorkflowEngineService(
         return (await BuildDetailAsync(instance.Id, cancellationToken))!;
     }
 
-    public async Task<IReadOnlyList<InstanceSummaryDto>> ListInstancesAsync(
+    public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken)
     {
-        var instances = await runtime.ListInstancesAsync(status, cancellationToken);
-        var result = new List<InstanceSummaryDto>(instances.Count);
-
-        foreach (var instance in instances)
-        {
-            var workflow = await definitions.GetAsync(instance.WorkflowDefinitionId, cancellationToken)
-                ?? throw new WorkflowDomainException($"Workflow definition #{instance.WorkflowDefinitionId} was not found.");
-            result.Add(ToSummary(instance, workflow));
-        }
-
-        return result;
+        var paged = await runtime.ListInstancesAsync(status, page, pageSize, cancellationToken);
+        var items = paged.Items.Select(ToSummary).ToList();
+        return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
-    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(
+    public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken)
     {
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
 
-        var instances = await runtime.ListInstancesAsync(WorkflowInstanceStatuses.Running, cancellationToken);
-        var definitionIds = instances.Select(i => i.WorkflowDefinitionId).Distinct().ToList();
-        var workflows = new Dictionary<long, WorkflowDefinitionRecord>(definitionIds.Count);
+        // Membership (running user task the actor may see/act on) is filtered in SQL;
+        // the per-row action flags are derived here from the denormalized columns.
+        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, page, pageSize, cancellationToken);
 
-        foreach (var definitionId in definitionIds)
+        var items = new List<InboxItemDto>(paged.Items.Count);
+        foreach (var row in paged.Items)
         {
-            var workflow = await definitions.GetAsync(definitionId, cancellationToken)
-                ?? throw new WorkflowDomainException($"Workflow definition #{definitionId} was not found.");
-            workflows[definitionId] = workflow;
-        }
+            var claimedByMe = row.ClaimedBy == normalizedUser;
+            var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
+            var roleMatch = row.CurrentNodeRoles.Count == 0
+                || row.CurrentNodeRoles.Any(normalizedRoles.Contains);
 
-        var result = new List<InboxItemDto>();
+            var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
+            var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
 
-        foreach (var instance in instances)
-        {
-            var workflow = workflows[instance.WorkflowDefinitionId];
-            var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-
-            if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
-            {
-                continue;
-            }
-
-            var claimedByMe = instance.ClaimedBy == normalizedUser;
-            var claimedByOther = !string.IsNullOrWhiteSpace(instance.ClaimedBy) && !claimedByMe;
-            var roleMatch = RoleAllowed(node, normalizedRoles);
-
-            if (!roleMatch && !claimedByMe)
-            {
-                continue;
-            }
-
-            if (node.RequiresClaim && claimedByOther)
-            {
-                continue;
-            }
-
-            var canClaim = node.RequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
-            var canAct = claimedByMe || (!node.RequiresClaim && roleMatch);
-
-            result.Add(new InboxItemDto(
-                instance.Id,
-                workflow.Id,
-                workflow.Name,
-                node.Id,
-                node.Name,
-                node.Roles,
-                node.RequiresClaim,
-                instance.ClaimedBy,
+            items.Add(new InboxItemDto(
+                row.Id,
+                row.WorkflowId,
+                row.WorkflowName,
+                row.CurrentNodeId,
+                row.CurrentNodeName,
+                row.CurrentNodeRoles,
+                row.CurrentRequiresClaim,
+                row.ClaimedBy,
                 claimedByMe,
                 canClaim,
                 canAct,
-                instance.CreatedAt,
-                instance.UpdatedAt));
+                row.CreatedAt,
+                row.UpdatedAt));
         }
 
-        return result
-            .OrderBy(i => i.CreatedAt)
-            .ToList();
+        return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>
@@ -291,7 +260,7 @@ public sealed class WorkflowEngineService(
             UpdatedAt = DateTimeOffset.UtcNow
         };
 
-        await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
+        await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(nextNode), instance.Status, null, cancellationToken);
         // Flush captured variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
         instance = await ResolvePassThroughAsync(instance, workflow.Definition, performedBy, cancellationToken);
@@ -375,7 +344,7 @@ public sealed class WorkflowEngineService(
                 UpdatedAt = DateTimeOffset.UtcNow
             };
 
-            await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
+            await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(nextNode), instance.Status, null, cancellationToken);
         }
 
         throw new WorkflowDomainException("Pass-through routing cycle detected.");
@@ -489,24 +458,22 @@ public sealed class WorkflowEngineService(
         await definitions.GetAsync(id, cancellationToken)
         ?? throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
 
-    private static InstanceSummaryDto ToSummary(
-        WorkflowInstanceRecord instance,
-        WorkflowDefinitionRecord workflow)
-    {
-        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        return new InstanceSummaryDto(
-            instance.Id,
-            workflow.Id,
-            workflow.Name,
-            workflow.Version,
-            instance.CurrentStepId,
-            node.Name,
-            instance.Status,
-            instance.ClaimedBy,
-            instance.StartedBy,
-            instance.CreatedAt,
-            instance.UpdatedAt);
-    }
+    private static InstanceSummaryDto ToSummary(InstanceListItem row) =>
+        new(
+            row.Id,
+            row.WorkflowId,
+            row.WorkflowName,
+            row.WorkflowVersion,
+            row.CurrentNodeId,
+            row.CurrentNodeName,
+            row.Status,
+            row.ClaimedBy,
+            row.StartedBy,
+            row.CreatedAt,
+            row.UpdatedAt);
+
+    private static CurrentNodeSnapshot ToSnapshot(FlowNodeModel node) =>
+        new(node.Id, node.Name, node.Type, node.Roles, node.RequiresClaim);
 
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)

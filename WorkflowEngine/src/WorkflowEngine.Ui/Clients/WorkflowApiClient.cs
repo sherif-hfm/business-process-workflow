@@ -23,20 +23,29 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<WorkflowDetailDto>(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<InstanceSummaryDto>> GetInstancesAsync(
+    public async Task<PagedResult<InstanceSummaryDto>> GetInstancesAsync(
         string? status = null,
+        int page = 1,
+        int pageSize = 50,
         CancellationToken cancellationToken = default)
     {
-        var url = string.IsNullOrWhiteSpace(status)
-            ? "/api/instances"
-            : $"/api/instances?status={Uri.EscapeDataString(status)}";
-        return await httpClient.GetFromJsonAsync<IReadOnlyList<InstanceSummaryDto>>(url, cancellationToken) ?? [];
+        var url = $"/api/instances?page={page}&pageSize={pageSize}";
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            url += $"&status={Uri.EscapeDataString(status)}";
+        }
+
+        return await httpClient.GetFromJsonAsync<PagedResult<InstanceSummaryDto>>(url, cancellationToken)
+            ?? new PagedResult<InstanceSummaryDto>([], page, pageSize, 0);
     }
 
-    public async Task<IReadOnlyList<InboxItemDto>> GetInboxAsync(CancellationToken cancellationToken = default) =>
-        await httpClient.GetFromJsonAsync<IReadOnlyList<InboxItemDto>>(
-            "/api/instances/inbox",
-            cancellationToken) ?? [];
+    public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<PagedResult<InboxItemDto>>(
+            $"/api/instances/inbox?page={page}&pageSize={pageSize}",
+            cancellationToken) ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);

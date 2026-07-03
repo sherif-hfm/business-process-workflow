@@ -14,7 +14,7 @@
 <div class="d-flex gap-2 align-items-end mb-3">
     <div>
         <label class="form-label">Status</label>
-        <select class="form-select" @bind="status">
+        <select class="form-select" @bind="status" @bind:after="OnFilterChangedAsync">
             <option value="">All</option>
             <option value="running">Running</option>
             <option value="completed">Completed</option>
@@ -24,11 +24,11 @@
     <button class="btn btn-outline-primary" @onclick="LoadAsync">Refresh</button>
 </div>
 
-@if (instances is null)
+@if (result is null)
 {
     <p>Loading...</p>
 }
-else if (instances.Count == 0)
+else if (result.Items.Count == 0)
 {
     <p>No instances found.</p>
 }
@@ -46,7 +46,7 @@ else
             </tr>
         </thead>
         <tbody>
-            @foreach (var instance in instances)
+            @foreach (var instance in result.Items)
             {
                 <tr>
                     <td>#@instance.Id</td>
@@ -61,21 +61,63 @@ else
             }
         </tbody>
     </table>
+
+    <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+        <span class="text-muted small">Page @result.Page of @TotalPages (@result.TotalCount total)</span>
+    </div>
 }
 
 @code {
-    private IReadOnlyList<InstanceSummaryDto>? instances;
+    private PagedResult<InstanceSummaryDto>? result;
     private string? status = "running";
     private string? error;
+    private int page = 1;
+    private const int PageSize = 50;
+
+    private int TotalPages => result is null || result.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+
+    private bool HasNextPage => result is not null && page < TotalPages;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task OnFilterChangedAsync()
+    {
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1)
+        {
+            return;
+        }
+
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage)
+        {
+            return;
+        }
+
+        page++;
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
         try
         {
             error = null;
-            instances = await Api.GetInstancesAsync(status);
+            result = await Api.GetInstancesAsync(status, page, PageSize);
         }
         catch (Exception ex)
         {

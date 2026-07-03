@@ -34,11 +34,11 @@ else
     </div>
 }
 
-@if (items is null)
+@if (result is null)
 {
     <p>Set a token, then refresh to load your inbox.</p>
 }
-else if (items.Count == 0)
+else if (result.Items.Count == 0)
 {
     <p>No inbox items found.</p>
 }
@@ -57,7 +57,7 @@ else
             </tr>
         </thead>
         <tbody>
-            @foreach (var item in items)
+            @foreach (var item in result.Items)
             {
                 <tr>
                     <td>#@item.InstanceId</td>
@@ -86,19 +86,55 @@ else
             }
         </tbody>
     </table>
+
+    <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+        <span class="text-muted small">Page @result.Page of @TotalPages (@result.TotalCount total)</span>
+    </div>
 }
 
 @code {
-    private IReadOnlyList<InboxItemDto>? items;
+    private PagedResult<InboxItemDto>? result;
     private string? error;
+    private int page = 1;
+    private const int PageSize = 50;
+
+    private int TotalPages => result is null || result.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+
+    private bool HasNextPage => result is not null && page < TotalPages;
+
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1)
+        {
+            return;
+        }
+
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage)
+        {
+            return;
+        }
+
+        page++;
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
         try
         {
             error = null;
-            items = null;
-            items = await Api.GetInboxAsync();
+            result = null;
+            result = await Api.GetInboxAsync(page, PageSize);
         }
         catch (Exception ex)
         {

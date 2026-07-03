@@ -73,6 +73,12 @@ public sealed record InstanceHistoryDto(
     string? Note,
     DateTimeOffset PerformedAt);
 
+public sealed record PagedResult<T>(
+    IReadOnlyList<T> Items,
+    int Page,
+    int PageSize,
+    long TotalCount);
+
 public sealed record InboxItemDto(
     long InstanceId,
     long WorkflowId,

@@ -10,6 +10,14 @@ public sealed class WorkflowInstanceEntity
 
     public int CurrentStepId { get; set; }
 
+    public string CurrentNodeName { get; set; } = string.Empty;
+
+    public string CurrentNodeType { get; set; } = string.Empty;
+
+    public List<string> CurrentNodeRoles { get; set; } = [];
+
+    public bool CurrentRequiresClaim { get; set; }
+
     public string Status { get; set; } = "running";
 
     public string? ClaimedBy { get; set; }

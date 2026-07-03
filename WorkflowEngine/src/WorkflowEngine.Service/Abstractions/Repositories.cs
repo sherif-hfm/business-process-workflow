@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WorkflowEngine.Service.Models;
+using WorkflowEngine.Shared.Dtos;
 using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Service.Abstractions;
@@ -28,12 +29,21 @@ public interface IWorkflowRuntimeRepository
 {
     Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
-        int currentStepId,
+        CurrentNodeSnapshot node,
         string? startedBy,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<WorkflowInstanceRecord>> ListInstancesAsync(
+    Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+
+    Task<PagedResult<InstanceListItem>> ListInboxAsync(
+        string user,
+        IReadOnlyCollection<string> roles,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken);
 
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
@@ -43,6 +53,13 @@ public interface IWorkflowRuntimeRepository
     Task UpdateInstanceAsync(
         long id,
         int currentStepId,
+        string status,
+        string? claimedBy,
+        CancellationToken cancellationToken);
+
+    Task UpdateInstanceNodeAsync(
+        long id,
+        CurrentNodeSnapshot node,
         string status,
         string? claimedBy,
         CancellationToken cancellationToken);

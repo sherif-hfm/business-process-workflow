@@ -91,6 +91,23 @@ Storage follows the hybrid design:
   names (`CurrentStepId`, `ActionId`, `FromStepId`, `ToStepId`,
   `SourceActionId`); the columns now simply carry flow-node / sequence-flow ids,
   so no database migration was needed for the BPMN rename.
+- **Denormalized current-node columns.** `workflow_instances` also carries
+  `CurrentNodeName`, `CurrentNodeType`, `CurrentNodeRoles` (Postgres `text[]`),
+  and `CurrentRequiresClaim`, stamped from the resting flow node on every node
+  change (`AddInstanceAsync`, `TakeFlowAsync`, and each `ResolvePassThroughAsync`
+  hop via `UpdateInstanceNodeAsync`; claim/unclaim/cancel leave them untouched).
+  These let the list and inbox read paths filter, sort, and page entirely in SQL
+  without parsing the definition JSONB. The inbox query
+  (`WorkflowRuntimeRepository.ListInboxAsync`) is parameterized raw SQL:
+  `Status = 'running' AND CurrentNodeType = 'userTask'` plus a claim/role
+  predicate (`ClaimedBy = @me`, or case-insensitive `CurrentNodeRoles`
+  overlap with the actor roles while excluding tasks claimed by someone else),
+  ordered by `UpdatedAt DESC, Id DESC`. Indexes:
+  `(Status, CurrentNodeType, UpdatedAt)`, `(Status, UpdatedAt, Id)`, and a GIN
+  index on `CurrentNodeRoles`. The action flags (`CanClaim`/`CanAct`/
+  `ClaimedByMe`) are computed per page row from these columns. Pre-existing rows
+  are backfilled once at dev startup (`DatabaseInitializer.BackfillCurrentNodeAsync`,
+  guarded by an empty `CurrentNodeType`).
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
@@ -145,9 +162,15 @@ definition can start instances.
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
   `POST /{id}/publish`, `DELETE /{id}`.
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
-  `startEventId`), `GET /?status=`, `GET /{id}`, `GET /{id}/flows` (available
-  sequence flows), `POST /{id}/claim`, `POST /{id}/unclaim`,
-  `POST /{id}/flows/{flowId}` (take a flow), `POST /{id}/cancel`.
+  `startEventId`), `GET /?status=&page=&pageSize=` (paged),
+  `GET /inbox?page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
+  `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
+  `POST /{id}/cancel`. The two list endpoints return
+  `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `page` defaults
+  to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
+  offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
+  repository can later switch to keyset paging without an API change.
 - `WorkflowDomainException` maps to problem responses for invalid operations
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).

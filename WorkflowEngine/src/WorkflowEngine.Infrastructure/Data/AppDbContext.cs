@@ -31,12 +31,21 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("workflow_instances");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CurrentNodeName).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
+            entity.Property(e => e.CurrentNodeType).HasMaxLength(32).IsRequired().HasDefaultValue(string.Empty);
+            entity.Property(e => e.CurrentNodeRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.CurrentRequiresClaim).IsRequired().HasDefaultValue(false);
             entity.Property(e => e.ClaimedBy).HasMaxLength(300);
             entity.Property(e => e.StartedBy).HasMaxLength(300);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.CurrentStepId);
+            // Supports the inbox filter (running user tasks) and its UpdatedAt ordering.
+            entity.HasIndex(e => new { e.Status, e.CurrentNodeType, e.UpdatedAt });
+            // Supports the paged instance list ordered by UpdatedAt.
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            // Supports array-overlap role matching in the inbox filter.
+            entity.HasIndex(e => e.CurrentNodeRoles).HasMethod("gin");
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
