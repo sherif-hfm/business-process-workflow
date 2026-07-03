@@ -17,8 +17,8 @@
 }
 else
 {
-    var startEvents = workflow.Definition.Steps.Where(s => s.Type == WorkflowStepTypes.StartEvent).ToList();
-    var selectedStep = startEvents.SingleOrDefault(s => s.Id == selectedStartStepId);
+    var startEvents = workflow.Definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsStart(n.Type)).ToList();
+    var selectedNode = startEvents.SingleOrDefault(n => n.Id == selectedStartEventId);
 
     <h1>Start @workflow.Name</h1>
     <p class="text-muted">Version @workflow.Version</p>
@@ -27,19 +27,19 @@ else
     {
         <div class="mb-3">
             <label class="form-label">Start event</label>
-            <select class="form-select" @bind="selectedStartStepId" @bind:after="OnStartEventChanged">
+            <select class="form-select" @bind="selectedStartEventId" @bind:after="OnStartEventChanged">
                 @foreach (var startEvent in startEvents)
                 {
                     <option value="@startEvent.Id">
-                        #@startEvent.Id @startEvent.Name@(startEvent.Id == workflow.Definition.InitialStepId ? " (default)" : "")
+                        #@startEvent.Id @startEvent.Name@(startEvent.Id == workflow.Definition.InitialEventId ? " (default)" : "")
                     </option>
                 }
             </select>
         </div>
     }
-    else if (selectedStep is not null)
+    else if (selectedNode is not null)
     {
-        <p class="text-muted">Start event: <strong>@selectedStep.Name</strong></p>
+        <p class="text-muted">Start event: <strong>@selectedNode.Name</strong></p>
     }
 
     <div class="mb-3">
@@ -47,10 +47,10 @@ else
         <input class="form-control" @bind="startedBy" placeholder="optional user name" />
     </div>
 
-    @if (selectedStep is not null && selectedStep.Variables.Count > 0)
+    @if (selectedNode is not null && selectedNode.Variables.Count > 0)
     {
         <h2 class="h4">Start variables</h2>
-        @foreach (var variable in selectedStep.Variables)
+        @foreach (var variable in selectedNode.Variables)
         {
             <div class="mb-3">
                 <label class="form-label">
@@ -76,14 +76,14 @@ else
 
     private WorkflowDetailDto? workflow;
     private readonly Dictionary<string, string?> inputs = [];
-    private int? selectedStartStepId;
+    private int? selectedStartEventId;
     private string? startedBy = "user";
     private string? error;
 
     protected override async Task OnInitializedAsync()
     {
         workflow = await Api.GetWorkflowAsync(WorkflowId);
-        selectedStartStepId = workflow?.Definition.InitialStepId;
+        selectedStartEventId = workflow?.Definition.InitialEventId;
     }
 
     private void OnStartEventChanged() => inputs.Clear();
@@ -94,7 +94,7 @@ else
 
     private async Task StartAsync()
     {
-        if (workflow is null || selectedStartStepId is null)
+        if (workflow is null || selectedStartEventId is null)
         {
             return;
         }
@@ -102,12 +102,12 @@ else
         try
         {
             error = null;
-            var startStep = workflow.Definition.Steps.Single(s => s.Id == selectedStartStepId);
-            var variables = BuildPayload(startStep.Variables);
+            var startEvent = workflow.Definition.FlowNodes.Single(n => n.Id == selectedStartEventId);
+            var variables = BuildPayload(startEvent.Variables);
             var instance = await Api.StartInstanceAsync(new StartInstanceRequest(
                 workflow.Id,
                 startedBy,
-                selectedStartStepId,
+                selectedStartEventId,
                 variables));
             if (instance is not null)
             {

@@ -51,8 +51,8 @@ else
                 <tr>
                     <td>#@item.InstanceId</td>
                     <td>@item.WorkflowName</td>
-                    <td>@item.CurrentStepName</td>
-                    <td>@(item.StepRoles.Count == 0 ? "(any)" : string.Join(", ", item.StepRoles))</td>
+                    <td>@item.CurrentNodeName</td>
+                    <td>@(item.NodeRoles.Count == 0 ? "(any)" : string.Join(", ", item.NodeRoles))</td>
                     <td>@(item.ClaimedBy ?? "-")</td>
                     <td>
                         @if (item.CanAct)

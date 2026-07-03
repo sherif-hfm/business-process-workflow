@@ -17,7 +17,7 @@ public static class WorkflowInstanceEndpoints
             var instance = await service.StartInstanceAsync(
                 request.WorkflowId,
                 request.StartedBy,
-                request.StartStepId,
+                request.StartEventId,
                 request.Variables,
                 cancellationToken);
             return Results.Created($"/api/instances/{instance.Id}", instance);
@@ -48,11 +48,11 @@ public static class WorkflowInstanceEndpoints
             return instance is null ? Results.NotFound() : Results.Ok(instance);
         });
 
-        group.MapGet("/{id:long}/actions", async (
+        group.MapGet("/{id:long}/flows", async (
             long id,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            Results.Ok(await service.GetAvailableActionsAsync(id, cancellationToken)));
+            Results.Ok(await service.GetAvailableFlowsAsync(id, cancellationToken)));
 
         group.MapPost("/{id:long}/claim", async (
             long id,
@@ -73,16 +73,16 @@ public static class WorkflowInstanceEndpoints
             return instance is null ? Results.NotFound() : Results.Ok(instance);
         });
 
-        group.MapPost("/{id:long}/actions/{actionId:int}", async (
+        group.MapPost("/{id:long}/flows/{flowId:int}", async (
             long id,
-            int actionId,
-            TakeActionRequest request,
+            int flowId,
+            TakeFlowRequest request,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
-            var instance = await service.TakeActionAsync(
+            var instance = await service.TakeFlowAsync(
                 id,
-                actionId,
+                flowId,
                 request.PerformedBy,
                 request.Variables,
                 cancellationToken);

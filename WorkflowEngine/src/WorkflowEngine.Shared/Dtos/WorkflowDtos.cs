@@ -25,12 +25,12 @@ public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publis
 public sealed record StartInstanceRequest(
     long WorkflowId,
     string? StartedBy,
-    int? StartStepId,
+    int? StartEventId,
     Dictionary<string, JsonElement>? Variables);
 
 public sealed record ClaimRequest(string? User);
 
-public sealed record TakeActionRequest(
+public sealed record TakeFlowRequest(
     string? PerformedBy,
     Dictionary<string, JsonElement>? Variables);
 
@@ -39,8 +39,8 @@ public sealed record InstanceSummaryDto(
     long WorkflowId,
     string WorkflowName,
     int WorkflowVersion,
-    int CurrentStepId,
-    string CurrentStepName,
+    int CurrentNodeId,
+    string CurrentNodeName,
     string Status,
     string? ClaimedBy,
     string? StartedBy,
@@ -50,8 +50,8 @@ public sealed record InstanceSummaryDto(
 public sealed record InstanceDetailDto(
     long Id,
     WorkflowDetailDto Workflow,
-    int CurrentStepId,
-    string CurrentStepName,
+    int CurrentNodeId,
+    string CurrentNodeName,
     string Status,
     string? ClaimedBy,
     string? StartedBy,
@@ -63,15 +63,15 @@ public sealed record InstanceDetailDto(
 public sealed record InstanceVariableDto(
     long Id,
     string VariableName,
-    int? SourceActionId,
+    int? SourceFlowId,
     JsonElement Value,
     DateTimeOffset SetAt);
 
 public sealed record InstanceHistoryDto(
     long Id,
-    int? ActionId,
-    int FromStepId,
-    int ToStepId,
+    int? SequenceFlowId,
+    int FromNodeId,
+    int ToNodeId,
     string? PerformedBy,
     Dictionary<string, JsonElement>? Payload,
     string? Note,
@@ -81,9 +81,9 @@ public sealed record InboxItemDto(
     long InstanceId,
     long WorkflowId,
     string WorkflowName,
-    int CurrentStepId,
-    string CurrentStepName,
-    IReadOnlyList<string> StepRoles,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    IReadOnlyList<string> NodeRoles,
     bool RequiresClaim,
     string? ClaimedBy,
     bool ClaimedByMe,

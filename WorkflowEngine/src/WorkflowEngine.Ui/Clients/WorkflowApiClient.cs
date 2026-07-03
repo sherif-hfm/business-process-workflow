@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using WorkflowEngine.Shared.Dtos;
+using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Ui.Clients;
 
@@ -56,6 +57,13 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
 
+    public async Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
+        long id,
+        CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<IReadOnlyList<SequenceFlowModel>>(
+            $"/api/instances/{id}/flows",
+            cancellationToken) ?? [];
+
     public async Task<InstanceDetailDto?> StartInstanceAsync(
         StartInstanceRequest request,
         CancellationToken cancellationToken = default)
@@ -82,13 +90,13 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }
 
-    public async Task<InstanceDetailDto?> TakeActionAsync(
+    public async Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
-        int actionId,
-        TakeActionRequest request,
+        int flowId,
+        TakeFlowRequest request,
         CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync($"/api/instances/{id}/actions/{actionId}", request, cancellationToken);
+        var response = await httpClient.PostAsJsonAsync($"/api/instances/{id}/flows/{flowId}", request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }

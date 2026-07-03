@@ -1,15 +1,16 @@
 # Business Process Workflow Editor
 
 A single-file, dependency-free visual editor for designing business process
-workflows in the browser. Users lay out **steps** (nodes) inside **phases**
-(swimlane-style containers), connect steps with **actions** (directed edges),
-attach typed **variables**, and save/load the whole model as JSON.
+workflows in the browser. Users lay out **flow nodes** inside **lanes**
+(swimlane-style containers), connect them with **sequence flows** (directed
+edges), attach typed **variables**, and save/load the whole model as JSON.
 
-The model is a simplified, BPMN 2.0-inspired subset: steps are typed as
-`startEvent`, `userTask`, `task`, or `endEvent`, drawn with BPMN-style shapes
-(event circles, task rounded rectangles). See [BPMN alignment](#bpmn-alignment)
-for how the editor's vocabulary maps to the BPMN standard and what is
-intentionally simplified.
+The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
+`startEvent`, `userTask`, `task`, `exclusiveGateway`, or `endEvent`, drawn with
+BPMN-style shapes (event circles, task rounded rectangles, gateway diamonds).
+Connections are first-class `sequenceFlows` with their own ids. See
+[BPMN alignment](#bpmn-alignment) for how the vocabulary maps to the standard
+and what is intentionally simplified.
 
 There is no build step, no server, and no external libraries. Everything runs
 client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
@@ -35,27 +36,26 @@ no server required.
 Everything lives in `workflow-editor.html`. The key pieces:
 
 - **State**: A single global `model` object holds the whole workflow. Interaction
-  state lives in globals like `selected`, `connectMode`, `drag`, `phaseDrag`,
-  and `phaseResize`.
-- **Rendering**: `render()` is the top-level redraw. It calls `renderPhases()`,
+  state lives in globals like `selected`, `connectMode`, `drag`, `laneDrag`,
+  and `laneResize`.
+- **Rendering**: `render()` is the top-level redraw. It calls `renderLanes()`,
   `renderEdges()`, `renderNodes()`, `renderInspector()`, and `renderHint()`.
-  The canvas is an `<svg>` with three layer groups: `#phases`, `#edges`, `#nodes`
+  The canvas is an `<svg>` with three layer groups: `#lanes`, `#edges`, `#nodes`
   (drawn in that back-to-front order).
 - **Inspector**: The right-hand `<aside id="inspector">` is a context panel that
-  edits whatever is selected (step, action, or phase). Built dynamically via
-  `field()`, `selectField()`, `variableRow()`, and `variableCheckbox()` helpers.
-- **Interaction**: Pointer events on the SVG drive dragging steps, dragging
-  phases (which moves their contained steps), and resizing phases.
-  "Connect mode" lets the user click a source step then a target step to create
-  an action edge between them. For pass-through steps (a `startEvent` or an
-  automatic `task`), connect mode sets the source's `nextStepId` instead of
-  creating an action.
+  edits whatever is selected (a flow node, a sequence flow, or a lane). Built
+  dynamically via `field()`, `selectField()`, `variableRow()`, and
+  `variableCheckbox()` helpers.
+- **Interaction**: Pointer events on the SVG drive dragging nodes, dragging lanes
+  (which moves their contained nodes), and resizing lanes. "Connect mode" lets
+  the user click a source node then a target node to create a `sequenceFlow`
+  between them.
 - **Persistence**: `save()` serializes `model` to pretty-printed JSON (uses the
   File System Access API `showSaveFilePicker` when available, otherwise falls
   back to a download). Loading reads a JSON file and normalizes it through
-  `loadFromObject()`, which fills in sensible defaults for missing fields.
-- **Seed data**: `seedSample()` populates the "Purchase Request Approval" example
-  on load.
+  `loadFromObject()`, which detects the schema and migrates legacy documents.
+- **Seed data**: `seedSample()` builds the "Purchase Request Approval" example
+  (including an exclusive gateway).
 
 There are no automated tests. Validation is manual, in-browser.
 
@@ -65,7 +65,7 @@ There are no automated tests. Validation is manual, in-browser.
 
 `WorkflowEngine/` is a separate .NET 10 solution for running workflow instances
 from the JSON definitions produced by the editor. It preserves the editor's JSON
-format rather than normalizing the definition into step/action tables.
+format rather than normalizing the definition into node/flow tables.
 
 Projects:
 
@@ -85,23 +85,32 @@ Storage follows the hybrid design:
 - Workflow definitions are immutable/versioned JSONB snapshots in
   `workflow_definitions`.
 - Runtime state is normalized in `workflow_instances`, `instance_variables`, and
-  `instance_history`.
+  `instance_history`. These tables keep integer ids and their original column
+  names (`CurrentStepId`, `ActionId`, `FromStepId`, `ToStepId`,
+  `SourceActionId`); the columns now simply carry flow-node / sequence-flow ids,
+  so no database migration was needed for the BPMN rename.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
-- Automatic `task` steps immediately follow `nextStepId` and write an
-  `automatic` history row. A hop limit (`steps.Count + 1`) guards against
-  cycles. Legacy JSON with `autoAdvance: true` is migrated to `type: "task"` on
-  load.
-- `requiresClaim` **is** enforced at runtime: such a step must be claimed
-  (`POST /claim`) before its actions are available or can be taken, only the
+- **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
+  `task`, and `exclusiveGateway` nodes are resolved in the same transaction until
+  the instance rests on a `userTask` or terminates on an `endEvent`. A hop limit
+  (`flowNodes.Count + 1`) guards against cycles. History rows are written with a
+  `start`, `automatic`, or `gateway` note.
+- **Exclusive gateways** evaluate outgoing flows: the first flow whose
+  `condition` is true wins; otherwise the `isDefault` flow is taken; if neither
+  matches the transition fails. Conditions use a minimal language
+  (`SequenceFlowConditionEvaluator`): `variable op literal` with
+  `== != < <= > >=`, or a bare variable name (truthy check).
+- `requiresClaim` **is** enforced at runtime: such a `userTask` must be claimed
+  (`POST /claim`) before its flows are available or can be taken, only the
   claiming user may act, and the claim is released on transition. `unclaim`
   clears it. Claim ownership is tracked on `workflow_instances.claimed_by`
   (users default to `anonymous` when unspecified).
 - Required `variables` are validated when starting an instance (chosen start
-  event variables) and when taking an action (action variables); missing required
-  values are rejected.
-- Instances move through `Running`, `Completed` (on entering an `endEvent`
-  step), and `Cancelled` (`POST /cancel`) statuses.
+  event variables) and when taking a sequence flow (flow variables); missing
+  required values are rejected.
+- Instances move through `Running`, `Completed` (on entering an `endEvent`), and
+  `Cancelled` (`POST /cancel`) statuses.
 - Roles are retained in the definition JSON but are **not** enforced by the
   current API/UI.
 
@@ -114,21 +123,22 @@ definition can start instances.
 - `WorkflowDefinitionEndpoints` (`/api/workflows`): `GET /` (latest per
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
   `POST /{id}/publish`, `DELETE /{id}`.
-- `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start),
-  `GET /?status=`, `GET /{id}`, `GET /{id}/actions` (available actions),
-  `POST /{id}/claim`, `POST /{id}/unclaim`,
-  `POST /{id}/actions/{actionId}` (take action), `POST /{id}/cancel`.
+- `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
+  `startEventId`), `GET /?status=`, `GET /{id}`, `GET /{id}/flows` (available
+  sequence flows), `POST /{id}/claim`, `POST /{id}/unclaim`,
+  `POST /{id}/flows/{flowId}` (take a flow), `POST /{id}/cancel`.
 - `WorkflowDomainException` maps to problem responses for invalid operations
-  (unpublished workflow, missing variable, bad claim, unavailable action, etc.).
+  (unpublished workflow, missing variable, bad claim, unavailable flow,
+  gateway with no matching/default flow, etc.).
 
 ### Blazor UI pages
 
 - `/workflows` (`Workflows.razor`) - list definitions.
-- `/workflows/{id}/start` (`StartInstance.razor`) - fill start variables and
-  launch an instance.
+- `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
+  variables, and launch an instance.
 - `/instances` (`Instances.razor`) - list instances, filterable by status.
-- `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take actions,
-  view variables and history.
+- `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
+  sequence flows, view variables and history.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
 
@@ -155,15 +165,16 @@ The workflow is a plain JSON object. See `workflow.json` for a real example.
 {
   "id": 1,
   "name": "Purchase Request Approval",
-  "initialStepId": 1,          // id of the start event step (nullable)
-  "phases": [ /* Phase[] */ ],
-  "steps":  [ /* Step[]  */ ]
+  "initialEventId": 1,           // id of the default start event (nullable)
+  "lanes": [ /* Lane[] */ ],
+  "flowNodes": [ /* FlowNode[] */ ],
+  "sequenceFlows": [ /* SequenceFlow[] */ ]
 }
 ```
 
-### Phase
-A visual container (swimlane) with position and size. Steps whose center falls
-inside a phase are assigned to it (`step.phaseId`).
+### Lane
+A visual container (swimlane) with position and size. Flow nodes whose center
+falls inside a lane are assigned to it (`flowNode.laneId`).
 
 ```jsonc
 {
@@ -174,60 +185,61 @@ inside a phase are assigned to it (`step.phaseId`).
 }
 ```
 
-### Step
-A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`, or
-`endEvent` (BPMN-inspired, simplified).
+### FlowNode
+A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
+`exclusiveGateway`, or `endEvent`.
 
 ```jsonc
 {
   "id": 1,
-  "name": "Draft",
-  "type": "startEvent",        // "startEvent" | "userTask" | "task" | "endEvent"
-  "phaseId": 1,                // owning phase id, or null
+  "name": "Request Submitted",
+  "type": "startEvent",        // startEvent | userTask | task | exclusiveGateway | endEvent
+  "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
-  "nextStepId": 2,             // target for startEvent and automatic task (nullable)
-  "variables": [ /* Variable[] */ ], // start event: data required to start the workflow
-  "actions":   [ /* Action[]   */ ]  // outgoing edges (userTask only); none on startEvent/endEvent/task
+  "variables": [ /* Variable[] */ ] // startEvent (data to start) / userTask
 }
 ```
 
-Step kinds:
+Node kinds and their outgoing-flow rules:
 
-- **`startEvent`** (was `start`): workflow entry; circle on canvas. Has start
-  `variables` and a single `nextStepId` (no actions). Auto-advances into
-  `nextStepId` when an instance is started.
-- **`userTask`** (was `task`): human step; rounded rectangle with user-task
-  marker. Has `roles`, `actions`, optional `requiresClaim`.
-- **`task`**: automatic pass-through (was `autoAdvance: true`); rounded
-  rectangle with AUTO marker. Follows `nextStepId` on entry with no user action.
-- **`endEvent`** (was `end`): terminal; thick-ring circle. No outgoing actions.
+- **`startEvent`**: workflow entry; circle on canvas. Carries start `variables`
+  and exactly one unconditional outgoing flow, consumed automatically on start.
+- **`userTask`**: human step; rounded rectangle with user-task marker. Has
+  `roles`, optional `requiresClaim`, and one or more outgoing flows (each a named
+  user choice). Taking a flow is the "action".
+- **`task`**: automatic pass-through; rounded rectangle with AUTO marker. Exactly
+  one unconditional outgoing flow, followed on entry with no user action.
+- **`exclusiveGateway`**: routing node; diamond on canvas. Two or more outgoing
+  flows with `condition`s plus one `isDefault`; the engine picks the first
+  matching condition, else the default. No user interaction.
+- **`endEvent`**: terminal; thick-ring circle. No outgoing flows.
 
-A workflow may define multiple `startEvent` steps. `initialStepId` is the
-default start event. `POST /api/instances` accepts optional `startStepId` to
-force a different start event; that event's variables are collected.
+A workflow may define multiple `startEvent` nodes. `initialEventId` is the
+default. `POST /api/instances` accepts optional `startEventId` to force a
+different start event; that event's variables are collected.
 
-Legacy JSON using `start` / `task` / `end` and `autoAdvance` is migrated on
-load in both the editor and the .NET engine (legacy start actions become
-`nextStepId` plus merged variables).
-
-### Action
-A directed transition from one step to another (rendered as an edge/arrow).
-Action ids are conventionally `stepId * 100 + n` (e.g. step 2 -> 201, 202).
+### SequenceFlow
+A first-class directed transition between two nodes (rendered as an edge/arrow).
+Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
+(e.g. node 2 -> 201, 202) but any unique integer is valid.
 
 ```jsonc
 {
-  "id": 101,
-  "name": "Submit",
-  "toStepId": 2,               // target step id
-  "roles": [ "Requester" ],    // free-text roles allowed to take this action
-  "variables": [ /* Variable[] */ ] // data captured when the action is taken
+  "id": 201,
+  "name": "Approve",           // label; empty for start/auto flows
+  "sourceRef": 2,              // source node id
+  "targetRef": 3,              // target node id
+  "roles": [ "Manager" ],      // userTask flow: roles allowed to take it
+  "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
+  "condition": "amount > 1000",// exclusiveGateway flow only (nullable)
+  "isDefault": false           // exclusiveGateway default flow
 }
 ```
 
 ### Variable
-Typed data attached to a start event or an action.
+Typed data attached to a start event (node) or a user-task sequence flow.
 
 ```jsonc
 {
@@ -251,91 +263,97 @@ when extending the model so new features stay close to BPMN terminology.
 
 | This project | BPMN 2.0 concept | Notes / simplifications |
 | --- | --- | --- |
-| `step` (node) | Flow node | Umbrella term for events and tasks. |
-| `type: "startEvent"` | None Start Event | Single entry marker per flow; drawn as a thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). |
+| `flowNode` | Flow node | Umbrella term for events, tasks, and gateways. |
+| `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). |
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task/Service Task without an implementation. |
+| `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
-| `action` (edge) | Sequence Flow + user decision | A named outgoing transition a user selects. BPMN would split this into a sequence flow plus a gateway when there are multiple choices. |
-| `phase` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
+| `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
+| `sequenceFlow.condition` | Condition Expression | Minimal `var op literal` / bare-truthy language on gateway flows. |
+| `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path. |
+| `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
-| `variables` | Data Object / Property | Typed data captured at the start event or on an action. |
+| `variables` | Data Object / Property | Typed data captured at a start event or on a user-task flow. |
 | `requiresClaim` | User Task "claim" (assignee) | Runtime-enforced single-owner locking; not a distinct BPMN element. |
-| `nextStepId` (auto/start) | Unconditional Sequence Flow | Direct, no-decision transition used by `startEvent` and automatic `task`. |
 
 ### Intentional deviations from BPMN
 
-- **No gateways.** Branching is expressed as multiple `actions` on a `userTask`.
-  There is no exclusive/parallel/inclusive gateway element yet.
-- **No message/timer/signal events.** Only plain (none) start and end events
-  exist.
-- **No pools / collaboration.** Phases are lanes only; there is no multi-party
-  pool or message flow.
-- **Sequence flow is embedded.** Edges live inside a step's `actions` (or its
-  `nextStepId`) rather than as first-class flow objects with their own ids.
-- **Roles are advisory** in the definition and only `requiresClaim` ownership is
+- **Only exclusive gateways.** No parallel/inclusive/event-based gateways yet;
+  branching is either a `userTask` with multiple named flows or an
+  `exclusiveGateway` routed by conditions.
+- **No message/timer/signal events.** Only plain (none) start and end events.
+- **No pools / collaboration.** Lanes exist without a multi-party pool or message
+  flow.
+- **Minimal condition language.** `variable op literal` (`== != < <= > >=`) or a
+  bare variable truthiness check. Anything richer (functions, boolean operators)
+  is future work.
+- **Integer ids, JSON (not BPMN XML).** Flow nodes and sequence flows use integer
+  ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
+- **Roles are advisory** in the definition; only `requiresClaim` ownership is
   enforced at runtime.
 
 ### If you add BPMN-aligned features later
 
-- Prefer BPMN names for new step types/elements (e.g. `serviceTask`,
-  `exclusiveGateway`, `timerStartEvent`) and add matching shapes.
+- Prefer BPMN names for new node types/elements (e.g. `serviceTask`,
+  `parallelGateway`, `timerStartEvent`) and add matching shapes.
 - Keep the JSON tolerant: extend `loadFromObject()` (editor) and
   `WorkflowModelMigrator` (.NET) so older documents still load.
-- Update `WorkflowStepTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
-  `IsUserTask`) and `ValidateDefinition` together so the engine and editor agree.
+- Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
+  `IsUserTask`, `IsGateway`, `IsPassThrough`) and `ValidateDefinition` together so
+  the engine and editor agree.
 
 ---
 
 ## Key conventions & invariants
 
-- **Node/phase sizing**: user tasks and automatic tasks use `NODE_W` x `NODE_H`
-  (170 x 64) rounded rectangles. Start/end events use `EVENT_D` (56) circles with
-  the name label below. Phases have minimums `MIN_PHASE_W` x `MIN_PHASE_H`
-  (220 x 150).
-- **ID generation**: `nextStepId`, `nextPhaseId`, `nextActionId`, and
-  `nextVariableId` derive new ids from existing max ids. Action ids are namespaced
-  per step (`step.id * 100 + n`).
-- **Start event**: `model.initialStepId` marks the default start event (must be a
-  `startEvent`). Multiple start events are allowed. Deleting the default
+- **Node/lane sizing**: user/automatic tasks use `NODE_W` x `NODE_H` (170 x 64)
+  rounded rectangles; start/end events use `EVENT_D` (56) circles; exclusive
+  gateways use a `GATEWAY_D` (72) diamond. Lanes have minimums `MIN_LANE_W` x
+  `MIN_LANE_H` (220 x 150).
+- **ID generation**: `nextNodeId`, `nextLaneId`, `nextFlowId`, and
+  `nextVariableId` derive new ids from existing max ids (`nextFlowId` starts at
+  101).
+- **Start event**: `model.initialEventId` marks the default start event (must be
+  a `startEvent`). Multiple start events are allowed. Deleting the default
   reassigns it to the first remaining start event (or null).
-- **Referential cleanup**: deleting a step also removes any actions pointing to it
-  and nulls out any `nextStepId` that referenced it;
-  deleting a phase nulls out `phaseId` on its steps.
-- **Phase assignment is geometric**: on drag end, a step's `phaseId` is set based
-  on which phase its center lands in (`assignStepPhase`).
-- **Load is tolerant**: `loadFromObject()` accepts alternate field names
-  (`label` for `name`, `initialStep`, `next` for `toStepId`) and backfills
-  missing coordinates so older/partial JSON still renders.
-- **Roles**: steps and actions carry a free-text `roles` string array (candidate
-  roles). `loadFromObject()` normalizes it via `normalizeRoles()`, migrating a
-  legacy singular `role` string into an array and defaulting to `[]`. Roles are
-  edited with the `rolesField()` chip editor and shown as small labels on nodes
-  and edges.
-- **Requires claim**: `userTask` steps carry a boolean `requiresClaim`
-  (design-time intent; enforced at runtime in `WorkflowEngine/`). Hidden for
-  other step types.
-- **Automatic task**: `type: "task"` follows `nextStepId` on entry with no user
-  action. A dashed "auto" edge is drawn on the canvas. Legacy `autoAdvance:
-  true` migrates to `type: "task"`.
-- **Start event flow**: `type: "startEvent"` uses `nextStepId` (solid "start"
-  edge on canvas). No actions. On instance start the engine collects that event's
-  variables then auto-advances via `nextStepId`.
+- **Referential cleanup**: deleting a flow node also removes every sequence flow
+  whose `sourceRef` or `targetRef` referenced it; deleting a lane nulls out
+  `laneId` on its nodes.
+- **Lane assignment is geometric**: on drag end, a node's `laneId` is set based on
+  which lane its center lands in (`assignNodeLane`).
+- **Load is tolerant**: `loadFromObject()` detects the schema. A document with
+  `flowNodes` loads directly; a legacy document with `phases`/`steps`/`actions`
+  (and `start`/`end`/`autoAdvance` types or `nextStepId`) is folded into
+  `lanes`/`flowNodes`/`sequenceFlows` via `migrateLegacyToNew()`. The .NET side
+  mirrors this in `WorkflowModelMigrator` using write-ignored legacy JSON shims.
+- **Roles**: nodes and flows carry a free-text `roles` string array (candidate
+  roles), normalized by `normalizeRoles()` (a legacy singular `role` string is
+  migrated into an array). Shown as small labels on nodes and edges.
+- **Requires claim**: `userTask` nodes carry a boolean `requiresClaim`
+  (enforced at runtime in `WorkflowEngine/`). Hidden for other node types.
+- **Automatic task / start event flow**: `task` and `startEvent` each own one
+  unconditional outgoing flow, drawn as a dashed edge. The engine follows it in
+  the pass-through loop with `automatic` / `start` history notes.
+- **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
+  `isDefault` marker; the editor shows the condition/`default` beneath the edge
+  and enforces a single default per gateway.
 
 ---
 
 ## Common tasks for an AI editing this project
 
-- **Add a new field to a step/action/variable**: update the relevant
+- **Add a new field to a node/flow/variable**: update the relevant
   `render*Inspector` function (UI), the `loadFromObject` normalizer (persistence),
   and `seedSample` if the example should show it. `save()` needs no change since
   it serializes `model` directly.
-- **Add a new step type**: extend `STEP_TYPE_OPTIONS` in `renderStepInspector`,
-  add matching CSS under `.node.<type>`, and update `WorkflowStepTypes` in the
-  .NET shared model.
-- **Add a new variable data type**: append to the `VARIABLE_DATA_TYPES` array.
+- **Add a new node type**: extend `NODE_TYPE`/`NODE_TYPE_OPTIONS` (editor), add
+  matching CSS under `.node.<type>`, update geometry (`nodeSize`, `borderPoint`)
+  for new shapes, and update `BpmnFlowNodeTypes` in the .NET shared model.
+- **Add a new variable data type**: append to the `VARIABLE_DATA_TYPES` array and
+  `WorkflowVariableTypes` (.NET).
 - **Change canvas visuals**: edit the `<style>` block (CSS variables live in
-  `:root`; node/phase/edge styling is grouped by class).
+  `:root`; node/lane/edge styling is grouped by class).
 
 Keep editor changes in the single HTML file unless there is a strong reason to
 split it. Preserve the editor's no-dependency, no-build nature. Runtime engine

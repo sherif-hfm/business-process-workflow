@@ -4,119 +4,167 @@ public static class WorkflowModelMigrator
 {
     public static void Normalize(WorkflowModel model)
     {
-        var isLegacy = model.Steps.Any(step =>
-            step.Type is "start" or "end" || step.AutoAdvance);
-
-        foreach (var step in model.Steps)
+        if (model.FlowNodes.Count == 0 && model.LegacySteps is { Count: > 0 })
         {
-            if (isLegacy)
+            ConvertLegacy(model);
+        }
+
+        model.LegacyInitialStepId = null;
+        model.LegacyPhases = null;
+        model.LegacySteps = null;
+
+        foreach (var node in model.FlowNodes)
+        {
+            ApplyNodeInvariants(node);
+        }
+    }
+
+    private static void ConvertLegacy(WorkflowModel model)
+    {
+        model.InitialEventId ??= model.LegacyInitialStepId;
+
+        if (model.LegacyPhases is { Count: > 0 })
+        {
+            model.Lanes = model.LegacyPhases
+                .Select(p => new LaneModel { Id = p.Id, Name = p.Name, X = p.X, Y = p.Y, W = p.W, H = p.H })
+                .ToList();
+        }
+
+        var flows = new List<SequenceFlowModel>();
+        var nextFlowId = 1;
+
+        foreach (var step in model.LegacySteps!)
+        {
+            var type = MapLegacyType(step);
+            var node = new FlowNodeModel
             {
-                MigrateLegacyStep(step);
+                Id = step.Id,
+                Name = step.Name,
+                Type = type,
+                LaneId = step.PhaseId,
+                X = step.X,
+                Y = step.Y,
+                Roles = step.Roles ?? [],
+                RequiresClaim = step.RequiresClaim,
+                Variables = step.Variables ?? []
+            };
+
+            if (BpmnFlowNodeTypes.IsStart(type))
+            {
+                // Legacy start steps advanced either through a single action or nextStepId.
+                if (step.Actions.Count > 0)
+                {
+                    var first = step.Actions[0];
+                    MergeVariables(node.Variables, first.Variables);
+                    flows.Add(new SequenceFlowModel
+                    {
+                        Id = NextFlowId(ref nextFlowId, flows),
+                        Name = string.Empty,
+                        SourceRef = step.Id,
+                        TargetRef = first.ToStepId
+                    });
+                }
+                else if (step.NextStepId is int startTarget)
+                {
+                    flows.Add(new SequenceFlowModel
+                    {
+                        Id = NextFlowId(ref nextFlowId, flows),
+                        Name = string.Empty,
+                        SourceRef = step.Id,
+                        TargetRef = startTarget
+                    });
+                }
+            }
+            else if (BpmnFlowNodeTypes.IsAutomatic(type))
+            {
+                if (step.NextStepId is int autoTarget)
+                {
+                    flows.Add(new SequenceFlowModel
+                    {
+                        Id = NextFlowId(ref nextFlowId, flows),
+                        Name = string.Empty,
+                        SourceRef = step.Id,
+                        TargetRef = autoTarget
+                    });
+                }
             }
             else
             {
-                MigrateStartEventActions(step);
-                ApplyTypeInvariants(step);
-            }
-        }
-    }
-
-    private static void MigrateLegacyStep(StepModel step)
-    {
-        switch (step.Type)
-        {
-            case "start":
-                step.Type = WorkflowStepTypes.StartEvent;
-                if (step.Actions.Count > 0)
+                foreach (var action in step.Actions)
                 {
-                    var firstAction = step.Actions[0];
-                    if (step.NextStepId is null)
+                    flows.Add(new SequenceFlowModel
                     {
-                        step.NextStepId = firstAction.ToStepId;
-                    }
-
-                    MergeActionVariables(step, firstAction);
-                    step.Actions = [];
+                        Id = action.Id != 0 ? action.Id : NextFlowId(ref nextFlowId, flows),
+                        Name = action.Name,
+                        SourceRef = step.Id,
+                        TargetRef = action.ToStepId,
+                        Roles = action.Roles ?? [],
+                        Variables = action.Variables ?? []
+                    });
                 }
-                else if (step.AutoAdvance && step.NextStepId.HasValue)
-                {
-                    step.Actions = [];
-                }
+            }
 
-                break;
-            case "end":
-                step.Type = WorkflowStepTypes.EndEvent;
-                break;
-            case "task" when step.AutoAdvance:
-                step.Type = WorkflowStepTypes.Task;
-                break;
-            case "task":
-                step.Type = WorkflowStepTypes.UserTask;
-                break;
+            model.FlowNodes.Add(node);
         }
 
-        step.AutoAdvance = false;
-        MigrateStartEventActions(step);
-        ApplyTypeInvariants(step);
+        model.SequenceFlows = flows;
     }
 
-    private static void MigrateStartEventActions(StepModel step)
+    private static int NextFlowId(ref int seed, List<SequenceFlowModel> flows)
     {
-        if (!WorkflowStepTypes.IsStart(step.Type) || step.Actions.Count == 0)
+        var max = flows.Count == 0 ? 0 : flows.Max(f => f.Id);
+        var candidate = Math.Max(seed, max + 1);
+        seed = candidate + 1;
+        return candidate;
+    }
+
+    private static string MapLegacyType(LegacyStepModel step) => step.Type switch
+    {
+        "start" => BpmnFlowNodeTypes.StartEvent,
+        "startEvent" => BpmnFlowNodeTypes.StartEvent,
+        "end" => BpmnFlowNodeTypes.EndEvent,
+        "endEvent" => BpmnFlowNodeTypes.EndEvent,
+        "task" when step.AutoAdvance => BpmnFlowNodeTypes.Task,
+        "task" => BpmnFlowNodeTypes.UserTask,
+        "userTask" => BpmnFlowNodeTypes.UserTask,
+        "exclusiveGateway" => BpmnFlowNodeTypes.ExclusiveGateway,
+        _ => BpmnFlowNodeTypes.UserTask
+    };
+
+    private static void MergeVariables(List<VariableModel> target, List<VariableModel>? source)
+    {
+        if (source is null)
         {
             return;
         }
 
-        var firstAction = step.Actions[0];
-        if (step.NextStepId is null)
+        foreach (var variable in source)
         {
-            step.NextStepId = firstAction.ToStepId;
-        }
-
-        MergeActionVariables(step, firstAction);
-        step.Actions = [];
-    }
-
-    private static void MergeActionVariables(StepModel step, ActionModel action)
-    {
-        foreach (var variable in action.Variables)
-        {
-            if (step.Variables.All(v =>
-                    !string.Equals(v.Name, variable.Name, StringComparison.OrdinalIgnoreCase)))
+            if (target.All(v => !string.Equals(v.Name, variable.Name, StringComparison.OrdinalIgnoreCase)))
             {
-                step.Variables.Add(variable);
+                target.Add(variable);
             }
         }
     }
 
-    private static void ApplyTypeInvariants(StepModel step)
+    private static void ApplyNodeInvariants(FlowNodeModel node)
     {
-        if (WorkflowStepTypes.IsEnd(step.Type))
+        if (BpmnFlowNodeTypes.IsEnd(node.Type))
         {
-            step.RequiresClaim = false;
-            step.NextStepId = null;
-            step.AutoAdvance = false;
-            step.Actions = [];
+            node.RequiresClaim = false;
+            node.Roles = [];
+            node.Variables = [];
         }
-        else if (WorkflowStepTypes.IsAutomatic(step.Type))
+        else if (BpmnFlowNodeTypes.IsAutomatic(node.Type) || BpmnFlowNodeTypes.IsGateway(node.Type))
         {
-            step.RequiresClaim = false;
-            step.Roles = [];
-            step.Actions = [];
-            step.Variables = [];
-            step.AutoAdvance = false;
+            node.RequiresClaim = false;
+            node.Roles = [];
+            node.Variables = [];
         }
-        else if (WorkflowStepTypes.IsUserTask(step.Type))
+        else if (BpmnFlowNodeTypes.IsStart(node.Type))
         {
-            step.NextStepId = null;
-            step.AutoAdvance = false;
-        }
-        else if (WorkflowStepTypes.IsStart(step.Type))
-        {
-            step.RequiresClaim = false;
-            step.Roles = [];
-            step.Actions = [];
-            step.AutoAdvance = false;
+            node.RequiresClaim = false;
+            node.Roles = [];
         }
     }
 }

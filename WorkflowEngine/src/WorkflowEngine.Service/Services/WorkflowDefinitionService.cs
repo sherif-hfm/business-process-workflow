@@ -66,77 +66,86 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             throw new WorkflowDomainException("Workflow name is required.");
         }
 
-        if (definition.Steps.Count == 0)
+        if (definition.FlowNodes.Count == 0)
         {
-            throw new WorkflowDomainException("Workflow must contain at least one step.");
+            throw new WorkflowDomainException("Workflow must contain at least one flow node.");
         }
 
-        if (definition.InitialStepId is null || definition.Steps.All(s => s.Id != definition.InitialStepId))
+        if (definition.InitialEventId is null || definition.FlowNodes.All(n => n.Id != definition.InitialEventId))
         {
-            throw new WorkflowDomainException("Workflow initialStepId must reference an existing step.");
+            throw new WorkflowDomainException("Workflow initialEventId must reference an existing flow node.");
         }
 
-        var initialStep = definition.Steps.Single(s => s.Id == definition.InitialStepId);
-        if (!WorkflowStepTypes.IsStart(initialStep.Type))
+        var initialNode = definition.FlowNodes.Single(n => n.Id == definition.InitialEventId);
+        if (!BpmnFlowNodeTypes.IsStart(initialNode.Type))
         {
-            throw new WorkflowDomainException("Workflow initialStepId must reference a start event.");
+            throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
         }
 
-        var stepIds = definition.Steps.Select(s => s.Id).ToHashSet();
-        foreach (var step in definition.Steps)
+        var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
+
+        foreach (var flow in definition.SequenceFlows)
         {
-            if (string.IsNullOrWhiteSpace(step.Name))
+            if (!nodeIds.Contains(flow.SourceRef))
             {
-                throw new WorkflowDomainException($"Step #{step.Id} name is required.");
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing sourceRef #{flow.SourceRef}.");
             }
 
-            if (!WorkflowStepTypes.IsSupported(step.Type))
+            if (!nodeIds.Contains(flow.TargetRef))
             {
-                throw new WorkflowDomainException($"Step #{step.Id} has an unsupported type '{step.Type}'.");
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing targetRef #{flow.TargetRef}.");
             }
 
-            if (WorkflowStepTypes.IsEnd(step.Type) && step.Actions.Count > 0)
+            ValidateVariables(flow.Variables, $"sequence flow #{flow.Id}");
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            if (string.IsNullOrWhiteSpace(node.Name))
             {
-                throw new WorkflowDomainException($"End event #{step.Id} cannot have outgoing actions.");
+                throw new WorkflowDomainException($"Flow node #{node.Id} name is required.");
             }
 
-            if (WorkflowStepTypes.IsAutomatic(step.Type))
+            if (!BpmnFlowNodeTypes.IsSupported(node.Type))
             {
-                if (step.NextStepId is null || !stepIds.Contains(step.NextStepId.Value))
+                throw new WorkflowDomainException($"Flow node #{node.Id} has an unsupported type '{node.Type}'.");
+            }
+
+            var outgoing = definition.SequenceFlows.Where(f => f.SourceRef == node.Id).ToList();
+
+            if (BpmnFlowNodeTypes.IsEnd(node.Type) && outgoing.Count > 0)
+            {
+                throw new WorkflowDomainException($"End event #{node.Id} cannot have outgoing sequence flows.");
+            }
+
+            if ((BpmnFlowNodeTypes.IsStart(node.Type) || BpmnFlowNodeTypes.IsAutomatic(node.Type)) && outgoing.Count != 1)
+            {
+                var kind = BpmnFlowNodeTypes.IsStart(node.Type) ? "Start event" : "Automatic task";
+                throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} must have at least one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsGateway(node.Type))
+            {
+                if (outgoing.Count < 2)
                 {
-                    throw new WorkflowDomainException($"Automatic task #{step.Id} must reference an existing nextStepId.");
+                    throw new WorkflowDomainException($"Exclusive gateway #{node.Id} must have at least two outgoing sequence flows.");
+                }
+
+                var hasDefault = outgoing.Any(f => f.IsDefault);
+                var conditioned = outgoing.Where(f => !f.IsDefault).All(f => !string.IsNullOrWhiteSpace(f.Condition));
+                if (!hasDefault && !conditioned)
+                {
+                    throw new WorkflowDomainException(
+                        $"Exclusive gateway #{node.Id} must have a default flow or a condition on every non-default flow.");
                 }
             }
 
-            if (WorkflowStepTypes.IsStart(step.Type))
-            {
-                if (step.Actions.Count > 0)
-                {
-                    throw new WorkflowDomainException($"Start event #{step.Id} cannot have outgoing actions.");
-                }
-
-                if (step.NextStepId is null || !stepIds.Contains(step.NextStepId.Value))
-                {
-                    throw new WorkflowDomainException($"Start event #{step.Id} must reference an existing nextStepId.");
-                }
-            }
-
-            if (WorkflowStepTypes.IsUserTask(step.Type) && step.NextStepId is not null)
-            {
-                throw new WorkflowDomainException($"User task #{step.Id} cannot use nextStepId.");
-            }
-
-            foreach (var action in step.Actions)
-            {
-                if (!stepIds.Contains(action.ToStepId))
-                {
-                    throw new WorkflowDomainException($"Action #{action.Id} points to missing step #{action.ToStepId}.");
-                }
-
-                ValidateVariables(action.Variables, $"action #{action.Id}");
-            }
-
-            ValidateVariables(step.Variables, $"step #{step.Id}");
+            ValidateVariables(node.Variables, $"flow node #{node.Id}");
         }
     }
 

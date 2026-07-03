@@ -148,30 +148,34 @@
     stroke-width: 2;
   }
   .node circle.body { stroke-width: 2; }
+  .node polygon.body { stroke-width: 2; cursor: grab; }
   .node.startEvent circle.body { fill: #14532d; stroke: var(--green); }
   .node.endEvent circle.body   { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
   .node.userTask rect { fill: #1e3a5f; stroke: var(--accent); }
   .node.task rect     { fill: #1e293b; stroke: #64748b; }
+  .node.exclusiveGateway polygon.body { fill: #422006; stroke: var(--amber); }
   .node.selected rect,
-  .node.selected circle.body { stroke: #fff; stroke-width: 3; }
+  .node.selected circle.body,
+  .node.selected polygon.body { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: #cbd5e1; font-size: 11px; }
   .node .roles { fill: var(--muted); font-size: 10px; }
   .node .event-name { font-size: 12px; }
+  .node .gw-mark { fill: var(--amber); font-size: 22px; font-weight: 700; }
   .node .user-marker circle { fill: #bfdbfe; stroke: #bfdbfe; }
   .node .user-marker path { fill: none; stroke: #bfdbfe; stroke-width: 1.5; }
 
-  .phase rect.body {
+  .lane rect.body {
     fill: rgba(59, 130, 246, .08);
     stroke: #64748b;
     stroke-width: 2;
     stroke-dasharray: 8 5;
     cursor: grab;
   }
-  .phase.selected rect.body { stroke: #fff; stroke-width: 3; }
-  .phase text { fill: #cbd5e1; font-size: 13px; pointer-events: none; user-select: none; }
-  .phase .pid { fill: var(--muted); font-size: 11px; }
-  .phase .resize {
+  .lane.selected rect.body { stroke: #fff; stroke-width: 3; }
+  .lane text { fill: #cbd5e1; font-size: 13px; pointer-events: none; user-select: none; }
+  .lane .pid { fill: var(--muted); font-size: 11px; }
+  .lane .resize {
     fill: var(--accent);
     stroke: #bfdbfe;
     stroke-width: 1;
@@ -183,6 +187,7 @@
   .edge.selected path { stroke: var(--amber); stroke-width: 3; }
   .edge text { fill: #cbd5e1; font-size: 11px; cursor: pointer; }
   .edge .roles { fill: var(--muted); font-size: 10px; }
+  .edge .cond { fill: var(--amber); font-size: 10px; }
   .edge .lblbg { fill: var(--bg); opacity: .85; }
 </style>
 </head>
@@ -190,9 +195,9 @@
 <header>
   <h1>Workflow Editor</h1>
   <input id="wfName" class="wf-name" placeholder="Workflow name" />
-  <button id="addStepBtn" class="primary">+ Add Step</button>
-  <button id="addPhaseBtn">+ Add Phase</button>
-  <button id="connectBtn">Connect Action</button>
+  <button id="addStepBtn" class="primary">+ Add Node</button>
+  <button id="addPhaseBtn">+ Add Lane</button>
+  <button id="connectBtn">Connect Flow</button>
   <div class="spacer"></div>
   <button id="newBtn">New</button>
   <button id="loadBtn">Load JSON</button>
@@ -213,7 +218,7 @@
           <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
         </marker>
       </defs>
-      <g id="phases"></g>
+      <g id="lanes"></g>
       <g id="edges"></g>
       <g id="nodes"></g>
     </svg>
@@ -226,30 +231,33 @@
 <script>
 const NODE_W = 170, NODE_H = 64;
 const EVENT_D = 56;
-const MIN_PHASE_W = 220, MIN_PHASE_H = 150;
-const STEP_TYPE = {
+const GATEWAY_D = 72;
+const MIN_LANE_W = 220, MIN_LANE_H = 150;
+const NODE_TYPE = {
   START_EVENT: "startEvent",
   END_EVENT: "endEvent",
   USER_TASK: "userTask",
-  TASK: "task"
+  TASK: "task",
+  EXCLUSIVE_GATEWAY: "exclusiveGateway"
 };
-const STEP_TYPE_OPTIONS = [
-  { value: STEP_TYPE.START_EVENT, label: "Start Event" },
-  { value: STEP_TYPE.END_EVENT, label: "End Event" },
-  { value: STEP_TYPE.USER_TASK, label: "User Task" },
-  { value: STEP_TYPE.TASK, label: "Task (automatic)" }
+const NODE_TYPE_OPTIONS = [
+  { value: NODE_TYPE.START_EVENT, label: "Start Event" },
+  { value: NODE_TYPE.END_EVENT, label: "End Event" },
+  { value: NODE_TYPE.USER_TASK, label: "User Task" },
+  { value: NODE_TYPE.TASK, label: "Task (automatic)" },
+  { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" }
 ];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 let model = newModel();
-let selected = null;          // {kind:'step'|'action'|'phase', stepId, actionId, phaseId}
+let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
 let connectMode = false;
-let connectSource = null;     // step id when picking target
+let connectSource = null;     // node id when picking target
 let drag = null;              // {id, dx, dy}
-let phaseDrag = null;         // {id, dx, dy, stepOffsets}
-let phaseResize = null;       // {id, dx, dy}
+let laneDrag = null;          // {id, dx, dy, nodeOffsets}
+let laneResize = null;        // {id, dx, dy}
 
 const svg = document.getElementById('svg');
-const phasesG = document.getElementById('phases');
+const lanesG = document.getElementById('lanes');
 const nodesG = document.getElementById('nodes');
 const edgesG = document.getElementById('edges');
 const inspector = document.getElementById('inspector');
@@ -260,30 +268,29 @@ function newModel() {
   return {
     id: 1,
     name: "New Workflow",
-    initialStepId: null,
-    phases: [],
-    steps: []
+    initialEventId: null,
+    lanes: [],
+    flowNodes: [],
+    sequenceFlows: []
   };
 }
 
-function nextPhaseId() {
-  return model.phases.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+function nextLaneId() {
+  return model.lanes.reduce((m, p) => Math.max(m, p.id), 0) + 1;
 }
-function nextStepId() {
-  return model.steps.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+function nextNodeId() {
+  return model.flowNodes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
 }
-function nextActionId(step) {
-  const base = step.id * 100;
-  const ids = step.actions.map(a => a.id);
-  let n = base + 1;
-  while (ids.includes(n)) n++;
-  return n;
+function nextFlowId() {
+  return model.sequenceFlows.reduce((m, f) => Math.max(m, f.id), 100) + 1;
 }
 function nextVariableId(owner) {
   return (owner.variables || []).reduce((m, v) => Math.max(m, v.id), 0) + 1;
 }
-function getPhase(id) { return model.phases.find(p => p.id === id); }
-function getStep(id) { return model.steps.find(s => s.id === id); }
+function getLane(id) { return model.lanes.find(p => p.id === id); }
+function getNode(id) { return model.flowNodes.find(s => s.id === id); }
+function getFlow(id) { return model.sequenceFlows.find(f => f.id === id); }
+function outgoingFlows(nodeId) { return model.sequenceFlows.filter(f => f.sourceRef === nodeId); }
 function normalizeRoles(roles) {
   if (Array.isArray(roles)) return roles.map(role => String(role).trim()).filter(Boolean);
   if (typeof roles === "string" && roles.trim()) return [roles.trim()];
@@ -294,76 +301,52 @@ function roleSummary(roles, maxLength = 28) {
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
 function isEventType(type) {
-  return type === STEP_TYPE.START_EVENT || type === STEP_TYPE.END_EVENT;
+  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT;
 }
 function isAutomaticType(type) {
-  return type === STEP_TYPE.TASK;
+  return type === NODE_TYPE.TASK;
 }
 function isUserTaskType(type) {
-  return type === STEP_TYPE.USER_TASK;
+  return type === NODE_TYPE.USER_TASK;
 }
 function isStartEventType(type) {
-  return type === STEP_TYPE.START_EVENT;
+  return type === NODE_TYPE.START_EVENT;
 }
 function isEndEventType(type) {
-  return type === STEP_TYPE.END_EVENT;
+  return type === NODE_TYPE.END_EVENT;
+}
+function isGatewayType(type) {
+  return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
 }
 function typeLabel(type) {
-  const match = STEP_TYPE_OPTIONS.find(o => o.value === type);
+  const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
   return match ? match.label : type;
 }
-function nodeSize(step) {
-  if (isEventType(step.type)) return { w: EVENT_D, h: EVENT_D };
+function nodeSize(node) {
+  if (isEventType(node.type)) return { w: EVENT_D, h: EVENT_D };
+  if (isGatewayType(node.type)) return { w: GATEWAY_D, h: GATEWAY_D };
   return { w: NODE_W, h: NODE_H };
 }
+// pass-through nodes advance without a user action (start / automatic task / gateway)
 function isPassThroughType(type) {
-  return isAutomaticType(type) || isStartEventType(type);
+  return isAutomaticType(type) || isStartEventType(type) || isGatewayType(type);
 }
-function applyTypeInvariants(step) {
-  if (isEndEventType(step.type)) {
-    step.requiresClaim = false;
-    step.nextStepId = null;
-    step.actions = [];
-    step.variables = step.variables || [];
-  } else if (isAutomaticType(step.type)) {
-    step.requiresClaim = false;
-    step.roles = [];
-    step.actions = [];
-    step.variables = [];
-  } else if (isUserTaskType(step.type)) {
-    step.nextStepId = null;
-    step.variables = step.variables || [];
-  } else if (isStartEventType(step.type)) {
-    step.requiresClaim = false;
-    step.roles = [];
-    step.actions = [];
-    step.variables = step.variables || [];
+function applyTypeInvariants(node) {
+  if (isEndEventType(node.type)) {
+    node.requiresClaim = false;
+    node.roles = [];
+    node.variables = [];
+  } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
+    node.requiresClaim = false;
+    node.roles = [];
+    node.variables = [];
+  } else if (isStartEventType(node.type)) {
+    node.requiresClaim = false;
+    node.roles = [];
+    node.variables = node.variables || [];
+  } else if (isUserTaskType(node.type)) {
+    node.variables = node.variables || [];
   }
-}
-function migrateStartEventActions(step) {
-  if (!isStartEventType(step.type) || !step.actions?.length) return;
-  const first = step.actions[0];
-  if (step.nextStepId == null) step.nextStepId = first.toStepId;
-  const existing = new Set((step.variables || []).map(v => v.name.toLowerCase()));
-  for (const v of first.variables || []) {
-    if (!existing.has(v.name.toLowerCase())) {
-      step.variables.push(v);
-      existing.add(v.name.toLowerCase());
-    }
-  }
-  step.actions = [];
-}
-function isLegacyDocument(obj) {
-  return (obj.steps || []).some(s => s.type === "start" || s.type === "end" || s.autoAdvance);
-}
-function migrateLegacyType(step, legacyDoc) {
-  if (!legacyDoc) return step.type ?? STEP_TYPE.USER_TASK;
-  const t = step.type ?? "task";
-  if (t === "start") return STEP_TYPE.START_EVENT;
-  if (t === "end") return STEP_TYPE.END_EVENT;
-  if (t === "task" && step.autoAdvance) return STEP_TYPE.TASK;
-  if (t === "task") return STEP_TYPE.USER_TASK;
-  return t;
 }
 function appendUserTaskMarker(g) {
   const icon = el("g", { class: "user-marker", transform: "translate(8,8)" });
@@ -382,55 +365,60 @@ function seedSample() {
   model = {
     id: 1,
     name: "Purchase Request Approval",
-    initialStepId: 1,
-    phases: [
-      { id: 1, name: "Submission", x: 40, y: 20, w: 260, h: 260 },
-      { id: 2, name: "Approval", x: 320, y: 20, w: 560, h: 260 },
-      { id: 3, name: "Resolution", x: 320, y: 260, w: 560, h: 180 }
+    initialEventId: 1,
+    lanes: [
+      { id: 1, name: "Submission", x: 40, y: 20, w: 260, h: 300 },
+      { id: 2, name: "Approval", x: 320, y: 20, w: 620, h: 300 },
+      { id: 3, name: "Resolution", x: 320, y: 340, w: 620, h: 180 }
     ],
-    steps: [
-      { id: 1, name: "Draft", type: "startEvent", phaseId: 1, x: 80,  y: 60, roles: [], requiresClaim: false,
-        nextStepId: 2,
+    flowNodes: [
+      { id: 1, name: "Request Submitted", type: "startEvent", laneId: 1, x: 90, y: 80, roles: [], requiresClaim: false,
         variables: [
           { id: 1, name: "requester", dataType: "string", isArray: false, required: true },
           { id: 2, name: "amount", dataType: "number", isArray: false, required: true },
           { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
-        ],
-        actions: [] },
-      { id: 2, name: "Pending Manager", type: "userTask", phaseId: 2, x: 360, y: 60, roles: ["Manager"], requiresClaim: false,
-        actions: [
-          { id: 201, name: "Approve", toStepId: 3, roles: ["Manager"] },
-          { id: 202, name: "Reject", toStepId: 5, roles: ["Manager"], variables: [
-            { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
-          ] },
-          { id: 203, name: "Return", toStepId: 1, roles: ["Manager"] }
         ] },
-      { id: 3, name: "Pending Finance", type: "userTask", phaseId: 2, x: 640, y: 60, roles: ["Finance"], requiresClaim: false,
-        actions: [
-          { id: 301, name: "Approve", toStepId: 4, roles: ["Finance"] },
-          { id: 302, name: "Reject", toStepId: 5, roles: ["Finance"] }
-        ] },
-      { id: 4, name: "Approved", type: "endEvent", phaseId: 3, x: 640, y: 300, roles: [], requiresClaim: false, actions: [] },
-      { id: 5, name: "Rejected", type: "endEvent", phaseId: 3, x: 360, y: 300, roles: [], requiresClaim: false, actions: [] }
+      { id: 2, name: "Manager Review", type: "userTask", laneId: 2, x: 360, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
+      { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 620, y: 70, roles: [], requiresClaim: false, variables: [] },
+      { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 760, y: 70, roles: ["Finance"], requiresClaim: false, variables: [] },
+      { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 760, y: 380, roles: [], requiresClaim: false, variables: [] },
+      { id: 6, name: "Rejected", type: "endEvent", laneId: 3, x: 380, y: 380, roles: [], requiresClaim: false, variables: [] }
+    ],
+    sequenceFlows: [
+      { id: 101, name: "", sourceRef: 1, targetRef: 2, roles: [], variables: [], condition: null, isDefault: false },
+      { id: 201, name: "Approve", sourceRef: 2, targetRef: 3, roles: ["Manager"], variables: [], condition: null, isDefault: false },
+      { id: 202, name: "Reject", sourceRef: 2, targetRef: 6, roles: ["Manager"], variables: [
+          { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
+        ], condition: null, isDefault: false },
+      { id: 301, name: "High amount", sourceRef: 3, targetRef: 4, roles: [], variables: [], condition: "amount > 1000", isDefault: false },
+      { id: 302, name: "Low amount", sourceRef: 3, targetRef: 5, roles: [], variables: [], condition: null, isDefault: true },
+      { id: 401, name: "Approve", sourceRef: 4, targetRef: 5, roles: ["Finance"], variables: [], condition: null, isDefault: false },
+      { id: 402, name: "Reject", sourceRef: 4, targetRef: 6, roles: ["Finance"], variables: [], condition: null, isDefault: false }
     ]
   };
 }
 
 /* ---------- Geometry ---------- */
-function center(step) {
-  const size = nodeSize(step);
-  return { x: step.x + size.w / 2, y: step.y + size.h / 2 };
+function center(node) {
+  const size = nodeSize(node);
+  return { x: node.x + size.w / 2, y: node.y + size.h / 2 };
 }
 
 // intersection of line from shape center toward target point with shape border
-function borderPoint(step, tx, ty) {
-  const c = center(step);
+function borderPoint(node, tx, ty) {
+  const c = center(node);
   const dx = tx - c.x, dy = ty - c.y;
   if (dx === 0 && dy === 0) return c;
-  if (isEventType(step.type)) {
+  if (isEventType(node.type)) {
     const r = EVENT_D / 2;
     const scale = r / Math.sqrt(dx * dx + dy * dy);
     return { x: c.x + dx * scale, y: c.y + dy * scale };
+  }
+  if (isGatewayType(node.type)) {
+    const hw = GATEWAY_D / 2, hh = GATEWAY_D / 2;
+    // rhombus border: |dx|/hw + |dy|/hh = 1
+    const t = 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh);
+    return { x: c.x + dx * t, y: c.y + dy * t };
   }
   const hw = NODE_W / 2, hh = NODE_H / 2;
   const scale = Math.min(
@@ -443,59 +431,71 @@ function borderPoint(step, tx, ty) {
 /* ---------- Rendering ---------- */
 function render() {
   wfNameInput.value = model.name || "";
-  renderPhases();
+  renderLanes();
   renderEdges();
   renderNodes();
   renderInspector();
   renderHint();
 }
 
-function renderPhases() {
-  phasesG.innerHTML = "";
-  for (const phase of model.phases) {
-    const g = el("g", { class: `phase ${isSel('phase', phase.id) ? 'selected' : ''}`,
-                        transform: `translate(${phase.x},${phase.y})`, "data-id": phase.id });
-    g.appendChild(el("rect", { class: "body", width: phase.w, height: phase.h, rx: 12, ry: 12 }));
+function renderLanes() {
+  lanesG.innerHTML = "";
+  for (const lane of model.lanes) {
+    const g = el("g", { class: `lane ${isSel('lane', lane.id) ? 'selected' : ''}`,
+                        transform: `translate(${lane.x},${lane.y})`, "data-id": lane.id });
+    g.appendChild(el("rect", { class: "body", width: lane.w, height: lane.h, rx: 12, ry: 12 }));
     const idText = el("text", { x: 12, y: 20, class: "pid" });
-    idText.textContent = `#${phase.id}`;
+    idText.textContent = `#${lane.id}`;
     g.appendChild(idText);
     const nameText = el("text", { x: 12, y: 42, "font-weight": "600" });
-    nameText.textContent = phase.name;
+    nameText.textContent = lane.name;
     g.appendChild(nameText);
-    const handle = el("rect", { class: "resize", x: phase.w - 14, y: phase.h - 14, width: 10, height: 10, rx: 2 });
-    handle.addEventListener("pointerdown", (e) => onPhaseResizePointerDown(e, phase));
+    const handle = el("rect", { class: "resize", x: lane.w - 14, y: lane.h - 14, width: 10, height: 10, rx: 2 });
+    handle.addEventListener("pointerdown", (e) => onLaneResizePointerDown(e, lane));
     g.appendChild(handle);
 
-    g.addEventListener("pointerdown", (e) => onPhasePointerDown(e, phase));
-    phasesG.appendChild(g);
+    g.addEventListener("pointerdown", (e) => onLanePointerDown(e, lane));
+    lanesG.appendChild(g);
   }
 }
 
 function renderNodes() {
   nodesG.innerHTML = "";
-  for (const step of model.steps) {
-    const g = el("g", { class: `node ${step.type} ${isSel('step', step.id) ? 'selected' : ''}`,
-                        transform: `translate(${step.x},${step.y})`, "data-id": step.id });
-    const marker = model.initialStepId === step.id ? " · START" : "";
-    if (isEventType(step.type)) {
+  for (const node of model.flowNodes) {
+    const g = el("g", { class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''}`,
+                        transform: `translate(${node.x},${node.y})`, "data-id": node.id });
+    const marker = model.initialEventId === node.id ? " · START" : "";
+    if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       const idText = el("text", { x: r, y: EVENT_D + 12, class: "nid", "text-anchor": "middle" });
-      idText.textContent = `#${step.id} · ${typeLabel(step.type)}${marker}`;
+      idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
       const nameText = el("text", { x: r, y: EVENT_D + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
-      nameText.textContent = step.name;
+      nameText.textContent = node.name;
+      g.appendChild(nameText);
+    } else if (isGatewayType(node.type)) {
+      const d = GATEWAY_D, h = d / 2;
+      g.appendChild(el("polygon", { class: "body", points: `${h},0 ${d},${h} ${h},${d} 0,${h}` }));
+      const mark = el("text", { x: h, y: h + 8, class: "gw-mark", "text-anchor": "middle" });
+      mark.textContent = "\u00D7";
+      g.appendChild(mark);
+      const idText = el("text", { x: h, y: d + 12, class: "nid", "text-anchor": "middle" });
+      idText.textContent = `#${node.id} · ${typeLabel(node.type)}`;
+      g.appendChild(idText);
+      const nameText = el("text", { x: h, y: d + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
+      nameText.textContent = node.name;
       g.appendChild(nameText);
     } else {
       g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 10, ry: 10 }));
       const idText = el("text", { x: 10, y: 18, class: "nid" });
-      idText.textContent = `#${step.id} · ${typeLabel(step.type)}${marker}`;
+      idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
       const nameText = el("text", { x: NODE_W / 2, y: 42, "text-anchor": "middle", "font-weight": "600" });
-      nameText.textContent = step.name;
+      nameText.textContent = node.name;
       g.appendChild(nameText);
-      if (isUserTaskType(step.type)) {
-        const roles = roleSummary(step.roles);
+      if (isUserTaskType(node.type)) {
+        const roles = roleSummary(node.roles);
         if (roles) {
           const rolesText = el("text", { x: NODE_W / 2, y: 58, class: "roles", "text-anchor": "middle" });
           rolesText.textContent = roles;
@@ -503,97 +503,85 @@ function renderNodes() {
         }
         appendUserTaskMarker(g);
       }
-      if (isAutomaticType(step.type)) appendAutomaticMarker(g);
+      if (isAutomaticType(node.type)) appendAutomaticMarker(g);
     }
 
-    g.addEventListener("pointerdown", (e) => onNodePointerDown(e, step));
+    g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
     nodesG.appendChild(g);
   }
 }
 
 function renderEdges() {
   edgesG.innerHTML = "";
-  for (const step of model.steps) {
-    if (isPassThroughType(step.type)) {
-      const target = getStep(step.nextStepId);
-      if (!target) continue;
-      const isAuto = isAutomaticType(step.type);
-      const g = el("g", { class: `edge ${isAuto ? "auto" : "start"} ${isSel('step', step.id) ? 'selected' : ''}`,
-                          "data-step": step.id });
-      let d, lx, ly;
-      const size = nodeSize(step);
-      if (step.id === target.id) {
-        const x = step.x + size.w, y = step.y + size.h / 2;
-        d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
-        lx = x + 60; ly = y;
-      } else {
-        const p1 = borderPoint(step, ...Object.values(center(target)));
-        const p2 = borderPoint(target, ...Object.values(center(step)));
-        d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-        lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
-      }
-      const sel = isSel('step', step.id);
-      g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
+  for (const flow of model.sequenceFlows) {
+    const source = getNode(flow.sourceRef);
+    const target = getNode(flow.targetRef);
+    if (!source || !target) continue;
 
-      const label = isAuto ? "auto" : "start";
-      const bg = el("rect", { class: "lblbg", x: lx - label.length * 3.6 - 4, y: ly - 16,
-                              width: label.length * 7.2 + 8, height: 16, rx: 4 });
-      g.appendChild(bg);
-      const t = el("text", { x: lx, y: ly - 4, "text-anchor": "middle" });
-      t.textContent = label;
-      g.appendChild(t);
-
-      g.addEventListener("click", (e) => { e.stopPropagation(); select('step', step.id); });
-      edgesG.appendChild(g);
-      continue;
+    const dashed = isPassThroughType(source.type);
+    const g = el("g", { class: `edge ${dashed ? "auto" : ""} ${isSel('flow', flow.id) ? 'selected' : ''}`,
+                        "data-flow": flow.id });
+    let d, lx, ly;
+    const size = nodeSize(source);
+    if (source.id === target.id) {
+      const x = source.x + size.w, y = source.y + size.h / 2;
+      d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
+      lx = x + 60; ly = y;
+    } else {
+      const p1 = borderPoint(source, ...Object.values(center(target)));
+      const p2 = borderPoint(target, ...Object.values(center(source)));
+      d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
+      lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
     }
-    for (const action of step.actions) {
-      const target = getStep(action.toStepId);
-      if (!target) continue;
-      const g = el("g", { class: `edge ${isSel('action', step.id, action.id) ? 'selected' : ''}`,
-                          "data-step": step.id, "data-action": action.id });
-      let d, lx, ly;
-      const size = nodeSize(step);
-      if (step.id === target.id) {
-        const x = step.x + size.w, y = step.y + size.h / 2;
-        d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
-        lx = x + 60; ly = y;
-      } else {
-        const p1 = borderPoint(step, ...Object.values(center(target)));
-        const p2 = borderPoint(target, ...Object.values(center(step)));
-        d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-        lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
-      }
-      const sel = isSel('action', step.id, action.id);
-      g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
+    const sel = isSel('flow', flow.id);
+    g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
 
-      const label = action.name || "action";
+    const label = flowLabel(flow, source);
+    if (label) {
       const bg = el("rect", { class: "lblbg", x: lx - label.length * 3.6 - 4, y: ly - 16,
                               width: label.length * 7.2 + 8, height: 16, rx: 4 });
       g.appendChild(bg);
       const t = el("text", { x: lx, y: ly - 4, "text-anchor": "middle" });
       t.textContent = label;
       g.appendChild(t);
-      const roles = roleSummary(action.roles);
+    }
+
+    // secondary line: roles for user-task flows, condition/default for gateway flows
+    if (isGatewayType(source.type)) {
+      const cond = flow.isDefault ? "default" : (flow.condition || "");
+      if (cond) {
+        const cText = el("text", { x: lx, y: ly + 9, class: "cond", "text-anchor": "middle" });
+        cText.textContent = cond.length > 24 ? cond.slice(0, 21) + "..." : cond;
+        g.appendChild(cText);
+      }
+    } else {
+      const roles = roleSummary(flow.roles);
       if (roles) {
         const roleText = el("text", { x: lx, y: ly + 9, class: "roles", "text-anchor": "middle" });
         roleText.textContent = roles;
         g.appendChild(roleText);
       }
-
-      g.addEventListener("click", (e) => { e.stopPropagation(); select('action', step.id, action.id); });
-      edgesG.appendChild(g);
     }
+
+    g.addEventListener("click", (e) => { e.stopPropagation(); select('flow', flow.id); });
+    edgesG.appendChild(g);
   }
+}
+
+function flowLabel(flow, source) {
+  if (flow.name && flow.name.trim()) return flow.name.trim();
+  if (isStartEventType(source.type)) return "start";
+  if (isAutomaticType(source.type)) return "auto";
+  return "";
 }
 
 function renderHint() {
   if (connectMode) {
     hintEl.innerHTML = connectSource == null
-      ? "<b>Connect mode:</b> click the <b>source</b> step."
-      : "<b>Connect mode:</b> now click the <b>target</b> step.";
+      ? "<b>Connect mode:</b> click the <b>source</b> node."
+      : "<b>Connect mode:</b> now click the <b>target</b> node.";
   } else {
-    hintEl.innerHTML = "Drag steps to move. Drag phases to move grouped steps. Click a step, phase, or action arrow to edit it.";
+    hintEl.innerHTML = "Drag nodes to move. Drag lanes to move grouped nodes. Click a node, lane, or flow arrow to edit it.";
   }
 }
 
@@ -602,16 +590,16 @@ function renderInspector() {
   inspector.innerHTML = "";
   if (!selected) {
     inspector.innerHTML = `<h2>Workflow</h2>
-      <p class="empty-note">Select a step or action to edit it.<br><br>
-      Phases: <b>${model.phases.length}</b><br>
-      Steps: <b>${model.steps.length}</b><br>
-      Actions: <b>${model.steps.reduce((n, s) => n + s.actions.length, 0)}</b></p>`;
+      <p class="empty-note">Select a node or flow to edit it.<br><br>
+      Lanes: <b>${model.lanes.length}</b><br>
+      Flow nodes: <b>${model.flowNodes.length}</b><br>
+      Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
     addInitialSelector();
     return;
   }
-  if (selected.kind === 'phase') return renderPhaseInspector();
-  if (selected.kind === 'step') return renderStepInspector();
-  return renderActionInspector();
+  if (selected.kind === 'lane') return renderLaneInspector();
+  if (selected.kind === 'node') return renderNodeInspector();
+  return renderFlowInspector();
 }
 
 function addInitialSelector() {
@@ -619,56 +607,41 @@ function addInitialSelector() {
   f.className = "field";
   f.innerHTML = `<label>Default start event</label>`;
   const sel = document.createElement("select");
-  const startEvents = model.steps.filter(s => isStartEventType(s.type));
+  const startEvents = model.flowNodes.filter(s => isStartEventType(s.type));
   sel.innerHTML = `<option value="">— none —</option>` +
-    startEvents.map(s => `<option value="${s.id}" ${model.initialStepId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
-  sel.onchange = () => { model.initialStepId = sel.value ? +sel.value : null; render(); };
+    startEvents.map(s => `<option value="${s.id}" ${model.initialEventId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
+  sel.onchange = () => { model.initialEventId = sel.value ? +sel.value : null; render(); };
   f.appendChild(sel);
   inspector.appendChild(f);
 }
 
-function renderStepInspector() {
-  const step = getStep(selected.stepId);
-  if (!step) { selected = null; return renderInspector(); }
-  applyTypeInvariants(step);
-  inspector.innerHTML = `<h2>Step #${step.id}</h2>`;
-  field("Name", "text", step.name, v => { step.name = v; renderNodes(); renderEdges(); });
-  selectField("Type", STEP_TYPE_OPTIONS, step.type, v => {
-    step.type = v;
-    applyTypeInvariants(step);
+function renderNodeInspector() {
+  const node = getNode(selected.nodeId);
+  if (!node) { selected = null; return renderInspector(); }
+  applyTypeInvariants(node);
+  inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
+  field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
+  selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
+    node.type = v;
+    applyTypeInvariants(node);
     render();
   });
-  selectField("Phase", [{ value: "", label: "— none —" }].concat(
-    model.phases.map(p => ({ value: p.id, label: `#${p.id} ${p.name}` }))
-  ), step.phaseId ?? "", v => {
-    step.phaseId = v ? +v : null;
+  selectField("Lane", [{ value: "", label: "— none —" }].concat(
+    model.lanes.map(p => ({ value: p.id, label: `#${p.id} ${p.name}` }))
+  ), node.laneId ?? "", v => {
+    node.laneId = v ? +v : null;
     render();
   });
-  if (isPassThroughType(step.type)) {
-    selectField("Goes to step", [{ value: "", label: "— none —" }].concat(
-      model.steps.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` }))
-    ), step.nextStepId ?? "", v => {
-      step.nextStepId = v ? +v : null;
-      render();
-    });
-    if (step.nextStepId == null) {
-      const p = document.createElement("p");
-      p.className = "empty-note";
-      p.textContent = isStartEventType(step.type)
-        ? "Select the step this start event advances to on instance start."
-        : "Select the step this automatic task advances to.";
-      inspector.appendChild(p);
-    }
-  }
-  if (isUserTaskType(step.type)) {
-    rolesField(step, () => { renderNodes(); renderEdges(); });
+
+  if (isUserTaskType(node.type)) {
+    rolesField(node, () => { renderNodes(); renderEdges(); });
     inspector.appendChild(
-      variableCheckbox("Requires claim", step.requiresClaim, checked => { step.requiresClaim = checked; })
+      variableCheckbox("Requires claim", node.requiresClaim, checked => { node.requiresClaim = checked; })
     );
   }
 
-  if (isStartEventType(step.type)) {
-    step.variables = step.variables || [];
+  if (isStartEventType(node.type)) {
+    node.variables = node.variables || [];
 
     const variablesTitle = document.createElement("h2");
     variablesTitle.textContent = "Variables";
@@ -680,133 +653,160 @@ function renderStepInspector() {
     hint.textContent = "Variables on the start event are the data required to start the workflow.";
     inspector.appendChild(hint);
 
-    if (step.variables.length === 0) {
+    if (node.variables.length === 0) {
       const p = document.createElement("p");
       p.className = "empty-note";
-      p.textContent = "No variables for this step.";
+      p.textContent = "No variables for this node.";
       inspector.appendChild(p);
     }
-    step.variables.forEach(variable => variableRow(step, variable));
+    node.variables.forEach(variable => variableRow(node, variable));
 
     const addVariableBtn = document.createElement("button");
     addVariableBtn.textContent = "+ Add variable";
     addVariableBtn.style.marginTop = "8px";
-    addVariableBtn.onclick = () => addVariable(step);
+    addVariableBtn.onclick = () => addVariable(node);
     inspector.appendChild(addVariableBtn);
   }
 
-  if (isUserTaskType(step.type)) {
-    const actionsTitle = document.createElement("h2");
-    actionsTitle.textContent = "Actions";
-    actionsTitle.style.marginTop = "16px";
-    inspector.appendChild(actionsTitle);
+  if (!isEndEventType(node.type)) {
+    const flowsTitle = document.createElement("h2");
+    flowsTitle.textContent = "Outgoing flows";
+    flowsTitle.style.marginTop = "16px";
+    inspector.appendChild(flowsTitle);
 
-    if (step.actions.length === 0) {
+    const flows = outgoingFlows(node.id);
+    if (flows.length === 0) {
       const p = document.createElement("p");
       p.className = "empty-note";
-      p.textContent = "No actions from this step.";
+      p.textContent = "No outgoing sequence flows. Use Connect Flow or the button below.";
       inspector.appendChild(p);
     }
-    step.actions.forEach(a => {
+    flows.forEach(flow => {
       const box = document.createElement("div");
       box.className = "field";
-      box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
-      const tgt = getStep(a.toStepId);
-      box.innerHTML = `<div class="badge">action #${a.id} → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'missing'}</div>`;
+      box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border);cursor:pointer";
+      const tgt = getNode(flow.targetRef);
+      const extra = isGatewayType(node.type)
+        ? (flow.isDefault ? " · default" : (flow.condition ? ` · [${flow.condition}]` : ""))
+        : "";
+      const name = flowLabel(flow, node) || "(unnamed)";
+      box.innerHTML = `<div class="badge">flow #${flow.id} · ${name} → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'missing'}${extra}</div>`;
+      box.onclick = () => select('flow', flow.id);
       inspector.appendChild(box);
-      // edit by selecting
-      box.style.cursor = "pointer";
-      box.onclick = () => select('action', step.id, a.id);
     });
 
     const addBtn = document.createElement("button");
-    addBtn.textContent = "+ Add action";
+    addBtn.textContent = "+ Add flow";
     addBtn.style.marginTop = "8px";
     addBtn.onclick = () => {
-      const a = { id: nextActionId(step), name: "action", toStepId: step.id, roles: [], variables: [] };
-      step.actions.push(a);
-      select('action', step.id, a.id);
+      const flow = createFlow(node.id, node.id);
+      select('flow', flow.id);
     };
     inspector.appendChild(addBtn);
   }
 
   const del = document.createElement("button");
-  del.textContent = "Delete step";
+  del.textContent = "Delete node";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
-  del.onclick = () => deleteStep(step.id);
+  del.onclick = () => deleteNode(node.id);
   inspector.appendChild(del);
 }
 
-function renderPhaseInspector() {
-  const phase = getPhase(selected.phaseId);
-  if (!phase) { selected = null; return renderInspector(); }
-  const stepCount = model.steps.filter(s => s.phaseId === phase.id).length;
-  inspector.innerHTML = `<h2>Phase #${phase.id}</h2>
-    <p class="badge" style="margin-top:-6px">${stepCount} step${stepCount === 1 ? "" : "s"} in this phase</p>`;
-  field("Name", "text", phase.name, v => { phase.name = v; renderPhases(); });
-  field("Width", "number", phase.w, v => {
-    phase.w = Math.max(MIN_PHASE_W, Math.round(+v || MIN_PHASE_W));
-    renderPhases();
+function renderLaneInspector() {
+  const lane = getLane(selected.laneId);
+  if (!lane) { selected = null; return renderInspector(); }
+  const nodeCount = model.flowNodes.filter(s => s.laneId === lane.id).length;
+  inspector.innerHTML = `<h2>Lane #${lane.id}</h2>
+    <p class="badge" style="margin-top:-6px">${nodeCount} node${nodeCount === 1 ? "" : "s"} in this lane</p>`;
+  field("Name", "text", lane.name, v => { lane.name = v; renderLanes(); });
+  field("Width", "number", lane.w, v => {
+    lane.w = Math.max(MIN_LANE_W, Math.round(+v || MIN_LANE_W));
+    renderLanes();
   });
-  field("Height", "number", phase.h, v => {
-    phase.h = Math.max(MIN_PHASE_H, Math.round(+v || MIN_PHASE_H));
-    renderPhases();
+  field("Height", "number", lane.h, v => {
+    lane.h = Math.max(MIN_LANE_H, Math.round(+v || MIN_LANE_H));
+    renderLanes();
   });
 
   const del = document.createElement("button");
-  del.textContent = "Delete phase";
+  del.textContent = "Delete lane";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
-  del.onclick = () => deletePhase(phase.id);
+  del.onclick = () => deleteLane(lane.id);
   inspector.appendChild(del);
 }
 
-function renderActionInspector() {
-  const step = getStep(selected.stepId);
-  const action = step && step.actions.find(a => a.id === selected.actionId);
-  if (!action) { selected = null; return renderInspector(); }
-  action.variables = action.variables || [];
-  inspector.innerHTML = `<h2>Action #${action.id}</h2>
-    <p class="badge" style="margin-top:-6px">From step #${step.id} (${step.name})</p>`;
-  field("Name", "text", action.name, v => { action.name = v; renderEdges(); });
-  selectField("Goes to step", model.steps.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
-              action.toStepId, v => { action.toStepId = +v; renderEdges(); });
-  rolesField(action, () => renderEdges());
+function renderFlowInspector() {
+  const flow = getFlow(selected.flowId);
+  if (!flow) { selected = null; return renderInspector(); }
+  const source = getNode(flow.sourceRef);
+  flow.variables = flow.variables || [];
+  const gateway = source && isGatewayType(source.type);
+  inspector.innerHTML = `<h2>Flow #${flow.id}</h2>
+    <p class="badge" style="margin-top:-6px">From node #${flow.sourceRef}${source ? ' (' + source.name + ')' : ''}</p>`;
+  field("Name", "text", flow.name, v => { flow.name = v; renderEdges(); });
+  selectField("Goes to node", model.flowNodes.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
+              flow.targetRef, v => { flow.targetRef = +v; renderEdges(); });
+
+  if (gateway) {
+    field("Condition", "text", flow.condition ?? "", v => {
+      flow.condition = v.trim() ? v : null;
+      renderEdges();
+    });
+    const condHint = document.createElement("p");
+    condHint.className = "empty-note";
+    condHint.textContent = 'e.g. "amount > 1000" or "approved". Leave empty for the default flow.';
+    inspector.appendChild(condHint);
+    inspector.appendChild(
+      variableCheckbox("Default flow", flow.isDefault, checked => {
+        flow.isDefault = checked;
+        if (checked) {
+          flow.condition = null;
+          // only one default per gateway
+          outgoingFlows(flow.sourceRef).forEach(f => { if (f.id !== flow.id) f.isDefault = false; });
+        }
+        renderInspector();
+        renderEdges();
+      })
+    );
+  } else {
+    rolesField(flow, () => renderEdges());
+  }
 
   const variablesTitle = document.createElement("h2");
   variablesTitle.textContent = "Variables";
   variablesTitle.style.marginTop = "16px";
   inspector.appendChild(variablesTitle);
 
-  if (step.id === model.initialStepId) {
+  if (gateway) {
     const p = document.createElement("p");
     p.className = "empty-note";
-    p.textContent = "Variables on this start action are the data required to start the workflow.";
+    p.textContent = "Gateway flows route automatically by condition and do not capture variables.";
     inspector.appendChild(p);
-  }
+  } else {
+    if (flow.variables.length === 0) {
+      const p = document.createElement("p");
+      p.className = "empty-note";
+      p.textContent = "No variables for this flow.";
+      inspector.appendChild(p);
+    }
+    flow.variables.forEach(variable => variableRow(flow, variable));
 
-  if (action.variables.length === 0) {
-    const p = document.createElement("p");
-    p.className = "empty-note";
-    p.textContent = "No variables for this action.";
-    inspector.appendChild(p);
+    const addVariableBtn = document.createElement("button");
+    addVariableBtn.textContent = "+ Add variable";
+    addVariableBtn.style.marginTop = "8px";
+    addVariableBtn.onclick = () => addVariable(flow);
+    inspector.appendChild(addVariableBtn);
   }
-  action.variables.forEach(variable => variableRow(action, variable));
-
-  const addVariableBtn = document.createElement("button");
-  addVariableBtn.textContent = "+ Add variable";
-  addVariableBtn.style.marginTop = "8px";
-  addVariableBtn.onclick = () => addVariable(action);
-  inspector.appendChild(addVariableBtn);
 
   const del = document.createElement("button");
-  del.textContent = "Delete action";
+  del.textContent = "Delete flow";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
   del.onclick = () => {
-    step.actions = step.actions.filter(a => a.id !== action.id);
-    select('step', step.id);
+    model.sequenceFlows = model.sequenceFlows.filter(f => f.id !== flow.id);
+    select('node', flow.sourceRef);
   };
   inspector.appendChild(del);
 }
@@ -954,92 +954,94 @@ function addVariable(owner) {
 }
 
 /* ---------- Selection ---------- */
-function isSel(kind, stepId, actionId) {
+function isSel(kind, id) {
   if (!selected || selected.kind !== kind) return false;
-  if (kind === 'phase') return selected.phaseId === stepId;
-  if (kind === 'step') return selected.stepId === stepId;
-  return selected.stepId === stepId && selected.actionId === actionId;
+  if (kind === 'lane') return selected.laneId === id;
+  if (kind === 'node') return selected.nodeId === id;
+  return selected.flowId === id;
 }
-function select(kind, stepId, actionId) {
-  selected = kind === 'phase' ? { kind, phaseId: stepId } : { kind, stepId, actionId };
+function select(kind, id) {
+  if (kind === 'lane') selected = { kind, laneId: id };
+  else if (kind === 'node') selected = { kind, nodeId: id };
+  else selected = { kind, flowId: id };
   render();
 }
 function clearSelection() { selected = null; render(); }
 
 /* ---------- Node interaction ---------- */
-function onNodePointerDown(e, step) {
+function onNodePointerDown(e, node) {
   if (connectMode) {
     e.stopPropagation();
-    handleConnectClick(step);
+    handleConnectClick(node);
     return;
   }
   e.stopPropagation();
-  select('step', step.id);
+  select('node', node.id);
   const pt = svgPoint(e);
-  drag = { id: step.id, dx: pt.x - step.x, dy: pt.y - step.y };
+  drag = { id: node.id, dx: pt.x - node.x, dy: pt.y - node.y };
   svg.setPointerCapture(e.pointerId);
 }
 
-function onPhasePointerDown(e, phase) {
+function onLanePointerDown(e, lane) {
   if (connectMode) return;
   e.stopPropagation();
-  select('phase', phase.id);
+  select('lane', lane.id);
   const pt = svgPoint(e);
-  phaseDrag = {
-    id: phase.id,
-    dx: pt.x - phase.x,
-    dy: pt.y - phase.y,
-    stepOffsets: model.steps
-      .filter(s => s.phaseId === phase.id)
-      .map(s => ({ id: s.id, dx: s.x - phase.x, dy: s.y - phase.y }))
+  laneDrag = {
+    id: lane.id,
+    dx: pt.x - lane.x,
+    dy: pt.y - lane.y,
+    nodeOffsets: model.flowNodes
+      .filter(s => s.laneId === lane.id)
+      .map(s => ({ id: s.id, dx: s.x - lane.x, dy: s.y - lane.y }))
   };
   svg.setPointerCapture(e.pointerId);
 }
 
-function onPhaseResizePointerDown(e, phase) {
+function onLaneResizePointerDown(e, lane) {
   if (connectMode) return;
   e.stopPropagation();
-  select('phase', phase.id);
+  select('lane', lane.id);
   const pt = svgPoint(e);
-  phaseResize = { id: phase.id, dx: phase.x + phase.w - pt.x, dy: phase.y + phase.h - pt.y };
+  laneResize = { id: lane.id, dx: lane.x + lane.w - pt.x, dy: lane.y + lane.h - pt.y };
   svg.setPointerCapture(e.pointerId);
 }
 
 svg.addEventListener("pointermove", (e) => {
   const pt = svgPoint(e);
   if (drag) {
-    const step = getStep(drag.id);
-    step.x = Math.round(pt.x - drag.dx);
-    step.y = Math.round(pt.y - drag.dy);
+    const node = getNode(drag.id);
+    node.x = Math.round(pt.x - drag.dx);
+    node.y = Math.round(pt.y - drag.dy);
     renderNodes(); renderEdges();
     return;
   }
-  if (phaseDrag) {
-    const phase = getPhase(phaseDrag.id);
-    phase.x = Math.round(pt.x - phaseDrag.dx);
-    phase.y = Math.round(pt.y - phaseDrag.dy);
-    phaseDrag.stepOffsets.forEach(offset => {
-      const step = getStep(offset.id);
-      if (step) {
-        step.x = phase.x + offset.dx;
-        step.y = phase.y + offset.dy;
+  if (laneDrag) {
+    const lane = getLane(laneDrag.id);
+    lane.x = Math.round(pt.x - laneDrag.dx);
+    lane.y = Math.round(pt.y - laneDrag.dy);
+    laneDrag.nodeOffsets.forEach(offset => {
+      const node = getNode(offset.id);
+      if (node) {
+        node.x = lane.x + offset.dx;
+        node.y = lane.y + offset.dy;
       }
     });
-    renderPhases(); renderNodes(); renderEdges();
+    renderLanes(); renderNodes(); renderEdges();
     return;
   }
-  if (phaseResize) {
-    const phase = getPhase(phaseResize.id);
-    phase.w = Math.max(MIN_PHASE_W, Math.round(pt.x - phase.x + phaseResize.dx));
-    phase.h = Math.max(MIN_PHASE_H, Math.round(pt.y - phase.y + phaseResize.dy));
-    renderPhases();
+  if (laneResize) {
+    const lane = getLane(laneResize.id);
+    lane.w = Math.max(MIN_LANE_W, Math.round(pt.x - lane.x + laneResize.dx));
+    lane.h = Math.max(MIN_LANE_H, Math.round(pt.y - lane.y + laneResize.dy));
+    renderLanes();
   }
 });
 svg.addEventListener("pointerup", () => {
-  if (drag) assignStepPhase(drag.id);
+  if (drag) assignNodeLane(drag.id);
   drag = null;
-  phaseDrag = null;
-  phaseResize = null;
+  laneDrag = null;
+  laneResize = null;
   renderInspector();
 });
 svg.addEventListener("pointerdown", (e) => { if (e.target === svg && !connectMode) clearSelection(); });
@@ -1049,35 +1051,32 @@ function svgPoint(e) {
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-function assignStepPhase(stepId) {
-  const step = getStep(stepId);
-  if (!step) return;
-  const c = center(step);
-  const phase = [...model.phases].reverse().find(p =>
+function assignNodeLane(nodeId) {
+  const node = getNode(nodeId);
+  if (!node) return;
+  const c = center(node);
+  const lane = [...model.lanes].reverse().find(p =>
     c.x >= p.x && c.x <= p.x + p.w && c.y >= p.y && c.y <= p.y + p.h
   );
-  step.phaseId = phase ? phase.id : null;
+  node.laneId = lane ? lane.id : null;
 }
 
 /* ---------- Connect mode ---------- */
-function handleConnectClick(step) {
+function createFlow(sourceId, targetId) {
+  const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
+                 roles: [], variables: [], condition: null, isDefault: false };
+  model.sequenceFlows.push(flow);
+  return flow;
+}
+function handleConnectClick(node) {
   if (connectSource == null) {
-    connectSource = step.id;
+    connectSource = node.id;
     renderHint();
   } else {
-    const src = getStep(connectSource);
-    if (isPassThroughType(src.type)) {
-      src.nextStepId = step.id;
-      connectSource = null;
-      setConnectMode(false);
-      select('step', src.id);
-      return;
-    }
-    const a = { id: nextActionId(src), name: "action", toStepId: step.id, roles: [], variables: [] };
-    src.actions.push(a);
+    const flow = createFlow(connectSource, node.id);
     connectSource = null;
     setConnectMode(false);
-    select('action', src.id, a.id);
+    select('flow', flow.id);
   }
 }
 function setConnectMode(on) {
@@ -1087,46 +1086,41 @@ function setConnectMode(on) {
   renderHint();
 }
 
-/* ---------- Phases and steps add/delete ---------- */
-function addPhase() {
-  const id = nextPhaseId();
-  const phase = { id, name: "New Phase", x: 60 + (model.phases.length % 4) * 40,
-                  y: 40 + (model.phases.length % 4) * 40, w: 300, h: 220 };
-  model.phases.push(phase);
-  select('phase', id);
+/* ---------- Lanes and nodes add/delete ---------- */
+function addLane() {
+  const id = nextLaneId();
+  const lane = { id, name: "New Lane", x: 60 + (model.lanes.length % 4) * 40,
+                 y: 40 + (model.lanes.length % 4) * 40, w: 300, h: 220 };
+  model.lanes.push(lane);
+  select('lane', id);
 }
-function addStep() {
-  const id = nextStepId();
-  const phase = selected?.kind === 'phase' ? getPhase(selected.phaseId) : null;
-  const step = { id, name: "New Step", type: model.steps.length === 0 ? STEP_TYPE.START_EVENT : STEP_TYPE.USER_TASK,
-                 phaseId: phase?.id ?? null,
-                 x: phase ? phase.x + 30 : 100 + (model.steps.length % 5) * 60,
-                 y: phase ? phase.y + 60 : 120 + (model.steps.length % 5) * 40,
+function addNode() {
+  const id = nextNodeId();
+  const lane = selected?.kind === 'lane' ? getLane(selected.laneId) : null;
+  const node = { id, name: "New Node", type: model.flowNodes.length === 0 ? NODE_TYPE.START_EVENT : NODE_TYPE.USER_TASK,
+                 laneId: lane?.id ?? null,
+                 x: lane ? lane.x + 30 : 100 + (model.flowNodes.length % 5) * 60,
+                 y: lane ? lane.y + 60 : 120 + (model.flowNodes.length % 5) * 40,
                  roles: [],
                  requiresClaim: false,
-                 nextStepId: null,
-                 variables: [],
-                 actions: [] };
-  model.steps.push(step);
-  if (isStartEventType(step.type) && model.initialStepId == null) model.initialStepId = id;
-  select('step', id);
+                 variables: [] };
+  model.flowNodes.push(node);
+  if (isStartEventType(node.type) && model.initialEventId == null) model.initialEventId = id;
+  select('node', id);
 }
-function deleteStep(id) {
-  model.steps = model.steps.filter(s => s.id !== id);
-  // remove actions pointing to it
-  model.steps.forEach(s => {
-    s.actions = s.actions.filter(a => a.toStepId !== id);
-    if (s.nextStepId === id) s.nextStepId = null;
-  });
-  if (model.initialStepId === id) {
-    const nextDefault = model.steps.find(s => isStartEventType(s.type));
-    model.initialStepId = nextDefault?.id ?? null;
+function deleteNode(id) {
+  model.flowNodes = model.flowNodes.filter(s => s.id !== id);
+  // remove sequence flows connected to it
+  model.sequenceFlows = model.sequenceFlows.filter(f => f.sourceRef !== id && f.targetRef !== id);
+  if (model.initialEventId === id) {
+    const nextDefault = model.flowNodes.find(s => isStartEventType(s.type));
+    model.initialEventId = nextDefault?.id ?? null;
   }
   clearSelection();
 }
-function deletePhase(id) {
-  model.phases = model.phases.filter(p => p.id !== id);
-  model.steps.forEach(s => { if (s.phaseId === id) s.phaseId = null; });
+function deleteLane(id) {
+  model.lanes = model.lanes.filter(p => p.id !== id);
+  model.flowNodes.forEach(s => { if (s.laneId === id) s.laneId = null; });
   clearSelection();
 }
 
@@ -1166,85 +1160,146 @@ async function save() {
   a.click();
   URL.revokeObjectURL(a.href);
 }
-function loadFromObject(obj) {
-  const legacy = isLegacyDocument(obj);
-  model = {
+function normalizeVariable(v) {
+  return {
+    id: v.id,
+    name: v.name ?? v.label ?? `Variable ${v.id}`,
+    dataType: v.dataType ?? "string",
+    isArray: !!v.isArray,
+    required: !!v.required
+  };
+}
+function mapLegacyNodeType(s) {
+  const t = s.type ?? "task";
+  if (t === "start") return NODE_TYPE.START_EVENT;
+  if (t === "end") return NODE_TYPE.END_EVENT;
+  if (t === "task" && s.autoAdvance) return NODE_TYPE.TASK;
+  if (t === "task") return NODE_TYPE.USER_TASK;
+  return t; // already startEvent/userTask/endEvent/exclusiveGateway
+}
+// Migrate a legacy (phases/steps/actions) document into the BPMN schema.
+function migrateLegacyToNew(obj) {
+  const lanes = (obj.phases || []).map((p, i) => ({
+    id: p.id,
+    name: p.name ?? p.label ?? `Lane ${p.id}`,
+    x: typeof p.x === "number" ? p.x : 60 + (i % 4) * 280,
+    y: typeof p.y === "number" ? p.y : 40 + Math.floor(i / 4) * 220,
+    w: typeof p.w === "number" ? p.w : 300,
+    h: typeof p.h === "number" ? p.h : 220
+  }));
+
+  const flowNodes = [];
+  const sequenceFlows = [];
+  let flowSeed = 100;
+  const nextId = (preferred) => {
+    if (preferred && !sequenceFlows.some(f => f.id === preferred)) return preferred;
+    do { flowSeed++; } while (sequenceFlows.some(f => f.id === flowSeed));
+    return flowSeed;
+  };
+
+  (obj.steps || []).forEach((s, i) => {
+    const type = mapLegacyNodeType(s);
+    const variables = (s.variables || []).map(normalizeVariable);
+    const actions = (s.actions || []).map(a => ({
+      id: a.id,
+      name: a.name ?? a.label ?? "",
+      toStepId: a.toStepId ?? a.next ?? null,
+      roles: normalizeRoles(a.roles ?? a.role),
+      variables: (a.variables || []).map(normalizeVariable)
+    }));
+
+    if (isStartEventType(type)) {
+      // start events are action-less: fold first action (or nextStepId) into one flow
+      let target = s.nextStepId ?? null;
+      if (actions.length > 0) {
+        const first = actions[0];
+        if (target == null) target = first.toStepId;
+        const existing = new Set(variables.map(v => v.name.toLowerCase()));
+        for (const v of first.variables) {
+          if (!existing.has(v.name.toLowerCase())) { variables.push(v); existing.add(v.name.toLowerCase()); }
+        }
+      }
+      if (target != null) {
+        sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
+                             roles: [], variables: [], condition: null, isDefault: false });
+      }
+    } else if (isAutomaticType(type)) {
+      if (s.nextStepId != null) {
+        sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
+                             roles: [], variables: [], condition: null, isDefault: false });
+      }
+    } else {
+      for (const a of actions) {
+        if (a.toStepId == null) continue;
+        sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
+                             roles: a.roles, variables: a.variables, condition: null, isDefault: false });
+      }
+    }
+
+    flowNodes.push({
+      id: s.id,
+      name: s.name ?? s.label ?? `Node ${s.id}`,
+      type,
+      laneId: s.phaseId ?? null,
+      x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
+      y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
+      roles: normalizeRoles(s.roles ?? s.role),
+      requiresClaim: !!s.requiresClaim,
+      variables
+    });
+  });
+
+  return {
     id: obj.id ?? 1,
     name: obj.name ?? "Workflow",
-    initialStepId: obj.initialStepId ?? obj.initialStep ?? null,
-    phases: (obj.phases || []).map((p, i) => ({
-      id: p.id,
-      name: p.name ?? p.label ?? `Phase ${p.id}`,
-      x: typeof p.x === "number" ? p.x : 60 + (i % 4) * 280,
-      y: typeof p.y === "number" ? p.y : 40 + Math.floor(i / 4) * 220,
-      w: typeof p.w === "number" ? p.w : 300,
-      h: typeof p.h === "number" ? p.h : 220
-    })),
-    steps: (obj.steps || []).map((s, i) => {
-      const type = migrateLegacyType(s, legacy);
-      let actions = (s.actions || []).map(a => ({
-        id: a.id,
-        name: a.name ?? a.label ?? "action",
-        toStepId: a.toStepId ?? a.next ?? null,
-        roles: normalizeRoles(a.roles ?? a.role),
-        variables: (a.variables || []).map(v => ({
-          id: v.id,
-          name: v.name ?? v.label ?? `Variable ${v.id}`,
-          dataType: v.dataType ?? "string",
-          isArray: !!v.isArray,
-          required: !!v.required
-        }))
-      }));
-      let nextStepId = s.nextStepId ?? null;
-      let variables = (s.variables || []).map(v => ({
-        id: v.id,
-        name: v.name ?? v.label ?? `Variable ${v.id}`,
-        dataType: v.dataType ?? "string",
-        isArray: !!v.isArray,
-        required: !!v.required
-      }));
-      if (legacy && s.type === "start" && actions.length > 0) {
-        const first = actions[0];
-        if (nextStepId == null) nextStepId = first.toStepId;
-        const existing = new Set(variables.map(v => v.name.toLowerCase()));
-        for (const v of first.variables || []) {
-          const name = (v.name ?? v.label ?? `Variable ${v.id}`).toLowerCase();
-          if (!existing.has(name)) {
-            variables.push({
-              id: v.id,
-              name: v.name ?? v.label ?? `Variable ${v.id}`,
-              dataType: v.dataType ?? "string",
-              isArray: !!v.isArray,
-              required: !!v.required
-            });
-            existing.add(name);
-          }
-        }
-        actions = [];
-      } else if (legacy && s.type === "start" && s.autoAdvance && nextStepId != null) {
-        actions = [];
-      }
-      const step = {
+    initialEventId: obj.initialEventId ?? obj.initialStepId ?? obj.initialStep ?? null,
+    lanes,
+    flowNodes,
+    sequenceFlows
+  };
+}
+function loadFromObject(obj) {
+  if (Array.isArray(obj.flowNodes)) {
+    // Already BPMN schema.
+    model = {
+      id: obj.id ?? 1,
+      name: obj.name ?? "Workflow",
+      initialEventId: obj.initialEventId ?? null,
+      lanes: (obj.lanes || []).map((p, i) => ({
+        id: p.id,
+        name: p.name ?? `Lane ${p.id}`,
+        x: typeof p.x === "number" ? p.x : 60 + (i % 4) * 280,
+        y: typeof p.y === "number" ? p.y : 40 + Math.floor(i / 4) * 220,
+        w: typeof p.w === "number" ? p.w : 300,
+        h: typeof p.h === "number" ? p.h : 220
+      })),
+      flowNodes: (obj.flowNodes || []).map((s, i) => ({
         id: s.id,
-        name: s.name ?? s.label ?? `Step ${s.id}`,
-        type,
-        phaseId: s.phaseId ?? null,
+        name: s.name ?? `Node ${s.id}`,
+        type: s.type ?? NODE_TYPE.USER_TASK,
+        laneId: s.laneId ?? null,
         x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
-        roles: normalizeRoles(s.roles ?? s.role),
-        requiresClaim: isEndEventType(type) || isPassThroughType(type)
-          ? false
-          : (s.requiresClaim ?? false),
-        nextStepId: isPassThroughType(type) ? nextStepId : null,
-        variables,
-        actions: isEndEventType(type) ? [] : actions
-      };
-      migrateStartEventActions(step);
-      if (isPassThroughType(type)) step.actions = [];
-      applyTypeInvariants(step);
-      return step;
-    })
-  };
+        roles: normalizeRoles(s.roles),
+        requiresClaim: !!s.requiresClaim,
+        variables: (s.variables || []).map(normalizeVariable)
+      })),
+      sequenceFlows: (obj.sequenceFlows || []).map(f => ({
+        id: f.id,
+        name: f.name ?? "",
+        sourceRef: f.sourceRef,
+        targetRef: f.targetRef,
+        roles: normalizeRoles(f.roles),
+        variables: (f.variables || []).map(normalizeVariable),
+        condition: f.condition ?? null,
+        isDefault: !!f.isDefault
+      }))
+    };
+  } else {
+    // Legacy phases/steps/actions document.
+    model = migrateLegacyToNew(obj);
+  }
+  model.flowNodes.forEach(applyTypeInvariants);
   clearSelection();
 }
 
@@ -1256,8 +1311,8 @@ function el(tag, attrs) {
 }
 
 /* ---------- Wire up toolbar ---------- */
-document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addStep(); };
-document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addPhase(); };
+document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addNode(); };
+document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
 document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
 document.getElementById("saveBtn").onclick = save;
 document.getElementById("newBtn").onclick = () => {
@@ -1280,11 +1335,11 @@ wfNameInput.oninput = () => { model.name = wfNameInput.value; };
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (connectMode) setConnectMode(false); else clearSelection(); }
   if (e.key === "Delete" && selected) {
-    if (selected.kind === 'step') deleteStep(selected.stepId);
-    else if (selected.kind === 'phase') deletePhase(selected.phaseId);
+    if (selected.kind === 'node') deleteNode(selected.nodeId);
+    else if (selected.kind === 'lane') deleteLane(selected.laneId);
     else {
-      const s = getStep(selected.stepId);
-      if (s) { s.actions = s.actions.filter(a => a.id !== selected.actionId); select('step', s.id); }
+      model.sequenceFlows = model.sequenceFlows.filter(f => f.id !== selected.flowId);
+      clearSelection();
     }
   }
 });

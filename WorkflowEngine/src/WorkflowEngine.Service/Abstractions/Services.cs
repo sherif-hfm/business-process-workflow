@@ -31,7 +31,7 @@ public interface IWorkflowEngineService
     Task<InstanceDetailDto> StartInstanceAsync(
         long workflowId,
         string? startedBy,
-        int? startStepId,
+        int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 
@@ -46,15 +46,15 @@ public interface IWorkflowEngineService
 
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ActionModel>> GetAvailableActionsAsync(long id, CancellationToken cancellationToken);
+    Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(long id, CancellationToken cancellationToken);
 
     Task<InstanceDetailDto?> ClaimAsync(long id, string? user, CancellationToken cancellationToken);
 
     Task<InstanceDetailDto?> UnclaimAsync(long id, CancellationToken cancellationToken);
 
-    Task<InstanceDetailDto?> TakeActionAsync(
+    Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
-        int actionId,
+        int flowId,
         string? performedBy,
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);

@@ -17,19 +17,19 @@
 }
 else
 {
-    var currentStep = CurrentStep;
+    var currentNode = CurrentNode;
 
     <h1>Instance #@instance.Id</h1>
     <p class="text-muted">@instance.Workflow.Name v@instance.Workflow.Version</p>
 
     <div class="card mb-3">
         <div class="card-body">
-            <h2 class="h4">@instance.CurrentStepName</h2>
+            <h2 class="h4">@instance.CurrentNodeName</h2>
             <p>Status: <strong>@instance.Status</strong></p>
             <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
             <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
 
-            @if (instance.Status == "running" && currentStep?.RequiresClaim == true)
+            @if (instance.Status == "running" && currentNode?.RequiresClaim == true)
             {
                 <div class="d-flex gap-2 mb-3">
                     <input class="form-control" style="max-width: 260px" @bind="actingAs" placeholder="claim as" />
@@ -47,32 +47,32 @@ else
 
     <section class="mb-4">
         <h2 class="h4">Available actions</h2>
-        @if (currentStep?.RequiresClaim == true && instance.Status == "running")
+        @if (currentNode?.RequiresClaim == true && instance.Status == "running")
         {
             if (string.IsNullOrWhiteSpace(instance.ClaimedBy))
             {
-                <div class="alert alert-info">Claim this step before taking an action.</div>
+                <div class="alert alert-info">Claim this task before taking an action.</div>
             }
             else if (!CanTakeActions)
             {
-                <div class="alert alert-info">This step is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take actions.</div>
+                <div class="alert alert-info">This task is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take actions.</div>
             }
         }
-        @if (currentStep is null || currentStep.Actions.Count == 0 || WorkflowStepTypes.IsEnd(currentStep.Type) || WorkflowStepTypes.IsAutomatic(currentStep.Type) || WorkflowStepTypes.IsStart(currentStep.Type))
+        @if (availableFlows.Count == 0)
         {
             <p>No user actions are available.</p>
         }
         else
         {
             <div class="row">
-                @foreach (var action in currentStep.Actions)
+                @foreach (var flow in availableFlows)
                 {
                     <div class="col-md-6 mb-3">
                         <div class="card h-100">
                             <div class="card-body">
-                                <h3 class="h5">@action.Name</h3>
-                                <p class="text-muted">Moves to step #@action.ToStepId</p>
-                                @foreach (var variable in action.Variables)
+                                <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
+                                <p class="text-muted">Moves to node #@flow.TargetRef</p>
+                                @foreach (var variable in flow.Variables)
                                 {
                                     <div class="mb-2">
                                         <label class="form-label">
@@ -84,14 +84,14 @@ else
                                             }
                                         </label>
                                         <input class="form-control"
-                                               value="@GetActionInput(action.Id, variable.Name)"
-                                               @oninput="e => SetActionInput(action.Id, variable.Name, e.Value?.ToString())" />
+                                               value="@GetFlowInput(flow.Id, variable.Name)"
+                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
                                     </div>
                                 }
 
                                 <button class="btn btn-primary"
                                         disabled="@(!CanTakeActions)"
-                                        @onclick="() => TakeActionAsync(action)">Take action</button>
+                                        @onclick="() => TakeFlowAsync(flow)">Take action</button>
                             </div>
                         </div>
                     </div>
@@ -112,7 +112,7 @@ else
                 <thead>
                     <tr>
                         <th>Name</th>
-                        <th>Action</th>
+                        <th>Flow</th>
                         <th>Value</th>
                     </tr>
                 </thead>
@@ -121,7 +121,7 @@ else
                     {
                         <tr>
                             <td>@variable.VariableName</td>
-                            <td>@(variable.SourceActionId?.ToString() ?? "start")</td>
+                            <td>@(variable.SourceFlowId?.ToString() ?? "start")</td>
                             <td><code>@FormatJson(variable.Value)</code></td>
                         </tr>
                     }
@@ -144,7 +144,7 @@ else
                         <th>When</th>
                         <th>From</th>
                         <th>To</th>
-                        <th>Action</th>
+                        <th>Flow</th>
                         <th>Note</th>
                     </tr>
                 </thead>
@@ -153,9 +153,9 @@ else
                     {
                         <tr>
                             <td>@item.PerformedAt.LocalDateTime</td>
-                            <td>#@item.FromStepId</td>
-                            <td>#@item.ToStepId</td>
-                            <td>@(item.ActionId?.ToString() ?? "-")</td>
+                            <td>#@item.FromNodeId</td>
+                            <td>#@item.ToNodeId</td>
+                            <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
                             <td>@item.Note</td>
                         </tr>
                     }
@@ -170,12 +170,13 @@ else
     public long InstanceId { get; set; }
 
     private InstanceDetailDto? instance;
-    private readonly Dictionary<string, string?> actionInputs = [];
+    private IReadOnlyList<SequenceFlowModel> availableFlows = [];
+    private readonly Dictionary<string, string?> flowInputs = [];
     private string? actingAs = "user";
     private string? error;
 
-    private StepModel? CurrentStep =>
-        instance?.Workflow.Definition.Steps.SingleOrDefault(s => s.Id == instance.CurrentStepId);
+    private FlowNodeModel? CurrentNode =>
+        instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
 
     private bool CanTakeActions
     {
@@ -186,13 +187,13 @@ else
                 return false;
             }
 
-            var step = CurrentStep;
-            if (step is null || WorkflowStepTypes.IsEnd(step.Type) || WorkflowStepTypes.IsAutomatic(step.Type) || WorkflowStepTypes.IsStart(step.Type))
+            var node = CurrentNode;
+            if (node is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
             {
                 return false;
             }
 
-            if (!step.RequiresClaim)
+            if (!node.RequiresClaim)
             {
                 return true;
             }
@@ -207,6 +208,7 @@ else
     private async Task LoadAsync()
     {
         instance = await Api.GetInstanceAsync(InstanceId);
+        availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
     }
 
     private async Task ClaimAsync() => await RefreshFrom(async () =>
@@ -224,15 +226,15 @@ else
         });
     }
 
-    private async Task TakeActionAsync(ActionModel action)
+    private async Task TakeFlowAsync(SequenceFlowModel flow)
     {
         await RefreshFrom(async () =>
         {
-            var variables = BuildPayload(action);
-            instance = await Api.TakeActionAsync(
+            var variables = BuildPayload(flow);
+            instance = await Api.TakeFlowAsync(
                 InstanceId,
-                action.Id,
-                new TakeActionRequest(actingAs, variables));
+                flow.Id,
+                new TakeFlowRequest(actingAs, variables));
         });
     }
 
@@ -243,6 +245,7 @@ else
             error = null;
             await action();
             instance ??= await Api.GetInstanceAsync(InstanceId);
+            availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
         }
         catch (Exception ex)
         {
@@ -250,18 +253,18 @@ else
         }
     }
 
-    private string? GetActionInput(int actionId, string variableName) =>
-        actionInputs.TryGetValue(Key(actionId, variableName), out var value) ? value : null;
+    private string? GetFlowInput(int flowId, string variableName) =>
+        flowInputs.TryGetValue(Key(flowId, variableName), out var value) ? value : null;
 
-    private void SetActionInput(int actionId, string variableName, string? value) =>
-        actionInputs[Key(actionId, variableName)] = value;
+    private void SetFlowInput(int flowId, string variableName, string? value) =>
+        flowInputs[Key(flowId, variableName)] = value;
 
-    private Dictionary<string, JsonElement> BuildPayload(ActionModel action)
+    private Dictionary<string, JsonElement> BuildPayload(SequenceFlowModel flow)
     {
         var payload = new Dictionary<string, JsonElement>();
-        foreach (var variable in action.Variables)
+        foreach (var variable in flow.Variables)
         {
-            var raw = GetActionInput(action.Id, variable.Name);
+            var raw = GetFlowInput(flow.Id, variable.Name);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 continue;
@@ -273,7 +276,7 @@ else
         return payload;
     }
 
-    private static string Key(int actionId, string variableName) => $"{actionId}:{variableName}";
+    private static string Key(int flowId, string variableName) => $"{flowId}:{variableName}";
 
     private static string NormalizeUser(string? user) =>
         string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();

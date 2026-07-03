@@ -1,165 +1,227 @@
 {
   "id": 1,
   "name": "Purchase Request Approval",
-  "initialStepId": 1,
-  "phases": [
+  "initialEventId": 1,
+  "lanes": [
     {
       "id": 1,
       "name": "Submission",
-      "x": 29,
-      "y": 95,
-      "w": 1082,
-      "h": 172
+      "x": 40,
+      "y": 20,
+      "w": 520,
+      "h": 200
     },
     {
       "id": 2,
       "name": "Approval",
-      "x": 31,
-      "y": 305,
-      "w": 1273,
-      "h": 162
+      "x": 40,
+      "y": 240,
+      "w": 900,
+      "h": 200
     },
     {
       "id": 3,
       "name": "Resolution",
-      "x": 28,
-      "y": 506,
-      "w": 1435,
-      "h": 150
+      "x": 40,
+      "y": 460,
+      "w": 900,
+      "h": 180
     }
   ],
-  "steps": [
+  "flowNodes": [
     {
       "id": 1,
-      "name": "Request Submission",
+      "name": "Request Submitted",
       "type": "startEvent",
-      "phaseId": 1,
-      "x": 133,
-      "y": 144,
+      "laneId": 1,
+      "x": 90,
+      "y": 80,
       "roles": [],
       "requiresClaim": false,
-      "nextStepId": 6,
       "variables": [
         {
           "id": 1,
-          "name": "req-no",
+          "name": "requester",
+          "dataType": "string",
+          "isArray": false,
+          "required": true
+        },
+        {
+          "id": 2,
+          "name": "amount",
           "dataType": "number",
           "isArray": false,
           "required": true
         }
-      ],
-      "actions": []
+      ]
     },
     {
       "id": 2,
-      "name": "Pending Manager",
-      "type": "userTask",
-      "phaseId": 2,
-      "x": 71,
-      "y": 360,
-      "roles": [
-        "user",
-        "admin"
-      ],
+      "name": "Auto Validate",
+      "type": "task",
+      "laneId": 1,
+      "x": 320,
+      "y": 82,
+      "roles": [],
       "requiresClaim": false,
-      "nextStepId": null,
-      "variables": [],
-      "actions": [
-        {
-          "id": 201,
-          "name": "Approve",
-          "toStepId": 3,
-          "roles": [],
-          "variables": []
-        },
-        {
-          "id": 202,
-          "name": "Reject",
-          "toStepId": 5,
-          "roles": [],
-          "variables": []
-        }
-      ]
+      "variables": []
     },
     {
       "id": 3,
-      "name": "Pending Finance",
+      "name": "Manager Review",
       "type": "userTask",
-      "phaseId": 2,
-      "x": 352,
-      "y": 364,
-      "roles": [],
-      "requiresClaim": true,
-      "nextStepId": null,
-      "variables": [],
-      "actions": [
-        {
-          "id": 301,
-          "name": "Approve",
-          "toStepId": 4,
-          "roles": [],
-          "variables": []
-        },
-        {
-          "id": 302,
-          "name": "Reject",
-          "toStepId": 5,
-          "roles": [],
-          "variables": []
-        }
-      ]
+      "laneId": 2,
+      "x": 90,
+      "y": 300,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "variables": []
     },
     {
       "id": 4,
-      "name": "Approved",
-      "type": "endEvent",
-      "phaseId": 3,
-      "x": 409,
-      "y": 563,
+      "name": "Amount Check",
+      "type": "exclusiveGateway",
+      "laneId": 2,
+      "x": 360,
+      "y": 296,
       "roles": [],
       "requiresClaim": false,
-      "nextStepId": null,
-      "variables": [],
-      "actions": []
+      "variables": []
     },
     {
       "id": 5,
-      "name": "Rejected",
-      "type": "endEvent",
-      "phaseId": 3,
-      "x": 130,
-      "y": 565,
-      "roles": [],
-      "requiresClaim": false,
-      "nextStepId": null,
-      "variables": [],
-      "actions": []
+      "name": "Finance Review",
+      "type": "userTask",
+      "laneId": 2,
+      "x": 520,
+      "y": 300,
+      "roles": [
+        "Finance"
+      ],
+      "requiresClaim": true,
+      "variables": []
     },
     {
       "id": 6,
-      "name": "auto review1",
-      "type": "task",
-      "phaseId": 1,
-      "x": 313,
-      "y": 144,
+      "name": "Approved",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 560,
+      "y": 520,
       "roles": [],
       "requiresClaim": false,
-      "nextStepId": 7,
-      "variables": [],
-      "actions": []
+      "variables": []
     },
     {
       "id": 7,
-      "name": "auto review2",
-      "type": "task",
-      "phaseId": 1,
-      "x": 527,
-      "y": 142,
+      "name": "Rejected",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 120,
+      "y": 520,
       "roles": [],
       "requiresClaim": false,
-      "nextStepId": 2,
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
       "variables": [],
-      "actions": []
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 102,
+      "name": "",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 202,
+      "name": "Reject",
+      "sourceRef": 3,
+      "targetRef": 7,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "rejectReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true
+        }
+      ],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 301,
+      "name": "High amount",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": "amount > 1000",
+      "isDefault": false
+    },
+    {
+      "id": 302,
+      "name": "Low amount",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true
+    },
+    {
+      "id": 401,
+      "name": "Approve",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "Finance"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 402,
+      "name": "Reject",
+      "sourceRef": 5,
+      "targetRef": 7,
+      "roles": [
+        "Finance"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
     }
   ]
 }
