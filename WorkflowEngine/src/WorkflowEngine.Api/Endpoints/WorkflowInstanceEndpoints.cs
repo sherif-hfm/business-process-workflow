@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
 
@@ -29,16 +30,18 @@ public static class WorkflowInstanceEndpoints
 
         group.MapGet("/", async (
             string? status,
+            [FromQuery(Name = "var")] string[]? variables,
             int? page,
             int? pageSize,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
             var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.ListInstancesAsync(status, p, s, cancellationToken));
+            return Results.Ok(await service.ListInstancesAsync(status, variables, p, s, cancellationToken));
         });
 
         group.MapGet("/inbox", async (
+            [FromQuery(Name = "var")] string[]? variables,
             int? page,
             int? pageSize,
             ClaimsPrincipal principal,
@@ -46,7 +49,7 @@ public static class WorkflowInstanceEndpoints
             CancellationToken cancellationToken) =>
         {
             var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.GetInboxAsync(ToActor(principal), p, s, cancellationToken));
+            return Results.Ok(await service.GetInboxAsync(ToActor(principal), variables, p, s, cancellationToken));
         });
 
         group.MapGet("/{id:long}", async (

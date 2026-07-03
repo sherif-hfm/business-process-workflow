@@ -46,12 +46,14 @@ public interface IWorkflowEngineService
 
     Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        IReadOnlyList<string>? variables,
         int page,
         int pageSize,
         CancellationToken cancellationToken);
 
     Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        IReadOnlyList<string>? variables,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

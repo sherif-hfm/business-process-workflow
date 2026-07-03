@@ -21,6 +21,10 @@
             <option value="cancelled">Cancelled</option>
         </select>
     </div>
+    <div class="flex-grow-1">
+        <label class="form-label">Variables (name:value, comma-separated)</label>
+        <input class="form-control" @bind="variableFilter" @bind:after="OnFilterChangedAsync" placeholder="reqno:4711, priority:high" />
+    </div>
     <button class="btn btn-outline-primary" @onclick="LoadAsync">Refresh</button>
 </div>
 
@@ -72,9 +76,15 @@ else
 @code {
     private PagedResult<InstanceSummaryDto>? result;
     private string? status = "running";
+    private string? variableFilter;
     private string? error;
     private int page = 1;
     private const int PageSize = 50;
+
+    private IReadOnlyList<string> ParseVariableFilter() =>
+        string.IsNullOrWhiteSpace(variableFilter)
+            ? []
+            : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private int TotalPages => result is null || result.TotalCount == 0
         ? 1
@@ -117,7 +127,7 @@ else
         try
         {
             error = null;
-            result = await Api.GetInstancesAsync(status, page, PageSize);
+            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter());
         }
         catch (Exception ex)
         {

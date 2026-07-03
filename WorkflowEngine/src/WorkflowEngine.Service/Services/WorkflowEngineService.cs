@@ -55,27 +55,31 @@ public sealed class WorkflowEngineService(
 
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        IReadOnlyList<string>? variables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
-        var paged = await runtime.ListInstancesAsync(status, page, pageSize, cancellationToken);
+        var variableFilters = ParseVariableFilters(variables);
+        var paged = await runtime.ListInstancesAsync(status, variableFilters, page, pageSize, cancellationToken);
         var items = paged.Items.Select(ToSummary).ToList();
         return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
     public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        IReadOnlyList<string>? variables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
+        var variableFilters = ParseVariableFilters(variables);
 
         // Membership (running user task the actor may see/act on) is filtered in SQL;
         // the per-row action flags are derived here from the denormalized columns.
-        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, page, pageSize, cancellationToken);
+        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, variableFilters, page, pageSize, cancellationToken);
 
         var items = new List<InboxItemDto>(paged.Items.Count);
         foreach (var row in paged.Items)
@@ -457,6 +461,44 @@ public sealed class WorkflowEngineService(
     private async Task<WorkflowDefinitionRecord> GetWorkflowAsync(long id, CancellationToken cancellationToken) =>
         await definitions.GetAsync(id, cancellationToken)
         ?? throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
+
+    // Parses raw "name:value" filter strings (split on the first ':') into
+    // exact-match VariableFilters. Malformed or empty-name entries are rejected.
+    private static IReadOnlyList<VariableFilter> ParseVariableFilters(IReadOnlyList<string>? variables)
+    {
+        if (variables is null || variables.Count == 0)
+        {
+            return [];
+        }
+
+        var filters = new List<VariableFilter>(variables.Count);
+        foreach (var raw in variables)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            var separator = raw.IndexOf(':');
+            if (separator <= 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Invalid variable filter '{raw}'. Expected format 'name:value'.");
+            }
+
+            var name = raw[..separator].Trim();
+            var value = raw[(separator + 1)..].Trim();
+            if (name.Length == 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Invalid variable filter '{raw}'. Variable name is required.");
+            }
+
+            filters.Add(new VariableFilter(name, value));
+        }
+
+        return filters;
+    }
 
     private static InstanceSummaryDto ToSummary(InstanceListItem row) =>
         new(

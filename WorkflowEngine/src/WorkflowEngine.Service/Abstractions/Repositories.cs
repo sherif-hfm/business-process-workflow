@@ -35,6 +35,7 @@ public interface IWorkflowRuntimeRepository
 
     Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
+        IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
         CancellationToken cancellationToken);
@@ -42,6 +43,7 @@ public interface IWorkflowRuntimeRepository
     Task<PagedResult<InstanceListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
+        IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

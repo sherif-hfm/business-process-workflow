@@ -27,6 +27,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         string? status = null,
         int page = 1,
         int pageSize = 50,
+        IEnumerable<string>? variables = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
@@ -35,6 +36,8 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             url += $"&status={Uri.EscapeDataString(status)}";
         }
 
+        url += BuildVariableQuery(variables);
+
         return await httpClient.GetFromJsonAsync<PagedResult<InstanceSummaryDto>>(url, cancellationToken)
             ?? new PagedResult<InstanceSummaryDto>([], page, pageSize, 0);
     }
@@ -42,10 +45,29 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
     public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
         int page = 1,
         int pageSize = 50,
-        CancellationToken cancellationToken = default) =>
-        await httpClient.GetFromJsonAsync<PagedResult<InboxItemDto>>(
-            $"/api/instances/inbox?page={page}&pageSize={pageSize}",
-            cancellationToken) ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
+        IEnumerable<string>? variables = null,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/instances/inbox?page={page}&pageSize={pageSize}{BuildVariableQuery(variables)}";
+        return await httpClient.GetFromJsonAsync<PagedResult<InboxItemDto>>(url, cancellationToken)
+            ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
+    }
+
+    private static string BuildVariableQuery(IEnumerable<string>? variables)
+    {
+        if (variables is null)
+        {
+            return string.Empty;
+        }
+
+        var query = string.Empty;
+        foreach (var variable in variables.Where(v => !string.IsNullOrWhiteSpace(v)))
+        {
+            query += $"&var={Uri.EscapeDataString(variable)}";
+        }
+
+        return query;
+    }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);

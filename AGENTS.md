@@ -162,8 +162,8 @@ definition can start instances.
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
   `POST /{id}/publish`, `DELETE /{id}`.
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
-  `startEventId`), `GET /?status=&page=&pageSize=` (paged),
-  `GET /inbox?page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `startEventId`), `GET /?status=&var=&page=&pageSize=` (paged),
+  `GET /inbox?var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/cancel`. The two list endpoints return
@@ -171,6 +171,18 @@ definition can start instances.
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
   offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
   repository can later switch to keyset paging without an API change.
+- **Variable search.** Both list endpoints accept repeated `var=name:value`
+  query params (split on the first `:`, so values may contain `:`). Each pair is
+  an exact, case-insensitive match on an instance variable's scalar value; when
+  several are supplied they are AND-combined. Matching is compiled to one
+  correlated `EXISTS` over `instance_variables` per pair
+  (`lower("ValueJson" #>> '{}') = lower(@value)`), all values bound as
+  parameters. The inbox filter is additive on top of the actor role/claim scope.
+  For the list endpoint the `var` filter combines with `status`. Malformed
+  entries (missing `:` or empty name) are rejected via `WorkflowDomainException`.
+  Array/object variables never match, and value ranges/operators are out of
+  scope. An `instance_variables (VariableName, InstanceId)` index backs the
+  lookup.
 - `WorkflowDomainException` maps to problem responses for invalid operations
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).
@@ -180,7 +192,10 @@ definition can start instances.
 - `/workflows` (`Workflows.razor`) - list definitions.
 - `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
   variables, and launch an instance.
-- `/instances` (`Instances.razor`) - list instances, filterable by status.
+- `/instances` (`Instances.razor`) - list instances, filterable by status and by
+  variables (a comma-separated `name:value` box mapped to repeated `var=` params).
+- `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same comma-separated
+  `name:value` variable filter box.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, view variables and history.
 

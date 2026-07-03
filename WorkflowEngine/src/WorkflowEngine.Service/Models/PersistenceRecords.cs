@@ -48,6 +48,9 @@ public sealed record InstanceListItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+// Exact-match filter over an instance variable's scalar value (name = value).
+public sealed record VariableFilter(string Name, string Value);
+
 public sealed record InstanceVariableRecord(
     long Id,
     long InstanceId,

@@ -60,6 +60,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.ValueJson).HasColumnType("jsonb");
             entity.Property(e => e.SetAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.VariableName });
+            // Leads with VariableName to support value lookups in the variable search.
+            entity.HasIndex(e => new { e.VariableName, e.InstanceId });
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Variables)
                 .HasForeignKey(e => e.InstanceId)

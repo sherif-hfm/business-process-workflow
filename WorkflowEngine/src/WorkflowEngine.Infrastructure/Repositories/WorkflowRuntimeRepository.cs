@@ -1,4 +1,6 @@
+using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using WorkflowEngine.Infrastructure.Data;
 using WorkflowEngine.Infrastructure.Entities;
 using WorkflowEngine.Service.Abstractions;
@@ -36,25 +38,45 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return ToRecord(entity);
     }
 
+    // EF1002: the SQL is assembled from static fragments plus @paramName placeholders
+    // only; every caller-supplied name/value is bound via NpgsqlParameter, so there is
+    // no interpolation of untrusted input and no injection surface.
+#pragma warning disable EF1002
     public async Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
+        IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
-        var query = dbContext.WorkflowInstances.AsNoTracking();
+        var where = new StringBuilder(" WHERE 1=1");
+        var args = new List<(string Name, object Value)>();
+
         if (!string.IsNullOrWhiteSpace(status))
         {
-            query = query.Where(i => i.Status == status);
+            args.Add(("status", status));
+            where.Append(" AND w.\"Status\" = @status");
         }
 
-        var totalCount = await query.LongCountAsync(cancellationToken);
+        AppendVariableFilters(where, args, variableFilters);
 
-        var entities = await query
-            .OrderByDescending(i => i.UpdatedAt)
-            .ThenByDescending(i => i.Id)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
+        var totalCount = await dbContext.Database
+            .SqlQueryRaw<long>(
+                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
+                BuildParameters(args))
+            .SingleAsync(cancellationToken);
+
+        var skip = (page - 1) * pageSize;
+        var pageArgs = new List<(string Name, object Value)>(args)
+        {
+            ("take", pageSize),
+            ("skip", skip)
+        };
+        var entities = await dbContext.WorkflowInstances
+            .FromSqlRaw(
+                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                BuildParameters(pageArgs))
+            .AsNoTracking()
             .ToListAsync(cancellationToken);
 
         var items = await ToListItemsAsync(entities, cancellationToken);
@@ -64,6 +86,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task<PagedResult<InstanceListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
+        IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -76,59 +99,83 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .Distinct()
             .ToArray();
 
-        var running = WorkflowInstanceStatuses.Running;
-        var userTask = BpmnFlowNodeTypes.UserTask;
+        // Actor-scoped inbox predicate (running user tasks the caller may see/act on).
+        // Aliased as w so the variable EXISTS filters can correlate on w."Id".
+        var where = new StringBuilder("""
+             WHERE w."Status" = @status
+              AND w."CurrentNodeType" = @userTask
+              AND (
+                    w."ClaimedBy" = @user
+                 OR (
+                      ( cardinality(w."CurrentNodeRoles") = 0
+                        OR EXISTS (
+                            SELECT 1 FROM unnest(w."CurrentNodeRoles") AS node_role
+                            WHERE lower(node_role) = ANY(@lowerRoles)
+                        ) )
+                      AND NOT (w."CurrentRequiresClaim"
+                               AND w."ClaimedBy" IS NOT NULL
+                               AND w."ClaimedBy" <> @user)
+                    )
+                  )
+            """);
+
+        var args = new List<(string Name, object Value)>
+        {
+            ("status", WorkflowInstanceStatuses.Running),
+            ("userTask", BpmnFlowNodeTypes.UserTask),
+            ("user", user),
+            ("lowerRoles", lowerRoles)
+        };
+
+        AppendVariableFilters(where, args, variableFilters);
 
         var totalCount = await dbContext.Database
-            .SqlQuery<long>($"""
-                SELECT COUNT(*) AS "Value"
-                FROM workflow_instances
-                WHERE "Status" = {running}
-                  AND "CurrentNodeType" = {userTask}
-                  AND (
-                        "ClaimedBy" = {user}
-                     OR (
-                          ( cardinality("CurrentNodeRoles") = 0
-                            OR EXISTS (
-                                SELECT 1 FROM unnest("CurrentNodeRoles") AS node_role
-                                WHERE lower(node_role) = ANY({lowerRoles})
-                            ) )
-                          AND NOT ("CurrentRequiresClaim"
-                                   AND "ClaimedBy" IS NOT NULL
-                                   AND "ClaimedBy" <> {user})
-                        )
-                      )
-                """)
+            .SqlQueryRaw<long>(
+                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
+                BuildParameters(args))
             .SingleAsync(cancellationToken);
 
         var skip = (page - 1) * pageSize;
+        var pageArgs = new List<(string Name, object Value)>(args)
+        {
+            ("take", pageSize),
+            ("skip", skip)
+        };
         var entities = await dbContext.WorkflowInstances
-            .FromSqlInterpolated($"""
-                SELECT * FROM workflow_instances
-                WHERE "Status" = {running}
-                  AND "CurrentNodeType" = {userTask}
-                  AND (
-                        "ClaimedBy" = {user}
-                     OR (
-                          ( cardinality("CurrentNodeRoles") = 0
-                            OR EXISTS (
-                                SELECT 1 FROM unnest("CurrentNodeRoles") AS node_role
-                                WHERE lower(node_role) = ANY({lowerRoles})
-                            ) )
-                          AND NOT ("CurrentRequiresClaim"
-                                   AND "ClaimedBy" IS NOT NULL
-                                   AND "ClaimedBy" <> {user})
-                        )
-                      )
-                ORDER BY "UpdatedAt" DESC, "Id" DESC
-                LIMIT {pageSize} OFFSET {skip}
-                """)
+            .FromSqlRaw(
+                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
         var items = await ToListItemsAsync(entities, cancellationToken);
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
+#pragma warning restore EF1002
+
+    // Appends one correlated EXISTS per filter: the variable must exist on the
+    // instance with a scalar value equal (case-insensitively) to the target.
+    // Names/values bind as parameters, so there is no SQL injection surface.
+    // `#>> ARRAY[]::text[]` extracts the root scalar as text (equivalent to the
+    // `#>> '{}'` literal but brace-free, since FromSqlRaw runs string.Format
+    // over the SQL and would treat literal braces as format placeholders).
+    private static void AppendVariableFilters(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        IReadOnlyList<VariableFilter> filters)
+    {
+        for (var i = 0; i < filters.Count; i++)
+        {
+            args.Add(($"vn{i}", filters[i].Name));
+            args.Add(($"vv{i}", filters[i].Value));
+            where.Append(
+                $" AND EXISTS (SELECT 1 FROM instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
+                $" AND v.\"VariableName\" = @vn{i} AND lower(v.\"ValueJson\" #>> ARRAY[]::text[]) = lower(@vv{i}))");
+        }
+    }
+
+    private static NpgsqlParameter[] BuildParameters(IEnumerable<(string Name, object Value)> args) =>
+        args.Select(a => new NpgsqlParameter(a.Name, a.Value)).ToArray();
 
     private async Task<IReadOnlyList<InstanceListItem>> ToListItemsAsync(
         IReadOnlyList<WorkflowInstanceEntity> entities,
