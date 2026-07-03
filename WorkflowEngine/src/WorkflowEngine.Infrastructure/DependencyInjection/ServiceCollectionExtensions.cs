@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using WorkflowEngine.Infrastructure.Data;
+using WorkflowEngine.Infrastructure.Http;
 using WorkflowEngine.Infrastructure.Repositories;
 using WorkflowEngine.Service.Abstractions;
 
@@ -27,6 +28,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
+        services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>();
 
         return services;
     }

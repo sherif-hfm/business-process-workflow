@@ -153,6 +153,7 @@
   .node.endEvent circle.body   { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
   .node.userTask rect { fill: #1e3a5f; stroke: var(--accent); }
   .node.task rect     { fill: #1e293b; stroke: #64748b; }
+  .node.serviceTask rect { fill: #164e4a; stroke: #2dd4bf; }
   .node.exclusiveGateway polygon.body { fill: #422006; stroke: var(--amber); }
   .node.selected rect,
   .node.selected circle.body,
@@ -238,6 +239,7 @@ const NODE_TYPE = {
   END_EVENT: "endEvent",
   USER_TASK: "userTask",
   TASK: "task",
+  SERVICE_TASK: "serviceTask",
   EXCLUSIVE_GATEWAY: "exclusiveGateway"
 };
 const NODE_TYPE_OPTIONS = [
@@ -245,9 +247,33 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.END_EVENT, label: "End Event" },
   { value: NODE_TYPE.USER_TASK, label: "User Task" },
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
+  { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" }
 ];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
+const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const SERVICE_ERROR_MODES = ["fail", "continue"];
+function defaultService() {
+  return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, onError: "fail", statusVariable: "", outputMappings: [] };
+}
+function normalizeService(service) {
+  const base = defaultService();
+  if (!service || typeof service !== "object") return base;
+  return {
+    method: HTTP_METHODS.includes((service.method || "").toUpperCase()) ? service.method.toUpperCase() : base.method,
+    url: typeof service.url === "string" ? service.url : "",
+    headers: Array.isArray(service.headers)
+      ? service.headers.map(h => ({ name: h && h.name ? String(h.name) : "", value: h && h.value != null ? String(h.value) : "" }))
+      : [],
+    body: typeof service.body === "string" ? service.body : "",
+    timeoutSeconds: Number.isFinite(+service.timeoutSeconds) && +service.timeoutSeconds > 0 ? Math.round(+service.timeoutSeconds) : base.timeoutSeconds,
+    onError: SERVICE_ERROR_MODES.includes(service.onError) ? service.onError : base.onError,
+    statusVariable: typeof service.statusVariable === "string" ? service.statusVariable : "",
+    outputMappings: Array.isArray(service.outputMappings)
+      ? service.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "" }))
+      : []
+  };
+}
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
 let connectMode = false;
@@ -306,6 +332,9 @@ function isEventType(type) {
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
 }
+function isServiceTaskType(type) {
+  return type === NODE_TYPE.SERVICE_TASK;
+}
 function isUserTaskType(type) {
   return type === NODE_TYPE.USER_TASK;
 }
@@ -327,9 +356,9 @@ function nodeSize(node) {
   if (isGatewayType(node.type)) return { w: GATEWAY_D, h: GATEWAY_D };
   return { w: NODE_W, h: NODE_H };
 }
-// pass-through nodes advance without a user action (start / automatic task / gateway)
+// pass-through nodes advance without a user action (start / automatic task / service task / gateway)
 function isPassThroughType(type) {
-  return isAutomaticType(type) || isStartEventType(type) || isGatewayType(type);
+  return isAutomaticType(type) || isServiceTaskType(type) || isStartEventType(type) || isGatewayType(type);
 }
 function applyTypeInvariants(node) {
   if (isEndEventType(node.type)) {
@@ -340,6 +369,11 @@ function applyTypeInvariants(node) {
     node.requiresClaim = false;
     node.roles = [];
     node.variables = [];
+  } else if (isServiceTaskType(node.type)) {
+    node.requiresClaim = false;
+    node.roles = [];
+    node.variables = [];
+    node.service = normalizeService(node.service);
   } else if (isStartEventType(node.type)) {
     node.requiresClaim = false;
     node.roles = [];
@@ -357,6 +391,11 @@ function appendUserTaskMarker(g) {
 function appendAutomaticMarker(g) {
   const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
   t.textContent = "AUTO";
+  g.appendChild(t);
+}
+function appendServiceMarker(g) {
+  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
+  t.textContent = "SVC";
   g.appendChild(t);
 }
 
@@ -504,6 +543,7 @@ function renderNodes() {
         appendUserTaskMarker(g);
       }
       if (isAutomaticType(node.type)) appendAutomaticMarker(g);
+      if (isServiceTaskType(node.type)) appendServiceMarker(g);
     }
 
     g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
@@ -640,6 +680,10 @@ function renderNodeInspector() {
     );
   }
 
+  if (isServiceTaskType(node.type)) {
+    renderServiceSection(node);
+  }
+
   if (isStartEventType(node.type)) {
     node.variables = node.variables || [];
 
@@ -711,6 +755,153 @@ function renderNodeInspector() {
   del.style.cssText = "margin-top:16px;width:100%";
   del.onclick = () => deleteNode(node.id);
   inspector.appendChild(del);
+}
+
+function renderServiceSection(node) {
+  node.service = normalizeService(node.service);
+  const service = node.service;
+
+  const title = document.createElement("h2");
+  title.textContent = "Service call";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Calls a REST endpoint automatically. Use ${variableName} in the URL, headers, and body.";
+  inspector.appendChild(hint);
+
+  selectField("Method", HTTP_METHODS, service.method, v => { service.method = v; });
+  field("URL", "text", service.url, v => { service.url = v; });
+  field("Timeout (seconds)", "number", service.timeoutSeconds, v => {
+    const n = Math.round(+v);
+    service.timeoutSeconds = Number.isFinite(n) && n > 0 ? n : 1;
+  });
+  selectField("On error", [
+    { value: "fail", label: "Fail (roll back the transition)" },
+    { value: "continue", label: "Continue (follow the outgoing flow)" }
+  ], service.onError, v => { service.onError = v; });
+  field("Status variable (optional)", "text", service.statusVariable, v => { service.statusVariable = v; });
+
+  // Headers
+  const headersTitle = document.createElement("h2");
+  headersTitle.textContent = "Headers";
+  headersTitle.style.marginTop = "16px";
+  inspector.appendChild(headersTitle);
+
+  service.headers.forEach((header, index) => {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+    const nameField = document.createElement("div");
+    nameField.className = "field";
+    nameField.innerHTML = "<label>Name</label>";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = header.name;
+    nameInput.oninput = () => { header.name = nameInput.value; };
+    nameField.appendChild(nameInput);
+    box.appendChild(nameField);
+
+    const valueField = document.createElement("div");
+    valueField.className = "field";
+    valueField.innerHTML = "<label>Value</label>";
+    const valueInput = document.createElement("input");
+    valueInput.type = "text";
+    valueInput.value = header.value;
+    valueInput.oninput = () => { header.value = valueInput.value; };
+    valueField.appendChild(valueInput);
+    box.appendChild(valueField);
+
+    const del = document.createElement("button");
+    del.textContent = "Delete header";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => { service.headers.splice(index, 1); renderInspector(); };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const addHeaderBtn = document.createElement("button");
+  addHeaderBtn.textContent = "+ Add header";
+  addHeaderBtn.style.marginTop = "8px";
+  addHeaderBtn.onclick = () => { service.headers.push({ name: "", value: "" }); renderInspector(); };
+  inspector.appendChild(addHeaderBtn);
+
+  // Body
+  const bodyTitle = document.createElement("h2");
+  bodyTitle.textContent = "Body";
+  bodyTitle.style.marginTop = "16px";
+  inspector.appendChild(bodyTitle);
+
+  const bodyHint = document.createElement("p");
+  bodyHint.className = "empty-note";
+  bodyHint.textContent = "Optional JSON body template. Placeholders insert the variable's JSON value, e.g. { \"amount\": ${amount} }.";
+  inspector.appendChild(bodyHint);
+
+  const bodyField = document.createElement("div");
+  bodyField.className = "field";
+  const bodyInput = document.createElement("textarea");
+  bodyInput.value = service.body || "";
+  bodyInput.rows = 5;
+  bodyInput.style.cssText = "width:100%;font-family:monospace;resize:vertical";
+  bodyInput.oninput = () => { service.body = bodyInput.value; };
+  bodyField.appendChild(bodyInput);
+  inspector.appendChild(bodyField);
+
+  // Output mappings
+  const outTitle = document.createElement("h2");
+  outTitle.textContent = "Response mappings";
+  outTitle.style.marginTop = "16px";
+  inspector.appendChild(outTitle);
+
+  const outHint = document.createElement("p");
+  outHint.className = "empty-note";
+  outHint.textContent = "Write response fields into instance variables. Path is dotted, e.g. decision.approved or items.0.id.";
+  inspector.appendChild(outHint);
+
+  service.outputMappings.forEach((mapping, index) => {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+    const varField = document.createElement("div");
+    varField.className = "field";
+    varField.innerHTML = "<label>Variable</label>";
+    const varInput = document.createElement("input");
+    varInput.type = "text";
+    varInput.value = mapping.variable;
+    varInput.oninput = () => { mapping.variable = varInput.value; };
+    varField.appendChild(varInput);
+    box.appendChild(varField);
+
+    const pathField = document.createElement("div");
+    pathField.className = "field";
+    pathField.innerHTML = "<label>Response path</label>";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.value = mapping.path;
+    pathInput.oninput = () => { mapping.path = pathInput.value; };
+    pathField.appendChild(pathInput);
+    box.appendChild(pathField);
+
+    const del = document.createElement("button");
+    del.textContent = "Delete mapping";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => { service.outputMappings.splice(index, 1); renderInspector(); };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const addMappingBtn = document.createElement("button");
+  addMappingBtn.textContent = "+ Add mapping";
+  addMappingBtn.style.marginTop = "8px";
+  addMappingBtn.onclick = () => { service.outputMappings.push({ variable: "", path: "" }); renderInspector(); };
+  inspector.appendChild(addMappingBtn);
 }
 
 function renderLaneInspector() {
@@ -1282,7 +1473,8 @@ function loadFromObject(obj) {
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
         roles: normalizeRoles(s.roles),
         requiresClaim: !!s.requiresClaim,
-        variables: (s.variables || []).map(normalizeVariable)
+        variables: (s.variables || []).map(normalizeVariable),
+        service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,

@@ -89,6 +89,61 @@ public sealed class FlowNodeModel
 
     [JsonPropertyName("variables")]
     public List<VariableModel> Variables { get; set; } = [];
+
+    [JsonPropertyName("service")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ServiceTaskModel? Service { get; set; }
+}
+
+public sealed class ServiceTaskModel
+{
+    [JsonPropertyName("method")]
+    public string Method { get; set; } = "GET";
+
+    [JsonPropertyName("url")]
+    public string Url { get; set; } = string.Empty;
+
+    [JsonPropertyName("headers")]
+    public List<ServiceHeaderModel> Headers { get; set; } = [];
+
+    [JsonPropertyName("body")]
+    public string? Body { get; set; }
+
+    [JsonPropertyName("timeoutSeconds")]
+    public int TimeoutSeconds { get; set; } = 30;
+
+    [JsonPropertyName("onError")]
+    public string OnError { get; set; } = ServiceTaskErrorModes.Fail;
+
+    [JsonPropertyName("statusVariable")]
+    public string? StatusVariable { get; set; }
+
+    [JsonPropertyName("outputMappings")]
+    public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
+}
+
+public sealed class ServiceHeaderModel
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = string.Empty;
+}
+
+public sealed class ServiceOutputMappingModel
+{
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+}
+
+public static class ServiceTaskErrorModes
+{
+    public const string Fail = "fail";
+    public const string Continue = "continue";
 }
 
 public sealed class SequenceFlowModel
@@ -199,6 +254,7 @@ public static class BpmnFlowNodeTypes
     public const string EndEvent = "endEvent";
     public const string UserTask = "userTask";
     public const string Task = "task";
+    public const string ServiceTask = "serviceTask";
     public const string ExclusiveGateway = "exclusiveGateway";
 
     public static bool IsStart(string type) =>
@@ -213,14 +269,17 @@ public static class BpmnFlowNodeTypes
     public static bool IsAutomatic(string type) =>
         string.Equals(type, Task, StringComparison.Ordinal);
 
+    public static bool IsServiceTask(string type) =>
+        string.Equals(type, ServiceTask, StringComparison.Ordinal);
+
     public static bool IsGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
 
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsAutomatic(type) || IsGateway(type);
+        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsGateway(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ExclusiveGateway;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ExclusiveGateway;
 }
 
 public static class WorkflowVariableTypes

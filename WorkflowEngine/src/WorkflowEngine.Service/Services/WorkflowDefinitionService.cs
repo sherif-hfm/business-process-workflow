@@ -118,10 +118,20 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                 throw new WorkflowDomainException($"End event #{node.Id} cannot have outgoing sequence flows.");
             }
 
-            if ((BpmnFlowNodeTypes.IsStart(node.Type) || BpmnFlowNodeTypes.IsAutomatic(node.Type)) && outgoing.Count != 1)
+            if ((BpmnFlowNodeTypes.IsStart(node.Type)
+                    || BpmnFlowNodeTypes.IsAutomatic(node.Type)
+                    || BpmnFlowNodeTypes.IsServiceTask(node.Type))
+                && outgoing.Count != 1)
             {
-                var kind = BpmnFlowNodeTypes.IsStart(node.Type) ? "Start event" : "Automatic task";
+                var kind = BpmnFlowNodeTypes.IsStart(node.Type)
+                    ? "Start event"
+                    : BpmnFlowNodeTypes.IsServiceTask(node.Type) ? "Service task" : "Automatic task";
                 throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
+            {
+                ValidateServiceTask(node);
             }
 
             if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
@@ -155,6 +165,62 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             }
 
             ValidateVariables(node.Variables, $"flow node #{node.Id}");
+        }
+    }
+
+    private static void ValidateServiceTask(FlowNodeModel node)
+    {
+        var service = node.Service
+            ?? throw new WorkflowDomainException($"Service task #{node.Id} must have a service configuration.");
+
+        if (string.IsNullOrWhiteSpace(service.Url))
+        {
+            throw new WorkflowDomainException($"Service task #{node.Id} must have a URL.");
+        }
+
+        var allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "GET", "POST", "PUT", "PATCH", "DELETE"
+        };
+        if (!allowedMethods.Contains(service.Method))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} has an unsupported HTTP method '{service.Method}'.");
+        }
+
+        if (service.TimeoutSeconds <= 0)
+        {
+            throw new WorkflowDomainException($"Service task #{node.Id} timeout must be greater than zero.");
+        }
+
+        if (!string.Equals(service.OnError, ServiceTaskErrorModes.Fail, StringComparison.Ordinal)
+            && !string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} onError must be '{ServiceTaskErrorModes.Fail}' or '{ServiceTaskErrorModes.Continue}'.");
+        }
+
+        foreach (var header in service.Headers)
+        {
+            if (string.IsNullOrWhiteSpace(header.Name))
+            {
+                throw new WorkflowDomainException($"Service task #{node.Id} has a header with no name.");
+            }
+        }
+
+        foreach (var mapping in service.OutputMappings)
+        {
+            if (string.IsNullOrWhiteSpace(mapping.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Service task #{node.Id} has an output mapping with no variable name.");
+            }
+
+            if (string.IsNullOrWhiteSpace(mapping.Path))
+            {
+                throw new WorkflowDomainException(
+                    $"Service task #{node.Id} output mapping for '{mapping.Variable}' must have a response path.");
+            }
         }
     }
 

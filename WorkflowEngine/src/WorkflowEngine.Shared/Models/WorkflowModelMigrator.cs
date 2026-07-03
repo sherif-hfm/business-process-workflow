@@ -161,6 +161,14 @@ public static class WorkflowModelMigrator
             node.Roles = [];
             node.Variables = [];
         }
+        else if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
+        {
+            // Service tasks are automatic; the REST configuration lives on node.Service.
+            node.RequiresClaim = false;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service ??= new ServiceTaskModel();
+        }
         else if (BpmnFlowNodeTypes.IsStart(node.Type))
         {
             node.RequiresClaim = false;

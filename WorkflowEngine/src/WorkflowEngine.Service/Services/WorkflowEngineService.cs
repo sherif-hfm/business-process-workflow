@@ -9,7 +9,8 @@ namespace WorkflowEngine.Service.Services;
 public sealed class WorkflowEngineService(
     IWorkflowDefinitionRepository definitions,
     IWorkflowRuntimeRepository runtime,
-    IUnitOfWork unitOfWork)
+    IUnitOfWork unitOfWork,
+    IServiceTaskInvoker serviceTaskInvoker)
     : IWorkflowEngineService
 {
     public async Task<InstanceDetailDto> StartInstanceAsync(
@@ -317,6 +318,14 @@ public sealed class WorkflowEngineService(
             }
 
             var variables = await LoadVariablesAsync(instance.Id, cancellationToken);
+
+            if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
+            {
+                await ExecuteServiceTaskAsync(instance, currentNode, variables, cancellationToken);
+                // Reload so downstream gateways/service tasks see any written outputs.
+                variables = await LoadVariablesAsync(instance.Id, cancellationToken);
+            }
+
             var flow = SelectPassThroughFlow(definition, currentNode, variables);
             var nextNode = GetFlowNode(definition, flow.TargetRef);
             var nextStatus = BpmnFlowNodeTypes.IsEnd(nextNode.Type)
@@ -327,6 +336,7 @@ public sealed class WorkflowEngineService(
             {
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
                 var t when BpmnFlowNodeTypes.IsGateway(t) => "gateway",
+                var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 _ => "automatic"
             };
 
@@ -384,11 +394,101 @@ public sealed class WorkflowEngineService(
 
         if (outgoing.Count != 1)
         {
-            var kind = BpmnFlowNodeTypes.IsStart(node.Type) ? "Start event" : "Automatic task";
+            var kind = BpmnFlowNodeTypes.IsStart(node.Type)
+                ? "Start event"
+                : BpmnFlowNodeTypes.IsServiceTask(node.Type) ? "Service task" : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 
         return outgoing[0];
+    }
+
+    private async Task ExecuteServiceTaskAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel node,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        CancellationToken cancellationToken)
+    {
+        var service = node.Service
+            ?? throw new WorkflowDomainException($"Service task #{node.Id} has no service configuration.");
+
+        var url = ServiceTaskTemplating.SubstituteScalar(service.Url, variables);
+        var headers = service.Headers
+            .Select(h => new ServiceTaskHeader(h.Name, ServiceTaskTemplating.SubstituteScalar(h.Value, variables)))
+            .ToList();
+        var body = string.IsNullOrEmpty(service.Body)
+            ? null
+            : ServiceTaskTemplating.SubstituteJson(service.Body, variables);
+
+        var request = new ServiceTaskRequest(service.Method, url, headers, body, service.TimeoutSeconds);
+        var result = await serviceTaskInvoker.InvokeAsync(request, cancellationToken);
+
+        if (result.IsSuccess)
+        {
+            await ApplyServiceOutputsAsync(instance.Id, service, result, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, service, result.StatusCode, cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        if (string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
+        {
+            await WriteStatusVariableAsync(instance.Id, service, result.StatusCode, cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var reason = result.Error ?? $"HTTP status {result.StatusCode}";
+        throw new WorkflowDomainException($"Service task #{node.Id} call to '{url}' failed ({reason}).");
+    }
+
+    private async Task ApplyServiceOutputsAsync(
+        long instanceId,
+        ServiceTaskModel service,
+        ServiceTaskResult result,
+        CancellationToken cancellationToken)
+    {
+        if (service.OutputMappings.Count == 0 || string.IsNullOrWhiteSpace(result.Body))
+        {
+            return;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(result.Body);
+        }
+        catch (JsonException)
+        {
+            // Non-JSON response body: nothing to map.
+            return;
+        }
+
+        using (document)
+        {
+            foreach (var mapping in service.OutputMappings)
+            {
+                if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
+                {
+                    await runtime.AddVariableAsync(instanceId, mapping.Variable, null, value.Clone(), cancellationToken);
+                }
+            }
+        }
+    }
+
+    private async Task WriteStatusVariableAsync(
+        long instanceId,
+        ServiceTaskModel service,
+        int statusCode,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(service.StatusVariable))
+        {
+            return;
+        }
+
+        var value = JsonSerializer.SerializeToElement(statusCode);
+        await runtime.AddVariableAsync(instanceId, service.StatusVariable, null, value, cancellationToken);
     }
 
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(

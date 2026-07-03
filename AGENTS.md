@@ -6,8 +6,9 @@ workflows in the browser. Users lay out **flow nodes** inside **lanes**
 edges), attach typed **variables**, and save/load the whole model as JSON.
 
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
-`startEvent`, `userTask`, `task`, `exclusiveGateway`, or `endEvent`, drawn with
-BPMN-style shapes (event circles, task rounded rectangles, gateway diamonds).
+`startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`, or
+`endEvent`, drawn with BPMN-style shapes (event circles, task rounded
+rectangles, gateway diamonds).
 Connections are first-class `sequenceFlows` with their own ids. See
 [BPMN alignment](#bpmn-alignment) for how the vocabulary maps to the standard
 and what is intentionally simplified.
@@ -111,10 +112,23 @@ Storage follows the hybrid design:
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
-  `task`, and `exclusiveGateway` nodes are resolved in the same transaction until
-  the instance rests on a `userTask` or terminates on an `endEvent`. A hop limit
-  (`flowNodes.Count + 1`) guards against cycles. History rows are written with a
-  `start`, `automatic`, or `gateway` note.
+  `task`, `serviceTask`, and `exclusiveGateway` nodes are resolved in the same
+  transaction until the instance rests on a `userTask` or terminates on an
+  `endEvent`. A hop limit (`flowNodes.Count + 1`) guards against cycles. History
+  rows are written with a `start`, `automatic`, `service`, or `gateway` note.
+- **Service tasks** call an external REST endpoint during the pass-through hop
+  (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
+  URL, header values, and JSON body are built by substituting `${var}`
+  placeholders from instance variables (`ServiceTaskTemplating`); on a `2xx`
+  response the configured `outputMappings` extract dotted-path values and write
+  them to instance variables (latest write wins). The call is synchronous inside
+  the locked transaction with a bounded `timeoutSeconds` and **no retries**; on a
+  non-2xx/timeout/network failure the node's `onError` decides: `fail` throws a
+  `WorkflowDomainException` (rolling back the transition) while `continue`
+  proceeds down the single outgoing flow. An optional `statusVariable` always
+  receives the HTTP status (0 on transport error) so a downstream gateway can
+  branch. Definitions are validated (`ValidateDefinition`) for a URL, allowed
+  method, positive timeout, valid `onError`, and complete output mappings.
 - **Exclusive gateways** evaluate outgoing flows: the first flow whose
   `condition` is true wins; otherwise the `isDefault` flow is taken; if neither
   matches the transition fails. Conditions are evaluated by
@@ -252,12 +266,13 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 {
   "id": 1,
   "name": "Request Submitted",
-  "type": "startEvent",        // startEvent | userTask | task | exclusiveGateway | endEvent
+  "type": "startEvent",        // startEvent | userTask | task | serviceTask | exclusiveGateway | endEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
-  "variables": [ /* Variable[] */ ] // startEvent (data to start) / userTask
+  "variables": [ /* Variable[] */ ], // startEvent (data to start) / userTask
+  "service": { /* ServiceTaskConfig */ } // serviceTask only (REST call config)
 }
 ```
 
@@ -270,6 +285,11 @@ Node kinds and their outgoing-flow rules:
   user choice). Taking a flow is the "action".
 - **`task`**: automatic pass-through; rounded rectangle with AUTO marker. Exactly
   one unconditional outgoing flow, followed on entry with no user action.
+- **`serviceTask`**: automatic REST call; rounded rectangle with SVC marker.
+  Carries a `service` config (method, URL, headers, JSON body, timeout, output
+  mappings) and exactly one unconditional outgoing flow. On entry the engine
+  calls the endpoint, writes response fields into instance variables, then
+  follows the flow. No user action.
 - **`exclusiveGateway`**: routing node; diamond on canvas. Two or more outgoing
   flows with `condition`s plus one `isDefault`; the engine picks the first
   matching condition, else the default. No user interaction.
@@ -310,6 +330,32 @@ Typed data attached to a start event (node) or a user-task sequence flow.
 }
 ```
 
+### ServiceTaskConfig
+The REST configuration on a `serviceTask` flow node (`flowNode.service`).
+
+```jsonc
+{
+  "method": "POST",            // GET | POST | PUT | PATCH | DELETE
+  "url": "https://api.example.com/credit/${customerId}", // ${var} templated
+  "headers": [                 // ${var} templated values
+    { "name": "Authorization", "value": "Bearer ${apiToken}" }
+  ],
+  "body": "{ \"amount\": ${amount} }", // JSON template; ${var} -> variable's JSON value
+  "timeoutSeconds": 30,        // per-call timeout (no retries)
+  "onError": "fail",           // "fail" (roll back) | "continue" (follow the flow)
+  "statusVariable": "creditStatus", // optional; receives the HTTP status (0 on transport error)
+  "outputMappings": [          // response field -> instance variable (applied on 2xx)
+    { "variable": "creditScore", "path": "score" },
+    { "variable": "approved", "path": "decision.approved" }
+  ]
+}
+```
+
+In `url` and header values a `${var}` placeholder becomes the variable's scalar
+text; in `body` it becomes the variable's JSON representation (so authors write
+`${var}` unquoted and still produce valid JSON). Output `path` is dotted
+(`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
+
 ---
 
 ## BPMN alignment
@@ -325,7 +371,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `flowNode` | Flow node | Umbrella term for events, tasks, and gateways. |
 | `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). |
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
-| `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task/Service Task without an implementation. |
+| `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
+| `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
@@ -341,6 +388,10 @@ when extending the model so new features stay close to BPMN terminology.
 - **Only exclusive gateways.** No parallel/inclusive/event-based gateways yet;
   branching is either a `userTask` with multiple named flows or an
   `exclusiveGateway` routed by conditions.
+- **Service tasks are REST only.** A `serviceTask` invokes an HTTP/REST endpoint
+  synchronously during the pass-through hop with a bounded timeout and no
+  retries, incidents, or async job execution; other BPMN implementations
+  (connectors, expressions, message/send-receive) are out of scope.
 - **No message/timer/signal events.** Only plain (none) start and end events.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
@@ -362,8 +413,8 @@ when extending the model so new features stay close to BPMN terminology.
 - Keep the JSON tolerant: extend `loadFromObject()` (editor) and
   `WorkflowModelMigrator` (.NET) so older documents still load.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
-  `IsUserTask`, `IsGateway`, `IsPassThrough`) and `ValidateDefinition` together so
-  the engine and editor agree.
+  `IsServiceTask`, `IsUserTask`, `IsGateway`, `IsPassThrough`) and
+  `ValidateDefinition` together so the engine and editor agree.
 
 ---
 

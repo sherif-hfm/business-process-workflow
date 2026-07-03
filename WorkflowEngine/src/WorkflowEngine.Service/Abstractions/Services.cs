@@ -78,3 +78,40 @@ public interface IWorkflowEngineService
 
     Task<bool> CancelAsync(long id, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// A fully-resolved outgoing REST request for a service task (all ${var}
+/// placeholders already substituted).
+/// </summary>
+public sealed record ServiceTaskRequest(
+    string Method,
+    string Url,
+    IReadOnlyList<ServiceTaskHeader> Headers,
+    string? Body,
+    int TimeoutSeconds);
+
+public sealed record ServiceTaskHeader(string Name, string Value);
+
+/// <summary>
+/// Outcome of a service-task REST call. <see cref="Completed"/> is false for
+/// transport failures (timeout / network), in which case <see cref="StatusCode"/>
+/// is 0. A completed call still reports its real <see cref="StatusCode"/> even
+/// when it is not a 2xx.
+/// </summary>
+public sealed record ServiceTaskResult(
+    bool Completed,
+    int StatusCode,
+    string? Body,
+    string? Error)
+{
+    public bool IsSuccess => Completed && StatusCode is >= 200 and < 300;
+}
+
+/// <summary>
+/// Executes a resolved <see cref="ServiceTaskRequest"/> against an external REST
+/// endpoint. Implemented in the infrastructure layer over <c>HttpClient</c>.
+/// </summary>
+public interface IServiceTaskInvoker
+{
+    Task<ServiceTaskResult> InvokeAsync(ServiceTaskRequest request, CancellationToken cancellationToken);
+}
