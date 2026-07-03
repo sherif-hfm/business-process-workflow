@@ -72,7 +72,9 @@ Projects:
 - `src/WorkflowEngine.Api` - API layer: Minimal API endpoints, OpenAPI, startup
   composition, development migration/seed.
 - `src/WorkflowEngine.Service` - Service layer: workflow engine behavior,
-  definition validation, service interfaces, repository ports, and DI extension.
+  definition validation, sequence-flow condition evaluation
+  (`SequenceFlowConditionEvaluator`, NCalc), service interfaces, repository
+  ports, and DI extension.
 - `src/WorkflowEngine.Infrastructure` - Infrastructure layer: EF Core,
   PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations, and
   unit of work.

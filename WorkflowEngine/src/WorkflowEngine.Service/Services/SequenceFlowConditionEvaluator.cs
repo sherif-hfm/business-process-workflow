@@ -3,7 +3,7 @@ using System.Text.Json;
 using NCalc;
 using NCalc.Exceptions;
 
-namespace WorkflowEngine.Shared.Models;
+namespace WorkflowEngine.Service.Services;
 
 /// <summary>
 /// Evaluates condition expressions on exclusive-gateway outgoing flows using
