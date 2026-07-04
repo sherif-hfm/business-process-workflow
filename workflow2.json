@@ -1,0 +1,86 @@
+{
+  "id": 2,
+  "name": "send sms",
+  "initialEventId": 1,
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 119,
+      "roles": [],
+      "requiresClaim": false,
+      "variables": [
+        {
+          "id": 1,
+          "name": "mobile",
+          "dataType": "string",
+          "isArray": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "send sms",
+      "type": "serviceTask",
+      "laneId": null,
+      "x": 295,
+      "y": 111,
+      "roles": [],
+      "requiresClaim": false,
+      "variables": [],
+      "service": {
+        "method": "POST",
+        "url": "http://localhost:3000/sms",
+        "headers": [],
+        "body": "{\n\"mobile\":${mobile},\n\"msg\":\"hi\"\n}",
+        "timeoutSeconds": 30,
+        "onError": "fail",
+        "statusVariable": "",
+        "outputMappings": [
+          {
+            "variable": "smsId",
+            "path": "smsId"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "stop",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 628,
+      "y": 119,
+      "roles": [],
+      "requiresClaim": false,
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 102,
+      "name": "",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    }
+  ]
+}
