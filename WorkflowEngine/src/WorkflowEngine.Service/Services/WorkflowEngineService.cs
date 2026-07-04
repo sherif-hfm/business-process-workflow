@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
 using WorkflowEngine.Shared.Dtos;
@@ -40,16 +41,15 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), startedBy, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        foreach (var variable in startEvent.Variables)
+        // Resolve templated defaults and run NCalc validation against the final values
+        // overlaid with sys.*/config.* context, then persist each resolved value.
+        var startContext = WithContext(
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            actor, instance, workflow.Definition, startEvent);
+        var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
+        foreach (var pair in startValues)
         {
-            if (TryGetValue(variableValues, variable.Name, out var value))
-            {
-                await runtime.AddVariableAsync(instance.Id, variable.Name, null, value, cancellationToken);
-            }
-            else if (TryGetDefault(variable, out var defaultValue))
-            {
-                await runtime.AddVariableAsync(instance.Id, variable.Name, null, defaultValue, cancellationToken);
-            }
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, pair.Value, cancellationToken);
         }
 
         // Flush variables so pass-through gateways can read them within this transaction.
@@ -241,16 +241,15 @@ public sealed class WorkflowEngineService(
         EnsureActionAllowedByClaim(node, instance, performedBy);
 
         ValidateVariableValues(flow.Variables, variableValues);
-        foreach (var variable in flow.Variables)
+
+        // Resolve templated defaults and run NCalc validation against the existing
+        // stored variables plus the final flow values, overlaid with context.
+        var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var flowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
+        var flowValues = ResolveAndValidateVariables(flow.Variables, variableValues, flowContext);
+        foreach (var pair in flowValues)
         {
-            if (TryGetValue(variableValues, variable.Name, out var value))
-            {
-                await runtime.AddVariableAsync(instance.Id, variable.Name, flow.Id, value, cancellationToken);
-            }
-            else if (TryGetDefault(variable, out var defaultValue))
-            {
-                await runtime.AddVariableAsync(instance.Id, variable.Name, flow.Id, defaultValue, cancellationToken);
-            }
+            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, pair.Value, cancellationToken);
         }
 
         var payload = CloneDictionary(variableValues);
@@ -660,9 +659,59 @@ public sealed class WorkflowEngineService(
         return false;
     }
 
-    // A missing optional variable falls back to its authored default (coerced to the
-    // declared data type) which is then persisted like any supplied value.
-    private static bool TryGetDefault(VariableModel variable, out JsonElement value)
+    // Resolves the final value for each scope variable and validates it: a supplied
+    // value wins; otherwise a templated/coerced default is applied when present.
+    // String defaults may carry ${...} placeholders resolved against the running map
+    // (base stored vars + sys.*/config.* context + already-resolved values), so a
+    // later default can reference an earlier one. Each variable's NCalc validation
+    // rule is then evaluated against the final map; a falsy result rejects the call.
+    private static Dictionary<string, JsonElement> ResolveAndValidateVariables(
+        IReadOnlyList<VariableModel> variables,
+        Dictionary<string, JsonElement>? variableValues,
+        Dictionary<string, JsonElement> contextBase)
+    {
+        var working = new Dictionary<string, JsonElement>(contextBase, StringComparer.OrdinalIgnoreCase);
+        var resolved = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var variable in variables)
+        {
+            if (TryGetValue(variableValues, variable.Name, out var value))
+            {
+                resolved[variable.Name] = value;
+                working[variable.Name] = value;
+            }
+            else if (TryResolveDefault(variable, working, out var defaultValue))
+            {
+                resolved[variable.Name] = defaultValue;
+                working[variable.Name] = defaultValue;
+            }
+        }
+
+        foreach (var variable in variables)
+        {
+            if (string.IsNullOrWhiteSpace(variable.Validation))
+            {
+                continue;
+            }
+
+            if (!SequenceFlowConditionEvaluator.Evaluate(variable.Validation, working))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' failed validation: '{variable.Validation}'.");
+            }
+        }
+
+        return resolved;
+    }
+
+    // A missing optional variable falls back to its authored default: any ${...}
+    // placeholders in a string default (or string array elements) are substituted
+    // from the running map, then the value is coerced to the declared data type and
+    // persisted like any supplied value.
+    private static bool TryResolveDefault(
+        VariableModel variable,
+        IReadOnlyDictionary<string, JsonElement> map,
+        out JsonElement value)
     {
         value = default;
         if (variable.DefaultValue is not { } raw
@@ -671,8 +720,36 @@ public sealed class WorkflowEngineService(
             return false;
         }
 
-        value = CoerceDefault(raw, variable);
+        value = CoerceDefault(SubstituteDefault(raw, map), variable);
         return true;
+    }
+
+    // Substitutes ${...} placeholders in a string default (or each string element of
+    // an array default). Non-string values pass through unchanged.
+    private static JsonElement SubstituteDefault(
+        JsonElement raw,
+        IReadOnlyDictionary<string, JsonElement> map)
+    {
+        if (raw.ValueKind == JsonValueKind.String)
+        {
+            return JsonSerializer.SerializeToElement(
+                ServiceTaskTemplating.SubstituteScalar(raw.GetString(), map));
+        }
+
+        if (raw.ValueKind == JsonValueKind.Array)
+        {
+            var array = new JsonArray();
+            foreach (var item in raw.EnumerateArray())
+            {
+                array.Add(item.ValueKind == JsonValueKind.String
+                    ? ServiceTaskTemplating.SubstituteScalar(item.GetString(), map)
+                    : JsonNode.Parse(item.GetRawText()));
+            }
+
+            return JsonSerializer.SerializeToElement(array);
+        }
+
+        return raw.Clone();
     }
 
     private static JsonElement CoerceDefault(JsonElement raw, VariableModel variable)

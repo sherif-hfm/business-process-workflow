@@ -205,10 +205,20 @@ public sealed class VariableModel
     public bool Required { get; set; }
 
     // Optional variables only: applied (and persisted) when no value is supplied
-    // at start / flow-take. Held as raw JSON so any data type round-trips.
+    // at start / flow-take. Held as raw JSON so any data type round-trips. A string
+    // default may contain ${...} placeholders (other variables + sys.*/config.*
+    // context) that are resolved before the value is coerced and persisted.
     [JsonPropertyName("defaultValue")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonElement? DefaultValue { get; set; }
+
+    // Optional NCalc expression validated at start / flow-take against the final
+    // collected values (supplied + resolved defaults) overlaid with sys.*/config.*
+    // context. A falsy or unresolvable expression rejects the operation. Empty means
+    // no rule. Parse-checked at author time in ValidateDefinition.
+    [JsonPropertyName("validation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Validation { get; set; }
 }
 
 public sealed class LegacyStepModel

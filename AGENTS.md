@@ -343,7 +343,8 @@ Typed data attached to a start event (node) or a user-task sequence flow.
   "dataType": "number",        // "string" | "number" | "boolean" | "date" | "datetime"
   "isArray": false,
   "required": true,
-  "defaultValue": null         // optional vars only: value persisted when none supplied
+  "defaultValue": null,        // optional vars only: value (or ${...} template) persisted when none supplied
+  "validation": null           // optional NCalc rule checked at start / flow-take (nullable)
 }
 ```
 
@@ -354,6 +355,28 @@ instance variable** exactly like a supplied value, so gateways, service tasks,
 history, and variable search all see it. Required variables still must be
 supplied. Names beginning with the reserved `sys.` / `config.` prefixes are
 rejected by `ValidateDefinition` (see context sources below).
+
+A **string** `defaultValue` (or each string element of an array default) may
+contain `${...}` placeholders. They are resolved just before the default is
+coerced and persisted, against a map of the other collected values for that scope
+overlaid with read-only `sys.*` / `config.*` context (context wins on collision),
+so a default of `"${sys.user}"` records the caller and `"${amount}"` copies
+another supplied value. Defaults are resolved in list order, so a later default
+can reference an earlier one; a missing placeholder resolves to an empty string
+(same rule as service-task `SubstituteScalar`). This resolution happens in
+`ResolveAndValidateVariables` (`WorkflowEngineService`) at both start and
+flow-take, using the same context map as service tasks / gateways.
+
+`validation` is an optional **NCalc** expression (any variable, required or not).
+After the required-presence check and after defaults are resolved, each rule is
+evaluated against the final collected values overlaid with `sys.*` / `config.*`
+context, reusing `SequenceFlowConditionEvaluator.Evaluate` (the gateway
+evaluator). A falsy or unresolvable expression rejects the start / flow-take with
+a `WorkflowDomainException` (`Variable '<name>' failed validation: '<expr>'`).
+Because it shares the gateway grammar, comparisons, boolean/arithmetic operators,
+bare-variable truthiness, and bracketed context names (e.g. `[sys.user]`) all
+work. Expressions are parse-checked at author time in `ValidateDefinition`
+(`ValidateVariables` -> `SequenceFlowConditionEvaluator.IsValid`).
 
 ### ServiceTaskConfig
 The REST configuration on a `serviceTask` flow node (`flowNode.service`).
@@ -387,13 +410,15 @@ string inside a string and `null` in a bare position. Output `path` is dotted
 
 ### Context sources (`sys.*` / `config.*`)
 
-Beyond stored instance variables, service-task templates and exclusive-gateway
-conditions can read **read-only context** resolved at evaluation time and
-**never persisted** to `instance_variables`. During pass-through routing
-(`ResolvePassThroughAsync`), `WithContext` overlays a context map (built by
-`BuildContextMap` from the `ActorContext`, the instance, the definition, the
-current node, an injected `TimeProvider`, and `WorkflowContextOptions`) onto a
-copy of the stored variables; context wins on any name collision. Available keys:
+Beyond stored instance variables, service-task templates, exclusive-gateway
+conditions, and variable `defaultValue` templates / `validation` rules can read
+**read-only context** resolved at evaluation time and **never persisted** to
+`instance_variables`. During pass-through routing (`ResolvePassThroughAsync`) and
+at start / flow-take (variable default resolution and validation), `WithContext`
+overlays a context map (built by `BuildContextMap` from the `ActorContext`, the
+instance, the definition, the current node, an injected `TimeProvider`, and
+`WorkflowContextOptions`) onto a copy of the stored variables; context wins on any
+name collision. Available keys:
 
 - `sys.now` (UTC ISO-8601), `sys.today` (`yyyy-MM-dd`)
 - `sys.user`, `sys.roles` (array)

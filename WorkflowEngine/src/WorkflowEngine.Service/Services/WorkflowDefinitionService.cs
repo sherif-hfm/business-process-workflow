@@ -301,6 +301,13 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             {
                 throw new WorkflowDomainException($"Variable '{variable.Name}' on {owner} has unsupported type '{variable.DataType}'.");
             }
+
+            if (!string.IsNullOrWhiteSpace(variable.Validation)
+                && !SequenceFlowConditionEvaluator.IsValid(variable.Validation))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} has an invalid validation expression: '{variable.Validation}'.");
+            }
         }
     }
 

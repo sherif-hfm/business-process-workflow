@@ -10,7 +10,7 @@
       "type": "startEvent",
       "laneId": null,
       "x": 100,
-      "y": 119,
+      "y": 118,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
@@ -22,7 +22,17 @@
           "dataType": "string",
           "isArray": false,
           "required": true,
-          "defaultValue": null
+          "defaultValue": null,
+          "validation": null
+        },
+        {
+          "id": 2,
+          "name": "user",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "${sys.user}",
+          "validation": null
         }
       ]
     },

@@ -429,8 +429,8 @@ function seedSample() {
     flowNodes: [
       { id: 1, name: "Request Submitted", type: "startEvent", laneId: 1, x: 90, y: 80, roles: [], requiresClaim: false,
         variables: [
-          { id: 1, name: "requester", dataType: "string", isArray: false, required: true },
-          { id: 2, name: "amount", dataType: "number", isArray: false, required: true },
+          { id: 1, name: "requester", dataType: "string", isArray: false, required: false, defaultValue: "${sys.user}" },
+          { id: 2, name: "amount", dataType: "number", isArray: false, required: true, validation: "amount > 0 and amount <= 100000" },
           { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
         ] },
       { id: 2, name: "Manager Review", type: "userTask", laneId: 2, x: 360, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
@@ -1105,11 +1105,24 @@ function variableRow(owner, variable) {
     const defInput = document.createElement("input");
     defInput.type = "text";
     defInput.value = defaultValueToText(variable.defaultValue);
-    defInput.placeholder = variable.isArray ? "comma,separated,values" : "value used when left empty";
+    defInput.placeholder = variable.isArray
+      ? "comma,separated,values or ${var}/${sys.user}"
+      : "value or template, e.g. ${sys.user}, ${otherVar}";
     defInput.oninput = () => { variable.defaultValue = parseDefaultValue(defInput.value, variable); };
     defField.appendChild(defInput);
     box.appendChild(defField);
   }
+
+  const valField = document.createElement("div");
+  valField.className = "field";
+  valField.innerHTML = "<label>Validation (NCalc, optional)</label>";
+  const valInput = document.createElement("input");
+  valInput.type = "text";
+  valInput.value = variable.validation ?? "";
+  valInput.placeholder = "e.g. amount > 0 and amount <= 10000";
+  valInput.oninput = () => { variable.validation = valInput.value.trim() === "" ? null : valInput.value; };
+  valField.appendChild(valInput);
+  box.appendChild(valField);
 
   const del = document.createElement("button");
   del.textContent = "Delete variable";
@@ -1192,7 +1205,8 @@ function addVariable(owner) {
     dataType: "string",
     isArray: false,
     required: false,
-    defaultValue: null
+    defaultValue: null,
+    validation: null
   });
   renderInspector();
 }
@@ -1204,6 +1218,8 @@ function defaultValueToText(value) {
 function coerceDefaultScalar(text, dataType) {
   const t = text.trim();
   if (t === "") return null;
+  // Keep ${...} templates as raw strings; the engine substitutes and coerces them.
+  if (t.includes("${")) return t;
   if (dataType === "number") { const n = Number(t); return Number.isNaN(n) ? t : n; }
   if (dataType === "boolean") return /^(true|1|yes)$/i.test(t);
   return t;
@@ -1433,7 +1449,8 @@ function normalizeVariable(v) {
     dataType: v.dataType ?? "string",
     isArray: !!v.isArray,
     required: !!v.required,
-    defaultValue: v.required ? null : (v.defaultValue ?? null)
+    defaultValue: v.required ? null : (v.defaultValue ?? null),
+    validation: (v.validation ?? "").trim() === "" ? null : v.validation
   };
 }
 function mapLegacyNodeType(s) {
