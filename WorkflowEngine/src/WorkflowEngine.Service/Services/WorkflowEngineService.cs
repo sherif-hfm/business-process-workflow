@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
@@ -10,7 +11,9 @@ public sealed class WorkflowEngineService(
     IWorkflowDefinitionRepository definitions,
     IWorkflowRuntimeRepository runtime,
     IUnitOfWork unitOfWork,
-    IServiceTaskInvoker serviceTaskInvoker)
+    IServiceTaskInvoker serviceTaskInvoker,
+    WorkflowContextOptions contextOptions,
+    TimeProvider timeProvider)
     : IWorkflowEngineService
 {
     public async Task<InstanceDetailDto> StartInstanceAsync(
@@ -43,11 +46,15 @@ public sealed class WorkflowEngineService(
             {
                 await runtime.AddVariableAsync(instance.Id, variable.Name, null, value, cancellationToken);
             }
+            else if (TryGetDefault(variable, out var defaultValue))
+            {
+                await runtime.AddVariableAsync(instance.Id, variable.Name, null, defaultValue, cancellationToken);
+            }
         }
 
         // Flush variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, workflow.Definition, startedBy, cancellationToken);
+        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -240,6 +247,10 @@ public sealed class WorkflowEngineService(
             {
                 await runtime.AddVariableAsync(instance.Id, variable.Name, flow.Id, value, cancellationToken);
             }
+            else if (TryGetDefault(variable, out var defaultValue))
+            {
+                await runtime.AddVariableAsync(instance.Id, variable.Name, flow.Id, defaultValue, cancellationToken);
+            }
         }
 
         var payload = CloneDictionary(variableValues);
@@ -269,7 +280,7 @@ public sealed class WorkflowEngineService(
         await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(nextNode), instance.Status, null, cancellationToken);
         // Flush captured variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, workflow.Definition, performedBy, cancellationToken);
+        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -302,9 +313,10 @@ public sealed class WorkflowEngineService(
     private async Task<WorkflowInstanceRecord> ResolvePassThroughAsync(
         WorkflowInstanceRecord instance,
         WorkflowModel definition,
-        string? performedBy,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
+        var performedBy = actor.User;
         var maxHops = definition.FlowNodes.Count + 1;
         for (var hop = 0; hop < maxHops; hop++)
         {
@@ -319,13 +331,17 @@ public sealed class WorkflowEngineService(
                 return instance;
             }
 
-            var variables = await LoadVariablesAsync(instance.Id, cancellationToken);
+            // Stored instance variables overlaid with read-only sys.*/config.* context.
+            // The merged map is used only for evaluation and is never persisted.
+            var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+            var variables = WithContext(stored, actor, instance, definition, currentNode);
 
             if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
             {
                 await ExecuteServiceTaskAsync(instance, currentNode, variables, cancellationToken);
                 // Reload so downstream gateways/service tasks see any written outputs.
-                variables = await LoadVariablesAsync(instance.Id, cancellationToken);
+                stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+                variables = WithContext(stored, actor, instance, definition, currentNode);
             }
 
             var flow = SelectPassThroughFlow(definition, currentNode, variables);
@@ -553,6 +569,137 @@ public sealed class WorkflowEngineService(
         }
 
         return result;
+    }
+
+    // Returns a copy of the stored variables overlaid with read-only context
+    // (sys.*/config.*). Context wins on collision so it can never be spoofed by a
+    // stored variable. The result is for evaluation only and is never persisted.
+    private Dictionary<string, JsonElement> WithContext(
+        Dictionary<string, JsonElement> stored,
+        ActorContext actor,
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        FlowNodeModel currentNode)
+    {
+        var merged = new Dictionary<string, JsonElement>(stored, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in BuildContextMap(actor, instance, definition, currentNode))
+        {
+            merged[pair.Key] = pair.Value;
+        }
+
+        return merged;
+    }
+
+    private Dictionary<string, JsonElement> BuildContextMap(
+        ActorContext actor,
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        FlowNodeModel currentNode)
+    {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var map = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        void Put(string key, object? value) => map[key] = JsonSerializer.SerializeToElement(value);
+
+        Put("sys.now", now.ToString("o", CultureInfo.InvariantCulture));
+        Put("sys.today", now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        Put("sys.user", actor.User ?? string.Empty);
+        Put("sys.roles", actor.Roles.ToArray());
+        Put("sys.instanceId", instance.Id);
+        Put("sys.workflowId", instance.WorkflowDefinitionId);
+        Put("sys.workflowName", definition.Name);
+        Put("sys.nodeId", currentNode.Id);
+        Put("sys.nodeName", currentNode.Name);
+
+        foreach (var allowed in contextOptions.AllowedClaims ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(allowed)
+                && TryResolveClaim(actor.Claims, allowed, out var claimValue))
+            {
+                Put($"sys.claim.{allowed}", claimValue);
+            }
+        }
+
+        if (contextOptions.Config is { } config)
+        {
+            foreach (var pair in config)
+            {
+                Put($"config.{pair.Key}", pair.Value);
+            }
+        }
+
+        return map;
+    }
+
+    // Resolves an allowlisted claim by exact type or by the last segment of a
+    // URI-style claim type (e.g. "email" matches ".../claims/emailaddress" only when
+    // the suffix equals the requested name).
+    private static bool TryResolveClaim(
+        IReadOnlyDictionary<string, string> claims,
+        string name,
+        out string value)
+    {
+        if (claims.TryGetValue(name, out var direct))
+        {
+            value = direct;
+            return true;
+        }
+
+        foreach (var pair in claims)
+        {
+            var slash = pair.Key.LastIndexOf('/');
+            if (slash >= 0 && slash < pair.Key.Length - 1
+                && string.Equals(pair.Key[(slash + 1)..], name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = pair.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    // A missing optional variable falls back to its authored default (coerced to the
+    // declared data type) which is then persisted like any supplied value.
+    private static bool TryGetDefault(VariableModel variable, out JsonElement value)
+    {
+        value = default;
+        if (variable.DefaultValue is not { } raw
+            || raw.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return false;
+        }
+
+        value = CoerceDefault(raw, variable);
+        return true;
+    }
+
+    private static JsonElement CoerceDefault(JsonElement raw, VariableModel variable)
+    {
+        // Arrays/objects and already-typed values are kept as authored; only a loosely
+        // typed string default for a number/boolean is parsed to the right JSON kind.
+        if (variable.IsArray || raw.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
+        {
+            return raw.Clone();
+        }
+
+        if (raw.ValueKind == JsonValueKind.String)
+        {
+            var text = raw.GetString();
+            switch (variable.DataType)
+            {
+                case WorkflowVariableTypes.Number
+                    when double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var number):
+                    return number % 1 == 0 && Math.Abs(number) < 9.2e18
+                        ? JsonSerializer.SerializeToElement((long)number)
+                        : JsonSerializer.SerializeToElement(number);
+                case WorkflowVariableTypes.Boolean when bool.TryParse(text, out var flag):
+                    return JsonSerializer.SerializeToElement(flag);
+            }
+        }
+
+        return raw.Clone();
     }
 
     private async Task<InstanceDetailDto?> BuildDetailAsync(long id, CancellationToken cancellationToken)

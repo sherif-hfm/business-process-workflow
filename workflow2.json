@@ -21,7 +21,8 @@
           "name": "mobile",
           "dataType": "string",
           "isArray": false,
-          "required": true
+          "required": true,
+          "defaultValue": null
         }
       ]
     },
@@ -41,7 +42,7 @@
         "method": "POST",
         "url": "http://localhost:3000/sms",
         "headers": [],
-        "body": "{\n\"mobile\":${mobile},\n\"msg\":\"hi\"\n}",
+        "body": "{\n\"mobile\":${mobile},\n\"msg\":\"hi ${sys.user}\"\n}",
         "timeoutSeconds": 30,
         "onError": "fail",
         "statusVariable": "",

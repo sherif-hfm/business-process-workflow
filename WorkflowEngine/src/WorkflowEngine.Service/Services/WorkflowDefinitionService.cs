@@ -290,6 +290,13 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                 throw new WorkflowDomainException($"Variable name is required on {owner}.");
             }
 
+            if (variable.Name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} uses the reserved 'sys.'/'config.' prefix.");
+            }
+
             if (!allowedTypes.Contains(variable.DataType))
             {
                 throw new WorkflowDomainException($"Variable '{variable.Name}' on {owner} has unsupported type '{variable.DataType}'.");

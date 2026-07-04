@@ -7,10 +7,31 @@ namespace WorkflowEngine.Service.Abstractions;
 /// <summary>
 /// Identity of the caller performing an operation, derived from the validated JWT
 /// (name + role claims). <see cref="Roles"/> is empty when the token carries none.
+/// <see cref="Claims"/> carries the token's raw claims (type -> value, first wins);
+/// the engine exposes only allowlisted entries as <c>sys.claim.*</c> context values.
 /// </summary>
-public sealed record ActorContext(string? User, IReadOnlyCollection<string> Roles)
+public sealed record ActorContext(
+    string? User,
+    IReadOnlyCollection<string> Roles,
+    IReadOnlyDictionary<string, string> Claims)
 {
-    public static readonly ActorContext Anonymous = new(null, []);
+    public static readonly ActorContext Anonymous =
+        new(null, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+}
+
+/// <summary>
+/// Server-side configuration for read-only workflow context sources. <see cref="Config"/>
+/// values are exposed as <c>config.*</c> placeholders/parameters (keeps secrets out of the
+/// versioned definition JSON); <see cref="AllowedClaims"/> whitelists which JWT claims are
+/// exposed as <c>sys.claim.*</c>. Neither is ever persisted to instance variables.
+/// </summary>
+public sealed class WorkflowContextOptions
+{
+    public const string SectionName = "WorkflowContext";
+
+    public Dictionary<string, string> Config { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public List<string> AllowedClaims { get; set; } = [];
 }
 
 public interface IWorkflowDefinitionService

@@ -1092,7 +1092,24 @@ function variableRow(owner, variable) {
   box.appendChild(typeField);
 
   box.appendChild(variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; }));
-  box.appendChild(variableCheckbox("Required", variable.required, checked => { variable.required = checked; }));
+  box.appendChild(variableCheckbox("Required", variable.required, checked => {
+    variable.required = checked;
+    if (checked) variable.defaultValue = null;
+    renderInspector();
+  }));
+
+  if (!variable.required) {
+    const defField = document.createElement("div");
+    defField.className = "field";
+    defField.innerHTML = "<label>Default value (optional)</label>";
+    const defInput = document.createElement("input");
+    defInput.type = "text";
+    defInput.value = defaultValueToText(variable.defaultValue);
+    defInput.placeholder = variable.isArray ? "comma,separated,values" : "value used when left empty";
+    defInput.oninput = () => { variable.defaultValue = parseDefaultValue(defInput.value, variable); };
+    defField.appendChild(defInput);
+    box.appendChild(defField);
+  }
 
   const del = document.createElement("button");
   del.textContent = "Delete variable";
@@ -1174,9 +1191,30 @@ function addVariable(owner) {
     name: "variable",
     dataType: "string",
     isArray: false,
-    required: false
+    required: false,
+    defaultValue: null
   });
   renderInspector();
+}
+function defaultValueToText(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.join(", ");
+  return String(value);
+}
+function coerceDefaultScalar(text, dataType) {
+  const t = text.trim();
+  if (t === "") return null;
+  if (dataType === "number") { const n = Number(t); return Number.isNaN(n) ? t : n; }
+  if (dataType === "boolean") return /^(true|1|yes)$/i.test(t);
+  return t;
+}
+function parseDefaultValue(text, variable) {
+  if ((text ?? "").trim() === "") return null;
+  if (variable.isArray) {
+    const items = text.split(",").map(s => coerceDefaultScalar(s, variable.dataType)).filter(v => v !== null);
+    return items.length ? items : null;
+  }
+  return coerceDefaultScalar(text, variable.dataType);
 }
 
 /* ---------- Selection ---------- */
@@ -1394,7 +1432,8 @@ function normalizeVariable(v) {
     name: v.name ?? v.label ?? `Variable ${v.id}`,
     dataType: v.dataType ?? "string",
     isArray: !!v.isArray,
-    required: !!v.required
+    required: !!v.required,
+    defaultValue: v.required ? null : (v.defaultValue ?? null)
   };
 }
 function mapLegacyNodeType(s) {

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace WorkflowEngine.Shared.Models;
@@ -202,6 +203,12 @@ public sealed class VariableModel
 
     [JsonPropertyName("required")]
     public bool Required { get; set; }
+
+    // Optional variables only: applied (and persisted) when no value is supplied
+    // at start / flow-take. Held as raw JSON so any data type round-trips.
+    [JsonPropertyName("defaultValue")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? DefaultValue { get; set; }
 }
 
 public sealed class LegacyStepModel

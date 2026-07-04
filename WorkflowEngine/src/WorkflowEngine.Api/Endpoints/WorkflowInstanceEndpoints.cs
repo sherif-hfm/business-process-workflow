@@ -135,6 +135,15 @@ public static class WorkflowInstanceEndpoints
         var roles = principal.FindAll(ClaimTypes.Role)
             .Select(claim => claim.Value)
             .ToArray();
-        return new ActorContext(user, roles);
+
+        // Capture all claims (first value per type); the engine applies the
+        // configured allowlist when exposing them as sys.claim.* context values.
+        var claims = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var claim in principal.Claims)
+        {
+            claims.TryAdd(claim.Type, claim.Value);
+        }
+
+        return new ActorContext(user, roles, claims);
     }
 }

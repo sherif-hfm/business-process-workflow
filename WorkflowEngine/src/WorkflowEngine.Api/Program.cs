@@ -4,6 +4,7 @@ using Microsoft.IdentityModel.Tokens;
 using WorkflowEngine.Api.Endpoints;
 using WorkflowEngine.Infrastructure.Data;
 using WorkflowEngine.Infrastructure.DependencyInjection;
+using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.DependencyInjection;
 using WorkflowEngine.Service.Services;
 
@@ -32,6 +33,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 builder.Services.AddOpenApi();
+
+// Read-only workflow context sources (sys.* / config.*) and a clock for sys.now/today.
+var workflowContextOptions = builder.Configuration
+    .GetSection(WorkflowContextOptions.SectionName)
+    .Get<WorkflowContextOptions>() ?? new WorkflowContextOptions();
+builder.Services.AddSingleton(workflowContextOptions);
+builder.Services.AddSingleton(TimeProvider.System);
+
 builder.Services
     .AddServiceLayer()
     .AddInfrastructure(builder.Configuration);

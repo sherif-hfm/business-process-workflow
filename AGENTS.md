@@ -342,9 +342,18 @@ Typed data attached to a start event (node) or a user-task sequence flow.
   "name": "reqno",
   "dataType": "number",        // "string" | "number" | "boolean" | "date" | "datetime"
   "isArray": false,
-  "required": true
+  "required": true,
+  "defaultValue": null         // optional vars only: value persisted when none supplied
 }
 ```
+
+`defaultValue` applies to **optional** variables only (the editor hides it when
+`required` is checked). When a value is not supplied at start / flow-take, the
+default is coerced to the declared `dataType`/`isArray` and **persisted as an
+instance variable** exactly like a supplied value, so gateways, service tasks,
+history, and variable search all see it. Required variables still must be
+supplied. Names beginning with the reserved `sys.` / `config.` prefixes are
+rejected by `ValidateDefinition` (see context sources below).
 
 ### ServiceTaskConfig
 The REST configuration on a `serviceTask` flow node (`flowNode.service`).
@@ -368,9 +377,39 @@ The REST configuration on a `serviceTask` flow node (`flowNode.service`).
 ```
 
 In `url` and header values a `${var}` placeholder becomes the variable's scalar
-text; in `body` it becomes the variable's JSON representation (so authors write
-`${var}` unquoted and still produce valid JSON). Output `path` is dotted
+text. In `body` substitution is quote-aware: a placeholder inside a JSON string
+literal becomes the variable's escaped scalar text with no added quotes (so
+`"message": "Hi ${sys.user}"` -> `"message": "Hi alice"`), while a placeholder in
+a bare value position becomes the variable's JSON representation (so
+`"amount": ${amount}` stays an unquoted number). A missing variable is an empty
+string inside a string and `null` in a bare position. Output `path` is dotted
 (`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
+
+### Context sources (`sys.*` / `config.*`)
+
+Beyond stored instance variables, service-task templates and exclusive-gateway
+conditions can read **read-only context** resolved at evaluation time and
+**never persisted** to `instance_variables`. During pass-through routing
+(`ResolvePassThroughAsync`), `WithContext` overlays a context map (built by
+`BuildContextMap` from the `ActorContext`, the instance, the definition, the
+current node, an injected `TimeProvider`, and `WorkflowContextOptions`) onto a
+copy of the stored variables; context wins on any name collision. Available keys:
+
+- `sys.now` (UTC ISO-8601), `sys.today` (`yyyy-MM-dd`)
+- `sys.user`, `sys.roles` (array)
+- `sys.instanceId`, `sys.workflowId`, `sys.workflowName`, `sys.nodeId`, `sys.nodeName`
+- `sys.claim.<name>` for each allowlisted JWT claim (matched by exact type or the
+  last segment of a URI-style claim type)
+- `config.<name>` for each server-side config entry (keeps secrets out of the
+  versioned definition JSON)
+
+In service-task `url`/`headers`/`body` these are used like any placeholder, e.g.
+`${sys.user}`, `${config.apiToken}`. In NCalc gateway conditions the dotted names
+need bracket syntax, e.g. `[sys.user] == requester` or `[sys.now] > deadline`.
+Configuration binds from the `WorkflowContext` section
+(`WorkflowContext:Config:<name>` and `WorkflowContext:AllowedClaims`). User
+variable names starting with `sys.` / `config.` are rejected so context can never
+be shadowed or spoofed.
 
 ---
 

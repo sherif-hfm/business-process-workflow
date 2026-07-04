@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -12,10 +13,13 @@ namespace WorkflowEngine.Service.Services;
 /// - In URLs and header values a placeholder is replaced by the variable's
 ///   scalar text (a string keeps its raw text; numbers/booleans use their JSON
 ///   text; missing variables become an empty string).
-/// - In a JSON body a placeholder is replaced by the variable's JSON
-///   representation (<see cref="JsonElement.GetRawText"/>), so authors write
-///   <c>${name}</c> unquoted and still get valid JSON; a missing variable
-///   becomes <c>null</c>.
+/// - In a JSON body substitution is quote-aware: a placeholder that sits inside a
+///   JSON string literal is replaced by the variable's <em>escaped scalar text</em>
+///   (no surrounding quotes), so <c>"Hi ${user}"</c> becomes <c>"Hi alice"</c>;
+///   a placeholder in a bare value position is replaced by the variable's JSON
+///   representation (<see cref="JsonElement.GetRawText"/>), so <c>${amount}</c>
+///   stays an unquoted number/boolean/object. A missing variable becomes an empty
+///   string inside a string and <c>null</c> in a bare position.
 /// </summary>
 public static partial class ServiceTaskTemplating
 {
@@ -47,11 +51,107 @@ public static partial class ServiceTaskTemplating
             return template;
         }
 
-        return PlaceholderRegex().Replace(template, match =>
+        var result = new StringBuilder(template.Length);
+        var inString = false;
+
+        for (var i = 0; i < template.Length; i++)
         {
-            var name = match.Groups[1].Value;
-            return variables.TryGetValue(name, out var value) ? value.GetRawText() : "null";
-        });
+            var c = template[i];
+
+            if (c == '$' && TryReadPlaceholder(template, i, out var name, out var end))
+            {
+                var has = variables.TryGetValue(name, out var value);
+                if (inString)
+                {
+                    // Inside a JSON string literal: emit escaped scalar text (no quotes).
+                    AppendJsonEscaped(result, has ? ToScalarText(value) : string.Empty);
+                }
+                else
+                {
+                    // Bare value position: emit the variable's JSON representation.
+                    result.Append(has ? value.GetRawText() : "null");
+                }
+
+                i = end;
+                continue;
+            }
+
+            if (c == '"' && !IsEscaped(template, i))
+            {
+                inString = !inString;
+            }
+
+            result.Append(c);
+        }
+
+        return result.ToString();
+    }
+
+    // Matches the same shape as PlaceholderRegex ("${" optional-ws name optional-ws "}"),
+    // where name has no whitespace or "}". Returns the trimmed name and the index of "}".
+    private static bool TryReadPlaceholder(string template, int start, out string name, out int end)
+    {
+        name = string.Empty;
+        end = start;
+        if (start + 1 >= template.Length || template[start + 1] != '{')
+        {
+            return false;
+        }
+
+        var close = template.IndexOf('}', start + 2);
+        if (close < 0)
+        {
+            return false;
+        }
+
+        var inner = template[(start + 2)..close].Trim();
+        if (inner.Length == 0 || inner.Any(char.IsWhiteSpace))
+        {
+            return false;
+        }
+
+        name = inner;
+        end = close;
+        return true;
+    }
+
+    private static bool IsEscaped(string template, int index)
+    {
+        var backslashes = 0;
+        for (var k = index - 1; k >= 0 && template[k] == '\\'; k--)
+        {
+            backslashes++;
+        }
+
+        return backslashes % 2 == 1;
+    }
+
+    private static void AppendJsonEscaped(StringBuilder sb, string value)
+    {
+        foreach (var ch in value)
+        {
+            switch (ch)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (ch < 0x20)
+                    {
+                        sb.Append("\\u").Append(((int)ch).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        sb.Append(ch);
+                    }
+
+                    break;
+            }
+        }
     }
 
     /// <summary>
