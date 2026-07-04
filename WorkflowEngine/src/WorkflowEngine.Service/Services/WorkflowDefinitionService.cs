@@ -139,6 +139,11 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                 throw new WorkflowDomainException($"User task #{node.Id} must have at least one outgoing sequence flow.");
             }
 
+            if (BpmnFlowNodeTypes.IsUserTask(node.Type))
+            {
+                ValidateClaimMode(node, definition);
+            }
+
             if (BpmnFlowNodeTypes.IsGateway(node.Type))
             {
                 if (outgoing.Count < 2)
@@ -220,6 +225,49 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
             {
                 throw new WorkflowDomainException(
                     $"Service task #{node.Id} output mapping for '{mapping.Variable}' must have a response path.");
+            }
+        }
+    }
+
+    private static void ValidateClaimMode(FlowNodeModel node, WorkflowModel definition)
+    {
+        var mode = node.ClaimMode;
+        if (mode != ClaimModes.Fresh && mode != ClaimModes.Previous && mode != ClaimModes.FromNode)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has an unsupported claimMode '{mode}'.");
+        }
+
+        if (mode == ClaimModes.Fresh)
+        {
+            return;
+        }
+
+        if (!node.RequiresClaim)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} claimMode '{mode}' requires requiresClaim to be true.");
+        }
+
+        if (mode == ClaimModes.FromNode)
+        {
+            if (node.InheritClaimFromNodeId is null)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} claimMode 'fromNode' requires inheritClaimFromNodeId.");
+            }
+
+            var source = definition.FlowNodes.SingleOrDefault(n => n.Id == node.InheritClaimFromNodeId);
+            if (source is null)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} inheritClaimFromNodeId #{node.InheritClaimFromNodeId} does not reference an existing flow node.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} inheritClaimFromNodeId #{node.InheritClaimFromNodeId} must reference a user task.");
             }
         }
     }

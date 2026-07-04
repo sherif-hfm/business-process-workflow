@@ -146,6 +146,20 @@ Storage follows the hybrid design:
   claiming user may act, and the claim is released on transition. `unclaim`
   clears it. Claim ownership is tracked on `workflow_instances.claimed_by`
   (users default to `anonymous` when unspecified).
+- **Claim inheritance** (`claimMode` on a `requiresClaim` `userTask`) lets a
+  resting task auto-claim to a prior actor instead of re-prompting, resolved from
+  `instance_history` (each taken flow logs `PerformedBy`):
+  `fresh` (default) leaves it unclaimed; `previous` inherits the actor of the
+  most recent user action anywhere in the instance; `fromNode` inherits the actor
+  of the most recent user action taken from `inheritClaimFromNodeId` (another
+  user-task node). If no matching history exists yet (e.g. the first time the
+  task is reached) it falls back to unclaimed, so a retry loop claims once then
+  stays claimed. Applied by `ApplyClaimInheritanceAsync` after the pass-through
+  resolves in `StartInstanceAsync`/`TakeFlowAsync`, inside the locked
+  transaction. Inheritance does not re-check roles (history stores no roles); the
+  inherited user still passes the normal role check when they act.
+  `ValidateDefinition` requires `requiresClaim` for a non-`fresh` mode and a valid
+  `userTask` reference for `fromNode`.
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.
@@ -271,6 +285,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
+  "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
+  "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
   "variables": [ /* Variable[] */ ], // startEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ } // serviceTask only (REST call config)
 }

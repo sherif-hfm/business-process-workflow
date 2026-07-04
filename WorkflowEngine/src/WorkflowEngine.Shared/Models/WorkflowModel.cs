@@ -87,6 +87,12 @@ public sealed class FlowNodeModel
     [JsonPropertyName("requiresClaim")]
     public bool RequiresClaim { get; set; }
 
+    [JsonPropertyName("claimMode")]
+    public string ClaimMode { get; set; } = ClaimModes.Fresh;
+
+    [JsonPropertyName("inheritClaimFromNodeId")]
+    public int? InheritClaimFromNodeId { get; set; }
+
     [JsonPropertyName("variables")]
     public List<VariableModel> Variables { get; set; } = [];
 
@@ -144,6 +150,13 @@ public static class ServiceTaskErrorModes
 {
     public const string Fail = "fail";
     public const string Continue = "continue";
+}
+
+public static class ClaimModes
+{
+    public const string Fresh = "fresh";
+    public const string Previous = "previous";
+    public const string FromNode = "fromNode";
 }
 
 public sealed class SequenceFlowModel

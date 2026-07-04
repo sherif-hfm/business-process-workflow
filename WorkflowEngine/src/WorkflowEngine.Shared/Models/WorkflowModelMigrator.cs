@@ -152,12 +152,16 @@ public static class WorkflowModelMigrator
         if (BpmnFlowNodeTypes.IsEnd(node.Type))
         {
             node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
         }
         else if (BpmnFlowNodeTypes.IsAutomatic(node.Type) || BpmnFlowNodeTypes.IsGateway(node.Type))
         {
             node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
         }
@@ -165,6 +169,8 @@ public static class WorkflowModelMigrator
         {
             // Service tasks are automatic; the REST configuration lives on node.Service.
             node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
             node.Service ??= new ServiceTaskModel();
@@ -172,7 +178,22 @@ public static class WorkflowModelMigrator
         else if (BpmnFlowNodeTypes.IsStart(node.Type))
         {
             node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
             node.Roles = [];
+        }
+        else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
+        {
+            // Tolerant load: older documents have no claimMode.
+            if (string.IsNullOrWhiteSpace(node.ClaimMode))
+            {
+                node.ClaimMode = ClaimModes.Fresh;
+            }
+
+            if (node.ClaimMode != ClaimModes.FromNode)
+            {
+                node.InheritClaimFromNodeId = null;
+            }
         }
     }
 }

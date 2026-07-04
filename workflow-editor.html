@@ -250,6 +250,12 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" }
 ];
+const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
+const CLAIM_MODE_OPTIONS = [
+  { value: CLAIM_MODE.FRESH, label: "Fresh (claim each time)" },
+  { value: CLAIM_MODE.PREVIOUS, label: "Previous (last actor)" },
+  { value: CLAIM_MODE.FROM_NODE, label: "From node (specific step)" }
+];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const SERVICE_ERROR_MODES = ["fail", "continue"];
@@ -363,23 +369,33 @@ function isPassThroughType(type) {
 function applyTypeInvariants(node) {
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
   } else if (isServiceTaskType(node.type)) {
     node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
     node.service = normalizeService(node.service);
   } else if (isStartEventType(node.type)) {
     node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = node.variables || [];
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
+    if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
+    if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
   }
 }
 function appendUserTaskMarker(g) {
@@ -676,8 +692,27 @@ function renderNodeInspector() {
   if (isUserTaskType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
     inspector.appendChild(
-      variableCheckbox("Requires claim", node.requiresClaim, checked => { node.requiresClaim = checked; })
+      variableCheckbox("Requires claim", node.requiresClaim, checked => {
+        node.requiresClaim = checked;
+        renderInspector();
+      })
     );
+    if (node.requiresClaim) {
+      selectField("Claim mode", CLAIM_MODE_OPTIONS, node.claimMode || CLAIM_MODE.FRESH, v => {
+        node.claimMode = v;
+        if (v !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+        renderInspector();
+      });
+      if (node.claimMode === CLAIM_MODE.FROM_NODE) {
+        const sourceNodes = model.flowNodes.filter(n => isUserTaskType(n.type));
+        const options = [{ value: "", label: "— select user task —" }].concat(
+          sourceNodes.map(n => ({ value: n.id, label: `#${n.id} ${n.name}${n.id === node.id ? " (this task)" : ""}` }))
+        );
+        selectField("Inherit claim from", options, node.inheritClaimFromNodeId ?? "", v => {
+          node.inheritClaimFromNodeId = v ? +v : null;
+        });
+      }
+    }
   }
 
   if (isServiceTaskType(node.type)) {
@@ -1294,6 +1329,8 @@ function addNode() {
                  y: lane ? lane.y + 60 : 120 + (model.flowNodes.length % 5) * 40,
                  roles: [],
                  requiresClaim: false,
+                 claimMode: CLAIM_MODE.FRESH,
+                 inheritClaimFromNodeId: null,
                  variables: [] };
   model.flowNodes.push(node);
   if (isStartEventType(node.type) && model.initialEventId == null) model.initialEventId = id;
@@ -1473,6 +1510,8 @@ function loadFromObject(obj) {
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
         roles: normalizeRoles(s.roles),
         requiresClaim: !!s.requiresClaim,
+        claimMode: CLAIM_MODE_OPTIONS.some(o => o.value === s.claimMode) ? s.claimMode : CLAIM_MODE.FRESH,
+        inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined
       })),

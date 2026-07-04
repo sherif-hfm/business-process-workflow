@@ -48,6 +48,7 @@ public sealed class WorkflowEngineService(
         // Flush variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
         instance = await ResolvePassThroughAsync(instance, workflow.Definition, startedBy, cancellationToken);
+        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -269,6 +270,7 @@ public sealed class WorkflowEngineService(
         // Flush captured variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
         instance = await ResolvePassThroughAsync(instance, workflow.Definition, performedBy, cancellationToken);
+        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -362,6 +364,54 @@ public sealed class WorkflowEngineService(
         }
 
         throw new WorkflowDomainException("Pass-through routing cycle detected.");
+    }
+
+    // Auto-claims a resting user task to a prior actor when the node opts in via
+    // claimMode. Resolved from instance history (each taken flow logs PerformedBy):
+    // "previous" inherits the last user action's actor; "fromNode" inherits the last
+    // user action taken from the referenced node. Falls back to unclaimed when no
+    // matching history exists yet (e.g. the first time the task is reached).
+    private async Task<WorkflowInstanceRecord> ApplyClaimInheritanceAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            return instance;
+        }
+
+        var node = GetFlowNode(definition, instance.CurrentStepId);
+        if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
+            || !node.RequiresClaim
+            || node.ClaimMode == ClaimModes.Fresh)
+        {
+            return instance;
+        }
+
+        var history = await runtime.ListHistoryAsync(instance.Id, cancellationToken);
+        // A user action is a history row with ActionId != null and PerformedBy set;
+        // service/gateway/automatic pass-through hops log ActionId == null.
+        var userActions = history
+            .Where(h => h.ActionId != null && !string.IsNullOrWhiteSpace(h.PerformedBy));
+
+        if (node.ClaimMode == ClaimModes.FromNode)
+        {
+            userActions = userActions.Where(h => h.FromStepId == node.InheritClaimFromNodeId);
+        }
+
+        var claimant = userActions
+            .OrderByDescending(h => h.PerformedAt)
+            .Select(h => h.PerformedBy)
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(claimant))
+        {
+            return instance;
+        }
+
+        await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, claimant, cancellationToken);
+        return instance with { ClaimedBy = claimant, UpdatedAt = DateTimeOffset.UtcNow };
     }
 
     private SequenceFlowModel SelectPassThroughFlow(
