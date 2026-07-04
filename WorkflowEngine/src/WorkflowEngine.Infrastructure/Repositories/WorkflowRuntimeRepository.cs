@@ -24,6 +24,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             WorkflowDefinitionId = workflowDefinitionId,
             CurrentStepId = node.Id,
             CurrentNodeName = node.Name,
+            CurrentNodeExternalId = node.ExternalId,
             CurrentNodeType = node.Type,
             CurrentNodeRoles = node.Roles.ToList(),
             CurrentRequiresClaim = node.RequiresClaim,
@@ -204,6 +205,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 definition?.Version ?? 0,
                 e.CurrentStepId,
                 e.CurrentNodeName,
+                e.CurrentNodeExternalId,
                 e.CurrentNodeType,
                 e.CurrentNodeRoles,
                 e.CurrentRequiresClaim,
@@ -264,6 +266,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 setters => setters
                     .SetProperty(i => i.CurrentStepId, node.Id)
                     .SetProperty(i => i.CurrentNodeName, node.Name)
+                    .SetProperty(i => i.CurrentNodeExternalId, node.ExternalId)
                     .SetProperty(i => i.CurrentNodeType, node.Type)
                     .SetProperty(i => i.CurrentNodeRoles, roles)
                     .SetProperty(i => i.CurrentRequiresClaim, node.RequiresClaim)

@@ -27,6 +27,10 @@ else
     <div class="card mb-3">
         <div class="card-body">
             <h2 class="h4">@instance.CurrentNodeName</h2>
+            @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
+            {
+                <p class="text-muted">External ID: <strong>@instance.CurrentNodeExternalId</strong></p>
+            }
             <p>Status: <strong>@instance.Status</strong></p>
             <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
             <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>

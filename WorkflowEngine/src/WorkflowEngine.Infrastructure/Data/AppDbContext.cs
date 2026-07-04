@@ -32,6 +32,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CurrentNodeName).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
+            entity.Property(e => e.CurrentNodeExternalId).HasMaxLength(300);
             entity.Property(e => e.CurrentNodeType).HasMaxLength(32).IsRequired().HasDefaultValue(string.Empty);
             entity.Property(e => e.CurrentNodeRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.CurrentRequiresClaim).IsRequired().HasDefaultValue(false);

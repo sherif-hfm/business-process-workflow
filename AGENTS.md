@@ -93,7 +93,8 @@ Storage follows the hybrid design:
   `SourceActionId`); the columns now simply carry flow-node / sequence-flow ids,
   so no database migration was needed for the BPMN rename.
 - **Denormalized current-node columns.** `workflow_instances` also carries
-  `CurrentNodeName`, `CurrentNodeType`, `CurrentNodeRoles` (Postgres `text[]`),
+  `CurrentNodeName`, `CurrentNodeExternalId` (nullable), `CurrentNodeType`,
+  `CurrentNodeRoles` (Postgres `text[]`),
   and `CurrentRequiresClaim`, stamped from the resting flow node on every node
   change (`AddInstanceAsync`, `TakeFlowAsync`, and each `ResolvePassThroughAsync`
   hop via `UpdateInstanceNodeAsync`; claim/unclaim/cancel leave them untouched).
@@ -278,6 +279,7 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 {
   "id": 1,
   "name": "Submission",
+  "externalId": "LANE_SUBMISSION", // optional free-form integration key (nullable)
   "x": 29, "y": 95,            // top-left position on canvas
   "w": 1082, "h": 172          // width / height (min 220 x 150)
 }
@@ -291,6 +293,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 {
   "id": 1,
   "name": "Request Submitted",
+  "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
   "type": "startEvent",        // startEvent | userTask | task | serviceTask | exclusiveGateway | endEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
@@ -335,6 +338,7 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
 {
   "id": 201,
   "name": "Approve",           // label; empty for start/auto flows
+  "externalId": "FLOW_MGR_APPROVE", // optional free-form integration key (nullable)
   "sourceRef": 2,              // source node id
   "targetRef": 3,              // target node id
   "roles": [ "Manager" ],      // userTask flow: roles allowed to take it

@@ -55,7 +55,13 @@ else
                 <tr>
                     <td>#@instance.Id</td>
                     <td>@instance.WorkflowName v@instance.WorkflowVersion</td>
-                    <td>@instance.CurrentNodeName</td>
+                    <td>
+                        @instance.CurrentNodeName
+                        @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
+                        {
+                            <div class="text-muted small">@instance.CurrentNodeExternalId</div>
+                        }
+                    </td>
                     <td>@instance.Status</td>
                     <td>@(instance.ClaimedBy ?? "-")</td>
                     <td class="text-end">

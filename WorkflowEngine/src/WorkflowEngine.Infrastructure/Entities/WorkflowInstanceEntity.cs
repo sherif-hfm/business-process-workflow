@@ -12,6 +12,8 @@ public sealed class WorkflowInstanceEntity
 
     public string CurrentNodeName { get; set; } = string.Empty;
 
+    public string? CurrentNodeExternalId { get; set; }
+
     public string CurrentNodeType { get; set; } = string.Empty;
 
     public List<string> CurrentNodeRoles { get; set; } = [];

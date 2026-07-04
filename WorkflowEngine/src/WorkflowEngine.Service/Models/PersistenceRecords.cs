@@ -26,6 +26,7 @@ public sealed record WorkflowInstanceRecord(
 public sealed record CurrentNodeSnapshot(
     int Id,
     string Name,
+    string? ExternalId,
     string Type,
     IReadOnlyList<string> Roles,
     bool RequiresClaim);
@@ -39,6 +40,7 @@ public sealed record InstanceListItem(
     int WorkflowVersion,
     int CurrentNodeId,
     string CurrentNodeName,
+    string? CurrentNodeExternalId,
     string CurrentNodeType,
     IReadOnlyList<string> CurrentNodeRoles,
     bool CurrentRequiresClaim,

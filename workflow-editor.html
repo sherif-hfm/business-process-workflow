@@ -422,7 +422,7 @@ function seedSample() {
     name: "Purchase Request Approval",
     initialEventId: 1,
     lanes: [
-      { id: 1, name: "Submission", x: 40, y: 20, w: 260, h: 300 },
+      { id: 1, name: "Submission", externalId: "LANE_SUBMISSION", x: 40, y: 20, w: 260, h: 300 },
       { id: 2, name: "Approval", x: 320, y: 20, w: 620, h: 300 },
       { id: 3, name: "Resolution", x: 320, y: 340, w: 620, h: 180 }
     ],
@@ -433,7 +433,7 @@ function seedSample() {
           { id: 2, name: "amount", dataType: "number", isArray: false, required: true, validation: "amount > 0 and amount <= 100000" },
           { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
         ] },
-      { id: 2, name: "Manager Review", type: "userTask", laneId: 2, x: 360, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
+      { id: 2, name: "Manager Review", externalId: "TASK_MGR_REVIEW", type: "userTask", laneId: 2, x: 360, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
       { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 620, y: 70, roles: [], requiresClaim: false, variables: [] },
       { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 760, y: 70, roles: ["Finance"], requiresClaim: false, variables: [] },
       { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 760, y: 380, roles: [], requiresClaim: false, variables: [] },
@@ -441,7 +441,7 @@ function seedSample() {
     ],
     sequenceFlows: [
       { id: 101, name: "", sourceRef: 1, targetRef: 2, roles: [], variables: [], condition: null, isDefault: false },
-      { id: 201, name: "Approve", sourceRef: 2, targetRef: 3, roles: ["Manager"], variables: [], condition: null, isDefault: false },
+      { id: 201, name: "Approve", externalId: "FLOW_MGR_APPROVE", sourceRef: 2, targetRef: 3, roles: ["Manager"], variables: [], condition: null, isDefault: false },
       { id: 202, name: "Reject", sourceRef: 2, targetRef: 6, roles: ["Manager"], variables: [
           { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
         ], condition: null, isDefault: false },
@@ -677,6 +677,7 @@ function renderNodeInspector() {
   applyTypeInvariants(node);
   inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
   field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
+  field("External ID", "text", node.externalId ?? "", v => { node.externalId = v.trim() ? v : null; });
   selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
     node.type = v;
     applyTypeInvariants(node);
@@ -946,6 +947,7 @@ function renderLaneInspector() {
   inspector.innerHTML = `<h2>Lane #${lane.id}</h2>
     <p class="badge" style="margin-top:-6px">${nodeCount} node${nodeCount === 1 ? "" : "s"} in this lane</p>`;
   field("Name", "text", lane.name, v => { lane.name = v; renderLanes(); });
+  field("External ID", "text", lane.externalId ?? "", v => { lane.externalId = v.trim() ? v : null; });
   field("Width", "number", lane.w, v => {
     lane.w = Math.max(MIN_LANE_W, Math.round(+v || MIN_LANE_W));
     renderLanes();
@@ -972,6 +974,7 @@ function renderFlowInspector() {
   inspector.innerHTML = `<h2>Flow #${flow.id}</h2>
     <p class="badge" style="margin-top:-6px">From node #${flow.sourceRef}${source ? ' (' + source.name + ')' : ''}</p>`;
   field("Name", "text", flow.name, v => { flow.name = v; renderEdges(); });
+  field("External ID", "text", flow.externalId ?? "", v => { flow.externalId = v.trim() ? v : null; });
   selectField("Goes to node", model.flowNodes.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
               flow.targetRef, v => { flow.targetRef = +v; renderEdges(); });
 
@@ -1556,6 +1559,7 @@ function loadFromObject(obj) {
       lanes: (obj.lanes || []).map((p, i) => ({
         id: p.id,
         name: p.name ?? `Lane ${p.id}`,
+        externalId: p.externalId ?? null,
         x: typeof p.x === "number" ? p.x : 60 + (i % 4) * 280,
         y: typeof p.y === "number" ? p.y : 40 + Math.floor(i / 4) * 220,
         w: typeof p.w === "number" ? p.w : 300,
@@ -1564,6 +1568,7 @@ function loadFromObject(obj) {
       flowNodes: (obj.flowNodes || []).map((s, i) => ({
         id: s.id,
         name: s.name ?? `Node ${s.id}`,
+        externalId: s.externalId ?? null,
         type: s.type ?? NODE_TYPE.USER_TASK,
         laneId: s.laneId ?? null,
         x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
@@ -1578,6 +1583,7 @@ function loadFromObject(obj) {
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,
         name: f.name ?? "",
+        externalId: f.externalId ?? null,
         sourceRef: f.sourceRef,
         targetRef: f.targetRef,
         roles: normalizeRoles(f.roles),

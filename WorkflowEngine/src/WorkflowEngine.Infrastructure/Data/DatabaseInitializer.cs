@@ -87,6 +87,7 @@ public sealed class DatabaseInitializer(AppDbContext dbContext)
             }
 
             instance.CurrentNodeName = node.Name;
+            instance.CurrentNodeExternalId = node.ExternalId;
             instance.CurrentNodeType = node.Type;
             instance.CurrentNodeRoles = node.Roles.ToList();
             instance.CurrentRequiresClaim = node.RequiresClaim;

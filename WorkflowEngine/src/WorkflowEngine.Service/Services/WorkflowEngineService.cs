@@ -107,6 +107,7 @@ public sealed class WorkflowEngineService(
                 row.WorkflowName,
                 row.CurrentNodeId,
                 row.CurrentNodeName,
+                row.CurrentNodeExternalId,
                 row.CurrentNodeRoles,
                 row.CurrentRequiresClaim,
                 row.ClaimedBy,
@@ -797,6 +798,7 @@ public sealed class WorkflowEngineService(
             WorkflowDefinitionService.ToDetail(workflow),
             instance.CurrentStepId,
             node.Name,
+            node.ExternalId,
             instance.Status,
             instance.ClaimedBy,
             instance.StartedBy,
@@ -882,6 +884,7 @@ public sealed class WorkflowEngineService(
             row.WorkflowVersion,
             row.CurrentNodeId,
             row.CurrentNodeName,
+            row.CurrentNodeExternalId,
             row.Status,
             row.ClaimedBy,
             row.StartedBy,
@@ -889,7 +892,7 @@ public sealed class WorkflowEngineService(
             row.UpdatedAt);
 
     private static CurrentNodeSnapshot ToSnapshot(FlowNodeModel node) =>
-        new(node.Id, node.Name, node.Type, node.Roles, node.RequiresClaim);
+        new(node.Id, node.Name, node.ExternalId, node.Type, node.Roles, node.RequiresClaim);
 
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)

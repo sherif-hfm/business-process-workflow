@@ -66,7 +66,13 @@ else
                 <tr>
                     <td>#@item.InstanceId</td>
                     <td>@item.WorkflowName</td>
-                    <td>@item.CurrentNodeName</td>
+                    <td>
+                        @item.CurrentNodeName
+                        @if (!string.IsNullOrWhiteSpace(item.CurrentNodeExternalId))
+                        {
+                            <div class="text-muted small">@item.CurrentNodeExternalId</div>
+                        }
+                    </td>
                     <td>@(item.NodeRoles.Count == 0 ? "(any)" : string.Join(", ", item.NodeRoles))</td>
                     <td>@(item.ClaimedBy ?? "-")</td>
                     <td>

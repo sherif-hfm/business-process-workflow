@@ -49,6 +49,10 @@ public sealed class LaneModel
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    [JsonPropertyName("externalId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExternalId { get; set; }
+
     [JsonPropertyName("x")]
     public int X { get; set; }
 
@@ -69,6 +73,10 @@ public sealed class FlowNodeModel
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("externalId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExternalId { get; set; }
 
     [JsonPropertyName("type")]
     public string Type { get; set; } = BpmnFlowNodeTypes.UserTask;
@@ -167,6 +175,10 @@ public sealed class SequenceFlowModel
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("externalId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExternalId { get; set; }
 
     [JsonPropertyName("sourceRef")]
     public int SourceRef { get; set; }
