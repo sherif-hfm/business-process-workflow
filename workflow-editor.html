@@ -982,7 +982,7 @@ function renderFlowInspector() {
     });
     const condHint = document.createElement("p");
     condHint.className = "empty-note";
-    condHint.textContent = 'NCalc expression, e.g. amount > 1000 and region == \'EU\', or a bare variable like approved. Leave empty for the default flow.';
+    condHint.textContent = 'NCalc expression, e.g. amount > 1000 and region == \'EU\', or a bare variable like approved. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern). Leave empty for the default flow.';
     inspector.appendChild(condHint);
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
@@ -1119,9 +1119,13 @@ function variableRow(owner, variable) {
   const valInput = document.createElement("input");
   valInput.type = "text";
   valInput.value = variable.validation ?? "";
-  valInput.placeholder = "e.g. amount > 0 and amount <= 10000";
+  valInput.placeholder = "e.g. amount > 0 and amount <= 10000, or Len(name) <= 50";
   valInput.oninput = () => { variable.validation = valInput.value.trim() === "" ? null : valInput.value; };
   valField.appendChild(valInput);
+  const valHint = document.createElement("p");
+  valHint.className = "empty-note";
+  valHint.textContent = 'NCalc expression checked at start / flow-take. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
+  valField.appendChild(valHint);
   box.appendChild(valField);
 
   const del = document.createElement("button");

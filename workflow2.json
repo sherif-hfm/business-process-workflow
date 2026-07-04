@@ -23,7 +23,7 @@
           "isArray": false,
           "required": true,
           "defaultValue": null,
-          "validation": null
+          "validation": "Len(mobile) == 10"
         },
         {
           "id": 2,

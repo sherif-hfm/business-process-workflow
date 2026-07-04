@@ -140,7 +140,18 @@ Storage follows the hybrid design:
   truthiness check (non-zero numbers / non-empty strings are truthy). An optional
   `${ ... }` wrapper is stripped, and invalid or unresolvable expressions
   evaluate to `false`. Conditions are also parse-checked when a definition is
-  created/updated.
+  created/updated. Beyond NCalc's built-ins (`Min`, `Max`, `if`, `in`, math
+  helpers), `SequenceFlowConditionEvaluator` registers **custom helper functions**
+  (case-insensitive names, wired once in `CreateExpression` so evaluation and
+  parse-checking agree): `Length(s)` / `Len(s)`, `IsNullOrEmpty(s)`,
+  `IsNullOrWhiteSpace(s)`, `Contains(s, sub)`, `StartsWith(s, prefix)`,
+  `EndsWith(s, suffix)`, `Lower(s)`, `Upper(s)`, `Trim(s)`, and
+  `IsMatch(s, pattern)` (regex match, case-insensitive, bounded execution time as
+  a ReDoS guard). Substring/regex matching is case-insensitive. These helpers work
+  anywhere NCalc runs (gateway conditions and variable `validation` rules). A
+  helper called with too few arguments (or a mistyped name) is treated as unknown;
+  since author-time `IsValid` only parse-checks grammar, such typos are not flagged
+  and the expression simply evaluates to `false` at runtime.
 - `requiresClaim` **is** enforced at runtime: such a `userTask` must be claimed
   (`POST /claim`) before its flows are available or can be taken, only the
   claiming user may act, and the claim is released on transition. `unclaim`
@@ -374,8 +385,11 @@ context, reusing `SequenceFlowConditionEvaluator.Evaluate` (the gateway
 evaluator). A falsy or unresolvable expression rejects the start / flow-take with
 a `WorkflowDomainException` (`Variable '<name>' failed validation: '<expr>'`).
 Because it shares the gateway grammar, comparisons, boolean/arithmetic operators,
-bare-variable truthiness, and bracketed context names (e.g. `[sys.user]`) all
-work. Expressions are parse-checked at author time in `ValidateDefinition`
+bare-variable truthiness, bracketed context names (e.g. `[sys.user]`), and the
+custom helper functions (`Len`, `IsNullOrEmpty`, `Contains`, `StartsWith`,
+`EndsWith`, `Lower`, `Upper`, `Trim`, `IsMatch`, etc.) all work -- so a rule like
+`Len(name) <= 50` or `IsMatch(email, '^.+@.+$')` is valid. Expressions are
+parse-checked at author time in `ValidateDefinition`
 (`ValidateVariables` -> `SequenceFlowConditionEvaluator.IsValid`).
 
 ### ServiceTaskConfig
