@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using WorkflowEngine.Infrastructure.Data;
@@ -14,9 +15,11 @@ using WorkflowEngine.Shared.Models;
 namespace WorkflowEngine.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260704104514_AddInstanceCurrentNodeExternalIdIndex")]
+    partial class AddInstanceCurrentNodeExternalIdIndex
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -133,18 +136,11 @@ namespace WorkflowEngine.Infrastructure.Data.Migrations
                     b.Property<int>("Version")
                         .HasColumnType("integer");
 
-                    b.Property<int>("WorkflowKey")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0);
-
                     b.HasKey("Id");
 
                     b.HasIndex("Definition");
 
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Definition"), "gin");
-
-                    b.HasIndex("WorkflowKey");
 
                     b.HasIndex("Name", "Version")
                         .IsUnique();

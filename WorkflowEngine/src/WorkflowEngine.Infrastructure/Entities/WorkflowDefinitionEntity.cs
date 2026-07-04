@@ -8,6 +8,8 @@ public sealed class WorkflowDefinitionEntity
 
     public string Name { get; set; } = string.Empty;
 
+    public int WorkflowKey { get; set; }
+
     public int Version { get; set; }
 
     public WorkflowModel Definition { get; set; } = new();

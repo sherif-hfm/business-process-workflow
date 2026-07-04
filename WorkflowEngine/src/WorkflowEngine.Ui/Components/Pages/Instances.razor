@@ -21,6 +21,26 @@
             <option value="cancelled">Cancelled</option>
         </select>
     </div>
+    <div>
+        <label class="form-label">Instance id</label>
+        <input type="number" class="form-control" @bind="instanceId" @bind:after="OnFilterChangedAsync" placeholder="42" />
+    </div>
+    <div>
+        <label class="form-label">Workflow id</label>
+        <input type="number" class="form-control" @bind="workflowId" @bind:after="OnFilterChangedAsync" placeholder="1" />
+    </div>
+    <div>
+        <label class="form-label">Workflow key</label>
+        <input type="number" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="1" />
+    </div>
+    <div>
+        <label class="form-label">Node id</label>
+        <input type="number" class="form-control" @bind="nodeId" @bind:after="OnFilterChangedAsync" placeholder="3" />
+    </div>
+    <div>
+        <label class="form-label">Node external id</label>
+        <input class="form-control" @bind="nodeExternalId" @bind:after="OnFilterChangedAsync" placeholder="TASK_MANAGER_APPROVAL" />
+    </div>
     <div class="flex-grow-1">
         <label class="form-label">Variables (name:value, comma-separated)</label>
         <input class="form-control" @bind="variableFilter" @bind:after="OnFilterChangedAsync" placeholder="reqno:4711, priority:high" />
@@ -83,6 +103,11 @@ else
     private PagedResult<InstanceSummaryDto>? result;
     private string? status = "running";
     private string? variableFilter;
+    private long? instanceId;
+    private long? workflowId;
+    private int? workflowKey;
+    private int? nodeId;
+    private string? nodeExternalId;
     private string? error;
     private int page = 1;
     private const int PageSize = 50;
@@ -133,7 +158,7 @@ else
         try
         {
             error = null;
-            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter());
+            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey);
         }
         catch (Exception ex)
         {

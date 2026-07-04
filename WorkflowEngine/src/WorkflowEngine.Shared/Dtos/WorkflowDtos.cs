@@ -6,6 +6,7 @@ namespace WorkflowEngine.Shared.Dtos;
 public sealed record WorkflowSummaryDto(
     long Id,
     string Name,
+    int WorkflowKey,
     int Version,
     bool IsPublished,
     DateTimeOffset CreatedAt);
@@ -13,6 +14,7 @@ public sealed record WorkflowSummaryDto(
 public sealed record WorkflowDetailDto(
     long Id,
     string Name,
+    int WorkflowKey,
     int Version,
     bool IsPublished,
     DateTimeOffset CreatedAt,

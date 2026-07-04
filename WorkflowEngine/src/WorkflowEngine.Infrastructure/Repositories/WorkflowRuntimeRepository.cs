@@ -45,6 +45,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 #pragma warning disable EF1002
     public async Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
@@ -59,6 +64,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             where.Append(" AND w.\"Status\" = @status");
         }
 
+        AppendInstanceIdFilter(where, args, instanceId);
+        AppendWorkflowIdFilter(where, args, workflowId);
+        AppendWorkflowKeyFilter(where, args, workflowKey);
+        AppendNodeIdFilter(where, args, nodeId);
+        AppendNodeExternalIdFilter(where, args, nodeExternalId);
         AppendVariableFilters(where, args, variableFilters);
 
         var totalCount = await dbContext.Database
@@ -87,6 +97,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task<PagedResult<InstanceListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
         int page,
         int pageSize,
@@ -128,6 +143,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ("lowerRoles", lowerRoles)
         };
 
+        AppendInstanceIdFilter(where, args, instanceId);
+        AppendWorkflowIdFilter(where, args, workflowId);
+        AppendWorkflowKeyFilter(where, args, workflowKey);
+        AppendNodeIdFilter(where, args, nodeId);
+        AppendNodeExternalIdFilter(where, args, nodeExternalId);
         AppendVariableFilters(where, args, variableFilters);
 
         var totalCount = await dbContext.Database
@@ -153,6 +173,90 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
 #pragma warning restore EF1002
+
+    // Filters on the instance id (primary key). The value is parameter-bound,
+    // so there is no SQL injection surface.
+    private static void AppendInstanceIdFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        long? instanceId)
+    {
+        if (instanceId is null)
+        {
+            return;
+        }
+
+        args.Add(("instanceId", instanceId.Value));
+        where.Append(" AND w.\"Id\" = @instanceId");
+    }
+
+    // Filters on the owning workflow definition id. The value is parameter-bound,
+    // so there is no SQL injection surface.
+    private static void AppendWorkflowIdFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        long? workflowId)
+    {
+        if (workflowId is null)
+        {
+            return;
+        }
+
+        args.Add(("workflowId", workflowId.Value));
+        where.Append(" AND w.\"WorkflowDefinitionId\" = @workflowId");
+    }
+
+    // Filters on the stable, cross-version workflow key (the JSON model id stored on
+    // workflow_definitions), matched via a correlated EXISTS against the instance's
+    // definition. Because every version shares the key, this spans all versions. The
+    // value is parameter-bound, so there is no SQL injection surface.
+    private static void AppendWorkflowKeyFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        int? workflowKey)
+    {
+        if (workflowKey is null)
+        {
+            return;
+        }
+
+        args.Add(("workflowKey", workflowKey.Value));
+        where.Append(
+            " AND EXISTS (SELECT 1 FROM workflow_definitions d" +
+            " WHERE d.\"Id\" = w.\"WorkflowDefinitionId\" AND d.\"WorkflowKey\" = @workflowKey)");
+    }
+
+    // Filters on the resting-node id (CurrentStepId). The value is parameter-bound,
+    // so there is no SQL injection surface.
+    private static void AppendNodeIdFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        int? nodeId)
+    {
+        if (nodeId is null)
+        {
+            return;
+        }
+
+        args.Add(("nodeId", nodeId.Value));
+        where.Append(" AND w.\"CurrentStepId\" = @nodeId");
+    }
+
+    // Filters on the denormalized resting-node externalId (exact, case-insensitive).
+    // The value is parameter-bound, so there is no SQL injection surface.
+    private static void AppendNodeExternalIdFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        string? nodeExternalId)
+    {
+        if (string.IsNullOrWhiteSpace(nodeExternalId))
+        {
+            return;
+        }
+
+        args.Add(("nodeExternalId", nodeExternalId.Trim()));
+        where.Append(" AND lower(w.\"CurrentNodeExternalId\") = lower(@nodeExternalId)");
+    }
 
     // Appends one correlated EXISTS per filter: the variable must exist on the
     // instance with a scalar value equal (case-insensitively) to the target.

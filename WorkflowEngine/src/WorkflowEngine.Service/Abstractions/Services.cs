@@ -67,6 +67,11 @@ public interface IWorkflowEngineService
 
     Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,
@@ -74,6 +79,11 @@ public interface IWorkflowEngineService
 
     Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,

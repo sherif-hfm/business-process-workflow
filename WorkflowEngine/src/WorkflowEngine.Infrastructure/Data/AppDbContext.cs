@@ -20,9 +20,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("workflow_definitions");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.WorkflowKey).IsRequired().HasDefaultValue(0);
             entity.Property(e => e.Definition).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Name, e.Version }).IsUnique();
+            // Supports the cross-version workflowKey instance search.
+            entity.HasIndex(e => e.WorkflowKey);
             entity.HasIndex(e => e.Definition).HasMethod("gin");
         });
 
@@ -47,6 +50,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             // Supports array-overlap role matching in the inbox filter.
             entity.HasIndex(e => e.CurrentNodeRoles).HasMethod("gin");
+            // Supports the current-node externalId filter on the list/inbox reads.
+            entity.HasIndex(e => new { e.Status, e.CurrentNodeExternalId });
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
                 .HasForeignKey(e => e.WorkflowDefinitionId)

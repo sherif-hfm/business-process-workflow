@@ -86,7 +86,10 @@ Projects:
 Storage follows the hybrid design:
 
 - Workflow definitions are immutable/versioned JSONB snapshots in
-  `workflow_definitions`.
+  `workflow_definitions`. Each row also carries `WorkflowKey`, an indexed integer
+  stamped from the editor JSON model `id` on every save; it is the same across all
+  versions of a workflow, so it acts as a stable cross-version key for instance
+  search (see the workflow key search below).
 - Runtime state is normalized in `workflow_instances`, `instance_variables`, and
   `instance_history`. These tables keep integer ids and their original column
   names (`CurrentStepId`, `ActionId`, `FromStepId`, `ToStepId`,
@@ -194,7 +197,10 @@ Storage follows the hybrid design:
 
 Definitions are versioned: `POST /api/workflows` creates v1, `PUT
 /api/workflows/{id}` creates a new immutable version, and only a *published*
-definition can start instances.
+definition can start instances. Each version row gets a fresh `Id`, but they
+share the JSON model `id` via the denormalized `WorkflowKey` column
+(`WorkflowSummaryDto`/`WorkflowDetailDto` expose it as `workflowKey`), which is
+what the cross-version `workflowKey` instance search matches.
 
 ### HTTP API
 
@@ -202,8 +208,8 @@ definition can start instances.
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
   `POST /{id}/publish`, `DELETE /{id}`.
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
-  `startEventId`), `GET /?status=&var=&page=&pageSize=` (paged),
-  `GET /inbox?var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `startEventId`), `GET /?status=&instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/cancel`. The two list endpoints return
@@ -223,6 +229,42 @@ definition can start instances.
   Array/object variables never match, and value ranges/operators are out of
   scope. An `instance_variables (VariableName, InstanceId)` index backs the
   lookup.
+- **Instance id / workflow id search.** Both list endpoints accept optional
+  integer `instanceId=` and `workflowId=` query params: exact matches on the
+  instance primary key (`w."Id" = @instanceId`) and the owning definition
+  (`w."WorkflowDefinitionId" = @workflowId`), both values bound as parameters. A
+  null / absent value applies no filter, and they AND-combine with the other
+  filters (and the inbox actor scope). `instanceId` overlaps with `GET /{id}` but
+  is convenient inside the shared filter/paging UI; `workflowId` scopes the list
+  to a single workflow definition version. Both are backed by existing indexes
+  (the primary key and the `WorkflowDefinitionId` foreign-key index).
+- **Workflow key search.** Both list endpoints accept an optional integer
+  `workflowKey=` query param that matches the stable, cross-version workflow key
+  (`workflow_definitions.WorkflowKey`, stamped from the editor JSON model `id`).
+  It is compiled to a correlated `EXISTS` joining each instance to its definition
+  (`d."Id" = w."WorkflowDefinitionId" AND d."WorkflowKey" = @workflowKey`, value
+  bound as a parameter). Unlike `workflowId` (a single version's row id), the key
+  is the same on every version, so `workflowKey` returns instances across ALL
+  versions of a workflow. A null / absent value applies no filter, and it
+  AND-combines with the other filters (and the inbox actor scope). The key is
+  stored as-is from the JSON `id` on every save and is not validated for
+  uniqueness, so if two definitions share a JSON `id` the search spans both. A
+  `WorkflowKey` index on `workflow_definitions` backs the lookup.
+- **Current-node id search.** Both list endpoints accept an optional integer
+  `nodeId=` query param, an exact match on the denormalized `CurrentStepId`
+  column (`w."CurrentStepId" = @nodeId`, value bound as a parameter). A null /
+  absent value applies no filter. It AND-combines with `status` /
+  `nodeExternalId` / `var` (and the inbox actor scope). Because the node id is a
+  version-scoped integer, it is most meaningful combined with a specific
+  workflow; the pre-existing `CurrentStepId` index backs the lookup.
+- **Current-node externalId search.** Both list endpoints accept an optional
+  `nodeExternalId=` query param, an exact, case-insensitive match on the
+  denormalized `CurrentNodeExternalId` column
+  (`lower(w."CurrentNodeExternalId") = lower(@nodeExternalId)`, value bound as a
+  parameter). Empty/whitespace input applies no filter. It AND-combines with
+  `status` / `var` (and the inbox actor scope). Because externalId is a
+  version-stable integration key it survives definition re-versioning (unlike the
+  integer node id). A `(Status, CurrentNodeExternalId)` index backs the lookup.
 - `WorkflowDomainException` maps to problem responses for invalid operations
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).
@@ -232,10 +274,14 @@ definition can start instances.
 - `/workflows` (`Workflows.razor`) - list definitions.
 - `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
   variables, and launch an instance.
-- `/instances` (`Instances.razor`) - list instances, filterable by status and by
-  variables (a comma-separated `name:value` box mapped to repeated `var=` params).
-- `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same comma-separated
-  `name:value` variable filter box.
+- `/instances` (`Instances.razor`) - list instances, filterable by status, by
+  instance id (`instanceId=`), workflow id (`workflowId=`), workflow key
+  (`workflowKey=`), node id (`nodeId=`), node external id (`nodeExternalId=`), and
+  by variables (a comma-separated `name:value` box mapped to repeated `var=`
+  params).
+- `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
+  workflow id, workflow key, node id, node external id, and comma-separated
+  `name:value` variable filter boxes.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, view variables and history.
 

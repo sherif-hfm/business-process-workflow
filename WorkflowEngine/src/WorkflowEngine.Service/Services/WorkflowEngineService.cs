@@ -64,19 +64,29 @@ public sealed class WorkflowEngineService(
 
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
         var variableFilters = ParseVariableFilters(variables);
-        var paged = await runtime.ListInstancesAsync(status, variableFilters, page, pageSize, cancellationToken);
+        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
         var items = paged.Items.Select(ToSummary).ToList();
         return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
     public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,
@@ -88,7 +98,7 @@ public sealed class WorkflowEngineService(
 
         // Membership (running user task the actor may see/act on) is filtered in SQL;
         // the per-row action flags are derived here from the denormalized columns.
-        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, variableFilters, page, pageSize, cancellationToken);
+        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
 
         var items = new List<InboxItemDto>(paged.Items.Count);
         foreach (var row in paged.Items)

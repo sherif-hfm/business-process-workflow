@@ -6,6 +6,7 @@ namespace WorkflowEngine.Service.Models;
 public sealed record WorkflowDefinitionRecord(
     long Id,
     string Name,
+    int WorkflowKey,
     int Version,
     WorkflowModel Definition,
     bool IsPublished,

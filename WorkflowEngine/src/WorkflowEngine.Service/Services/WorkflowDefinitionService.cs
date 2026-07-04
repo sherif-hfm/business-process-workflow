@@ -312,8 +312,8 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
     }
 
     internal static WorkflowSummaryDto ToSummary(WorkflowDefinitionRecord record) =>
-        new(record.Id, record.Name, record.Version, record.IsPublished, record.CreatedAt);
+        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.CreatedAt);
 
     internal static WorkflowDetailDto ToDetail(WorkflowDefinitionRecord record) =>
-        new(record.Id, record.Name, record.Version, record.IsPublished, record.CreatedAt, record.Definition);
+        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.CreatedAt, record.Definition);
 }

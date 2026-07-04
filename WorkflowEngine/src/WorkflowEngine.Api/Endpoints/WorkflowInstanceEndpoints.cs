@@ -30,6 +30,11 @@ public static class WorkflowInstanceEndpoints
 
         group.MapGet("/", async (
             string? status,
+            long? instanceId,
+            long? workflowId,
+            int? workflowKey,
+            int? nodeId,
+            string? nodeExternalId,
             [FromQuery(Name = "var")] string[]? variables,
             int? page,
             int? pageSize,
@@ -37,10 +42,15 @@ public static class WorkflowInstanceEndpoints
             CancellationToken cancellationToken) =>
         {
             var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.ListInstancesAsync(status, variables, p, s, cancellationToken));
+            return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
         });
 
         group.MapGet("/inbox", async (
+            long? instanceId,
+            long? workflowId,
+            int? workflowKey,
+            int? nodeId,
+            string? nodeExternalId,
             [FromQuery(Name = "var")] string[]? variables,
             int? page,
             int? pageSize,
@@ -49,7 +59,7 @@ public static class WorkflowInstanceEndpoints
             CancellationToken cancellationToken) =>
         {
             var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.GetInboxAsync(ToActor(principal), variables, p, s, cancellationToken));
+            return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
         });
 
         group.MapGet("/{id:long}", async (

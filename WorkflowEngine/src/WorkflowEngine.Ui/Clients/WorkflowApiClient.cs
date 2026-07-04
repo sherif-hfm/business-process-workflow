@@ -28,12 +28,42 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         int page = 1,
         int pageSize = 50,
         IEnumerable<string>? variables = null,
+        string? nodeExternalId = null,
+        int? nodeId = null,
+        long? instanceId = null,
+        long? workflowId = null,
+        int? workflowKey = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
         if (!string.IsNullOrWhiteSpace(status))
         {
             url += $"&status={Uri.EscapeDataString(status)}";
+        }
+
+        if (instanceId is not null)
+        {
+            url += $"&instanceId={instanceId.Value}";
+        }
+
+        if (workflowId is not null)
+        {
+            url += $"&workflowId={workflowId.Value}";
+        }
+
+        if (workflowKey is not null)
+        {
+            url += $"&workflowKey={workflowKey.Value}";
+        }
+
+        if (nodeId is not null)
+        {
+            url += $"&nodeId={nodeId.Value}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(nodeExternalId))
+        {
+            url += $"&nodeExternalId={Uri.EscapeDataString(nodeExternalId)}";
         }
 
         url += BuildVariableQuery(variables);
@@ -46,9 +76,41 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         int page = 1,
         int pageSize = 50,
         IEnumerable<string>? variables = null,
+        string? nodeExternalId = null,
+        int? nodeId = null,
+        long? instanceId = null,
+        long? workflowId = null,
+        int? workflowKey = null,
         CancellationToken cancellationToken = default)
     {
-        var url = $"/api/instances/inbox?page={page}&pageSize={pageSize}{BuildVariableQuery(variables)}";
+        var url = $"/api/instances/inbox?page={page}&pageSize={pageSize}";
+        if (instanceId is not null)
+        {
+            url += $"&instanceId={instanceId.Value}";
+        }
+
+        if (workflowId is not null)
+        {
+            url += $"&workflowId={workflowId.Value}";
+        }
+
+        if (workflowKey is not null)
+        {
+            url += $"&workflowKey={workflowKey.Value}";
+        }
+
+        if (nodeId is not null)
+        {
+            url += $"&nodeId={nodeId.Value}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(nodeExternalId))
+        {
+            url += $"&nodeExternalId={Uri.EscapeDataString(nodeExternalId)}";
+        }
+
+        url += BuildVariableQuery(variables);
+
         return await httpClient.GetFromJsonAsync<PagedResult<InboxItemDto>>(url, cancellationToken)
             ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
     }
