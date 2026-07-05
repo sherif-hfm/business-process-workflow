@@ -11,6 +11,15 @@
       "required": false,
       "defaultValue": 0,
       "validation": null
+    },
+    {
+      "id": 2,
+      "name": "users",
+      "dataType": "string",
+      "isArray": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
     }
   ],
   "lanes": [],
@@ -58,7 +67,7 @@
       "variables": [],
       "scriptFormat": "javascript",
       "assignments": [],
-      "script": "var votes = execution.getVariable(\"votes\");\n\n// Perform logic\nvotes = votes + 1\n\n// Update/create variables\nexecution.setVariable(\"votes\", votes);"
+      "script": "var votes = execution.getVariable(\"votes\");\nvar users = execution.getVariable(\"users\");\n\n// Perform logic\nvotes = votes + 1;\n\nvar usersList = [];\nif (users) {\n    for (var i = 0; i < users.length; i++) {\n        usersList.push(users[i]);\n    }\n}\nvar currentUser = execution.getVariable(\"sys.user\");\nif (currentUser) {\n    usersList.push(currentUser);\n}\n\n// Update/create variables\nexecution.setVariable(\"votes\", votes);\nexecution.setVariable(\"users\", usersList);"
     },
     {
       "id": 4,
@@ -137,6 +146,7 @@
     {
       "id": 106,
       "name": "",
+      "externalId": null,
       "sourceRef": 5,
       "targetRef": 2,
       "roles": [],
