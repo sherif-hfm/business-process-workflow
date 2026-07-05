@@ -177,7 +177,12 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
-        return OutgoingFlows(workflow.Definition, node.Id);
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
+        return OutgoingFlows(workflow.Definition, node.Id)
+            .Where(f => f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
+                        || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx))
+            .ToList();
     }
 
     public async Task<InstanceDetailDto?> ClaimAsync(
@@ -273,6 +278,18 @@ public sealed class WorkflowEngineService(
         var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
         var flowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
         var flowValues = ResolveAndValidateVariables(flow.Variables, variableValues, flowContext);
+        foreach (var pair in flowValues)
+        {
+            flowContext[pair.Key] = pair.Value;
+        }
+
+        if (!flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition)
+            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, flowContext))
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow '{flow.Name}' condition is not satisfied: '{flow.Condition}'.");
+        }
+
         foreach (var pair in flowValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, pair.Value, cancellationToken);

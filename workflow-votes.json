@@ -18,7 +18,7 @@
       "dataType": "string",
       "isArray": true,
       "required": false,
-      "defaultValue": null,
+      "defaultValue": [],
       "validation": null
     }
   ],
@@ -118,7 +118,7 @@
       "targetRef": 3,
       "roles": [],
       "variables": [],
-      "condition": null,
+      "condition": "votes < 3",
       "isDefault": false
     },
     {

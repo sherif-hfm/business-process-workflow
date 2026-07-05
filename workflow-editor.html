@@ -667,16 +667,29 @@ function renderEdges() {
       g.appendChild(t);
     }
 
-    // secondary line: roles for user-task flows, condition/default for gateway flows
+    // secondary line: roles/condition/default for user-task and gateway flows
+    const cond = flow.isDefault ? "default" : (flow.condition || "");
+    const roles = roleSummary(flow.roles);
     if (isGatewayType(source.type)) {
-      const cond = flow.isDefault ? "default" : (flow.condition || "");
       if (cond) {
         const cText = el("text", { x: lx, y: ly + 9, class: "cond", "text-anchor": "middle" });
         cText.textContent = cond.length > 24 ? cond.slice(0, 21) + "..." : cond;
         g.appendChild(cText);
       }
+    } else if (isUserTaskType(source.type)) {
+      let y = ly + 9;
+      if (roles) {
+        const roleText = el("text", { x: lx, y, class: "roles", "text-anchor": "middle" });
+        roleText.textContent = roles;
+        g.appendChild(roleText);
+        y += 13;
+      }
+      if (cond) {
+        const cText = el("text", { x: lx, y, class: "cond", "text-anchor": "middle" });
+        cText.textContent = cond.length > 24 ? cond.slice(0, 21) + "..." : cond;
+        g.appendChild(cText);
+      }
     } else {
-      const roles = roleSummary(flow.roles);
       if (roles) {
         const roleText = el("text", { x: lx, y: ly + 9, class: "roles", "text-anchor": "middle" });
         roleText.textContent = roles;
@@ -1246,6 +1259,29 @@ function renderFlowInspector() {
     );
   } else {
     rolesField(flow, () => renderEdges());
+    if (isUserTaskFlow) {
+      field("Condition", "text", flow.condition ?? "", v => {
+        flow.condition = v.trim() ? v : null;
+        if (flow.condition && flow.isDefault) flow.isDefault = false;
+        renderEdges();
+      });
+      const condHint = document.createElement("p");
+      condHint.className = "empty-note";
+      condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action; check Default flow to always show it regardless of condition.';
+      inspector.appendChild(condHint);
+      inspector.appendChild(
+        variableCheckbox("Default flow", flow.isDefault, checked => {
+          flow.isDefault = checked;
+          if (checked) {
+            flow.condition = null;
+            // only one default per user task
+            outgoingFlows(flow.sourceRef).forEach(f => { if (f.id !== flow.id) f.isDefault = false; });
+          }
+          renderInspector();
+          renderEdges();
+        })
+      );
+    }
   }
 
   const variablesTitle = document.createElement("h2");

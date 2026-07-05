@@ -161,6 +161,22 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsUserTask(node.Type))
             {
                 ValidateClaimMode(node, definition);
+
+                var userTaskDefaultCount = outgoing.Count(f => f.IsDefault);
+                if (userTaskDefaultCount > 1)
+                {
+                    throw new WorkflowDomainException(
+                        $"User task #{node.Id} has {userTaskDefaultCount} default flows; at most one allowed.");
+                }
+
+                foreach (var flow in outgoing.Where(f => !string.IsNullOrWhiteSpace(f.Condition)))
+                {
+                    if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+                    }
+                }
             }
 
             if (BpmnFlowNodeTypes.IsGateway(node.Type))
@@ -168,6 +184,13 @@ public sealed class WorkflowDefinitionService(
                 if (outgoing.Count < 2)
                 {
                     throw new WorkflowDomainException($"Exclusive gateway #{node.Id} must have at least two outgoing sequence flows.");
+                }
+
+                var gatewayDefaultCount = outgoing.Count(f => f.IsDefault);
+                if (gatewayDefaultCount > 1)
+                {
+                    throw new WorkflowDomainException(
+                        $"Exclusive gateway #{node.Id} has {gatewayDefaultCount} default flows; at most one allowed.");
                 }
 
                 var hasDefault = outgoing.Any(f => f.IsDefault);

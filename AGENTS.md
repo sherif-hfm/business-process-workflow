@@ -214,7 +214,10 @@ Storage follows the hybrid design:
   claimed/acted on by a caller holding one of those roles; an empty `roles` list
   is open to anyone. `GetAvailableFlowsAsync` hides flows when the role does not
   match; `ClaimAsync`/`TakeFlowAsync` reject with a `WorkflowDomainException`.
-  Sequence-flow `roles` are still advisory (not enforced).
+  Sequence-flow `roles` are still advisory (not enforced), but `userTask` flows
+  can also carry a `condition` (NCalc) and an `isDefault` flag: the engine filters
+  visible actions in `GetAvailableFlowsAsync` and re-checks the condition before
+  executing `TakeFlowAsync`.
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
@@ -474,10 +477,10 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "externalId": "FLOW_MGR_APPROVE", // optional free-form integration key (nullable)
   "sourceRef": 2,              // source node id
   "targetRef": 3,              // target node id
-  "roles": [ "Manager" ],      // userTask flow: roles allowed to take it
+  "roles": [ "Manager" ],      // userTask flow: advisory roles shown in the editor
   "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
-  "condition": "amount > 1000",// exclusiveGateway flow only (nullable)
-  "isDefault": false           // exclusiveGateway default flow
+  "condition": "amount > 1000",// userTask / exclusiveGateway flow only (nullable)
+  "isDefault": false           // userTask / exclusiveGateway default flow
 }
 ```
 
@@ -630,8 +633,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
-| `sequenceFlow.condition` | Condition Expression | NCalc expression on gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
-| `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path. |
+| `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
+| `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
 | `variables` (start/flow) | Data Object / Property | Typed data captured at a start event or on a user-task flow. |
@@ -659,8 +662,10 @@ when extending the model so new features stay close to BPMN terminology.
 - **Integer ids, JSON (not BPMN XML).** Flow nodes and sequence flows use integer
   ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
 - **Node roles are enforced** at runtime (against JWT role claims); an empty
-  `roles` list means open to anyone. Sequence-flow `roles` remain advisory, and
-  `requiresClaim` ownership is enforced on top of the role check.
+  `roles` list means open to anyone. Sequence-flow `roles` remain advisory, but
+  `userTask` flows can also carry a `condition` (NCalc) and `isDefault` flag that
+  the engine evaluates at both list and execution time. `requiresClaim` ownership
+  is enforced on top of the role check.
 
 ### If you add BPMN-aligned features later
 
@@ -709,6 +714,9 @@ when extending the model so new features stay close to BPMN terminology.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
   `isDefault` marker; the editor shows the condition/`default` beneath the edge
   and enforces a single default per gateway.
+- **User-task flows**: `userTask` outgoing flows may also carry a `condition` (NCalc)
+  and an `isDefault` marker; the editor shows both roles and condition/default beneath
+  the edge and enforces a single default per user task.
 
 ---
 
