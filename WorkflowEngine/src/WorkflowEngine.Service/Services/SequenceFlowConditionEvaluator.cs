@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,14 +28,18 @@ namespace WorkflowEngine.Service.Services;
 /// In addition to the built-in NCalc functions (e.g. <c>Min</c>, <c>Max</c>,
 /// <c>if</c>, <c>in</c>, math helpers), the following custom helper functions are
 /// registered (names are case-insensitive):
-///   - <c>Length(s)</c> / <c>Len(s)</c> - character count of a value
+///   - <c>Length(s)</c> / <c>Len(s)</c> - character count of a string, or element
+///     count of an array variable
 ///   - <c>IsNullOrEmpty(s)</c>, <c>IsNullOrWhiteSpace(s)</c>
-///   - <c>Contains(s, sub)</c>, <c>StartsWith(s, prefix)</c>, <c>EndsWith(s, suffix)</c>
+///   - <c>Contains(s, sub)</c> - substring match for strings, or element membership
+///     for array variables; both are case-insensitive
+///   - <c>StartsWith(s, prefix)</c>, <c>EndsWith(s, suffix)</c>
 ///   - <c>Lower(s)</c>, <c>Upper(s)</c>, <c>Trim(s)</c>
 ///   - <c>IsMatch(s, pattern)</c> - regular-expression match (case-insensitive,
 ///     bounded execution time)
-/// Substring and regex matching are case-insensitive. A helper called with too
-/// few arguments is treated as unknown (the expression evaluates to
+/// Substring and regex matching are case-insensitive. Array variables are exposed
+/// as native lists so the collection helpers work directly on them. A helper called
+/// with too few arguments is treated as unknown (the expression evaluates to
 /// <c>false</c>).
 /// </summary>
 public static class SequenceFlowConditionEvaluator
@@ -166,7 +171,7 @@ public static class SequenceFlowConditionEvaluator
             case "length":
             case "len":
                 if (arguments.Count < 1) return;
-                args.Result = (long)AsString(arguments.Evaluate(0)).Length;
+                args.Result = GetLength(arguments.Evaluate(0));
                 return;
             case "isnullorempty":
                 if (arguments.Count < 1) return;
@@ -178,8 +183,7 @@ public static class SequenceFlowConditionEvaluator
                 return;
             case "contains":
                 if (arguments.Count < 2) return;
-                args.Result = AsString(arguments.Evaluate(0))
-                    .Contains(AsString(arguments.Evaluate(1)), StringComparison.OrdinalIgnoreCase);
+                args.Result = ContainsValue(arguments.Evaluate(0), arguments.Evaluate(1));
                 return;
             case "startswith":
                 if (arguments.Count < 2) return;
@@ -214,6 +218,50 @@ public static class SequenceFlowConditionEvaluator
 
     private static string AsString(object? value) =>
         Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static long GetLength(object? value)
+    {
+        if (value is string s)
+        {
+            return s.Length;
+        }
+
+        if (value is IEnumerable enumerable and not string)
+        {
+            if (value is ICollection collection)
+            {
+                return collection.Count;
+            }
+
+            return enumerable.Cast<object?>().LongCount();
+        }
+
+        return AsString(value).Length;
+    }
+
+    private static bool ContainsValue(object? container, object? search)
+    {
+        if (container is string s)
+        {
+            return s.Contains(AsString(search), StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (container is IEnumerable enumerable and not string)
+        {
+            var searchText = AsString(search);
+            foreach (var item in enumerable)
+            {
+                if (AsString(item).Equals(searchText, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return AsString(container).Contains(AsString(search), StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool TryRegexMatch(string input, string pattern)
     {
@@ -266,6 +314,7 @@ public static class SequenceFlowConditionEvaluator
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null or JsonValueKind.Undefined => null,
+        JsonValueKind.Array => element.EnumerateArray().Select(ConvertValue).ToList<object?>(),
         _ => element.GetRawText()
     };
 
@@ -276,6 +325,7 @@ public static class SequenceFlowConditionEvaluator
         string s => !string.IsNullOrWhiteSpace(s),
         sbyte or byte or short or ushort or int or uint or long or ulong
             or float or double or decimal => Convert.ToDecimal(value, CultureInfo.InvariantCulture) != 0,
+        IEnumerable enumerable and not string => enumerable.Cast<object?>().Any(),
         _ => true
     };
 }
