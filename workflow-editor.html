@@ -374,6 +374,12 @@ function isEndEventType(type) {
 function isGatewayType(type) {
   return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
 }
+function isSingleOutgoingType(type) {
+  return type === NODE_TYPE.START_EVENT
+    || type === NODE_TYPE.TASK
+    || type === NODE_TYPE.SERVICE_TASK
+    || type === NODE_TYPE.SCRIPT_TASK;
+}
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
   return match ? match.label : type;
@@ -435,6 +441,14 @@ function applyTypeInvariants(node) {
     node.variables = node.variables || [];
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
     if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+  }
+
+  if (isSingleOutgoingType(node.type)) {
+    const outgoing = outgoingFlows(node.id);
+    if (outgoing.length > 1) {
+      const keepId = outgoing[0].id;
+      model.sequenceFlows = model.sequenceFlows.filter(f => f.sourceRef !== node.id || f.id === keepId);
+    }
   }
 }
 function appendUserTaskMarker(g) {
@@ -685,9 +699,15 @@ function flowLabel(flow, source) {
 
 function renderHint() {
   if (connectMode) {
-    hintEl.innerHTML = connectSource == null
-      ? "<b>Connect mode:</b> click the <b>source</b> node."
-      : "<b>Connect mode:</b> now click the <b>target</b> node.";
+    if (connectSource == null) {
+      hintEl.innerHTML = "<b>Connect mode:</b> click the <b>source</b> node.";
+    } else {
+      const source = getNode(connectSource);
+      const extra = source && isSingleOutgoingType(source.type)
+        ? " This node type can have exactly one outgoing flow."
+        : "";
+      hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
+    }
   } else {
     hintEl.innerHTML = "Drag nodes to move. Drag lanes to move grouped nodes. Click a node, lane, or flow arrow to edit it.";
   }
@@ -860,14 +880,21 @@ function renderNodeInspector() {
       inspector.appendChild(box);
     });
 
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "+ Add flow";
-    addBtn.style.marginTop = "8px";
-    addBtn.onclick = () => {
-      const flow = createFlow(node.id, node.id);
-      select('flow', flow.id);
-    };
-    inspector.appendChild(addBtn);
+    if (isSingleOutgoingType(node.type) && flows.length >= 1) {
+      const p = document.createElement("p");
+      p.className = "empty-note";
+      p.textContent = "This node type can have exactly one outgoing sequence flow.";
+      inspector.appendChild(p);
+    } else {
+      const addBtn = document.createElement("button");
+      addBtn.textContent = "+ Add flow";
+      addBtn.style.marginTop = "8px";
+      addBtn.onclick = () => {
+        const flow = createFlow(node.id, node.id);
+        select('flow', flow.id);
+      };
+      inspector.appendChild(addBtn);
+    }
   }
 
   const del = document.createElement("button");
@@ -1602,6 +1629,13 @@ function handleConnectClick(node) {
     connectSource = node.id;
     renderHint();
   } else {
+    const source = getNode(connectSource);
+    if (source && isSingleOutgoingType(source.type) && outgoingFlows(connectSource).length >= 1) {
+      hintEl.innerHTML = "<b>Connect mode:</b> this node type can have exactly one outgoing flow.";
+      connectSource = null;
+      setConnectMode(false);
+      return;
+    }
     const flow = createFlow(connectSource, node.id);
     connectSource = null;
     setConnectMode(false);
