@@ -101,7 +101,13 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing targetRef #{flow.TargetRef}.");
             }
 
-            ValidateVariables(flow.Variables, $"sequence flow #{flow.Id}");
+            var sourceNode = definition.FlowNodes.Single(n => n.Id == flow.SourceRef);
+            if (flow.Variables is not null && flow.Variables.Count > 0 && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has variables but its source node is not a user task.");
+            }
+
+            ValidateVariables(flow.Variables ?? [], $"sequence flow #{flow.Id}");
         }
 
         foreach (var node in definition.FlowNodes)

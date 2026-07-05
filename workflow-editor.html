@@ -1188,6 +1188,7 @@ function renderFlowInspector() {
   const source = getNode(flow.sourceRef);
   flow.variables = flow.variables || [];
   const gateway = source && isGatewayType(source.type);
+  const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   inspector.innerHTML = `<h2>Flow #${flow.id}</h2>
     <p class="badge" style="margin-top:-6px">From node #${flow.sourceRef}${source ? ' (' + source.name + ')' : ''}</p>`;
   field("Name", "text", flow.name, v => { flow.name = v; renderEdges(); });
@@ -1229,6 +1230,11 @@ function renderFlowInspector() {
     const p = document.createElement("p");
     p.className = "empty-note";
     p.textContent = "Gateway flows route automatically by condition and do not capture variables.";
+    inspector.appendChild(p);
+  } else if (!isUserTaskFlow) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "Variables are only captured on flows leaving a user task.";
     inspector.appendChild(p);
   } else {
     if (flow.variables.length === 0) {
