@@ -94,6 +94,45 @@ public static class SequenceFlowConditionEvaluator
     }
 
     /// <summary>
+    /// Evaluates an expression and returns the raw typed result (not coerced to a
+    /// boolean), for use by scriptTask assignments. Instance variables are exposed
+    /// as NCalc parameters (same as <see cref="Evaluate"/>), and the same custom
+    /// helper functions are available. Unlike <see cref="Evaluate"/>, a parse or
+    /// runtime failure throws a <see cref="WorkflowDomainException"/> naming the
+    /// expression so a broken assignment is visible and rolls back the transition
+    /// instead of silently writing null. An optional "${ ... }" wrapper is stripped.
+    /// </summary>
+    public static object? EvaluateValue(string? expression, IReadOnlyDictionary<string, JsonElement> variables)
+    {
+        var text = Normalize(expression);
+        if (text is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var ncalc = CreateExpression(text, variables);
+            return ncalc.Evaluate();
+        }
+        catch (NCalcException ex)
+        {
+            throw new WorkflowDomainException(
+                $"Expression '{expression}' could not be evaluated: {ex.Message}");
+        }
+        catch (FormatException ex)
+        {
+            throw new WorkflowDomainException(
+                $"Expression '{expression}' could not be evaluated: {ex.Message}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new WorkflowDomainException(
+                $"Expression '{expression}' could not be evaluated: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Builds an <see cref="Expression"/> with the shared options, the supplied
     /// instance variables as parameters (when given), and the custom helper
     /// functions registered. Both <see cref="Evaluate"/> and <see cref="IsValid"/>

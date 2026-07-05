@@ -146,3 +146,83 @@ public interface IServiceTaskInvoker
 {
     Task<ServiceTaskResult> InvokeAsync(ServiceTaskRequest request, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// The host surface a scriptTask's JavaScript body sees as the bound
+/// <c>execution</c> object. Reads see stored instance variables overlaid with
+/// read-only <c>sys.*</c>/<c>config.*</c> context (same map as NCalc assignments);
+/// <see cref="SetVariable"/> stages a write that the engine validates against the
+/// declared process variable (name + dataType coercion) before persisting -
+/// mirroring an NCalc assignment. Implemented by <c>WorkflowEngineService</c> so
+/// the coercion/declaration rules stay in one place; the evaluator (Jint) only
+/// talks to this interface and never sees <c>VariableModel</c>.
+/// </summary>
+public interface IScriptContext
+{
+    bool TryGetVariable(string name, out JsonElement value);
+
+    bool HasVariable(string name);
+
+    IReadOnlyDictionary<string, JsonElement> GetVariables();
+
+    /// <summary>
+    /// Stages a write for a declared process variable. <paramref name="rawValue"/>
+    /// is the JS value marshalled to JSON as-is (untyped); the context coerces it
+    /// to the target variable's declared dataType. Throws
+    /// <c>WorkflowDomainException</c> when the name is not a declared process
+    /// variable, mirroring the NCalc-assignment rule.
+    /// </summary>
+    void SetVariable(string name, JsonElement rawValue);
+}
+
+/// <summary>
+/// Outcome of running a scriptTask JavaScript body. <see cref="Success"/> is false
+/// for a script error, a parse failure, or an execution-constraint violation
+/// (timeout / memory / statement limit); <see cref="Error"/> then carries a
+/// human-readable reason that the engine wraps in a <c>WorkflowDomainException</c>
+/// (rolling back the transition).
+/// </summary>
+public sealed record ScriptResult(bool Success, string? Error)
+{
+    public static readonly ScriptResult Ok = new(true, null);
+
+    public static ScriptResult Fail(string error) => new(false, error);
+}
+
+/// <summary>
+/// Execution limits for scriptTask JavaScript bodies, bound from the
+/// <c>WorkflowScript</c> configuration section. Applied per-call by the
+/// <see cref="IScriptEvaluator"/> implementation (Jint execution constraints);
+/// defaults are conservative since script authors are trusted definition authors
+/// but scripts still run inside a locked database transaction.
+/// </summary>
+public sealed class ScriptOptions
+{
+    public const string SectionName = "WorkflowScript";
+
+    /// <summary>Wall-clock timeout for a single script execution.</summary>
+    public int TimeoutSeconds { get; set; } = 5;
+
+    /// <summary>Maximum number of JS statements a single execution may run.</summary>
+    public int MaxStatements { get; set; } = 100_000;
+
+    /// <summary>Maximum bytes a single execution may allocate.</summary>
+    public long MemoryBytes { get; set; } = 8_000_000;
+}
+
+/// <summary>
+/// Evaluates a scriptTask JavaScript body against an <see cref="IScriptContext"/>.
+/// Implemented in the infrastructure layer over Jint, in a sandboxed
+/// <c>Engine</c> with no CLR access (no filesystem/network/reflection) and bounded
+/// by <see cref="ScriptOptions"/>.
+/// </summary>
+public interface IScriptEvaluator
+{
+    ScriptResult Evaluate(string script, IScriptContext context, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Parse-only syntax check used for author-time validation
+    /// (<c>ValidateDefinition</c>); does not execute the script.
+    /// </summary>
+    bool IsValid(string script, out string? error);
+}

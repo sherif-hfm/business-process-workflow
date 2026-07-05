@@ -77,7 +77,8 @@ Projects:
   (`SequenceFlowConditionEvaluator`, NCalc), service interfaces, repository
   ports, and DI extension.
 - `src/WorkflowEngine.Infrastructure` - Infrastructure layer: EF Core,
-  PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations, and
+  PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations,
+  scriptTask JavaScript execution (`JintScriptEvaluator`, sandboxed Jint), and
   unit of work.
 - `src/WorkflowEngine.Shared` - shared DTOs and C# model for the editor JSON.
 - `src/WorkflowEngine.Ui` - Blazor Server UI that calls the API through a typed
@@ -116,10 +117,11 @@ Storage follows the hybrid design:
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
-  `task`, `serviceTask`, and `exclusiveGateway` nodes are resolved in the same
-  transaction until the instance rests on a `userTask` or terminates on an
+  `task`, `serviceTask`, `scriptTask`, and `exclusiveGateway` nodes are resolved in
+  the same transaction until the instance rests on a `userTask` or terminates on an
   `endEvent`. A hop limit (`flowNodes.Count + 1`) guards against cycles. History
-  rows are written with a `start`, `automatic`, `service`, or `gateway` note.
+  rows are written with a `start`, `automatic`, `service`, `script`, or `gateway`
+  note.
 - **Service tasks** call an external REST endpoint during the pass-through hop
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
@@ -133,6 +135,32 @@ Storage follows the hybrid design:
   receives the HTTP status (0 on transport error) so a downstream gateway can
   branch. Definitions are validated (`ValidateDefinition`) for a URL, allowed
   method, positive timeout, valid `onError`, and complete output mappings.
+- **Script tasks** mutate process variables during the pass-through hop in one of
+  two authoring modes (`scriptFormat`), never both at once:
+  - `ncalc` (default): `assignments` are NCalc expressions evaluated **in order**
+    against a running overlay, so a later assignment sees an earlier one's write
+    within the same node.
+  - `javascript`: the `script` body runs in a sandboxed Jint `Engine` (no
+    `AllowClr()` - no filesystem/network/reflection) with a single bound
+    `execution` host object: `execution.getVariable(name)`,
+    `execution.setVariable(name, value)`, `execution.getVariables()`,
+    `execution.hasVariable(name)`. A script reads its own writes within the same
+    execution (an in-memory overlay, same as the ncalc path). Execution is bounded
+    by `ScriptOptions` (`WorkflowScript` config section: `TimeoutSeconds`,
+    `MaxStatements`, `MemoryBytes`, defaults 5s / 100,000 / 8 MB), enforced both by
+    Jint's own execution constraints and a hard wall-clock
+    `CancellationTokenSource.CancelAfter` backstop (a few Jint built-ins bulk-process
+    in a single CLR call that bypasses per-step constraint checks -
+    [sebastienros/jint#2486](https://github.com/sebastienros/jint/issues/2486)).
+  In both modes, every write is coerced to the target's declared `dataType`/
+  `isArray` (`CoerceScriptValue`) and must target a **declared process variable**
+  (`model.variables`) - an undeclared `setVariable`/assignment target throws
+  `WorkflowDomainException`, rolling back the transition. After all writes are
+  flushed, each distinct target variable's `validation` rule is re-checked against
+  the reloaded map, exactly like a bad flow input. `IScriptEvaluator`
+  (`JintScriptEvaluator` in the infrastructure layer) also parse-checks a
+  `javascript` body at author time (`Engine.PrepareScript`, no execution) via
+  `ValidateDefinition`.
 - **Exclusive gateways** evaluate outgoing flows: the first flow whose
   `condition` is true wins; otherwise the `isDefault` flow is taken; if neither
   matches the transition fails. Conditions are evaluated by
@@ -311,6 +339,7 @@ The workflow is a plain JSON object. See `workflow.json` for a real example.
   "id": 1,
   "name": "Purchase Request Approval",
   "initialEventId": 1,           // id of the default start event (nullable)
+  "variables": [ /* Variable[] */ ], // process-level declarations (see Process variables)
   "lanes": [ /* Lane[] */ ],
   "flowNodes": [ /* FlowNode[] */ ],
   "sequenceFlows": [ /* SequenceFlow[] */ ]
@@ -333,14 +362,14 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
-`exclusiveGateway`, or `endEvent`.
+`serviceTask`, `scriptTask`, `exclusiveGateway`, or `endEvent`.
 
 ```jsonc
 {
   "id": 1,
   "name": "Request Submitted",
   "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
-  "type": "startEvent",        // startEvent | userTask | task | serviceTask | exclusiveGateway | endEvent
+  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
@@ -348,9 +377,58 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
   "variables": [ /* Variable[] */ ], // startEvent (data to start) / userTask
-  "service": { /* ServiceTaskConfig */ } // serviceTask only (REST call config)
+  "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
+  "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
+  "assignments": [ /* Assignment[] */ ], // scriptTask + scriptFormat "ncalc" only (see Assignment)
+  "script": null               // scriptTask + scriptFormat "javascript" only (see below)
 }
 ```
+
+### Assignment
+An ordered variable write performed by a `scriptTask` node during its pass-through
+hop when `scriptFormat` is `"ncalc"` (the default). Each `expression` is NCalc,
+evaluated against the current instance variables overlaid with `sys.*` / `config.*`
+context (use `[sys.user]` bracket syntax for dotted context names); the typed
+result is coerced to the target variable's declared `dataType` and persisted.
+Assignments run in list order against a running overlay, so a later one can
+reference an earlier one's write in the same list.
+
+```jsonc
+{
+  "variable": "total",         // must reference a declared process variable name
+  "expression": "amount * 1.1" // NCalc expression; parse-checked at author time
+}
+```
+
+### Script (JavaScript scriptFormat)
+When `scriptFormat` is `"javascript"`, `flowNode.script` is a JavaScript body run
+by [Jint](https://github.com/sebastienros/jint) in a sandboxed `Engine` (no CLR
+access) with a single bound `execution` host object:
+
+```jsonc
+{
+  "scriptFormat": "javascript",
+  "script": "var orderAmount = execution.getVariable('orderAmount');\nvar tax = orderAmount * 0.15;\nvar total = orderAmount + tax;\nexecution.setVariable('tax', tax);\nexecution.setVariable('total', total);"
+}
+```
+
+- `execution.getVariable(name)` - reads a stored instance variable or `sys.*`/
+  `config.*` context value (same map as NCalc assignments), marshalled to a native
+  JS value (number/string/boolean/array/object).
+- `execution.setVariable(name, value)` - writes a **declared process variable**
+  (`model.variables`); the JS value is marshalled back to JSON and coerced to the
+  target's declared `dataType`/`isArray`, exactly like an NCalc assignment. An
+  undeclared target throws (rolls back the transition).
+- `execution.getVariables()` - a snapshot object of all currently visible
+  variables (property access, e.g. `vars.amount`).
+- `execution.hasVariable(name)` - existence check.
+- A script reads its own writes within the same execution (an in-memory overlay),
+  so `execution.getVariable('tax')` after `setVariable('tax', ...)` sees the new
+  value even before it is persisted.
+
+`assignments` and `script` are mutually exclusive per `scriptFormat`; the editor
+and `ValidateDefinition` both enforce that only the active mode's field is
+populated.
 
 Node kinds and their outgoing-flow rules:
 
@@ -366,6 +444,15 @@ Node kinds and their outgoing-flow rules:
   mappings) and exactly one unconditional outgoing flow. On entry the engine
   calls the endpoint, writes response fields into instance variables, then
   follows the flow. No user action.
+- **`scriptTask`**: automatic variable mutation; rounded rectangle with SCRIPT
+  marker. Carries `scriptFormat` plus either `assignments` (ncalc) or `script`
+  (javascript, run by Jint) and exactly one unconditional outgoing flow. On entry
+  the engine runs the active mode, coerces each write to the target process
+  variable's `dataType`, persists it (append-only; last write wins), then follows
+  the flow. No user action. Each target variable's `validation` rule is
+  re-checked after the writes; a failure rolls back the transition. The first
+  automatic node type that carries authored data (`assignments`/`script`), so
+  `ApplyNodeInvariants` has a dedicated case that preserves them.
 - **`exclusiveGateway`**: routing node; diamond on canvas. Two or more outgoing
   flows with `condition`s plus one `isDefault`; the engine picks the first
   matching condition, else the default. No user interaction.
@@ -442,6 +529,28 @@ custom helper functions (`Len`, `IsNullOrEmpty`, `Contains`, `StartsWith`,
 parse-checked at author time in `ValidateDefinition`
 (`ValidateVariables` -> `SequenceFlowConditionEvaluator.IsValid`).
 
+### Process variables
+In addition to start-event and sequence-flow variables, a workflow may declare
+**process-level variables** at the top level (`model.variables`). These are
+instance-scoped: never supplied by a user, initialized from their `defaultValue`
+at instance start, and mutated by `scriptTask` nodes during pass-through routing.
+They are visible to gateways, service-task templates, and validation rules
+through the same `WithContext` overlay as any other stored variable.
+
+Process variables differ from start/flow variables in a few respects:
+
+- `required` is meaningless (the value is computed, not collected) and is hidden
+  in the editor. `ValidateDefinition` does not reject it but the engine ignores
+  it; the editor forces `required: false`.
+- `defaultValue` is **required** (validated at author time). Every process
+  variable is initialized from its default at start (templated + coerced like a
+  start-variable default, so `${sys.user}` / `${amount}` placeholders work), so
+  every declared name is readable from hop 0 of the pass-through loop.
+- `validation` runs both after the start initialization and after every
+  `scriptTask` write that targets the variable, reusing the gateway evaluator.
+- The editor surfaces them in the "Workflow" inspector panel (shown when nothing
+  is selected), separate from the per-node / per-flow variable editors.
+
 ### ServiceTaskConfig
 The REST configuration on a `serviceTask` flow node (`flowNode.service`).
 
@@ -517,6 +626,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
+| `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
@@ -524,7 +634,9 @@ when extending the model so new features stay close to BPMN terminology.
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
-| `variables` | Data Object / Property | Typed data captured at a start event or on a user-task flow. |
+| `variables` (start/flow) | Data Object / Property | Typed data captured at a start event or on a user-task flow. |
+| `variables` (process) | Data Object (process-scoped) | Instance-scoped typed data, initialized at start and mutated by `scriptTask` nodes; closest to a BPMN Data Object owned by the process. |
+| `assignment` | Script Task expression / Data Write | NCalc expression whose typed result is coerced to the target variable's `dataType` and persisted. |
 | `requiresClaim` | User Task "claim" (assignee) | Runtime-enforced single-owner locking; not a distinct BPMN element. |
 
 ### Intentional deviations from BPMN
@@ -557,7 +669,7 @@ when extending the model so new features stay close to BPMN terminology.
 - Keep the JSON tolerant: extend `loadFromObject()` (editor) and
   `WorkflowModelMigrator` (.NET) so older documents still load.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
-  `IsServiceTask`, `IsUserTask`, `IsGateway`, `IsPassThrough`) and
+  `IsServiceTask`, `IsScriptTask`, `IsUserTask`, `IsGateway`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
 ---
@@ -591,7 +703,9 @@ when extending the model so new features stay close to BPMN terminology.
   (enforced at runtime in `WorkflowEngine/`). Hidden for other node types.
 - **Automatic task / start event flow**: `task` and `startEvent` each own one
   unconditional outgoing flow, drawn as a dashed edge. The engine follows it in
-  the pass-through loop with `automatic` / `start` history notes.
+  the pass-through loop with `automatic` / `start` history notes. `serviceTask`
+  and `scriptTask` are also pass-through (single unconditional outgoing flow),
+  logged with `service` / `script` notes.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
   `isDefault` marker; the editor shows the condition/`default` beneath the edge
   and enforces a single default per gateway.

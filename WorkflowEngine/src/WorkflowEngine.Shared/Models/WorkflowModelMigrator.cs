@@ -13,6 +13,8 @@ public static class WorkflowModelMigrator
         model.LegacyPhases = null;
         model.LegacySteps = null;
 
+        model.Variables ??= [];
+
         foreach (var node in model.FlowNodes)
         {
             ApplyNodeInvariants(node);
@@ -174,6 +176,34 @@ public static class WorkflowModelMigrator
             node.Roles = [];
             node.Variables = [];
             node.Service ??= new ServiceTaskModel();
+            node.Assignments = [];
+        }
+        else if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
+        {
+            // Script tasks are automatic; the authored logic lives on either
+            // node.Assignments (ncalc) or node.Script (javascript), never both.
+            // The first automatic node type to carry authored data, so this is a
+            // deliberate case rather than a fall-through.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            if (node.ScriptFormat != ScriptFormats.JavaScript)
+            {
+                node.ScriptFormat = ScriptFormats.NCalc;
+            }
+
+            if (node.ScriptFormat == ScriptFormats.JavaScript)
+            {
+                node.Assignments = [];
+            }
+            else
+            {
+                node.Assignments ??= [];
+                node.Script = null;
+            }
         }
         else if (BpmnFlowNodeTypes.IsStart(node.Type))
         {

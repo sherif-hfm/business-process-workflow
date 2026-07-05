@@ -41,6 +41,12 @@ var workflowContextOptions = builder.Configuration
 builder.Services.AddSingleton(workflowContextOptions);
 builder.Services.AddSingleton(TimeProvider.System);
 
+// scriptTask JavaScript execution limits (Jint sandbox: timeout / statements / memory).
+var scriptOptions = builder.Configuration
+    .GetSection(ScriptOptions.SectionName)
+    .Get<ScriptOptions>() ?? new ScriptOptions();
+builder.Services.AddSingleton(scriptOptions);
+
 builder.Services
     .AddServiceLayer()
     .AddInfrastructure(builder.Configuration);

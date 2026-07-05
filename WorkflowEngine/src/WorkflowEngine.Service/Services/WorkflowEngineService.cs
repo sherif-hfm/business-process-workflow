@@ -13,6 +13,7 @@ public sealed class WorkflowEngineService(
     IWorkflowRuntimeRepository runtime,
     IUnitOfWork unitOfWork,
     IServiceTaskInvoker serviceTaskInvoker,
+    IScriptEvaluator scriptEvaluator,
     WorkflowContextOptions contextOptions,
     TimeProvider timeProvider)
     : IWorkflowEngineService
@@ -48,6 +49,20 @@ public sealed class WorkflowEngineService(
             actor, instance, workflow.Definition, startEvent);
         var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
         foreach (var pair in startValues)
+        {
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, pair.Value, cancellationToken);
+        }
+
+        // Initialize process-level variables from their authored defaults so every
+        // declared name is readable from hop 0. Defaults are templated/coerced like
+        // start-variable defaults and validated against the start values + context.
+        var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in startValues)
+        {
+            processContext[pair.Key] = pair.Value;
+        }
+        var processValues = ResolveAndValidateVariables(workflow.Definition.Variables, null, processContext);
+        foreach (var pair in processValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, null, pair.Value, cancellationToken);
         }
@@ -354,6 +369,14 @@ public sealed class WorkflowEngineService(
                 variables = WithContext(stored, actor, instance, definition, currentNode);
             }
 
+            if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
+            {
+                await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
+                // Reload so the outgoing-flow selector and the next hop see the writes.
+                stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+                variables = WithContext(stored, actor, instance, definition, currentNode);
+            }
+
             var flow = SelectPassThroughFlow(definition, currentNode, variables);
             var nextNode = GetFlowNode(definition, flow.TargetRef);
             var nextStatus = BpmnFlowNodeTypes.IsEnd(nextNode.Type)
@@ -365,6 +388,7 @@ public sealed class WorkflowEngineService(
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
                 var t when BpmnFlowNodeTypes.IsGateway(t) => "gateway",
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
+                var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
                 _ => "automatic"
             };
 
@@ -472,7 +496,9 @@ public sealed class WorkflowEngineService(
         {
             var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                 ? "Start event"
-                : BpmnFlowNodeTypes.IsServiceTask(node.Type) ? "Service task" : "Automatic task";
+                : BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                    ? "Service task"
+                    : BpmnFlowNodeTypes.IsScriptTask(node.Type) ? "Script task" : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 
@@ -566,6 +592,223 @@ public sealed class WorkflowEngineService(
         var value = JsonSerializer.SerializeToElement(statusCode);
         await runtime.AddVariableAsync(instanceId, service.StatusVariable, null, value, cancellationToken);
     }
+
+    // Executes a scriptTask inside the pass-through loop, in either authoring mode:
+    //   - ncalc: each assignment's NCalc expression is evaluated in order against a
+    //     running overlay (so a later assignment sees an earlier one's write within
+    //     the same node), coerced to the target's dataType, and staged.
+    //   - javascript: the script runs under Jint via IScriptEvaluator; execution.
+    //     setVariable stages a write the same way (through EngineScriptContext),
+    //     validated against declared process variables and coerced identically.
+    // All staged writes are then persisted (append-only; last write wins) and each
+    // distinct target variable's NCalc validation rule is re-checked against the
+    // reloaded map, rejecting the transition just like a bad flow input.
+    private async Task ExecuteScriptTaskAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel node,
+        WorkflowModel definition,
+        ActorContext actor,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        CancellationToken cancellationToken)
+    {
+        var byName = definition.Variables
+            .Where(v => !string.IsNullOrWhiteSpace(v.Name))
+            .ToDictionary(v => v.Name!, StringComparer.OrdinalIgnoreCase);
+
+        var overlay = new Dictionary<string, JsonElement>(variables, StringComparer.OrdinalIgnoreCase);
+        var writes = new List<(VariableModel Target, JsonElement Value)>();
+
+        if (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(node.Script))
+            {
+                return;
+            }
+
+            var context = new EngineScriptContext(overlay, byName, writes);
+            var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
+            if (!result.Success)
+            {
+                throw new WorkflowDomainException($"Script task #{node.Id} failed: {result.Error}");
+            }
+        }
+        else
+        {
+            if (node.Assignments.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var assignment in node.Assignments)
+            {
+                if (string.IsNullOrWhiteSpace(assignment.Variable))
+                {
+                    throw new WorkflowDomainException($"Script task #{node.Id} has an assignment with no variable name.");
+                }
+
+                if (!byName.TryGetValue(assignment.Variable, out var target))
+                {
+                    throw new WorkflowDomainException(
+                        $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
+                }
+
+                var result = SequenceFlowConditionEvaluator.EvaluateValue(assignment.Expression, overlay);
+                var coerced = CoerceScriptValue(result, target);
+                overlay[target.Name!] = coerced;
+                writes.Add((target, coerced));
+            }
+        }
+
+        if (writes.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (target, value) in writes)
+        {
+            await runtime.AddVariableAsync(instance.Id, target.Name!, null, value, cancellationToken);
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // Re-read the persisted values (including the just-written assignments) and
+        // re-run each distinct target variable's validation rule against the full context.
+        var reloaded = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var validated = WithContext(reloaded, actor, instance, definition, node);
+        foreach (var target in writes.Select(w => w.Target).Distinct())
+        {
+            if (string.IsNullOrWhiteSpace(target.Validation))
+            {
+                continue;
+            }
+
+            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, validated))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{target.Name}' failed validation: '{target.Validation}'.");
+            }
+        }
+    }
+
+    // IScriptContext backing a scriptTask's JavaScript body: reads see the running
+    // overlay (stored vars + sys.*/config.* context, updated as the script writes,
+    // so a script reads its own writes within the same execution); SetVariable
+    // enforces the "declared process variables only" rule, coerces via
+    // CoerceScriptValue (shared with the ncalc path), and stages the write for
+    // persistence after the script returns successfully.
+    private sealed class EngineScriptContext(
+        Dictionary<string, JsonElement> overlay,
+        IReadOnlyDictionary<string, VariableModel> declared,
+        List<(VariableModel Target, JsonElement Value)> writes) : IScriptContext
+    {
+        public bool TryGetVariable(string name, out JsonElement value) => overlay.TryGetValue(name, out value);
+
+        public bool HasVariable(string name) => overlay.ContainsKey(name);
+
+        public IReadOnlyDictionary<string, JsonElement> GetVariables() => overlay;
+
+        public void SetVariable(string name, JsonElement rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new WorkflowDomainException("execution.setVariable requires a variable name.");
+            }
+
+            if (!declared.TryGetValue(name, out var target))
+            {
+                throw new WorkflowDomainException(
+                    $"execution.setVariable('{name}', ...) is not a declared process variable.");
+            }
+
+            var coerced = CoerceScriptValue(JsonElementToObject(rawValue), target);
+            overlay[target.Name!] = coerced;
+            writes.Add((target, coerced));
+        }
+    }
+
+    // Converts an arbitrary raw JsonElement (e.g. a value marshalled from a JS
+    // script) into the loosely-typed CLR shape CoerceScriptScalar expects
+    // (string/long/double/bool/null); arrays and objects pass through as a cloned
+    // JsonElement, which CoerceScriptValue/CoerceScriptScalar's fallback arm
+    // re-serializes correctly (System.Text.Json has first-class JsonElement support).
+    private static object? JsonElementToObject(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null or JsonValueKind.Undefined => null,
+        _ => element.Clone()
+    };
+
+    // Coerces a script result (NCalc: long/double/bool/string/null; JavaScript: the
+    // same, or an already array/object-shaped JsonElement) into the JSON shape
+    // declared by the target variable. number/boolean/string are strict; date and
+    // datetime keep the authored text. A scalar assigned to a declared array
+    // variable is wrapped in a single-element array; an already array-shaped result
+    // (a genuine JS array) has each element coerced to the declared element type.
+    private static JsonElement CoerceScriptValue(object? result, VariableModel variable)
+    {
+        if (variable.IsArray)
+        {
+            if (result is JsonElement { ValueKind: JsonValueKind.Array } arrayElement)
+            {
+                var items = new List<object?>();
+                foreach (var item in arrayElement.EnumerateArray())
+                {
+                    items.Add(CoerceScriptScalar(JsonElementToObject(item), variable.DataType));
+                }
+
+                return JsonSerializer.SerializeToElement(items);
+            }
+
+            // A scalar result (NCalc never produces arrays) is wrapped so a
+            // declared array variable still receives a single-element value.
+            return JsonSerializer.SerializeToElement(new[] { CoerceScriptScalar(result, variable.DataType) });
+        }
+
+        return JsonSerializer.SerializeToElement(CoerceScriptScalar(result, variable.DataType));
+    }
+
+    private static object? CoerceScriptScalar(object? result, string dataType)
+    {
+        if (result is null)
+        {
+            return null;
+        }
+
+        return dataType switch
+        {
+            WorkflowVariableTypes.Number => ToNumber(result),
+            WorkflowVariableTypes.Boolean => ToBoolean(result),
+            WorkflowVariableTypes.String => Convert.ToString(result, CultureInfo.InvariantCulture) ?? string.Empty,
+            _ => result
+        };
+    }
+
+    private static object? ToNumber(object result) => result switch
+    {
+        long l => l,
+        double d => d % 1 == 0 && Math.Abs(d) < 9.2e18 ? (long)d : d,
+        int or short or byte or sbyte or ushort or uint or ulong or float or decimal
+            => Convert.ToDouble(result, CultureInfo.InvariantCulture),
+        bool b => b ? 1L : 0L,
+        string s when double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var n)
+            => n % 1 == 0 && Math.Abs(n) < 9.2e18 ? (long)n : n,
+        _ => Convert.ToString(result, CultureInfo.InvariantCulture) ?? string.Empty
+    };
+
+    private static object? ToBoolean(object result) => result switch
+    {
+        bool b => b,
+        long l => l != 0,
+        double d => Math.Abs(d) > 0,
+        int or short or byte or sbyte or ushort or uint or ulong or float or decimal
+            => Convert.ToDouble(result, CultureInfo.InvariantCulture) != 0,
+        string s when bool.TryParse(s, out var b) => b,
+        string s when double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var n) => Math.Abs(n) > 0,
+        _ => Convert.ToString(result, CultureInfo.InvariantCulture) ?? string.Empty
+    };
 
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
         long instanceId,

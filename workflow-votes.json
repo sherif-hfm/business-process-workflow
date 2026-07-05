@@ -1,0 +1,148 @@
+{
+  "id": 300,
+  "name": "Votes",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "votes",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": null,
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "user vote",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 323,
+      "y": 116,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "New Node",
+      "externalId": null,
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 578,
+      "y": 111,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "var votes = execution.getVariable(\"votes\");\n\n// Perform logic\nvotes = votes + 1\n\n// Update/create variables\nexecution.setVariable(\"votes\", votes);"
+    },
+    {
+      "id": 4,
+      "name": "End",
+      "externalId": null,
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1025,
+      "y": 331,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "New Node",
+      "externalId": null,
+      "type": "exclusiveGateway",
+      "laneId": null,
+      "x": 636,
+      "y": 330,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 102,
+      "name": "vote",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 104,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 105,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 5,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true
+    },
+    {
+      "id": 106,
+      "name": "",
+      "sourceRef": 5,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": "votes < 4",
+      "isDefault": false
+    }
+  ]
+}

@@ -154,6 +154,7 @@
   .node.userTask rect { fill: #1e3a5f; stroke: var(--accent); }
   .node.task rect     { fill: #1e293b; stroke: #64748b; }
   .node.serviceTask rect { fill: #164e4a; stroke: #2dd4bf; }
+  .node.scriptTask rect { fill: #1e1b4b; stroke: #a78bfa; }
   .node.exclusiveGateway polygon.body { fill: #422006; stroke: var(--amber); }
   .node.selected rect,
   .node.selected circle.body,
@@ -240,6 +241,7 @@ const NODE_TYPE = {
   USER_TASK: "userTask",
   TASK: "task",
   SERVICE_TASK: "serviceTask",
+  SCRIPT_TASK: "scriptTask",
   EXCLUSIVE_GATEWAY: "exclusiveGateway"
 };
 const NODE_TYPE_OPTIONS = [
@@ -248,6 +250,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.USER_TASK, label: "User Task" },
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
+  { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" }
 ];
 const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
@@ -255,6 +258,11 @@ const CLAIM_MODE_OPTIONS = [
   { value: CLAIM_MODE.FRESH, label: "Fresh (claim each time)" },
   { value: CLAIM_MODE.PREVIOUS, label: "Previous (last actor)" },
   { value: CLAIM_MODE.FROM_NODE, label: "From node (specific step)" }
+];
+const SCRIPT_FORMAT = { NCALC: "ncalc", JAVASCRIPT: "javascript" };
+const SCRIPT_FORMAT_OPTIONS = [
+  { value: SCRIPT_FORMAT.NCALC, label: "NCalc assignments" },
+  { value: SCRIPT_FORMAT.JAVASCRIPT, label: "JavaScript (execution API)" }
 ];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -280,6 +288,15 @@ function normalizeService(service) {
       : []
   };
 }
+function normalizeAssignments(assignments) {
+  if (!Array.isArray(assignments)) return [];
+  return assignments
+    .map(a => (a && typeof a === "object" ? a : {}))
+    .map(a => ({
+      variable: typeof a.variable === "string" ? a.variable : "",
+      expression: typeof a.expression === "string" ? a.expression : ""
+    }));
+}
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
 let connectMode = false;
@@ -301,6 +318,7 @@ function newModel() {
     id: 1,
     name: "New Workflow",
     initialEventId: null,
+    variables: [],
     lanes: [],
     flowNodes: [],
     sequenceFlows: []
@@ -341,6 +359,9 @@ function isAutomaticType(type) {
 function isServiceTaskType(type) {
   return type === NODE_TYPE.SERVICE_TASK;
 }
+function isScriptTaskType(type) {
+  return type === NODE_TYPE.SCRIPT_TASK;
+}
 function isUserTaskType(type) {
   return type === NODE_TYPE.USER_TASK;
 }
@@ -362,9 +383,9 @@ function nodeSize(node) {
   if (isGatewayType(node.type)) return { w: GATEWAY_D, h: GATEWAY_D };
   return { w: NODE_W, h: NODE_H };
 }
-// pass-through nodes advance without a user action (start / automatic task / service task / gateway)
+// pass-through nodes advance without a user action (start / automatic task / service task / script task / gateway)
 function isPassThroughType(type) {
-  return isAutomaticType(type) || isServiceTaskType(type) || isStartEventType(type) || isGatewayType(type);
+  return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isGatewayType(type);
 }
 function applyTypeInvariants(node) {
   if (isEndEventType(node.type)) {
@@ -386,6 +407,24 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.service = normalizeService(node.service);
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+  } else if (isScriptTaskType(node.type)) {
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    delete node.service;
+    if (node.scriptFormat !== SCRIPT_FORMAT.JAVASCRIPT) node.scriptFormat = SCRIPT_FORMAT.NCALC;
+    if (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT) {
+      node.assignments = [];
+      node.script = typeof node.script === "string" ? node.script : "";
+    } else {
+      node.assignments = normalizeAssignments(node.assignments);
+      node.script = null;
+    }
   } else if (isStartEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -414,6 +453,11 @@ function appendServiceMarker(g) {
   t.textContent = "SVC";
   g.appendChild(t);
 }
+function appendScriptMarker(g) {
+  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
+  t.textContent = "SCRIPT";
+  g.appendChild(t);
+}
 
 /* ---------- Sample seed ---------- */
 function seedSample() {
@@ -421,10 +465,13 @@ function seedSample() {
     id: 1,
     name: "Purchase Request Approval",
     initialEventId: 1,
+    variables: [
+      { id: 1, name: "total", dataType: "number", isArray: false, required: false, defaultValue: 0, validation: "total >= 0" }
+    ],
     lanes: [
-      { id: 1, name: "Submission", externalId: "LANE_SUBMISSION", x: 40, y: 20, w: 260, h: 300 },
-      { id: 2, name: "Approval", x: 320, y: 20, w: 620, h: 300 },
-      { id: 3, name: "Resolution", x: 320, y: 340, w: 620, h: 180 }
+      { id: 1, name: "Submission", externalId: "LANE_SUBMISSION", x: 40, y: 20, w: 420, h: 300 },
+      { id: 2, name: "Approval", x: 480, y: 20, w: 620, h: 300 },
+      { id: 3, name: "Resolution", x: 480, y: 340, w: 620, h: 180 }
     ],
     flowNodes: [
       { id: 1, name: "Request Submitted", type: "startEvent", laneId: 1, x: 90, y: 80, roles: [], requiresClaim: false,
@@ -433,19 +480,22 @@ function seedSample() {
           { id: 2, name: "amount", dataType: "number", isArray: false, required: true, validation: "amount > 0 and amount <= 100000" },
           { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
         ] },
-      { id: 2, name: "Manager Review", externalId: "TASK_MGR_REVIEW", type: "userTask", laneId: 2, x: 360, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
-      { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 620, y: 70, roles: [], requiresClaim: false, variables: [] },
-      { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 760, y: 70, roles: ["Finance"], requiresClaim: false, variables: [] },
-      { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 760, y: 380, roles: [], requiresClaim: false, variables: [] },
-      { id: 6, name: "Rejected", type: "endEvent", laneId: 3, x: 380, y: 380, roles: [], requiresClaim: false, variables: [] }
+      { id: 8, name: "Compute Total", type: "scriptTask", laneId: 1, x: 220, y: 80, roles: [], requiresClaim: false, variables: [],
+        scriptFormat: "ncalc", assignments: [{ variable: "total", expression: "amount * 1.1" }], script: null },
+      { id: 2, name: "Manager Review", externalId: "TASK_MGR_REVIEW", type: "userTask", laneId: 2, x: 520, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
+      { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 780, y: 70, roles: [], requiresClaim: false, variables: [] },
+      { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 920, y: 70, roles: ["Finance"], requiresClaim: false, variables: [] },
+      { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 920, y: 380, roles: [], requiresClaim: false, variables: [] },
+      { id: 6, name: "Rejected", type: "endEvent", laneId: 3, x: 540, y: 380, roles: [], requiresClaim: false, variables: [] }
     ],
     sequenceFlows: [
-      { id: 101, name: "", sourceRef: 1, targetRef: 2, roles: [], variables: [], condition: null, isDefault: false },
+      { id: 101, name: "", sourceRef: 1, targetRef: 8, roles: [], variables: [], condition: null, isDefault: false },
+      { id: 801, name: "", sourceRef: 8, targetRef: 2, roles: [], variables: [], condition: null, isDefault: false },
       { id: 201, name: "Approve", externalId: "FLOW_MGR_APPROVE", sourceRef: 2, targetRef: 3, roles: ["Manager"], variables: [], condition: null, isDefault: false },
       { id: 202, name: "Reject", sourceRef: 2, targetRef: 6, roles: ["Manager"], variables: [
           { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
         ], condition: null, isDefault: false },
-      { id: 301, name: "High amount", sourceRef: 3, targetRef: 4, roles: [], variables: [], condition: "amount > 1000", isDefault: false },
+      { id: 301, name: "High amount", sourceRef: 3, targetRef: 4, roles: [], variables: [], condition: "total > 1100", isDefault: false },
       { id: 302, name: "Low amount", sourceRef: 3, targetRef: 5, roles: [], variables: [], condition: null, isDefault: true },
       { id: 401, name: "Approve", sourceRef: 4, targetRef: 5, roles: ["Finance"], variables: [], condition: null, isDefault: false },
       { id: 402, name: "Reject", sourceRef: 4, targetRef: 6, roles: ["Finance"], variables: [], condition: null, isDefault: false }
@@ -560,6 +610,7 @@ function renderNodes() {
       }
       if (isAutomaticType(node.type)) appendAutomaticMarker(g);
       if (isServiceTaskType(node.type)) appendServiceMarker(g);
+      if (isScriptTaskType(node.type)) appendScriptMarker(g);
     }
 
     g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
@@ -628,6 +679,7 @@ function flowLabel(flow, source) {
   if (flow.name && flow.name.trim()) return flow.name.trim();
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
+  if (isScriptTaskType(source.type)) return "script";
   return "";
 }
 
@@ -651,11 +703,40 @@ function renderInspector() {
       Flow nodes: <b>${model.flowNodes.length}</b><br>
       Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
     addInitialSelector();
+    addProcessVariablesSection();
     return;
   }
   if (selected.kind === 'lane') return renderLaneInspector();
   if (selected.kind === 'node') return renderNodeInspector();
   return renderFlowInspector();
+}
+
+function addProcessVariablesSection() {
+  model.variables = model.variables || [];
+
+  const title = document.createElement("h2");
+  title.textContent = "Process variables";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Instance-scoped variables initialized from their default at start and updated by Script Task nodes. Usable in gateway conditions, service-task templates, and validation rules.";
+  inspector.appendChild(hint);
+
+  if (model.variables.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No process variables.";
+    inspector.appendChild(p);
+  }
+  model.variables.forEach(variable => variableRow(model, variable, true));
+
+  const addBtn = document.createElement("button");
+  addBtn.textContent = "+ Add process variable";
+  addBtn.style.marginTop = "8px";
+  addBtn.onclick = () => addVariable(model);
+  inspector.appendChild(addBtn);
 }
 
 function addInitialSelector() {
@@ -718,6 +799,10 @@ function renderNodeInspector() {
 
   if (isServiceTaskType(node.type)) {
     renderServiceSection(node);
+  }
+
+  if (isScriptTaskType(node.type)) {
+    renderScriptSection(node);
   }
 
   if (isStartEventType(node.type)) {
@@ -940,6 +1025,138 @@ function renderServiceSection(node) {
   inspector.appendChild(addMappingBtn);
 }
 
+function renderScriptSection(node) {
+  if (node.scriptFormat !== SCRIPT_FORMAT.JAVASCRIPT) node.scriptFormat = SCRIPT_FORMAT.NCALC;
+
+  const title = document.createElement("h2");
+  title.textContent = "Script";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  selectField("Format", SCRIPT_FORMAT_OPTIONS, node.scriptFormat, v => {
+    node.scriptFormat = v;
+    applyTypeInvariants(node);
+    renderInspector();
+  });
+
+  if (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT) {
+    renderJavaScriptSection(node);
+  } else {
+    renderAssignmentsSection(node);
+  }
+}
+
+function renderAssignmentsSection(node) {
+  node.assignments = normalizeAssignments(node.assignments);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Sets process variables during the pass-through hop. Each expression is NCalc and may read other variables (including earlier assignments in this same list) and sys.*/config.* context (use [sys.user] bracket syntax for dotted names). Evaluated in order, coerced to the target's data type.";
+  inspector.appendChild(hint);
+
+  const declared = (model.variables || []).filter(v => v.name && v.name.trim());
+  if (declared.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No process variables declared. Deselect everything and add them under the Workflow panel first.";
+    inspector.appendChild(p);
+  }
+
+  node.assignments.forEach((assignment, index) => {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+    const varField = document.createElement("div");
+    varField.className = "field";
+    varField.innerHTML = "<label>Variable</label>";
+    const varSelect = document.createElement("select");
+    const opts = [{ value: "", label: "— select process variable —" }].concat(
+      declared.map(v => ({ value: v.name, label: `${v.name} (${v.dataType}${v.isArray ? "[]" : ""})` }))
+    );
+    varSelect.innerHTML = opts.map(o => `<option value="${o.value}" ${o.value === assignment.variable ? "selected" : ""}>${o.label}</option>`).join("");
+    varSelect.onchange = () => { assignment.variable = varSelect.value; };
+    varField.appendChild(varSelect);
+    box.appendChild(varField);
+
+    const exprField = document.createElement("div");
+    exprField.className = "field";
+    exprField.innerHTML = "<label>Expression (NCalc)</label>";
+    const exprInput = document.createElement("input");
+    exprInput.type = "text";
+    exprInput.value = assignment.expression;
+    exprInput.placeholder = "e.g. amount * 1.1, retryCount + 1, [sys.now]";
+    exprInput.oninput = () => { assignment.expression = exprInput.value; };
+    exprField.appendChild(exprInput);
+    box.appendChild(exprField);
+
+    const del = document.createElement("button");
+    del.textContent = "Delete assignment";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => { node.assignments.splice(index, 1); renderInspector(); };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.textContent = "+ Add assignment";
+  addBtn.style.marginTop = "8px";
+  addBtn.onclick = () => { node.assignments.push({ variable: "", expression: "" }); renderInspector(); };
+  inspector.appendChild(addBtn);
+}
+
+function renderJavaScriptSection(node) {
+  node.script = typeof node.script === "string" ? node.script : "";
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.innerHTML = "Runs in a sandboxed JavaScript engine (Jint) with a bound <code>execution</code> object " +
+    "- no filesystem/network/CLR access. <code>execution.getVariable(name)</code>, " +
+    "<code>execution.setVariable(name, value)</code>, <code>execution.getVariables()</code>, " +
+    "<code>execution.hasVariable(name)</code>. <b>setVariable</b> targets must be declared process " +
+    "variables (declared under the Workflow panel); the value is coerced to the declared data type " +
+    "and its validation rule re-checked. Bounded by a timeout/statement/memory limit.";
+  inspector.appendChild(hint);
+
+  const declared = (model.variables || []).filter(v => v.name && v.name.trim());
+  if (declared.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No process variables declared. Deselect everything and add them under the Workflow panel first.";
+    inspector.appendChild(p);
+  } else {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "Declared process variables: " + declared.map(v => v.name).join(", ");
+    inspector.appendChild(p);
+  }
+
+  const exampleBtn = document.createElement("button");
+  exampleBtn.textContent = "Insert example";
+  exampleBtn.style.marginBottom = "8px";
+  exampleBtn.onclick = () => {
+    node.script = 'var orderAmount = execution.getVariable("orderAmount");\n\n' +
+      '// Perform logic\nvar tax = orderAmount * 0.15;\nvar total = orderAmount + tax;\n\n' +
+      '// Update/create variables\nexecution.setVariable("tax", tax);\nexecution.setVariable("total", total);';
+    renderInspector();
+  };
+  inspector.appendChild(exampleBtn);
+
+  const scriptField = document.createElement("div");
+  scriptField.className = "field";
+  scriptField.innerHTML = "<label>Script body (JavaScript)</label>";
+  const scriptInput = document.createElement("textarea");
+  scriptInput.value = node.script;
+  scriptInput.rows = 12;
+  scriptInput.spellcheck = false;
+  scriptInput.style.cssText = "width:100%;font-family:monospace;resize:vertical";
+  scriptInput.oninput = () => { node.script = scriptInput.value; };
+  scriptField.appendChild(scriptInput);
+  inspector.appendChild(scriptField);
+}
+
 function renderLaneInspector() {
   const lane = getLane(selected.laneId);
   if (!lane) { selected = null; return renderInspector(); }
@@ -1062,10 +1279,14 @@ function selectField(label, options, value, onChange) {
   f.appendChild(sel);
   inspector.appendChild(f);
 }
-function variableRow(owner, variable) {
+function variableRow(owner, variable, hideRequired) {
   const box = document.createElement("div");
   box.className = "field";
   box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+  if (hideRequired) {
+    variable.required = false;
+  }
 
   const badge = document.createElement("div");
   badge.className = "badge";
@@ -1095,16 +1316,31 @@ function variableRow(owner, variable) {
   box.appendChild(typeField);
 
   box.appendChild(variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; }));
-  box.appendChild(variableCheckbox("Required", variable.required, checked => {
-    variable.required = checked;
-    if (checked) variable.defaultValue = null;
-    renderInspector();
-  }));
 
-  if (!variable.required) {
+  if (hideRequired) {
+    // Process variables are computed (never user-supplied); required is meaningless.
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    note.textContent = "Process variable: initialized from the default at start, updated by script tasks.";
+    note.style.margin = "0";
+    box.appendChild(note);
+  } else {
+    box.appendChild(variableCheckbox("Required", variable.required, checked => {
+      variable.required = checked;
+      if (checked) variable.defaultValue = null;
+      renderInspector();
+    }));
+  }
+
+  // The default value field shows for process variables (always) and for optional
+  // start/flow variables. Process variables must have a default so they are
+  // initialized at instance start; the engine rejects a missing default at author time.
+  if (hideRequired || !variable.required) {
     const defField = document.createElement("div");
     defField.className = "field";
-    defField.innerHTML = "<label>Default value (optional)</label>";
+    defField.innerHTML = hideRequired
+      ? "<label>Default value (initial)</label>"
+      : "<label>Default value (optional)</label>";
     const defInput = document.createElement("input");
     defInput.type = "text";
     defInput.value = defaultValueToText(variable.defaultValue);
@@ -1544,6 +1780,7 @@ function migrateLegacyToNew(obj) {
     id: obj.id ?? 1,
     name: obj.name ?? "Workflow",
     initialEventId: obj.initialEventId ?? obj.initialStepId ?? obj.initialStep ?? null,
+    variables: [],
     lanes,
     flowNodes,
     sequenceFlows
@@ -1556,6 +1793,7 @@ function loadFromObject(obj) {
       id: obj.id ?? 1,
       name: obj.name ?? "Workflow",
       initialEventId: obj.initialEventId ?? null,
+      variables: (obj.variables || []).map(normalizeVariable),
       lanes: (obj.lanes || []).map((p, i) => ({
         id: p.id,
         name: p.name ?? `Lane ${p.id}`,
@@ -1578,7 +1816,12 @@ function loadFromObject(obj) {
         claimMode: CLAIM_MODE_OPTIONS.some(o => o.value === s.claimMode) ? s.claimMode : CLAIM_MODE.FRESH,
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
-        service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined
+        service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,
+        scriptFormat: isScriptTaskType(s.type)
+          ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
+          : undefined,
+        assignments: isScriptTaskType(s.type) ? normalizeAssignments(s.assignments) : undefined,
+        script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,

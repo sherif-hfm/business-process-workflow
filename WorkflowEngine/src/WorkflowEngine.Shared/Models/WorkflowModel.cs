@@ -14,6 +14,14 @@ public sealed class WorkflowModel
     [JsonPropertyName("initialEventId")]
     public int? InitialEventId { get; set; }
 
+    // Process-level (instance-scoped) variable declarations. Unlike start-event
+    // and sequence-flow variables these are never supplied by a user; they are
+    // initialized from `defaultValue` at instance start and mutated by scriptTask
+    // nodes during pass-through routing. Visible to gateways, service tasks, and
+    // validation rules through the same WithContext overlay as other variables.
+    [JsonPropertyName("variables")]
+    public List<VariableModel> Variables { get; set; } = [];
+
     [JsonPropertyName("lanes")]
     public List<LaneModel> Lanes { get; set; } = [];
 
@@ -108,6 +116,46 @@ public sealed class FlowNodeModel
     [JsonPropertyName("service")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ServiceTaskModel? Service { get; set; }
+
+    // scriptTask only: which authoring mode is active. "ncalc" (default) uses
+    // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
+    // JS body with a bound `execution` host object). Exactly one mode's data is
+    // populated at a time; ApplyNodeInvariants clears the other.
+    [JsonPropertyName("scriptFormat")]
+    public string ScriptFormat { get; set; } = ScriptFormats.NCalc;
+
+    // scriptTask only: ordered list of variable assignments executed during the
+    // pass-through hop when scriptFormat is "ncalc". Each `expression` is an NCalc
+    // expression evaluated against the current variables + sys.*/config.* context;
+    // the typed result is coerced to the target variable's declared dataType and
+    // persisted. A later assignment can reference an earlier one in the same list.
+    [JsonPropertyName("assignments")]
+    public List<AssignmentModel> Assignments { get; set; } = [];
+
+    // scriptTask only, when scriptFormat is "javascript": a JavaScript body run by
+    // Jint in a sandboxed Engine (no CLR access) with a bound `execution` host
+    // object exposing getVariable/setVariable/getVariables/hasVariable.
+    // setVariable targets must be declared process variables (model.Variables);
+    // the value is coerced to the target's dataType and its validation re-checked,
+    // exactly like an NCalc assignment.
+    [JsonPropertyName("script")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Script { get; set; }
+}
+
+public static class ScriptFormats
+{
+    public const string NCalc = "ncalc";
+    public const string JavaScript = "javascript";
+}
+
+public sealed class AssignmentModel
+{
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+
+    [JsonPropertyName("expression")]
+    public string Expression { get; set; } = string.Empty;
 }
 
 public sealed class ServiceTaskModel
@@ -297,6 +345,7 @@ public static class BpmnFlowNodeTypes
     public const string UserTask = "userTask";
     public const string Task = "task";
     public const string ServiceTask = "serviceTask";
+    public const string ScriptTask = "scriptTask";
     public const string ExclusiveGateway = "exclusiveGateway";
 
     public static bool IsStart(string type) =>
@@ -314,14 +363,17 @@ public static class BpmnFlowNodeTypes
     public static bool IsServiceTask(string type) =>
         string.Equals(type, ServiceTask, StringComparison.Ordinal);
 
+    public static bool IsScriptTask(string type) =>
+        string.Equals(type, ScriptTask, StringComparison.Ordinal);
+
     public static bool IsGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
 
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsGateway(type);
+        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ExclusiveGateway;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway;
 }
 
 public static class WorkflowVariableTypes

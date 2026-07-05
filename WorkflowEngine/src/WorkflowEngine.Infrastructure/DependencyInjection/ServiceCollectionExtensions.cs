@@ -5,6 +5,7 @@ using Npgsql;
 using WorkflowEngine.Infrastructure.Data;
 using WorkflowEngine.Infrastructure.Http;
 using WorkflowEngine.Infrastructure.Repositories;
+using WorkflowEngine.Infrastructure.Scripting;
 using WorkflowEngine.Service.Abstractions;
 
 namespace WorkflowEngine.Infrastructure.DependencyInjection;
@@ -29,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>();
+        services.AddSingleton<IScriptEvaluator, JintScriptEvaluator>();
 
         return services;
     }

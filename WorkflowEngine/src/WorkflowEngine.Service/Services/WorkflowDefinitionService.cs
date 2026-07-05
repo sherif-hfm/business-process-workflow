@@ -1,3 +1,4 @@
+using System.Text.Json;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
 using WorkflowEngine.Shared.Dtos;
@@ -5,7 +6,9 @@ using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Service.Services;
 
-public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository definitions)
+public sealed class WorkflowDefinitionService(
+    IWorkflowDefinitionRepository definitions,
+    IScriptEvaluator scriptEvaluator)
     : IWorkflowDefinitionService
 {
     public async Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken)
@@ -59,7 +62,7 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
     public Task<bool> DeleteAsync(long id, CancellationToken cancellationToken) =>
         definitions.DeleteAsync(id, cancellationToken);
 
-    internal static void ValidateDefinition(WorkflowModel definition)
+    internal void ValidateDefinition(WorkflowModel definition)
     {
         if (string.IsNullOrWhiteSpace(definition.Name))
         {
@@ -81,6 +84,8 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
         {
             throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
         }
+
+        ValidateProcessVariables(definition.Variables);
 
         var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
 
@@ -120,18 +125,26 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
 
             if ((BpmnFlowNodeTypes.IsStart(node.Type)
                     || BpmnFlowNodeTypes.IsAutomatic(node.Type)
-                    || BpmnFlowNodeTypes.IsServiceTask(node.Type))
+                    || BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                    || BpmnFlowNodeTypes.IsScriptTask(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
-                    : BpmnFlowNodeTypes.IsServiceTask(node.Type) ? "Service task" : "Automatic task";
+                    : BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                        ? "Service task"
+                        : BpmnFlowNodeTypes.IsScriptTask(node.Type) ? "Script task" : "Automatic task";
                 throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
             }
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
             {
                 ValidateServiceTask(node);
+            }
+
+            if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
+            {
+                ValidateScriptTask(node, definition);
             }
 
             if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
@@ -274,6 +287,22 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
 
     private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
     {
+        ValidateVariables(variables, owner, requireDefault: false);
+    }
+
+    // Process-level variables are computed (never user-supplied), so each one must
+    // declare a defaultValue that initializes it at instance start. The shared
+    // name/type/prefix/validation checks are reused via the requireDefault path.
+    private static void ValidateProcessVariables(IEnumerable<VariableModel> variables)
+    {
+        ValidateVariables(variables, "process variables", requireDefault: true);
+    }
+
+    private static void ValidateVariables(
+        IEnumerable<VariableModel> variables,
+        string owner,
+        bool requireDefault)
+    {
         var allowedTypes = new HashSet<string>
         {
             WorkflowVariableTypes.String,
@@ -302,11 +331,96 @@ public sealed class WorkflowDefinitionService(IWorkflowDefinitionRepository defi
                 throw new WorkflowDomainException($"Variable '{variable.Name}' on {owner} has unsupported type '{variable.DataType}'.");
             }
 
+            if (requireDefault
+                && (variable.DefaultValue is null
+                    || variable.DefaultValue.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' on {owner} must have a defaultValue.");
+            }
+
             if (!string.IsNullOrWhiteSpace(variable.Validation)
                 && !SequenceFlowConditionEvaluator.IsValid(variable.Validation))
             {
                 throw new WorkflowDomainException(
                     $"Variable '{variable.Name}' on {owner} has an invalid validation expression: '{variable.Validation}'.");
+            }
+        }
+    }
+
+    // Validates a scriptTask's authoring mode. Exactly one of the two payloads may
+    // be populated per scriptFormat:
+    //   - "ncalc" (default): each assignment must target a declared process
+    //     variable with a parse-checkable NCalc expression; `script` must be empty.
+    //   - "javascript": `script` is required and syntax-checked (parse-only, no
+    //     execution) via IScriptEvaluator; `assignments` must be empty. setVariable
+    //     targets inside the script body cannot be fully checked at author time
+    //     since JS is dynamic - that remains a runtime check (WorkflowEngineService).
+    private void ValidateScriptTask(FlowNodeModel node, WorkflowModel definition)
+    {
+        if (node.ScriptFormat != ScriptFormats.NCalc && node.ScriptFormat != ScriptFormats.JavaScript)
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} has an unsupported scriptFormat '{node.ScriptFormat}'.");
+        }
+
+        if (node.ScriptFormat == ScriptFormats.JavaScript)
+        {
+            if (node.Assignments.Count > 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'javascript' and must not have assignments.");
+            }
+
+            if (string.IsNullOrWhiteSpace(node.Script))
+            {
+                throw new WorkflowDomainException($"Script task #{node.Id} must have a script body.");
+            }
+
+            if (!scriptEvaluator.IsValid(node.Script, out var error))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an invalid JavaScript body: {error}");
+            }
+
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.Script))
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} uses scriptFormat 'ncalc' and must not have a script body.");
+        }
+
+        var declared = definition.Variables
+            .Where(v => !string.IsNullOrWhiteSpace(v.Name))
+            .Select(v => v.Name!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var assignment in node.Assignments)
+        {
+            if (string.IsNullOrWhiteSpace(assignment.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an assignment with no variable name.");
+            }
+
+            if (!declared.Contains(assignment.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
+            }
+
+            if (string.IsNullOrWhiteSpace(assignment.Expression))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}' must have an expression.");
+            }
+
+            if (!SequenceFlowConditionEvaluator.IsValid(assignment.Expression))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}' has an invalid expression: '{assignment.Expression}'.");
             }
         }
     }
