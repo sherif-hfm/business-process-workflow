@@ -217,7 +217,11 @@ Storage follows the hybrid design:
   Sequence-flow `roles` are still advisory (not enforced), but `userTask` flows
   can also carry a `condition` (NCalc) and an `isDefault` flag: the engine filters
   visible actions in `GetAvailableFlowsAsync` and re-checks the condition before
-  executing `TakeFlowAsync`.
+  executing `TakeFlowAsync`. In addition, a `userTask` node may itself carry a
+  `condition` (NCalc) that acts as a **visibility gate**: when the condition is
+  false, the instance is hidden from the actor's inbox, no flows are returned by
+  `GetAvailableFlowsAsync`, and `ClaimAsync`/`TakeFlowAsync` reject. The instance
+  still rests on the node; the condition does not change routing.
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
@@ -248,6 +252,11 @@ what the cross-version `workflowKey` instance search matches.
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
   offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
   repository can later switch to keyset paging without an API change.
+  **Inbox visibility conditions.** When any `userTask` node reached by the inbox
+  candidate set carries a `condition`, the inbox switches to exact-count post-filtering:
+  it fetches the full actor-filtered candidate set, evaluates the NCalc condition
+  against each instance's variables, and re-pages the surviving rows. The fast
+  SQL-only path is preserved when no relevant `userTask` has a `condition`.
 - **Variable search.** Both list endpoints accept repeated `var=name:value`
   query params (split on the first `:`, so values may contain `:`). Each pair is
   an exact, case-insensitive match on an instance variable's scalar value; when
@@ -379,6 +388,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
+  "condition": null,           // userTask only: NCalc visibility gate; null = always visible
   "variables": [ /* Variable[] */ ], // startEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
   "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
@@ -717,6 +727,11 @@ when extending the model so new features stay close to BPMN terminology.
 - **User-task flows**: `userTask` outgoing flows may also carry a `condition` (NCalc)
   and an `isDefault` marker; the editor shows both roles and condition/default beneath
   the edge and enforces a single default per user task.
+- **User-task node condition**: a `userTask` may itself carry a `condition` (NCalc)
+  that acts as a visibility gate. When false, the task is hidden from the inbox,
+  `GetAvailableFlowsAsync` returns no flows, and `ClaimAsync`/`TakeFlowAsync` reject.
+  The instance still rests on the node; routing is unchanged. The editor shows a
+  `COND` marker on the node and a `Condition` field in the inspector.
 
 ---
 

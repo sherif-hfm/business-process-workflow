@@ -109,6 +109,66 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
+        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters);
+
+        var totalCount = await dbContext.Database
+            .SqlQueryRaw<long>(
+                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
+                BuildParameters(args))
+            .SingleAsync(cancellationToken);
+
+        var skip = (page - 1) * pageSize;
+        var pageArgs = new List<(string Name, object Value)>(args)
+        {
+            ("take", pageSize),
+            ("skip", skip)
+        };
+        var entities = await dbContext.WorkflowInstances
+            .FromSqlRaw(
+                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                BuildParameters(pageArgs))
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        var items = await ToListItemsAsync(entities, cancellationToken);
+        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+    }
+
+    public async Task<IReadOnlyList<InstanceListItem>> ListInboxCandidatesAsync(
+        string user,
+        IReadOnlyCollection<string> roles,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
+        IReadOnlyList<VariableFilter> variableFilters,
+        CancellationToken cancellationToken)
+    {
+        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters);
+
+        var entities = await dbContext.WorkflowInstances
+            .FromSqlRaw(
+                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC",
+                BuildParameters(args))
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        return await ToListItemsAsync(entities, cancellationToken);
+    }
+
+    private static (StringBuilder Where, List<(string Name, object Value)> Args) BuildInboxWhere(
+        string user,
+        IReadOnlyCollection<string> roles,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
+        IReadOnlyList<VariableFilter> variableFilters)
+    {
+        // Roles are matched case-insensitively (mirrors the in-memory role check),
+        // so compare lower-cased node roles against lower-cased actor roles.
         var lowerRoles = roles
             .Where(r => !string.IsNullOrWhiteSpace(r))
             .Select(r => r.Trim().ToLowerInvariant())
@@ -150,27 +210,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendNodeExternalIdFilter(where, args, nodeExternalId);
         AppendVariableFilters(where, args, variableFilters);
 
-        var totalCount = await dbContext.Database
-            .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
-                BuildParameters(args))
-            .SingleAsync(cancellationToken);
-
-        var skip = (page - 1) * pageSize;
-        var pageArgs = new List<(string Name, object Value)>(args)
-        {
-            ("take", pageSize),
-            ("skip", skip)
-        };
-        var entities = await dbContext.WorkflowInstances
-            .FromSqlRaw(
-                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
-                BuildParameters(pageArgs))
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-
-        var items = await ToListItemsAsync(entities, cancellationToken);
-        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+        return (where, args);
     }
 #pragma warning restore EF1002
 
@@ -304,6 +344,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             definitions.TryGetValue(e.WorkflowDefinitionId, out var definition);
             return new InstanceListItem(
                 e.Id,
+                definition?.Id ?? 0,
                 e.WorkflowDefinitionId,
                 definition?.Name ?? string.Empty,
                 definition?.Version ?? 0,
@@ -405,6 +446,23 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var entities = await dbContext.InstanceVariables.AsNoTracking()
             .Where(v => v.InstanceId == instanceId)
             .OrderBy(v => v.Id)
+            .ToListAsync(cancellationToken);
+        return entities.Select(ToRecord).ToList();
+    }
+
+    public async Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesForInstancesAsync(
+        IReadOnlyCollection<long> instanceIds,
+        CancellationToken cancellationToken)
+    {
+        if (instanceIds.Count == 0)
+        {
+            return [];
+        }
+
+        var entities = await dbContext.InstanceVariables.AsNoTracking()
+            .Where(v => instanceIds.Contains(v.InstanceId))
+            .OrderBy(v => v.InstanceId)
+            .ThenBy(v => v.Id)
             .ToListAsync(cancellationToken);
         return entities.Select(ToRecord).ToList();
     }

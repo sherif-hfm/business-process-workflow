@@ -169,6 +169,13 @@ public sealed class WorkflowDefinitionService(
                         $"User task #{node.Id} has {userTaskDefaultCount} default flows; at most one allowed.");
                 }
 
+                if (!string.IsNullOrWhiteSpace(node.Condition)
+                    && !SequenceFlowConditionEvaluator.IsValid(node.Condition))
+                {
+                    throw new WorkflowDomainException(
+                        $"User task #{node.Id} has an invalid condition expression: '{node.Condition}'.");
+                }
+
                 foreach (var flow in outgoing.Where(f => !string.IsNullOrWhiteSpace(f.Condition)))
                 {
                     if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))

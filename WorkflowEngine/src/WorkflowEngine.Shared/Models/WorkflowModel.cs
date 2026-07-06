@@ -141,6 +141,13 @@ public sealed class FlowNodeModel
     [JsonPropertyName("script")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Script { get; set; }
+
+    // userTask only: optional NCalc visibility gate. When present and false, the
+    // task is hidden from the inbox and no outgoing flows can be shown or taken.
+    // It does not affect routing; the instance still rests on the node.
+    [JsonPropertyName("condition")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Condition { get; set; }
 }
 
 public static class ScriptFormats

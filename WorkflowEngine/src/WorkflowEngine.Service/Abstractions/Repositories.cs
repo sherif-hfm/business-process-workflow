@@ -58,6 +58,19 @@ public interface IWorkflowRuntimeRepository
         int pageSize,
         CancellationToken cancellationToken);
 
+    // Returns the full actor-filtered inbox candidate set (running user tasks) without
+    // paging, so a caller can evaluate node-level visibility conditions and re-page.
+    Task<IReadOnlyList<InstanceListItem>> ListInboxCandidatesAsync(
+        string user,
+        IReadOnlyCollection<string> roles,
+        long? instanceId,
+        long? workflowId,
+        int? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
+        IReadOnlyList<VariableFilter> variableFilters,
+        CancellationToken cancellationToken);
+
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(long id, CancellationToken cancellationToken);
@@ -85,6 +98,10 @@ public interface IWorkflowRuntimeRepository
 
     Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesAsync(
         long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesForInstancesAsync(
+        IReadOnlyCollection<long> instanceIds,
         CancellationToken cancellationToken);
 
     Task AddHistoryAsync(

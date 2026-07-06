@@ -37,6 +37,7 @@ public sealed record CurrentNodeSnapshot(
 public sealed record InstanceListItem(
     long Id,
     long WorkflowId,
+    long WorkflowDefinitionId,
     string WorkflowName,
     int WorkflowVersion,
     int CurrentNodeId,

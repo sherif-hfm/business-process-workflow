@@ -111,39 +111,134 @@ public sealed class WorkflowEngineService(
         var normalizedRoles = NormalizeRoles(actor.Roles);
         var variableFilters = ParseVariableFilters(variables);
 
-        // Membership (running user task the actor may see/act on) is filtered in SQL;
-        // the per-row action flags are derived here from the denormalized columns.
-        var paged = await runtime.ListInboxAsync(normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
+        // Pull the full actor-filtered candidate set (running user tasks) from SQL.
+        // Visibility conditions are evaluated below so the count and paging are exact.
+        var candidates = await runtime.ListInboxCandidatesAsync(
+            normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters, cancellationToken);
 
-        var items = new List<InboxItemDto>(paged.Items.Count);
-        foreach (var row in paged.Items)
+        if (candidates.Count == 0)
         {
-            var claimedByMe = row.ClaimedBy == normalizedUser;
-            var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
-            var roleMatch = row.CurrentNodeRoles.Count == 0
-                || row.CurrentNodeRoles.Any(normalizedRoles.Contains);
-
-            var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
-            var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
-
-            items.Add(new InboxItemDto(
-                row.Id,
-                row.WorkflowId,
-                row.WorkflowName,
-                row.CurrentNodeId,
-                row.CurrentNodeName,
-                row.CurrentNodeExternalId,
-                row.CurrentNodeRoles,
-                row.CurrentRequiresClaim,
-                row.ClaimedBy,
-                claimedByMe,
-                canClaim,
-                canAct,
-                row.CreatedAt,
-                row.UpdatedAt));
+            return new PagedResult<InboxItemDto>([], page, pageSize, 0);
         }
 
-        return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
+        // Skip optimization: load definitions only once, then only load variables and
+        // evaluate conditions if at least one relevant userTask carries a node condition.
+        var definitionIds = candidates.Select(c => c.WorkflowDefinitionId).Distinct().ToList();
+        var definitions = new Dictionary<long, WorkflowDefinitionRecord>(definitionIds.Count);
+        foreach (var id in definitionIds)
+        {
+            definitions[id] = await GetWorkflowAsync(id, cancellationToken);
+        }
+
+        var hasNodeCondition = definitions.Values.Any(w =>
+            w.Definition.FlowNodes.Any(n =>
+                BpmnFlowNodeTypes.IsUserTask(n.Type) && !string.IsNullOrWhiteSpace(n.Condition)));
+
+        List<InstanceListItem> visible;
+        if (hasNodeCondition)
+        {
+            var instanceIds = candidates.Select(c => c.Id).ToList();
+            var allVars = await runtime.ListVariablesForInstancesAsync(instanceIds, cancellationToken);
+            // instance_variables is append-only (one row per write), so the same
+            // variable name may appear multiple times per instance. Take the last
+            // write (records are ordered by InstanceId then Id ascending, so later
+            // entries overwrite earlier ones).
+            var varsByInstance = new Dictionary<long, Dictionary<string, JsonElement>>();
+            foreach (var v in allVars)
+            {
+                if (!varsByInstance.TryGetValue(v.InstanceId, out var dict))
+                {
+                    dict = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+                    varsByInstance[v.InstanceId] = dict;
+                }
+
+                dict[v.VariableName] = v.Value;
+            }
+
+            visible = new List<InstanceListItem>(candidates.Count);
+            foreach (var row in candidates)
+            {
+                var definition = definitions[row.WorkflowDefinitionId];
+                var node = definition.Definition.FlowNodes.SingleOrDefault(n => n.Id == row.CurrentNodeId);
+
+                // Defensive: a candidate whose resting node cannot be resolved in its own
+                // definition version is not actionable; skip it rather than fail the whole inbox.
+                if (node is null)
+                {
+                    continue;
+                }
+
+                // Fast path: an unconditioned userTask (or one in a definition without a
+                // condition) is always visible and needs no variable/context evaluation.
+                if (string.IsNullOrWhiteSpace(node.Condition))
+                {
+                    visible.Add(row);
+                    continue;
+                }
+
+                var instance = new WorkflowInstanceRecord(
+                    row.Id,
+                    row.WorkflowDefinitionId,
+                    row.CurrentNodeId,
+                    row.Status,
+                    row.ClaimedBy,
+                    row.StartedBy,
+                    row.CreatedAt,
+                    row.UpdatedAt);
+
+                varsByInstance.TryGetValue(row.Id, out var stored);
+                var ctx = WithContext(
+                    stored ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                    actor,
+                    instance,
+                    definition.Definition,
+                    node);
+                if (NodeVisible(node, ctx))
+                {
+                    visible.Add(row);
+                }
+            }
+        }
+        else
+        {
+            visible = [.. candidates];
+        }
+
+        var totalCount = visible.Count;
+        var pageItems = visible
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
+        var items = pageItems.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles)).ToList();
+        return new PagedResult<InboxItemDto>(items, page, pageSize, totalCount);
+    }
+
+    private static InboxItemDto ToInboxItem(InstanceListItem row, string normalizedUser, IReadOnlySet<string> normalizedRoles)
+    {
+        var claimedByMe = row.ClaimedBy == normalizedUser;
+        var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
+        var roleMatch = row.CurrentNodeRoles.Count == 0
+            || row.CurrentNodeRoles.Any(normalizedRoles.Contains);
+
+        var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
+        var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
+
+        return new InboxItemDto(
+            row.Id,
+            row.WorkflowId,
+            row.WorkflowName,
+            row.CurrentNodeId,
+            row.CurrentNodeName,
+            row.CurrentNodeExternalId,
+            row.CurrentNodeRoles,
+            row.CurrentRequiresClaim,
+            row.ClaimedBy,
+            claimedByMe,
+            canClaim,
+            canAct,
+            row.CreatedAt,
+            row.UpdatedAt);
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>
@@ -179,6 +274,11 @@ public sealed class WorkflowEngineService(
 
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
+        if (!NodeVisible(node, evalCtx))
+        {
+            return [];
+        }
+
         return OutgoingFlows(workflow.Definition, node.Id)
             .Where(f => f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
                         || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx))
@@ -205,6 +305,13 @@ public sealed class WorkflowEngineService(
         }
 
         EnsureRoleAllowed(node, actor);
+
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
+        if (!NodeVisible(node, evalCtx))
+        {
+            throw new WorkflowDomainException("The current flow node is not currently visible.");
+        }
 
         var normalizedUser = NormalizeUser(actor.User);
         if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != normalizedUser)
@@ -277,6 +384,11 @@ public sealed class WorkflowEngineService(
         // stored variables plus the final flow values, overlaid with context.
         var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
         var flowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
+        if (!NodeVisible(node, flowContext))
+        {
+            throw new WorkflowDomainException("The current flow node is not currently visible.");
+        }
+
         var flowValues = ResolveAndValidateVariables(flow.Variables, variableValues, flowContext);
         foreach (var pair in flowValues)
         {
@@ -1213,6 +1325,12 @@ public sealed class WorkflowEngineService(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to act on this flow node.");
         }
     }
+
+    // userTask visibility gate. When the node has a condition, the task is visible
+    // only if the expression evaluates to true. Empty/null condition is always true.
+    private static bool NodeVisible(FlowNodeModel node, Dictionary<string, JsonElement> context) =>
+        string.IsNullOrWhiteSpace(node.Condition)
+        || SequenceFlowConditionEvaluator.Evaluate(node.Condition, context);
 
     private static void ValidateVariableValues(
         IReadOnlyList<VariableModel> variables,

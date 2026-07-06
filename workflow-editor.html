@@ -400,18 +400,21 @@ function applyTypeInvariants(node) {
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
+    node.condition = null;
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
+    node.condition = null;
   } else if (isServiceTaskType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
+    node.condition = null;
     node.service = normalizeService(node.service);
     node.assignments = [];
     delete node.scriptFormat;
@@ -422,6 +425,7 @@ function applyTypeInvariants(node) {
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
+    node.condition = null;
     delete node.service;
     if (node.scriptFormat !== SCRIPT_FORMAT.JAVASCRIPT) node.scriptFormat = SCRIPT_FORMAT.NCALC;
     if (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT) {
@@ -437,6 +441,7 @@ function applyTypeInvariants(node) {
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = node.variables || [];
+    node.condition = null;
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
@@ -472,6 +477,11 @@ function appendScriptMarker(g) {
   t.textContent = "SCRIPT";
   g.appendChild(t);
 }
+function appendConditionMarker(g) {
+  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
+  t.textContent = "COND";
+  g.appendChild(t);
+}
 
 /* ---------- Sample seed ---------- */
 function seedSample() {
@@ -488,19 +498,19 @@ function seedSample() {
       { id: 3, name: "Resolution", x: 480, y: 340, w: 620, h: 180 }
     ],
     flowNodes: [
-      { id: 1, name: "Request Submitted", type: "startEvent", laneId: 1, x: 90, y: 80, roles: [], requiresClaim: false,
+      { id: 1, name: "Request Submitted", type: "startEvent", laneId: 1, x: 90, y: 80, roles: [], requiresClaim: false, condition: null,
         variables: [
           { id: 1, name: "requester", dataType: "string", isArray: false, required: false, defaultValue: "${sys.user}" },
           { id: 2, name: "amount", dataType: "number", isArray: false, required: true, validation: "amount > 0 and amount <= 100000" },
           { id: 3, name: "attachments", dataType: "string", isArray: true, required: false }
         ] },
-      { id: 8, name: "Compute Total", type: "scriptTask", laneId: 1, x: 220, y: 80, roles: [], requiresClaim: false, variables: [],
+      { id: 8, name: "Compute Total", type: "scriptTask", laneId: 1, x: 220, y: 80, roles: [], requiresClaim: false, condition: null, variables: [],
         scriptFormat: "ncalc", assignments: [{ variable: "total", expression: "amount * 1.1" }], script: null },
-      { id: 2, name: "Manager Review", externalId: "TASK_MGR_REVIEW", type: "userTask", laneId: 2, x: 520, y: 70, roles: ["Manager"], requiresClaim: false, variables: [] },
-      { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 780, y: 70, roles: [], requiresClaim: false, variables: [] },
-      { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 920, y: 70, roles: ["Finance"], requiresClaim: false, variables: [] },
-      { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 920, y: 380, roles: [], requiresClaim: false, variables: [] },
-      { id: 6, name: "Rejected", type: "endEvent", laneId: 3, x: 540, y: 380, roles: [], requiresClaim: false, variables: [] }
+      { id: 2, name: "Manager Review", externalId: "TASK_MGR_REVIEW", type: "userTask", laneId: 2, x: 520, y: 70, roles: ["Manager"], requiresClaim: false, condition: null, variables: [] },
+      { id: 3, name: "Amount Check", type: "exclusiveGateway", laneId: 2, x: 780, y: 70, roles: [], requiresClaim: false, condition: null, variables: [] },
+      { id: 4, name: "Finance Review", type: "userTask", laneId: 2, x: 920, y: 70, roles: ["Finance"], requiresClaim: false, condition: null, variables: [] },
+      { id: 5, name: "Approved", type: "endEvent", laneId: 3, x: 920, y: 380, roles: [], requiresClaim: false, condition: null, variables: [] },
+      { id: 6, name: "Rejected", type: "endEvent", laneId: 3, x: 540, y: 380, roles: [], requiresClaim: false, condition: null, variables: [] }
     ],
     sequenceFlows: [
       { id: 101, name: "", sourceRef: 1, targetRef: 8, roles: [], variables: [], condition: null, isDefault: false },
@@ -621,6 +631,9 @@ function renderNodes() {
           g.appendChild(rolesText);
         }
         appendUserTaskMarker(g);
+        if (node.condition) {
+          appendConditionMarker(g);
+        }
       }
       if (isAutomaticType(node.type)) appendAutomaticMarker(g);
       if (isServiceTaskType(node.type)) appendServiceMarker(g);
@@ -828,6 +841,15 @@ function renderNodeInspector() {
         });
       }
     }
+
+    const condHint = document.createElement("p");
+    condHint.className = "empty-note";
+    condHint.textContent = "NCalc visibility gate. When the condition is false, this task is hidden from the inbox and its actions cannot be shown or taken. It does not affect routing.";
+    inspector.appendChild(condHint);
+    field("Condition", "text", node.condition ?? "", v => {
+      node.condition = v.trim() ? v : null;
+      renderNodes();
+    });
   }
 
   if (isServiceTaskType(node.type)) {
@@ -1704,7 +1726,8 @@ function addNode() {
                  requiresClaim: false,
                  claimMode: CLAIM_MODE.FRESH,
                  inheritClaimFromNodeId: null,
-                 variables: [] };
+                 variables: [],
+                 condition: null };
   model.flowNodes.push(node);
   if (isStartEventType(node.type) && model.initialEventId == null) model.initialEventId = id;
   select('node', id);
@@ -1848,7 +1871,8 @@ function migrateLegacyToNew(obj) {
       y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
       roles: normalizeRoles(s.roles ?? s.role),
       requiresClaim: !!s.requiresClaim,
-      variables
+      variables,
+      condition: null
     });
   });
 
@@ -1892,6 +1916,7 @@ function loadFromObject(obj) {
         claimMode: CLAIM_MODE_OPTIONS.some(o => o.value === s.claimMode) ? s.claimMode : CLAIM_MODE.FRESH,
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
+        condition: (typeof s.condition === "string" && s.condition.trim()) ? s.condition : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,
         scriptFormat: isScriptTaskType(s.type)
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
