@@ -656,15 +656,15 @@ public sealed class WorkflowEngineService(
 
         if (result.IsSuccess)
         {
-            await ApplyServiceOutputsAsync(instance.Id, service, result, cancellationToken);
-            await WriteStatusVariableAsync(instance.Id, service, result.StatusCode, cancellationToken);
+            await ApplyServiceOutputsAsync(instance.Id, node.Id, service, result, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, node.Id, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return;
         }
 
         if (string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
         {
-            await WriteStatusVariableAsync(instance.Id, service, result.StatusCode, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, node.Id, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -675,6 +675,7 @@ public sealed class WorkflowEngineService(
 
     private async Task ApplyServiceOutputsAsync(
         long instanceId,
+        int nodeId,
         ServiceTaskModel service,
         ServiceTaskResult result,
         CancellationToken cancellationToken)
@@ -701,7 +702,7 @@ public sealed class WorkflowEngineService(
             {
                 if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
                 {
-                    await runtime.AddVariableAsync(instanceId, mapping.Variable, null, value.Clone(), cancellationToken);
+                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, value.Clone(), cancellationToken);
                 }
             }
         }
@@ -709,6 +710,7 @@ public sealed class WorkflowEngineService(
 
     private async Task WriteStatusVariableAsync(
         long instanceId,
+        int nodeId,
         ServiceTaskModel service,
         int statusCode,
         CancellationToken cancellationToken)
@@ -719,7 +721,7 @@ public sealed class WorkflowEngineService(
         }
 
         var value = JsonSerializer.SerializeToElement(statusCode);
-        await runtime.AddVariableAsync(instanceId, service.StatusVariable, null, value, cancellationToken);
+        await runtime.AddVariableAsync(instanceId, service.StatusVariable, nodeId, value, cancellationToken);
     }
 
     // Executes a scriptTask inside the pass-through loop, in either authoring mode:
@@ -795,7 +797,7 @@ public sealed class WorkflowEngineService(
 
         foreach (var (target, value) in writes)
         {
-            await runtime.AddVariableAsync(instance.Id, target.Name!, null, value, cancellationToken);
+            await runtime.AddVariableAsync(instance.Id, target.Name!, node.Id, value, cancellationToken);
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
