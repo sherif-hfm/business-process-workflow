@@ -64,6 +64,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.VariableName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.ValueJson).HasColumnType("jsonb");
+            entity.Property(e => e.SetBy).HasMaxLength(300);
             entity.Property(e => e.SetAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.VariableName });
             // Leads with VariableName to support value lookups in the variable search.

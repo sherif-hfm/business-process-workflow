@@ -425,6 +425,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long instanceId,
         string variableName,
         int? sourceActionId,
+        string? setBy,
         System.Text.Json.JsonElement value,
         CancellationToken cancellationToken)
     {
@@ -433,6 +434,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             InstanceId = instanceId,
             VariableName = variableName,
             SourceActionId = sourceActionId,
+            SetBy = setBy,
             ValueJson = JsonMapping.ToJsonDocument(value),
             SetAt = DateTimeOffset.UtcNow
         });
@@ -520,6 +522,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.InstanceId,
             entity.VariableName,
             entity.SourceActionId,
+            entity.SetBy,
             entity.ValueJson.RootElement.Clone(),
             entity.SetAt);
 

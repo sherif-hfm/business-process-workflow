@@ -50,7 +50,7 @@ public sealed class WorkflowEngineService(
         var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
         foreach (var pair in startValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, startedBy, pair.Value, cancellationToken);
         }
 
         // Initialize process-level variables from their authored defaults so every
@@ -64,7 +64,7 @@ public sealed class WorkflowEngineService(
         var processValues = ResolveAndValidateVariables(workflow.Definition.Variables, null, processContext);
         foreach (var pair in processValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, startedBy, pair.Value, cancellationToken);
         }
 
         // Flush variables so pass-through gateways can read them within this transaction.
@@ -404,7 +404,7 @@ public sealed class WorkflowEngineService(
 
         foreach (var pair in flowValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, performedBy, pair.Value, cancellationToken);
         }
 
         var payload = CloneDictionary(variableValues);
@@ -492,7 +492,7 @@ public sealed class WorkflowEngineService(
 
             if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
             {
-                await ExecuteServiceTaskAsync(instance, currentNode, variables, cancellationToken);
+                await ExecuteServiceTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
                 // Reload so downstream gateways/service tasks see any written outputs.
                 stored = await LoadVariablesAsync(instance.Id, cancellationToken);
                 variables = WithContext(stored, actor, instance, definition, currentNode);
@@ -637,6 +637,8 @@ public sealed class WorkflowEngineService(
     private async Task ExecuteServiceTaskAsync(
         WorkflowInstanceRecord instance,
         FlowNodeModel node,
+        WorkflowModel definition,
+        ActorContext actor,
         IReadOnlyDictionary<string, JsonElement> variables,
         CancellationToken cancellationToken)
     {
@@ -654,17 +656,19 @@ public sealed class WorkflowEngineService(
         var request = new ServiceTaskRequest(service.Method, url, headers, body, service.TimeoutSeconds);
         var result = await serviceTaskInvoker.InvokeAsync(request, cancellationToken);
 
+        var performedBy = actor.User;
+
         if (result.IsSuccess)
         {
-            await ApplyServiceOutputsAsync(instance.Id, node.Id, service, result, cancellationToken);
-            await WriteStatusVariableAsync(instance.Id, node.Id, service, result.StatusCode, cancellationToken);
+            await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return;
         }
 
         if (string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
         {
-            await WriteStatusVariableAsync(instance.Id, node.Id, service, result.StatusCode, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -676,6 +680,7 @@ public sealed class WorkflowEngineService(
     private async Task ApplyServiceOutputsAsync(
         long instanceId,
         int nodeId,
+        string? setBy,
         ServiceTaskModel service,
         ServiceTaskResult result,
         CancellationToken cancellationToken)
@@ -702,7 +707,7 @@ public sealed class WorkflowEngineService(
             {
                 if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
                 {
-                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, value.Clone(), cancellationToken);
+                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
                 }
             }
         }
@@ -711,6 +716,7 @@ public sealed class WorkflowEngineService(
     private async Task WriteStatusVariableAsync(
         long instanceId,
         int nodeId,
+        string? setBy,
         ServiceTaskModel service,
         int statusCode,
         CancellationToken cancellationToken)
@@ -721,7 +727,7 @@ public sealed class WorkflowEngineService(
         }
 
         var value = JsonSerializer.SerializeToElement(statusCode);
-        await runtime.AddVariableAsync(instanceId, service.StatusVariable, nodeId, value, cancellationToken);
+        await runtime.AddVariableAsync(instanceId, service.StatusVariable, nodeId, setBy, value, cancellationToken);
     }
 
     // Executes a scriptTask inside the pass-through loop, in either authoring mode:
@@ -795,9 +801,10 @@ public sealed class WorkflowEngineService(
             return;
         }
 
+        var performedBy = actor.User;
         foreach (var (target, value) in writes)
         {
-            await runtime.AddVariableAsync(instance.Id, target.Name!, node.Id, value, cancellationToken);
+            await runtime.AddVariableAsync(instance.Id, target.Name!, node.Id, performedBy, value, cancellationToken);
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1192,6 +1199,7 @@ public sealed class WorkflowEngineService(
                 v.Id,
                 v.VariableName,
                 v.SourceActionId,
+                v.SetBy,
                 v.Value,
                 v.SetAt)).ToList(),
             history.Select(h => new InstanceHistoryDto(

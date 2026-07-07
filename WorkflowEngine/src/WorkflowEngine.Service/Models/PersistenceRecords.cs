@@ -60,6 +60,7 @@ public sealed record InstanceVariableRecord(
     long InstanceId,
     string VariableName,
     int? SourceActionId,
+    string? SetBy,
     JsonElement Value,
     DateTimeOffset SetAt);
 

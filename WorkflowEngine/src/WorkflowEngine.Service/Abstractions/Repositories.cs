@@ -93,6 +93,7 @@ public interface IWorkflowRuntimeRepository
         long instanceId,
         string variableName,
         int? sourceActionId,
+        string? setBy,
         JsonElement value,
         CancellationToken cancellationToken);
 

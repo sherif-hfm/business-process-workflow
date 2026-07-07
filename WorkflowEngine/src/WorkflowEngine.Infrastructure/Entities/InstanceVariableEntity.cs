@@ -16,5 +16,7 @@ public sealed class InstanceVariableEntity
 
     public JsonDocument ValueJson { get; set; } = JsonDocument.Parse("null");
 
+    public string? SetBy { get; set; }
+
     public DateTimeOffset SetAt { get; set; } = DateTimeOffset.UtcNow;
 }

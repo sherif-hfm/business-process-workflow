@@ -124,6 +124,7 @@ else
                     <tr>
                         <th>Name</th>
                         <th>Flow</th>
+                        <th>Set by</th>
                         <th>Value</th>
                     </tr>
                 </thead>
@@ -133,6 +134,7 @@ else
                         <tr>
                             <td>@variable.VariableName</td>
                             <td>@(variable.SourceFlowId?.ToString() ?? "start")</td>
+                            <td>@(variable.SetBy ?? "-")</td>
                             <td><code>@FormatJson(variable.Value)</code></td>
                         </tr>
                     }

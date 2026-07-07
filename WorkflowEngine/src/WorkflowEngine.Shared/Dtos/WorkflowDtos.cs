@@ -64,6 +64,7 @@ public sealed record InstanceVariableDto(
     long Id,
     string VariableName,
     int? SourceFlowId,
+    string? SetBy,
     JsonElement Value,
     DateTimeOffset SetAt);
 
