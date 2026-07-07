@@ -391,9 +391,19 @@
       </div>
       <!-- Variables Panel Column -->
       <div style="width: 280px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-height: 0;">
-        <h4 style="margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em;">Available Variables</h4>
-        <p class="empty-note" id="js-editor-variables-hint" style="margin: 0 0 12px 0; font-size: 12px; line-height: 1.4;"></p>
-        <div id="js-editor-variables-list" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; padding-right: 4px;"></div>
+        <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding-right: 4px;">
+          <!-- User Variables Section -->
+          <div>
+            <h4 style="margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em;">Available Variables</h4>
+            <p class="empty-note" id="js-editor-variables-hint" style="margin: 0 0 8px 0; font-size: 12px; line-height: 1.4;"></p>
+            <div id="js-editor-variables-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          </div>
+          <!-- System Variables Section -->
+          <div>
+            <h4 style="margin: 0 0 8px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; border-top: 1px solid var(--border); padding-top: 12px;">System Context</h4>
+            <div id="js-editor-sys-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1661,6 +1671,61 @@ function openJsEditor(nodeId) {
       varList.appendChild(card);
     });
   }
+
+  // System variables list
+  const sysList = document.getElementById("js-editor-sys-list");
+  sysList.innerHTML = "";
+  const SYS_VARS = [
+    { name: "sys.user", dataType: "string", desc: "Current actor username" },
+    { name: "sys.roles", dataType: "string[]", desc: "Current actor roles" },
+    { name: "sys.now", dataType: "string", desc: "Current UTC ISO timestamp" },
+    { name: "sys.today", dataType: "string", desc: "Current UTC date (YYYY-MM-DD)" },
+    { name: "sys.instanceId", dataType: "number", desc: "Workflow instance ID" },
+    { name: "sys.workflowId", dataType: "number", desc: "Workflow definition version ID" },
+    { name: "sys.workflowName", dataType: "string", desc: "Workflow definition name" },
+    { name: "sys.nodeId", dataType: "number", desc: "Current node ID" },
+    { name: "sys.nodeName", dataType: "string", desc: "Current node name" }
+  ];
+  
+  SYS_VARS.forEach(v => {
+    const card = document.createElement("div");
+    card.style.cssText = "background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 4px;";
+    
+    const header = document.createElement("div");
+    header.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
+    
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = v.name;
+    nameSpan.style.cssText = "font-weight: 600; font-size: 12px; color: var(--text); word-break: break-all; margin-right: 4px;";
+    header.appendChild(nameSpan);
+    
+    const typeSpan = document.createElement("span");
+    typeSpan.textContent = v.dataType;
+    typeSpan.style.cssText = "background: rgba(167, 139, 250, 0.15); color: #ddd6fe; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; white-space: nowrap;";
+    header.appendChild(typeSpan);
+    
+    card.appendChild(header);
+    
+    const descDiv = document.createElement("div");
+    descDiv.style.cssText = "font-size: 9px; color: var(--muted); line-height: 1.2;";
+    descDiv.textContent = v.desc;
+    card.appendChild(descDiv);
+    
+    const actions = document.createElement("div");
+    actions.style.cssText = "display: flex; gap: 6px; margin-top: 4px;";
+    
+    const getBtn = document.createElement("button");
+    getBtn.type = "button";
+    getBtn.textContent = "get";
+    getBtn.style.cssText = "padding: 3px 6px; font-size: 11px; flex: 1; margin: 0; background: var(--panel-2); border-color: var(--border);";
+    getBtn.onclick = () => {
+      insertAtCursor(textarea, `execution.getVariable("${v.name}")`);
+    };
+    actions.appendChild(getBtn);
+    
+    card.appendChild(actions);
+    sysList.appendChild(card);
+  });
   
   modal.style.display = "flex";
   textarea.focus();
