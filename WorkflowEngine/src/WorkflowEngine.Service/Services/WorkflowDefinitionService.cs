@@ -356,10 +356,11 @@ public sealed class WorkflowDefinitionService(
             }
 
             if (variable.Name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
-                || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase))
+                || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("setting.", StringComparison.OrdinalIgnoreCase))
             {
                 throw new WorkflowDomainException(
-                    $"Variable '{variable.Name}' on {owner} uses the reserved 'sys.'/'config.' prefix.");
+                    $"Variable '{variable.Name}' on {owner} uses the reserved 'sys.'/'config.'/'setting.' prefix.");
             }
 
             if (!allowedTypes.Contains(variable.DataType))

@@ -1974,6 +1974,9 @@ document.getElementById("fileInput").onchange = (e) => {
 wfNameInput.oninput = () => { model.name = wfNameInput.value; };
 
 window.addEventListener("keydown", (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+            || t.tagName === "SELECT" || t.isContentEditable)) return;
   if (e.key === "Escape") { if (connectMode) setConnectMode(false); else clearSelection(); }
   if (e.key === "Delete" && selected) {
     if (selected.kind === 'node') deleteNode(selected.nodeId);

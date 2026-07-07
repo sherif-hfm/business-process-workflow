@@ -594,7 +594,7 @@ a bare value position becomes the variable's JSON representation (so
 string inside a string and `null` in a bare position. Output `path` is dotted
 (`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
 
-### Context sources (`sys.*` / `config.*`)
+### Context sources (`sys.*` / `config.*` / `setting.*`)
 
 Beyond stored instance variables, service-task templates, exclusive-gateway
 conditions, and variable `defaultValue` templates / `validation` rules can read
@@ -602,9 +602,9 @@ conditions, and variable `defaultValue` templates / `validation` rules can read
 `instance_variables`. During pass-through routing (`ResolvePassThroughAsync`) and
 at start / flow-take (variable default resolution and validation), `WithContext`
 overlays a context map (built by `BuildContextMap` from the `ActorContext`, the
-instance, the definition, the current node, an injected `TimeProvider`, and
-`WorkflowContextOptions`) onto a copy of the stored variables; context wins on any
-name collision. Available keys:
+instance, the definition, the current node, an injected `TimeProvider`,
+`WorkflowContextOptions`, and the `workflow_settings` table) onto a copy of the
+stored variables; context wins on any name collision. Available keys:
 
 - `sys.now` (UTC ISO-8601), `sys.today` (`yyyy-MM-dd`)
 - `sys.user`, `sys.roles` (array)
@@ -613,14 +613,18 @@ name collision. Available keys:
   last segment of a URI-style claim type)
 - `config.<name>` for each server-side config entry (keeps secrets out of the
   versioned definition JSON)
+- `setting.<name>` for each row in the `workflow_settings` database table
+  (global, read-only, manually inserted; loaded once per request and cached).
+  When a row has a non-null `Namespace`, the key becomes
+  `setting.<namespace>.<name>` (e.g. `setting.finance.taxRate`).
 
 In service-task `url`/`headers`/`body` these are used like any placeholder, e.g.
-`${sys.user}`, `${config.apiToken}`. In NCalc gateway conditions the dotted names
-need bracket syntax, e.g. `[sys.user] == requester` or `[sys.now] > deadline`.
-Configuration binds from the `WorkflowContext` section
-(`WorkflowContext:Config:<name>` and `WorkflowContext:AllowedClaims`). User
-variable names starting with `sys.` / `config.` are rejected so context can never
-be shadowed or spoofed.
+`${sys.user}`, `${config.apiToken}`, `${setting.taxRate}`. In NCalc gateway
+conditions the dotted names need bracket syntax, e.g. `[sys.user] == requester`
+or `[sys.now] > deadline` or `[setting.taxRate] > 0`. Configuration binds from
+the `WorkflowContext` section (`WorkflowContext:Config:<name>` and
+`WorkflowContext:AllowedClaims`). User variable names starting with `sys.` /
+`config.` / `setting.` are rejected so context can never be shadowed or spoofed.
 
 ---
 

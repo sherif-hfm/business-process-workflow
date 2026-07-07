@@ -2,6 +2,7 @@
   "id": 2,
   "name": "send sms",
   "initialEventId": 1,
+  "variables": [],
   "lanes": [],
   "flowNodes": [
     {
@@ -35,7 +36,8 @@
           "defaultValue": "${sys.user}",
           "validation": null
         }
-      ]
+      ],
+      "condition": null
     },
     {
       "id": 2,
@@ -50,9 +52,10 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
+      "condition": null,
       "service": {
         "method": "POST",
-        "url": "http://localhost:3000/sms",
+        "url": "${setting.url}",
         "headers": [],
         "body": "{\n\"mobile\":${mobile},\n\"msg\":\"hi ${sys.user}\"\n}",
         "timeoutSeconds": 30,
@@ -64,7 +67,8 @@
             "path": "smsId"
           }
         ]
-      }
+      },
+      "assignments": []
     },
     {
       "id": 3,
@@ -78,7 +82,8 @@
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "variables": []
+      "variables": [],
+      "condition": null
     },
     {
       "id": 4,
@@ -92,7 +97,8 @@
       "requiresClaim": true,
       "claimMode": "previous",
       "inheritClaimFromNodeId": null,
-      "variables": []
+      "variables": [],
+      "condition": null
     },
     {
       "id": 5,
@@ -106,7 +112,8 @@
       "requiresClaim": true,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "variables": []
+      "variables": [],
+      "condition": null
     }
   ],
   "sequenceFlows": [

@@ -15,9 +15,22 @@ public sealed class WorkflowEngineService(
     IServiceTaskInvoker serviceTaskInvoker,
     IScriptEvaluator scriptEvaluator,
     WorkflowContextOptions contextOptions,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IWorkflowSettingsRepository settings)
     : IWorkflowEngineService
 {
+    private Dictionary<string, JsonElement>? _settingsCache;
+
+    private async Task LoadSettingsAsync(CancellationToken cancellationToken)
+    {
+        if (_settingsCache is not null)
+        {
+            return;
+        }
+
+        _settingsCache = (Dictionary<string, JsonElement>)await settings.LoadAllAsync(cancellationToken);
+    }
+
     public async Task<InstanceDetailDto> StartInstanceAsync(
         long workflowId,
         ActorContext actor,
@@ -25,6 +38,7 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
         var workflow = await GetPublishedWorkflowAsync(workflowId, cancellationToken);
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
@@ -107,6 +121,7 @@ public sealed class WorkflowEngineService(
         int pageSize,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
         var variableFilters = ParseVariableFilters(variables);
@@ -249,6 +264,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var instance = await runtime.GetInstanceAsync(id, cancellationToken);
         if (instance is null || instance.Status != WorkflowInstanceStatuses.Running)
         {
@@ -290,6 +306,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
@@ -354,6 +371,7 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var performedBy = actor.User;
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
@@ -963,8 +981,9 @@ public sealed class WorkflowEngineService(
     }
 
     // Returns a copy of the stored variables overlaid with read-only context
-    // (sys.*/config.*). Context wins on collision so it can never be spoofed by a
-    // stored variable. The result is for evaluation only and is never persisted.
+    // (sys.*/config.*/setting.*). Context wins on collision so it can never be
+    // spoofed by a stored variable. The result is for evaluation only and is
+    // never persisted.
     private Dictionary<string, JsonElement> WithContext(
         Dictionary<string, JsonElement> stored,
         ActorContext actor,
@@ -1016,6 +1035,14 @@ public sealed class WorkflowEngineService(
             foreach (var pair in config)
             {
                 Put($"config.{pair.Key}", pair.Value);
+            }
+        }
+
+        if (_settingsCache is { } cache)
+        {
+            foreach (var pair in cache)
+            {
+                Put(pair.Key, pair.Value);
             }
         }
 

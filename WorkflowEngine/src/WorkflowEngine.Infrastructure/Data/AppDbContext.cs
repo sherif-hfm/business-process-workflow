@@ -13,6 +13,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
 
+    public DbSet<WorkflowSettingEntity> WorkflowSettings => Set<WorkflowSettingEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
@@ -88,6 +90,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.History)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WorkflowSettingEntity>(entity =>
+        {
+            entity.ToTable("workflow_settings");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Namespace).HasMaxLength(300);
+            entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Value).HasColumnType("jsonb");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Namespace, e.Name }).IsUnique();
         });
     }
 }

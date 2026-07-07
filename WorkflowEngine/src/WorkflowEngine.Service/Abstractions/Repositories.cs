@@ -120,6 +120,11 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken);
 }
 
+public interface IWorkflowSettingsRepository
+{
+    Task<IReadOnlyDictionary<string, JsonElement>> LoadAllAsync(CancellationToken cancellationToken);
+}
+
 public interface IWorkflowTransaction : IAsyncDisposable
 {
     Task CommitAsync(CancellationToken cancellationToken);

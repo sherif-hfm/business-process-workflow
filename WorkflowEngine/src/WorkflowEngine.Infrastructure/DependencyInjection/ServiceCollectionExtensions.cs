@@ -27,6 +27,7 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
+        services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>();
