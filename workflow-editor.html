@@ -557,6 +557,34 @@ function borderPoint(node, tx, ty) {
   return { x: c.x + dx * scale, y: c.y + dy * scale };
 }
 
+function segmentsIntersect(p1, p2, q1, q2) {
+  const dx1 = p2.x - p1.x;
+  const dy1 = p2.y - p1.y;
+  const dx2 = q2.x - q1.x;
+  const dy2 = q2.y - q1.y;
+  const det = dx1 * dy2 - dy1 * dx2;
+  if (Math.abs(det) < 1e-9) return false;
+  const dx3 = q1.x - p1.x;
+  const dy3 = q1.y - p1.y;
+  const lambda = (dx3 * dy2 - dy3 * dx2) / det;
+  const gamma = (dx3 * dy1 - dy3 * dx1) / det;
+  return (lambda >= 0 && lambda <= 1) && (gamma >= 0 && gamma <= 1);
+}
+
+function lineIntersectsNode(p1, p2, node) {
+  const size = nodeSize(node);
+  const x = node.x, y = node.y, w = size.w, h = size.h;
+  const tl = { x, y };
+  const tr = { x: x + w, y };
+  const bl = { x, y: y + h };
+  const br = { x: x + w, y: y + h };
+  return segmentsIntersect(p1, p2, tl, tr) ||
+         segmentsIntersect(p1, p2, tr, br) ||
+         segmentsIntersect(p1, p2, bl, br) ||
+         segmentsIntersect(p1, p2, tl, bl);
+}
+
+
 /* ---------- Rendering ---------- */
 function render() {
   wfNameInput.value = model.name || "";
@@ -662,10 +690,76 @@ function renderEdges() {
       d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
       lx = x + 60; ly = y;
     } else {
-      const p1 = borderPoint(source, ...Object.values(center(target)));
-      const p2 = borderPoint(target, ...Object.values(center(source)));
-      d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-      lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
+      const p1_c = center(source);
+      const p2_c = center(target);
+
+      // Check if blocked by any intermediate node
+      let isBlocked = false;
+      for (const node of model.flowNodes) {
+        if (node.id === source.id || node.id === target.id) continue;
+        if (lineIntersectsNode(p1_c, p2_c, node)) {
+          isBlocked = true;
+          break;
+        }
+      }
+
+      // Group flows between these two nodes
+      const A = Math.min(source.id, target.id);
+      const B = Math.max(source.id, target.id);
+      const group = model.sequenceFlows.filter(f =>
+        (f.sourceRef === A && f.targetRef === B) || (f.sourceRef === B && f.targetRef === A)
+      ).sort((f1, f2) => f1.id - f2.id);
+
+      const K = group.length;
+      const idx = group.findIndex(f => f.id === flow.id);
+
+      let h = 0;
+      if (K > 1) {
+        const canonicalOffset = (idx - (K - 1) / 2) * 30;
+        const dirSign = (flow.sourceRef === A) ? 1 : -1;
+        h = canonicalOffset * dirSign;
+      }
+
+      if (isBlocked) {
+        const dx = p2_c.x - p1_c.x;
+        const dy = p2_c.y - p1_c.y;
+        let blockOffset = 0;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          const hSign = dx > 0 ? -1 : 1;
+          blockOffset = hSign * 110;
+        } else {
+          const hSign = dy > 0 ? -1 : 1;
+          blockOffset = hSign * 220;
+        }
+        h += blockOffset;
+      }
+
+      if (h === 0) {
+        const p1 = borderPoint(source, p2_c.x, p2_c.y);
+        const p2 = borderPoint(target, p1_c.x, p1_c.y);
+        d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
+        lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
+      } else {
+        // Calculate control point Pc
+        const dx = p2_c.x - p1_c.x;
+        const dy = p2_c.y - p1_c.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1e-9;
+        const ux = dx / len;
+        const uy = dy / len;
+        const nx = -uy;
+        const ny = ux;
+        const mx = (p1_c.x + p2_c.x) / 2;
+        const my = (p1_c.y + p2_c.y) / 2;
+        const pc = { x: mx + h * nx, y: my + h * ny };
+
+        const p1 = borderPoint(source, pc.x, pc.y);
+        const p2 = borderPoint(target, pc.x, pc.y);
+
+        d = `M ${p1.x} ${p1.y} Q ${pc.x} ${pc.y} ${p2.x} ${p2.y}`;
+        // Midpoint of quadratic Bezier is at t = 0.5
+        lx = 0.25 * p1.x + 0.5 * pc.x + 0.25 * p2.x;
+        ly = 0.25 * p1.y + 0.5 * pc.y + 0.25 * p2.y;
+      }
     }
     const sel = isSel('flow', flow.id);
     g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
