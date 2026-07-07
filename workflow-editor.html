@@ -384,10 +384,17 @@
       <h3 id="js-editor-title">Edit JavaScript Code</h3>
       <button type="button" class="close-btn" onclick="closeJsEditor()">&times;</button>
     </div>
-    <div class="modal-body">
-      <div id="js-editor-variables-hint" class="empty-note" style="margin-bottom: 8px;"></div>
-      <div id="js-editor-variables-list" class="chips" style="margin-bottom: 12px;"></div>
-      <textarea id="js-editor-textarea" class="modal-textarea" spellcheck="false" placeholder="// Write your JavaScript code here..."></textarea>
+    <div class="modal-body" style="display: flex; flex-direction: row; gap: 20px;">
+      <!-- Code Editor Column -->
+      <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+        <textarea id="js-editor-textarea" class="modal-textarea" spellcheck="false" placeholder="// Write your JavaScript code here..."></textarea>
+      </div>
+      <!-- Variables Panel Column -->
+      <div style="width: 280px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-height: 0;">
+        <h4 style="margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em;">Available Variables</h4>
+        <p class="empty-note" id="js-editor-variables-hint" style="margin: 0 0 12px 0; font-size: 12px; line-height: 1.4;"></p>
+        <div id="js-editor-variables-list" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; padding-right: 4px;"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button type="button" onclick="closeJsEditor()">Cancel</button>
@@ -1500,6 +1507,71 @@ function renderJavaScriptSection(node) {
 /* ---------- JavaScript Code Editor Modal ---------- */
 let editingScriptNodeId = null;
 
+function getAllAvailableVariables() {
+  const varsMap = new Map();
+  
+  // 1. Process variables (writeable)
+  if (model.variables) {
+    model.variables.forEach(v => {
+      if (v.name && v.name.trim()) {
+        varsMap.set(v.name.trim(), {
+          name: v.name.trim(),
+          dataType: v.dataType || "string",
+          isArray: !!v.isArray,
+          isProcessVar: true,
+          source: "Process"
+        });
+      }
+    });
+  }
+  
+  // 2. Node-level variables (inputs)
+  if (model.flowNodes) {
+    model.flowNodes.forEach(node => {
+      if (node.variables) {
+        node.variables.forEach(v => {
+          if (v.name && v.name.trim()) {
+            const name = v.name.trim();
+            if (!varsMap.has(name)) {
+              varsMap.set(name, {
+                name: name,
+                dataType: v.dataType || "string",
+                isArray: !!v.isArray,
+                isProcessVar: false,
+                source: `Node: ${node.name || '#' + node.id}`
+              });
+            }
+          }
+        });
+      }
+    });
+  }
+  
+  // 3. Sequence flow variables (inputs)
+  if (model.sequenceFlows) {
+    model.sequenceFlows.forEach(flow => {
+      if (flow.variables) {
+        flow.variables.forEach(v => {
+          if (v.name && v.name.trim()) {
+            const name = v.name.trim();
+            if (!varsMap.has(name)) {
+              varsMap.set(name, {
+                name: name,
+                dataType: v.dataType || "string",
+                isArray: !!v.isArray,
+                isProcessVar: false,
+                source: `Flow: ${flow.name || '#' + flow.id}`
+              });
+            }
+          }
+        });
+      }
+    });
+  }
+  
+  return Array.from(varsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function openJsEditor(nodeId) {
   const node = getNode(nodeId);
   if (!node) return;
@@ -1515,34 +1587,78 @@ function openJsEditor(nodeId) {
   textarea.value = node.script || "";
   
   // Declared variables
-  const declared = (model.variables || []).filter(v => v.name && v.name.trim());
+  const declared = getAllAvailableVariables();
   if (declared.length === 0) {
-    varHint.textContent = "No process variables declared. Declare them under the Workflow panel to see helper tags here.";
+    varHint.textContent = "No process or node variables declared. Declare variables under the Workflow panel or on nodes to see them here.";
     varList.innerHTML = "";
   } else {
-    varHint.textContent = "Click a variable badge to insert execution.getVariable(...) / setVariable(...) syntax:";
+    varHint.textContent = "Click getters/setters to insert code snippets at your cursor:";
     varList.innerHTML = "";
     declared.forEach(v => {
-      // Create a getter badge
-      const getChip = document.createElement("div");
-      getChip.className = "chip";
-      getChip.textContent = `get: ${v.name}`;
-      getChip.onclick = () => {
+      // Create a variable card container
+      const card = document.createElement("div");
+      card.style.cssText = "background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 4px;";
+      
+      // Card Header
+      const header = document.createElement("div");
+      header.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
+      
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = v.name;
+      nameSpan.style.cssText = "font-weight: 600; font-size: 12px; color: var(--text); word-break: break-all; margin-right: 4px;";
+      header.appendChild(nameSpan);
+      
+      const typeSpan = document.createElement("span");
+      typeSpan.textContent = `${v.dataType}${v.isArray ? "[]" : ""}`;
+      typeSpan.style.cssText = "background: rgba(59, 130, 246, 0.15); color: #bfdbfe; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; white-space: nowrap;";
+      header.appendChild(typeSpan);
+      
+      card.appendChild(header);
+
+      // Source info
+      const sourceDiv = document.createElement("div");
+      sourceDiv.style.cssText = "font-size: 9px; color: var(--muted); word-break: break-all;";
+      if (v.isProcessVar) {
+        sourceDiv.innerHTML = `Source: <span style="color: var(--green);">Process Variable</span>`;
+      } else {
+        sourceDiv.innerHTML = `Source: <span>${v.source}</span> (Read-only)`;
+      }
+      card.appendChild(sourceDiv);
+      
+      // Actions row
+      const actions = document.createElement("div");
+      actions.style.cssText = "display: flex; gap: 6px; margin-top: 4px;";
+      
+      // Getter Button
+      const getBtn = document.createElement("button");
+      getBtn.type = "button";
+      getBtn.textContent = "get";
+      getBtn.style.cssText = "padding: 3px 6px; font-size: 11px; flex: 1; margin: 0; background: var(--panel-2); border-color: var(--border);";
+      getBtn.onclick = () => {
         insertAtCursor(textarea, `execution.getVariable("${v.name}")`);
       };
-      varList.appendChild(getChip);
+      actions.appendChild(getBtn);
       
-      // Create a setter badge
-      const setChip = document.createElement("div");
-      setChip.className = "chip";
-      setChip.textContent = `set: ${v.name}`;
-      setChip.style.background = "rgba(167, 139, 250, 0.16)";
-      setChip.style.borderColor = "rgba(167, 139, 250, 0.45)";
-      setChip.style.color = "#ddd6fe";
-      setChip.onclick = () => {
-        insertAtCursor(textarea, `execution.setVariable("${v.name}", value)`);
-      };
-      varList.appendChild(setChip);
+      // Setter Button
+      const setBtn = document.createElement("button");
+      setBtn.type = "button";
+      setBtn.textContent = "set";
+      setBtn.style.cssText = "padding: 3px 6px; font-size: 11px; flex: 1; margin: 0; background: var(--panel-2); border-color: var(--border);";
+      if (!v.isProcessVar) {
+        setBtn.disabled = true;
+        setBtn.style.opacity = "0.4";
+        setBtn.style.cursor = "not-allowed";
+        setBtn.title = "Declare as a Process variable in the Workflow panel to make this writeable";
+      } else {
+        setBtn.onclick = () => {
+          insertAtCursor(textarea, `execution.setVariable("${v.name}", value)`);
+        };
+      }
+      actions.appendChild(setBtn);
+      
+      card.appendChild(actions);
+      
+      varList.appendChild(card);
     });
   }
   
