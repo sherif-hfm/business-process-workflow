@@ -96,9 +96,34 @@
   aside {
     width: 280px;
     background: var(--panel);
-    border-left: 1px solid var(--border);
     padding: 14px;
     overflow-y: auto;
+  }
+  .resizer {
+    width: 4px;
+    margin-left: -2px;
+    margin-right: -2px;
+    background: transparent;
+    cursor: col-resize;
+    position: relative;
+    z-index: 10;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .resizer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 1px;
+    width: 1px;
+    background: var(--border);
+    transition: background 0.15s, width 0.15s, left 0.15s;
+  }
+  .resizer:hover::before, .resizer.dragging::before {
+    background: var(--accent);
+    width: 3px;
+    left: 0px;
   }
   aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
   .field { margin-bottom: 12px; }
@@ -227,6 +252,8 @@
     <div class="hint" id="hint"></div>
   </div>
 
+  <div class="resizer" id="sidebar-resizer"></div>
+
   <aside id="inspector"></aside>
 </main>
 
@@ -312,6 +339,7 @@ const edgesG = document.getElementById('edges');
 const inspector = document.getElementById('inspector');
 const hintEl = document.getElementById('hint');
 const wfNameInput = document.getElementById('wfName');
+const resizer = document.getElementById('sidebar-resizer');
 
 function newModel() {
   return {
@@ -2081,6 +2109,46 @@ window.addEventListener("keydown", (e) => {
     }
   }
 });
+
+/* ---------- Sidebar Resizer ---------- */
+let isResizingSidebar = false;
+
+// Restore sidebar width on load
+const savedSidebarWidth = localStorage.getItem("sidebarWidth");
+if (savedSidebarWidth) {
+  inspector.style.width = savedSidebarWidth + "px";
+}
+
+resizer.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  isResizingSidebar = true;
+  resizer.classList.add("dragging");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  resizer.setPointerCapture(e.pointerId);
+});
+
+resizer.addEventListener("pointermove", (e) => {
+  if (!isResizingSidebar) return;
+  const newWidth = window.innerWidth - e.clientX;
+  const clampedWidth = Math.max(200, Math.min(800, newWidth)); // min 200px, max 800px
+  inspector.style.width = clampedWidth + "px";
+  localStorage.setItem("sidebarWidth", clampedWidth);
+});
+
+const stopResizing = (e) => {
+  if (!isResizingSidebar) return;
+  isResizingSidebar = false;
+  resizer.classList.remove("dragging");
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  try {
+    resizer.releasePointerCapture(e.pointerId);
+  } catch (err) {}
+};
+
+resizer.addEventListener("pointerup", stopResizing);
+resizer.addEventListener("pointercancel", stopResizing);
 
 /* ---------- Init ---------- */
 render();
