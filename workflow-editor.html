@@ -515,7 +515,9 @@ function newModel() {
     variables: [],
     lanes: [],
     flowNodes: [],
-    sequenceFlows: []
+    sequenceFlows: [],
+    cancelRoles: [],
+    unclaimRoles: []
   };
 }
 
@@ -1121,12 +1123,27 @@ function renderInspector() {
       Flow nodes: <b>${model.flowNodes.length}</b><br>
       Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
     addInitialSelector();
+    addWorkflowRolesSection();
     addProcessVariablesSection();
     return;
   }
   if (selected.kind === 'lane') return renderLaneInspector();
   if (selected.kind === 'node') return renderNodeInspector();
   return renderFlowInspector();
+}
+
+function addWorkflowRolesSection() {
+  model.cancelRoles = model.cancelRoles || [];
+  model.unclaimRoles = model.unclaimRoles || [];
+
+  const title = document.createElement("h3");
+  title.textContent = "Permissions (Optional)";
+  title.style.marginTop = "16px";
+  title.style.marginBottom = "8px";
+  inspector.appendChild(title);
+
+  rolesFieldGeneric(model, "cancelRoles", "Roles allowed to cancel instance", () => {});
+  rolesFieldGeneric(model, "unclaimRoles", "Roles allowed to unclaim a task", () => {});
 }
 
 function addProcessVariablesSection() {
@@ -2267,15 +2284,18 @@ function variableCheckbox(label, checked, onChange) {
   return f;
 }
 function rolesField(owner, onChange) {
-  owner.roles = normalizeRoles(owner.roles);
+  rolesFieldGeneric(owner, "roles", "Roles", onChange);
+}
+function rolesFieldGeneric(owner, key, label, onChange) {
+  owner[key] = normalizeRoles(owner[key]);
 
   const f = document.createElement("div");
   f.className = "field";
-  f.innerHTML = "<label>Roles</label>";
+  f.innerHTML = `<label>${label}</label>`;
 
   const chips = document.createElement("div");
   chips.className = "chips";
-  owner.roles.forEach((role, i) => {
+  owner[key].forEach((role, i) => {
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.appendChild(document.createTextNode(role));
@@ -2285,7 +2305,7 @@ function rolesField(owner, onChange) {
     removeBtn.textContent = "x";
     removeBtn.title = `Remove ${role}`;
     removeBtn.onclick = () => {
-      owner.roles.splice(i, 1);
+      owner[key].splice(i, 1);
       onChange();
       renderInspector();
     };
@@ -2301,8 +2321,8 @@ function rolesField(owner, onChange) {
     if (e.key !== "Enter" && e.key !== ",") return;
     e.preventDefault();
     const role = input.value.trim();
-    if (!role || owner.roles.includes(role)) return;
-    owner.roles.push(role);
+    if (!role || owner[key].includes(role)) return;
+    owner[key].push(role);
     onChange();
     renderInspector();
   };
@@ -2675,7 +2695,9 @@ function migrateLegacyToNew(obj) {
     variables: [],
     lanes,
     flowNodes,
-    sequenceFlows
+    sequenceFlows,
+    cancelRoles: [],
+    unclaimRoles: []
   };
 }
 function loadFromObject(obj) {
@@ -2728,7 +2750,9 @@ function loadFromObject(obj) {
         variables: (f.variables || []).map(normalizeVariable),
         condition: f.condition ?? null,
         isDefault: !!f.isDefault
-      }))
+      })),
+      cancelRoles: normalizeRoles(obj.cancelRoles),
+      unclaimRoles: normalizeRoles(obj.unclaimRoles)
     };
   } else {
     // Legacy phases/steps/actions document.

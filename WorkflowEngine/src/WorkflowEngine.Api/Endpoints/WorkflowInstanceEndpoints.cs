@@ -90,10 +90,11 @@ public static class WorkflowInstanceEndpoints
 
         group.MapPost("/{id:long}/unclaim", async (
             long id,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
-            var instance = await service.UnclaimAsync(id, cancellationToken);
+            var instance = await service.UnclaimAsync(id, ToActor(principal), cancellationToken);
             return instance is null ? Results.NotFound() : Results.Ok(instance);
         });
 
@@ -116,9 +117,10 @@ public static class WorkflowInstanceEndpoints
 
         group.MapPost("/{id:long}/cancel", async (
             long id,
+            ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
-            await service.CancelAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
+            await service.CancelAsync(id, ToActor(principal), cancellationToken) ? Results.NoContent() : Results.NotFound());
 
         return app;
     }

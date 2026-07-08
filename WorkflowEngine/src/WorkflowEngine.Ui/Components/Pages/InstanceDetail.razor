@@ -45,11 +45,14 @@ else
             {
                 <div class="d-flex gap-2 mb-3">
                     <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
-                    <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                    @if (CanUnclaim)
+                    {
+                        <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                    }
                 </div>
             }
 
-            @if (instance.Status == "running")
+            @if (instance.Status == "running" && CanCancel)
             {
                 <button class="btn btn-outline-danger" @onclick="CancelAsync">Cancel instance</button>
             }
@@ -214,6 +217,47 @@ else
 
             return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
                 && instance.ClaimedBy == ActingUser;
+        }
+    }
+
+    private bool CanUnclaim
+    {
+        get
+        {
+            if (instance is null) return false;
+            if (string.IsNullOrWhiteSpace(instance.ClaimedBy)) return false;
+
+            var normalizedUser = ActingUser;
+            if (string.Equals(instance.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var unclaimRoles = instance.Workflow?.Definition?.UnclaimRoles ?? [];
+            if (unclaimRoles.Count > 0)
+            {
+                var actorRoles = Token.CurrentRoles ?? [];
+                return unclaimRoles.Any(r => actorRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+            }
+
+            return false;
+        }
+    }
+
+    private bool CanCancel
+    {
+        get
+        {
+            if (instance is null) return false;
+
+            var cancelRoles = instance.Workflow?.Definition?.CancelRoles ?? [];
+            if (cancelRoles.Count == 0)
+            {
+                return true;
+            }
+
+            var actorRoles = Token.CurrentRoles ?? [];
+            return cancelRoles.Any(r => actorRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
         }
     }
 

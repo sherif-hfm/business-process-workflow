@@ -14,6 +14,8 @@ public static class WorkflowModelMigrator
         model.LegacySteps = null;
 
         model.Variables ??= [];
+        model.CancelRoles ??= [];
+        model.UnclaimRoles ??= [];
 
         foreach (var node in model.FlowNodes)
         {

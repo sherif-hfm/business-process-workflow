@@ -31,6 +31,12 @@ public sealed class WorkflowModel
     [JsonPropertyName("sequenceFlows")]
     public List<SequenceFlowModel> SequenceFlows { get; set; } = [];
 
+    [JsonPropertyName("cancelRoles")]
+    public List<string> CancelRoles { get; set; } = [];
+
+    [JsonPropertyName("unclaimRoles")]
+    public List<string> UnclaimRoles { get; set; } = [];
+
     // ---- Legacy read shims (older JSONB snapshots) ----
     // These are populated only when deserializing pre-BPMN documents and are
     // folded into the new structure by WorkflowModelMigrator. They are never

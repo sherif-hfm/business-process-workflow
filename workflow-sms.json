@@ -253,6 +253,7 @@
     {
       "id": 111,
       "name": "yes",
+      "externalId": null,
       "sourceRef": 4,
       "targetRef": 2,
       "roles": [],
@@ -260,5 +261,11 @@
       "condition": null,
       "isDefault": false
     }
+  ],
+  "cancelRoles": [
+    "sysAdmin"
+  ],
+  "unclaimRoles": [
+    "admin"
   ]
 }

@@ -98,7 +98,7 @@ public interface IWorkflowEngineService
 
     Task<InstanceDetailDto?> ClaimAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 
-    Task<InstanceDetailDto?> UnclaimAsync(long id, CancellationToken cancellationToken);
+    Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 
     Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
@@ -107,7 +107,7 @@ public interface IWorkflowEngineService
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 
-    Task<bool> CancelAsync(long id, CancellationToken cancellationToken);
+    Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 }
 
 /// <summary>

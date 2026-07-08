@@ -348,13 +348,30 @@ public sealed class WorkflowEngineService(
         return await BuildDetailAsync(id, cancellationToken);
     }
 
-    public async Task<InstanceDetailDto?> UnclaimAsync(long id, CancellationToken cancellationToken)
+    public async Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken)
     {
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
             return null;
+        }
+
+        var normalizedUser = NormalizeUser(actor.User);
+        if (!string.IsNullOrWhiteSpace(instance.ClaimedBy))
+        {
+            var isClaimant = string.Equals(instance.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
+
+            var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+            var unclaimRoles = workflow.Definition.UnclaimRoles ?? [];
+
+            var actorRoles = NormalizeRoles(actor.Roles);
+            var hasUnclaimRole = unclaimRoles.Any(r => actorRoles.Contains(r));
+
+            if (!isClaimant && !hasUnclaimRole)
+            {
+                throw new WorkflowDomainException($"Only the user who claimed the task ('{instance.ClaimedBy}') or users with unclaim permissions can unclaim this task.");
+            }
         }
 
         await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
@@ -463,13 +480,24 @@ public sealed class WorkflowEngineService(
         return await BuildDetailAsync(id, cancellationToken);
     }
 
-    public async Task<bool> CancelAsync(long id, CancellationToken cancellationToken)
+    public async Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken)
     {
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
             return false;
+        }
+
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var cancelRoles = workflow.Definition.CancelRoles ?? [];
+        if (cancelRoles.Count > 0)
+        {
+            var actorRoles = NormalizeRoles(actor.Roles);
+            if (!cancelRoles.Any(r => actorRoles.Contains(r)))
+            {
+                throw new WorkflowDomainException("You do not have permission to cancel this workflow instance.");
+            }
         }
 
         await runtime.UpdateInstanceAsync(
