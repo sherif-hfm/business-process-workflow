@@ -123,7 +123,11 @@ public sealed class WorkflowDefinitionService(
             }
 
             var outgoing = definition.SequenceFlows.Where(f => f.SourceRef == node.Id).ToList();
+            var incoming = definition.SequenceFlows.Where(f => f.TargetRef == node.Id).ToList();
 
+            // errorEndEvent is covered by IsEnd (no outgoing). errorBoundaryEvent
+            // has exactly one outgoing (the error path) and no incoming flows
+            // (it is attached, not reached via a normal sequence flow).
             if (BpmnFlowNodeTypes.IsEnd(node.Type) && outgoing.Count > 0)
             {
                 throw new WorkflowDomainException($"End event #{node.Id} cannot have outgoing sequence flows.");
@@ -132,15 +136,25 @@ public sealed class WorkflowDefinitionService(
             if ((BpmnFlowNodeTypes.IsStart(node.Type)
                     || BpmnFlowNodeTypes.IsAutomatic(node.Type)
                     || BpmnFlowNodeTypes.IsServiceTask(node.Type)
-                    || BpmnFlowNodeTypes.IsScriptTask(node.Type))
+                    || BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                    || BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
                     : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                         ? "Service task"
-                        : BpmnFlowNodeTypes.IsScriptTask(node.Type) ? "Script task" : "Automatic task";
+                        : BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                            ? "Script task"
+                            : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                                ? "Error boundary event"
+                                : "Automatic task";
                 throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+            {
+                ValidateErrorBoundary(node, definition, incoming);
             }
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -247,13 +261,6 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException($"Service task #{node.Id} timeout must be greater than zero.");
         }
 
-        if (!string.Equals(service.OnError, ServiceTaskErrorModes.Fail, StringComparison.Ordinal)
-            && !string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
-        {
-            throw new WorkflowDomainException(
-                $"Service task #{node.Id} onError must be '{ServiceTaskErrorModes.Fail}' or '{ServiceTaskErrorModes.Continue}'.");
-        }
-
         foreach (var header in service.Headers)
         {
             if (string.IsNullOrWhiteSpace(header.Name))
@@ -275,6 +282,45 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException(
                     $"Service task #{node.Id} output mapping for '{mapping.Variable}' must have a response path.");
             }
+        }
+    }
+
+    // An errorBoundaryEvent is attached to exactly one serviceTask/scriptTask
+    // (attachedToRef), has no incoming sequence flows (it is reached by the
+    // engine's error routing, not a normal flow), and at most one boundary may
+    // be attached to a given host.
+    private static void ValidateErrorBoundary(FlowNodeModel node, WorkflowModel definition, List<SequenceFlowModel> incoming)
+    {
+        if (node.AttachedToRef is null)
+        {
+            throw new WorkflowDomainException($"Error boundary event #{node.Id} must reference a host via attachedToRef.");
+        }
+
+        var host = definition.FlowNodes.SingleOrDefault(n => n.Id == node.AttachedToRef);
+        if (host is null)
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsServiceTask(host.Type) && !BpmnFlowNodeTypes.IsScriptTask(host.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} must reference a service task or script task.");
+        }
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} cannot have incoming sequence flows.");
+        }
+
+        var siblings = definition.FlowNodes.Count(n =>
+            BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == node.AttachedToRef);
+        if (siblings > 1)
+        {
+            throw new WorkflowDomainException(
+                $"Host node #{host.Id} has {siblings} error boundary events; at most one is allowed.");
         }
     }
 

@@ -212,6 +212,20 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
         }
+        else if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+        {
+            // A boundary event is attached to a service/script task; it carries
+            // only attachedToRef and the optional errorVariable, nothing else.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.Condition = null;
+        }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
             // Tolerant load: older documents have no claimMode.

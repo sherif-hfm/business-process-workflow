@@ -80,4 +80,7 @@ public static class WorkflowInstanceStatuses
     public const string Running = "running";
     public const string Completed = "completed";
     public const string Cancelled = "cancelled";
+    // Terminal status set when an instance enters an errorEndEvent (vs the
+    // Completed status set by a plain endEvent). Filterable in the list/inbox.
+    public const string Faulted = "faulted";
 }

@@ -148,6 +148,21 @@ public sealed class FlowNodeModel
     [JsonPropertyName("condition")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Condition { get; set; }
+
+    // errorBoundaryEvent only: the host activity (serviceTask/scriptTask) id this
+    // boundary is attached to. The boundary renders on the host's border and its
+    // single outgoing flow is the error path taken when the host fails at runtime.
+    [JsonPropertyName("attachedToRef")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? AttachedToRef { get; set; }
+
+    // errorBoundaryEvent only, optional: when set, the failure reason is written
+    // to this instance variable when the boundary catches a host failure, so the
+    // error path can branch on or display it. No declaration required (mirrors
+    // serviceTask statusVariable).
+    [JsonPropertyName("errorVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorVariable { get; set; }
 }
 
 public static class ScriptFormats
@@ -182,9 +197,6 @@ public sealed class ServiceTaskModel
     [JsonPropertyName("timeoutSeconds")]
     public int TimeoutSeconds { get; set; } = 30;
 
-    [JsonPropertyName("onError")]
-    public string OnError { get; set; } = ServiceTaskErrorModes.Fail;
-
     [JsonPropertyName("statusVariable")]
     public string? StatusVariable { get; set; }
 
@@ -208,12 +220,6 @@ public sealed class ServiceOutputMappingModel
 
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
-}
-
-public static class ServiceTaskErrorModes
-{
-    public const string Fail = "fail";
-    public const string Continue = "continue";
 }
 
 public static class ClaimModes
@@ -354,12 +360,29 @@ public static class BpmnFlowNodeTypes
     public const string ServiceTask = "serviceTask";
     public const string ScriptTask = "scriptTask";
     public const string ExclusiveGateway = "exclusiveGateway";
+    // Terminal event that ends the instance with the Faulted status (vs the
+    // Completed status set by a plain endEvent). Typically reached via an
+    // errorBoundaryEvent's error path, directly or through a handler task.
+    public const string ErrorEndEvent = "errorEndEvent";
+    // Boundary event attached to a serviceTask/scriptTask (attachedToRef). When
+    // the host fails at runtime, the token routes out the boundary's single
+    // outgoing "error" flow instead of failing the transition.
+    public const string ErrorBoundaryEvent = "errorBoundaryEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
 
+    // A plain endEvent completes the instance; an errorEndEvent faults it. Both
+    // are terminal (no outgoing flows) and share the end-like invariants.
     public static bool IsEnd(string type) =>
-        string.Equals(type, EndEvent, StringComparison.Ordinal);
+        string.Equals(type, EndEvent, StringComparison.Ordinal)
+        || string.Equals(type, ErrorEndEvent, StringComparison.Ordinal);
+
+    public static bool IsErrorEnd(string type) =>
+        string.Equals(type, ErrorEndEvent, StringComparison.Ordinal);
+
+    public static bool IsErrorBoundary(string type) =>
+        string.Equals(type, ErrorBoundaryEvent, StringComparison.Ordinal);
 
     public static bool IsUserTask(string type) =>
         string.Equals(type, UserTask, StringComparison.Ordinal);
@@ -376,11 +399,13 @@ public static class BpmnFlowNodeTypes
     public static bool IsGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
 
+    // A boundary event auto-advances down its single outgoing error flow once
+    // the token is routed onto it, so it behaves as a pass-through node.
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type);
+        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent;
 }
 
 public static class WorkflowVariableTypes

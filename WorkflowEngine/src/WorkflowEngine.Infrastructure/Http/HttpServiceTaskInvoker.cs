@@ -7,8 +7,9 @@ namespace WorkflowEngine.Infrastructure.Http;
 /// <summary>
 /// Executes service-task REST calls over <see cref="HttpClient"/>. Transport
 /// failures (timeout / network) are reported as a non-completed result with
-/// status 0 so the engine can apply the node's onError policy; a completed call
-/// reports its real status code and body regardless of success.
+/// status 0 so the engine can route to an attached errorBoundaryEvent (or, when
+/// none is attached, fail the transition); a completed call reports its real
+/// status code and body regardless of success.
 /// </summary>
 public sealed class HttpServiceTaskInvoker(HttpClient httpClient) : IServiceTaskInvoker
 {

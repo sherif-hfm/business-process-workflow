@@ -117,11 +117,12 @@ Storage follows the hybrid design:
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
-  `task`, `serviceTask`, `scriptTask`, and `exclusiveGateway` nodes are resolved in
-  the same transaction until the instance rests on a `userTask` or terminates on an
-  `endEvent`. A hop limit (`flowNodes.Count + 1`) guards against cycles. History
-  rows are written with a `start`, `automatic`, `service`, `script`, or `gateway`
-  note.
+  `task`, `serviceTask`, `scriptTask`, `exclusiveGateway`, and
+  `errorBoundaryEvent` nodes are resolved in the same transaction until the
+  instance rests on a `userTask` or terminates on an `endEvent`/`errorEndEvent`.
+  A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
+  written with a `start`, `automatic`, `service`, `script`, `gateway`,
+  `boundary`, or `error` note.
 - **Service tasks** call an external REST endpoint during the pass-through hop
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
@@ -129,12 +130,13 @@ Storage follows the hybrid design:
   response the configured `outputMappings` extract dotted-path values and write
   them to instance variables (latest write wins). The call is synchronous inside
   the locked transaction with a bounded `timeoutSeconds` and **no retries**; on a
-  non-2xx/timeout/network failure the node's `onError` decides: `fail` throws a
-  `WorkflowDomainException` (rolling back the transition) while `continue`
-  proceeds down the single outgoing flow. An optional `statusVariable` always
-  receives the HTTP status (0 on transport error) so a downstream gateway can
-  branch. Definitions are validated (`ValidateDefinition`) for a URL, allowed
-  method, positive timeout, valid `onError`, and complete output mappings.
+  non-2xx/timeout/network failure the engine looks up an attached
+  `errorBoundaryEvent` (see Error events). If one exists the token routes out the
+  boundary's single error flow (and an optional `statusVariable` still receives
+  the HTTP status, 0 on transport error, so the error path can branch); if none
+  is attached the transition fails with a `WorkflowDomainException` (rollback +
+  400). Definitions are validated (`ValidateDefinition`) for a URL, allowed
+  method, positive timeout, and complete output mappings.
 - **Script tasks** mutate process variables during the pass-through hop in one of
   two authoring modes (`scriptFormat`), never both at once:
   - `ncalc` (default): `assignments` are NCalc expressions evaluated **in order**
@@ -155,9 +157,12 @@ Storage follows the hybrid design:
   In both modes, every write is coerced to the target's declared `dataType`/
   `isArray` (`CoerceScriptValue`) and must target a **declared process variable**
   (`model.variables`) - an undeclared `setVariable`/assignment target throws
-  `WorkflowDomainException`, rolling back the transition. After all writes are
-  flushed, each distinct target variable's `validation` rule is re-checked against
-  the reloaded map, exactly like a bad flow input. `IScriptEvaluator`
+  `WorkflowDomainException`, rolling back the transition. Each distinct target
+  variable's `validation` rule is re-checked against the in-memory overlay
+  (before persistence) so an error-boundary catch leaves nothing half-written.
+  A script/assignment/validation failure routes out an attached
+  `errorBoundaryEvent` like a service-task failure; with no boundary the
+  transition fails (rollback + 400). `IScriptEvaluator`
   (`JintScriptEvaluator` in the infrastructure layer) also parse-checks a
   `javascript` body at author time (`Engine.PrepareScript`, no execution) via
   `ValidateDefinition`.
@@ -206,8 +211,24 @@ Storage follows the hybrid design:
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.
-- Instances move through `Running`, `Completed` (on entering an `endEvent`), and
-  `Cancelled` (`POST /cancel`) statuses.
+- Instances move through `Running`, `Completed` (on entering an `endEvent`),
+  `Faulted` (on entering an `errorEndEvent`), and `Cancelled` (`POST /cancel`)
+  statuses.
+- **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask` or
+  `scriptTask` (`attachedToRef`) and catches that task's runtime failures
+  (HTTP non-2xx/timeout/network, or a script/assignment/validation error): the
+  token routes out the boundary's single outgoing **error** flow instead of
+  failing the transition, with an optional `errorVariable` capturing the failure
+  reason. With no boundary attached, a failure throws a
+  `WorkflowDomainException` (rollback + 400) - the historical no-boundary
+  default. A boundary is pass-through (it auto-advances its error flow, history
+  note `error` then `boundary`) and may have no incoming flows; at most one
+  boundary per host. An `errorEndEvent` is a terminal event (no outgoing flows)
+  that ends the instance with the `Faulted` status; it is typically reached via
+  a boundary's error path, directly or through a handler task. The legacy
+  `serviceTask.onError` (fail|continue) field has been removed in favor of
+  boundary events (old definitions load tolerantly; the dropped `onError` value
+  is ignored, and behavior is the no-boundary default = fail).
 - **Node roles are enforced** at runtime for `userTask` nodes. The caller's
   identity and roles come from a validated JWT (name + role claims), not from
   request fields. A `userTask` with a non-empty `roles` list can only be
@@ -374,14 +395,15 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
-`serviceTask`, `scriptTask`, `exclusiveGateway`, or `endEvent`.
+`serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`, or
+`errorBoundaryEvent`.
 
 ```jsonc
 {
   "id": 1,
   "name": "Request Submitted",
   "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
-  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent
+  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
@@ -393,7 +415,9 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
   "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
   "assignments": [ /* Assignment[] */ ], // scriptTask + scriptFormat "ncalc" only (see Assignment)
-  "script": null               // scriptTask + scriptFormat "javascript" only (see below)
+  "script": null,              // scriptTask + scriptFormat "javascript" only (see below)
+  "attachedToRef": null,       // errorBoundaryEvent only: host serviceTask/scriptTask id
+  "errorVariable": null        // errorBoundaryEvent only, optional: captures the failure reason
 }
 ```
 
@@ -470,6 +494,19 @@ Node kinds and their outgoing-flow rules:
   flows with `condition`s plus one `isDefault`; the engine picks the first
   matching condition, else the default. No user interaction.
 - **`endEvent`**: terminal; thick-ring circle. No outgoing flows.
+- **`errorEndEvent`**: terminal; thick-ring circle with an error glyph. No
+  outgoing flows. Entering it ends the instance with the `Faulted` status
+  (vs `Completed` for a plain `endEvent`). Typically reached via an
+  `errorBoundaryEvent`'s error path, directly or through a handler task.
+- **`errorBoundaryEvent`**: an error catch attached to a `serviceTask` or
+  `scriptTask` (`attachedToRef`); a small double-ring circle drawn on the
+  host's border. When the host fails at runtime (HTTP non-2xx/timeout/network,
+  or a script/assignment/validation error) the token routes out the boundary's
+  single outgoing **error** flow instead of failing the transition, with an
+  optional `errorVariable` capturing the failure reason. With no boundary
+  attached, a failure fails the transition (rollback + 400). A boundary is
+  pass-through (auto-advances its error flow) and may have no incoming flows;
+  at most one boundary per host.
 
 A workflow may define multiple `startEvent` nodes. `initialEventId` is the
 default. `POST /api/instances` accepts optional `startEventId` to force a
@@ -576,7 +613,6 @@ The REST configuration on a `serviceTask` flow node (`flowNode.service`).
   ],
   "body": "{ \"amount\": ${amount} }", // JSON template; ${var} -> variable's JSON value
   "timeoutSeconds": 30,        // per-call timeout (no retries)
-  "onError": "fail",           // "fail" (roll back) | "continue" (follow the flow)
   "statusVariable": "creditStatus", // optional; receives the HTTP status (0 on transport error)
   "outputMappings": [          // response field -> instance variable (applied on 2xx)
     { "variable": "creditScore", "path": "score" },
@@ -584,6 +620,11 @@ The REST configuration on a `serviceTask` flow node (`flowNode.service`).
   ]
 }
 ```
+
+A `serviceTask` may also have an attached `errorBoundaryEvent` (see Error
+events); on a non-2xx/timeout/network failure the token routes out the
+boundary's error flow instead of failing the transition. The legacy `onError`
+field has been removed (old values load tolerantly and are ignored).
 
 In `url` and header values a `${var}` placeholder becomes the variable's scalar
 text. In `body` substitution is quote-aware: a placeholder inside a JSON string
@@ -646,6 +687,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
+| `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
+| `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
@@ -665,7 +708,9 @@ when extending the model so new features stay close to BPMN terminology.
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations
   (connectors, expressions, message/send-receive) are out of scope.
-- **No message/timer/signal events.** Only plain (none) start and end events.
+- **Error events only (no timer/message/signal).** Plain (none) start and end
+  events plus `errorEndEvent` and `errorBoundaryEvent` (catch-all, no error
+  codes); no timer/message/signal events yet.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -687,9 +732,10 @@ when extending the model so new features stay close to BPMN terminology.
   `parallelGateway`, `timerStartEvent`) and add matching shapes.
 - Keep the JSON tolerant: extend `loadFromObject()` (editor) and
   `WorkflowModelMigrator` (.NET) so older documents still load.
-- Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsAutomatic`,
-  `IsServiceTask`, `IsScriptTask`, `IsUserTask`, `IsGateway`, `IsPassThrough`) and
-  `ValidateDefinition` together so the engine and editor agree.
+- Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
+  `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`,
+  `IsUserTask`, `IsGateway`, `IsPassThrough`) and `ValidateDefinition` together
+  so the engine and editor agree.
 
 ---
 

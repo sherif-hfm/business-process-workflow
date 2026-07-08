@@ -181,9 +181,14 @@
   .node.serviceTask rect { fill: #164e4a; stroke: #2dd4bf; }
   .node.scriptTask rect { fill: #1e1b4b; stroke: #a78bfa; }
   .node.exclusiveGateway polygon.body { fill: #422006; stroke: var(--amber); }
+  .node.errorEndEvent circle.body { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
+  .node.errorBoundaryEvent circle.body { fill: #1f0a0a; stroke: var(--red); stroke-width: 3; }
+  .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
+  .node .err-mark { fill: var(--red); font-size: 13px; font-weight: 700; text-anchor: middle; }
   .node.selected rect,
   .node.selected circle.body,
   .node.selected polygon.body { stroke: #fff; stroke-width: 3; }
+  .node.selected.errorBoundaryEvent circle.body { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: #cbd5e1; font-size: 11px; }
   .node .roles { fill: var(--muted); font-size: 10px; }
@@ -212,6 +217,9 @@
   .edge path { fill: none; stroke: #64748b; stroke-width: 2; cursor: pointer; }
   .edge.auto path { stroke-dasharray: 6 4; }
   .edge.selected path { stroke: var(--amber); stroke-width: 3; }
+  .edge.error path { stroke: var(--red); stroke-dasharray: 5 4; }
+  .edge.error text { fill: var(--red); }
+  .edge.error .lblbg { fill: var(--bg); opacity: .85; }
   .edge text { fill: #cbd5e1; font-size: 11px; cursor: pointer; }
   .edge .roles { fill: var(--muted); font-size: 10px; }
   .edge .cond { fill: var(--amber); font-size: 10px; }
@@ -417,6 +425,7 @@
 const NODE_W = 170, NODE_H = 64;
 const EVENT_D = 56;
 const GATEWAY_D = 72;
+const BOUNDARY_D = 28;
 const MIN_LANE_W = 220, MIN_LANE_H = 150;
 const NODE_TYPE = {
   START_EVENT: "startEvent",
@@ -425,7 +434,9 @@ const NODE_TYPE = {
   TASK: "task",
   SERVICE_TASK: "serviceTask",
   SCRIPT_TASK: "scriptTask",
-  EXCLUSIVE_GATEWAY: "exclusiveGateway"
+  EXCLUSIVE_GATEWAY: "exclusiveGateway",
+  ERROR_END_EVENT: "errorEndEvent",
+  ERROR_BOUNDARY_EVENT: "errorBoundaryEvent"
 };
 const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.START_EVENT, label: "Start Event" },
@@ -434,7 +445,8 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
-  { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" }
+  { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
+  { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" }
 ];
 const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
 const CLAIM_MODE_OPTIONS = [
@@ -449,9 +461,8 @@ const SCRIPT_FORMAT_OPTIONS = [
 ];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-const SERVICE_ERROR_MODES = ["fail", "continue"];
 function defaultService() {
-  return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, onError: "fail", statusVariable: "", outputMappings: [] };
+  return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
 }
 function normalizeService(service) {
   const base = defaultService();
@@ -464,7 +475,6 @@ function normalizeService(service) {
       : [],
     body: typeof service.body === "string" ? service.body : "",
     timeoutSeconds: Number.isFinite(+service.timeoutSeconds) && +service.timeoutSeconds > 0 ? Math.round(+service.timeoutSeconds) : base.timeoutSeconds,
-    onError: SERVICE_ERROR_MODES.includes(service.onError) ? service.onError : base.onError,
     statusVariable: typeof service.statusVariable === "string" ? service.statusVariable : "",
     outputMappings: Array.isArray(service.outputMappings)
       ? service.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "" }))
@@ -525,6 +535,10 @@ function getLane(id) { return model.lanes.find(p => p.id === id); }
 function getNode(id) { return model.flowNodes.find(s => s.id === id); }
 function getFlow(id) { return model.sequenceFlows.find(f => f.id === id); }
 function outgoingFlows(nodeId) { return model.sequenceFlows.filter(f => f.sourceRef === nodeId); }
+function incomingFlows(nodeId) { return model.sequenceFlows.filter(f => f.targetRef === nodeId); }
+function findErrorBoundary(hostNodeId) {
+  return model.flowNodes.find(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
+}
 function normalizeRoles(roles) {
   if (Array.isArray(roles)) return roles.map(role => String(role).trim()).filter(Boolean);
   if (typeof roles === "string" && roles.trim()) return [roles.trim()];
@@ -535,7 +549,7 @@ function roleSummary(roles, maxLength = 28) {
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
 function isEventType(type) {
-  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT;
+  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT;
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -553,7 +567,13 @@ function isStartEventType(type) {
   return type === NODE_TYPE.START_EVENT;
 }
 function isEndEventType(type) {
-  return type === NODE_TYPE.END_EVENT;
+  return type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT;
+}
+function isErrorEndEventType(type) {
+  return type === NODE_TYPE.ERROR_END_EVENT;
+}
+function isBoundaryEventType(type) {
+  return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
 }
 function isGatewayType(type) {
   return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
@@ -562,20 +582,22 @@ function isSingleOutgoingType(type) {
   return type === NODE_TYPE.START_EVENT
     || type === NODE_TYPE.TASK
     || type === NODE_TYPE.SERVICE_TASK
-    || type === NODE_TYPE.SCRIPT_TASK;
+    || type === NODE_TYPE.SCRIPT_TASK
+    || type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
 }
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
   return match ? match.label : type;
 }
 function nodeSize(node) {
+  if (isBoundaryEventType(node.type)) return { w: BOUNDARY_D, h: BOUNDARY_D };
   if (isEventType(node.type)) return { w: EVENT_D, h: EVENT_D };
   if (isGatewayType(node.type)) return { w: GATEWAY_D, h: GATEWAY_D };
   return { w: NODE_W, h: NODE_H };
 }
-// pass-through nodes advance without a user action (start / automatic task / service task / script task / gateway)
+// pass-through nodes advance without a user action (start / automatic task / service task / script task / gateway / error boundary event)
 function isPassThroughType(type) {
-  return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isGatewayType(type);
+  return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isGatewayType(type) || isBoundaryEventType(type);
 }
 function applyTypeInvariants(node) {
   if (isEndEventType(node.type)) {
@@ -626,6 +648,21 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = node.variables || [];
     node.condition = null;
+  } else if (isBoundaryEventType(node.type)) {
+    // A boundary event is attached to a service/script task; it carries only
+    // attachedToRef and the optional errorVariable, nothing else.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.condition = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    node.script = null;
+    if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
+    if (typeof node.errorVariable !== "string" || !node.errorVariable.trim()) node.errorVariable = null;
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
@@ -712,9 +749,22 @@ function seedSample() {
 }
 
 /* ---------- Geometry ---------- */
+// The render position of a node: boundary events are anchored to their host's
+// border and move with the host, so their position is derived, not stored.
+function nodePosition(node) {
+  if (isBoundaryEventType(node.type)) {
+    const host = getNode(node.attachedToRef);
+    if (host) {
+      const hs = nodeSize(host);
+      return { x: host.x + hs.w - BOUNDARY_D / 2, y: host.y + hs.h - BOUNDARY_D / 2 };
+    }
+  }
+  return { x: node.x, y: node.y };
+}
 function center(node) {
   const size = nodeSize(node);
-  return { x: node.x + size.w / 2, y: node.y + size.h / 2 };
+  const pos = nodePosition(node);
+  return { x: pos.x + size.w / 2, y: pos.y + size.h / 2 };
 }
 
 // intersection of line from shape center toward target point with shape border
@@ -722,6 +772,11 @@ function borderPoint(node, tx, ty) {
   const c = center(node);
   const dx = tx - c.x, dy = ty - c.y;
   if (dx === 0 && dy === 0) return c;
+  if (isBoundaryEventType(node.type)) {
+    const r = BOUNDARY_D / 2;
+    const scale = r / Math.sqrt(dx * dx + dy * dy);
+    return { x: c.x + dx * scale, y: c.y + dy * scale };
+  }
   if (isEventType(node.type)) {
     const r = EVENT_D / 2;
     const scale = r / Math.sqrt(dx * dx + dy * dy);
@@ -756,6 +811,7 @@ function segmentsIntersect(p1, p2, q1, q2) {
 }
 
 function lineIntersectsNode(p1, p2, node) {
+  if (isBoundaryEventType(node.type)) return false; // attached to host; not a routing obstacle
   const size = nodeSize(node);
   const x = node.x, y = node.y, w = size.w, h = size.h;
   const tl = { x, y };
@@ -803,12 +859,36 @@ function renderLanes() {
 function renderNodes() {
   nodesG.innerHTML = "";
   for (const node of model.flowNodes) {
+    // A boundary event is anchored to its host's border; compute its render
+    // position from the host each redraw so it always moves with the host.
+    let renderX = node.x, renderY = node.y;
+    let host = null;
+    if (isBoundaryEventType(node.type)) {
+      host = getNode(node.attachedToRef);
+      if (host) {
+        const hs = nodeSize(host);
+        renderX = host.x + hs.w - BOUNDARY_D / 2;
+        renderY = host.y + hs.h - BOUNDARY_D / 2;
+      }
+    }
     const g = el("g", { class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''}`,
-                        transform: `translate(${node.x},${node.y})`, "data-id": node.id });
+                        transform: `translate(${renderX},${renderY})`, "data-id": node.id });
     const marker = model.initialEventId === node.id ? " · START" : "";
-    if (isEventType(node.type)) {
+    if (isBoundaryEventType(node.type)) {
+      const r = BOUNDARY_D / 2;
+      g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
+      g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
+      const mark = el("text", { x: r, y: r + 4, class: "err-mark" });
+      mark.textContent = "!";
+      g.appendChild(mark);
+    } else if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
+      if (isErrorEndEventType(node.type)) {
+        const mark = el("text", { x: r, y: r + 6, class: "err-mark", "font-size": "22" });
+        mark.textContent = "!";
+        g.appendChild(mark);
+      }
       const idText = el("text", { x: r, y: EVENT_D + 12, class: "nid", "text-anchor": "middle" });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
@@ -852,7 +932,19 @@ function renderNodes() {
       if (isScriptTaskType(node.type)) appendScriptMarker(g);
     }
 
-    g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
+    if (isBoundaryEventType(node.type)) {
+      // Boundary events are selectable but not independently draggable; they
+      // move with their host. In connect mode they behave like any node: they
+      // can be picked as a source (to draw the error flow) but are blocked as a
+      // target inside handleConnectClick.
+      g.addEventListener("pointerdown", (e) => {
+        if (connectMode) { e.stopPropagation(); handleConnectClick(node); return; }
+        e.stopPropagation();
+        select('node', node.id);
+      });
+    } else {
+      g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
+    }
     nodesG.appendChild(g);
   }
 }
@@ -865,7 +957,8 @@ function renderEdges() {
     if (!source || !target) continue;
 
     const dashed = isPassThroughType(source.type);
-    const g = el("g", { class: `edge ${dashed ? "auto" : ""} ${isSel('flow', flow.id) ? 'selected' : ''}`,
+    const isError = isBoundaryEventType(source.type);
+    const g = el("g", { class: `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${isSel('flow', flow.id) ? 'selected' : ''}`,
                         "data-flow": flow.id });
     let d, lx, ly;
     const size = nodeSize(source);
@@ -995,6 +1088,7 @@ function renderEdges() {
 
 function flowLabel(flow, source) {
   if (flow.name && flow.name.trim()) return flow.name.trim();
+  if (isBoundaryEventType(source.type)) return "error";
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
   if (isScriptTaskType(source.type)) return "script";
@@ -1083,11 +1177,39 @@ function renderNodeInspector() {
   inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
   field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
   field("External ID", "text", node.externalId ?? "", v => { node.externalId = v.trim() ? v : null; });
-  selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
-    node.type = v;
-    applyTypeInvariants(node);
-    render();
-  });
+  if (isBoundaryEventType(node.type)) {
+    // Boundary events are created via a host's "+ Add error boundary event"
+    // button, not the Type dropdown (the type is absent from NODE_TYPE_OPTIONS
+    // by design). Show a read-only label so the field cannot be edited away.
+    const typeField = document.createElement("div");
+    typeField.className = "field";
+    typeField.innerHTML = `<label>Type</label>`;
+    const typeInput = document.createElement("input");
+    typeInput.type = "text";
+    typeInput.disabled = true;
+    typeInput.value = typeLabel(node.type);
+    typeField.appendChild(typeInput);
+    inspector.appendChild(typeField);
+  } else {
+    selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
+      node.type = v;
+      applyTypeInvariants(node);
+      // If a node stops being a service/script task, any attached error
+      // boundary event is orphaned (its attachedToRef no longer points at a
+      // valid host). Cascade-delete it (and its error flow) to keep the model
+      // valid, mirroring the host-deletion cleanup in deleteNode.
+      if (!isServiceTaskType(v) && !isScriptTaskType(v)) {
+        const attached = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === node.id);
+        const boundaryIds = new Set(attached.map(n => n.id));
+        if (boundaryIds.size > 0) {
+          model.flowNodes = model.flowNodes.filter(n => !boundaryIds.has(n.id));
+          model.sequenceFlows = model.sequenceFlows.filter(f =>
+            !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
+        }
+      }
+      render();
+    });
+  }
   selectField("Lane", [{ value: "", label: "— none —" }].concat(
     model.lanes.map(p => ({ value: p.id, label: `#${p.id} ${p.name}` }))
   ), node.laneId ?? "", v => {
@@ -1127,6 +1249,28 @@ function renderNodeInspector() {
     field("Condition", "text", node.condition ?? "", v => {
       node.condition = v.trim() ? v : null;
       renderNodes();
+    });
+  }
+
+  if (isBoundaryEventType(node.type)) {
+    const host = getNode(node.attachedToRef);
+    const hostField = document.createElement("div");
+    hostField.className = "field";
+    hostField.innerHTML = `<label>Attached to</label>`;
+    const hostInput = document.createElement("input");
+    hostInput.type = "text";
+    hostInput.disabled = true;
+    hostInput.value = host ? `#${host.id} ${host.name}` : "(missing host)";
+    hostField.appendChild(hostInput);
+    inspector.appendChild(hostField);
+
+    const bhint = document.createElement("p");
+    bhint.className = "empty-note";
+    bhint.textContent = "When the host task fails, the token exits through this boundary's single outgoing flow (the error path).";
+    inspector.appendChild(bhint);
+
+    field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
+      node.errorVariable = v.trim() ? v : null;
     });
   }
 
@@ -1238,11 +1382,9 @@ function renderServiceSection(node) {
     const n = Math.round(+v);
     service.timeoutSeconds = Number.isFinite(n) && n > 0 ? n : 1;
   });
-  selectField("On error", [
-    { value: "fail", label: "Fail (roll back the transition)" },
-    { value: "continue", label: "Continue (follow the outgoing flow)" }
-  ], service.onError, v => { service.onError = v; });
   field("Status variable (optional)", "text", service.statusVariable, v => { service.statusVariable = v; });
+
+  renderErrorBoundarySection(node);
 
   // Headers
   const headersTitle = document.createElement("h2");
@@ -1384,6 +1526,80 @@ function renderScriptSection(node) {
   } else {
     renderAssignmentsSection(node);
   }
+
+  renderErrorBoundarySection(node);
+}
+
+// Renders the "Error boundary" sub-panel inside a service/script task
+// inspector. A boundary event is the host's failure handler: when the task's
+// runtime call fails, the token routes out the boundary's single error flow
+// instead of failing the transition. Without a boundary, a failure rolls back.
+function renderErrorBoundarySection(hostNode) {
+  const title = document.createElement("h2");
+  title.textContent = "Error boundary";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "When this task fails (HTTP error / timeout / script error), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.";
+  inspector.appendChild(hint);
+
+  const existing = findErrorBoundary(hostNode.id);
+  if (existing) {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border);cursor:pointer";
+    const out = outgoingFlows(existing.id);
+    const tgt = out.length ? getNode(out[0].targetRef) : null;
+    box.innerHTML = `<div class="badge">boundary #${existing.id} · error → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'no flow yet'}</div>`;
+    box.onclick = () => select('node', existing.id);
+    inspector.appendChild(box);
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "Remove error boundary event";
+    delBtn.className = "danger";
+    delBtn.style.width = "100%";
+    delBtn.style.marginTop = "8px";
+    delBtn.onclick = () => deleteNode(existing.id);
+    inspector.appendChild(delBtn);
+  } else {
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "+ Add error boundary event";
+    addBtn.style.width = "100%";
+    addBtn.style.marginTop = "8px";
+    addBtn.onclick = () => addErrorBoundary(hostNode);
+    inspector.appendChild(addBtn);
+  }
+}
+
+// Creates an errorBoundaryEvent attached to a host service/script task and
+// immediately enters connect mode from it so the user can draw the error path.
+function addErrorBoundary(hostNode) {
+  const boundary = {
+    id: nextNodeId(),
+    name: hostNode.name ? `${hostNode.name} error` : "Error",
+    externalId: null,
+    type: NODE_TYPE.ERROR_BOUNDARY_EVENT,
+    laneId: hostNode.laneId ?? null,
+    x: hostNode.x,
+    y: hostNode.y,
+    roles: [],
+    requiresClaim: false,
+    claimMode: CLAIM_MODE.FRESH,
+    inheritClaimFromNodeId: null,
+    variables: [],
+    condition: null,
+    attachedToRef: hostNode.id,
+    errorVariable: null
+  };
+  model.flowNodes.push(boundary);
+  applyTypeInvariants(boundary);
+  select('node', boundary.id);
+  setConnectMode(true);
+  connectSource = boundary.id;
+  renderHint();
+  render();
 }
 
 function renderAssignmentsSection(node) {
@@ -2251,6 +2467,14 @@ function handleConnectClick(node) {
     renderHint();
   } else {
     const source = getNode(connectSource);
+    // A boundary event is reached by the engine's error routing, not a normal
+    // sequence flow, so nothing can connect into it.
+    if (isBoundaryEventType(node.type)) {
+      hintEl.innerHTML = "<b>Connect mode:</b> an error boundary event cannot have an incoming sequence flow.";
+      connectSource = null;
+      setConnectMode(false);
+      return;
+    }
     if (source && isSingleOutgoingType(source.type) && outgoingFlows(connectSource).length >= 1) {
       hintEl.innerHTML = "<b>Connect mode:</b> this node type can have exactly one outgoing flow.";
       connectSource = null;
@@ -2296,9 +2520,14 @@ function addNode() {
   select('node', id);
 }
 function deleteNode(id) {
-  model.flowNodes = model.flowNodes.filter(s => s.id !== id);
-  // remove sequence flows connected to it
-  model.sequenceFlows = model.sequenceFlows.filter(f => f.sourceRef !== id && f.targetRef !== id);
+  // A boundary event's host is independent; but deleting the host also removes
+  // any boundary events attached to it (plus their flows).
+  const attachedBoundaries = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === id);
+  const boundaryIds = new Set(attachedBoundaries.map(n => n.id));
+  model.flowNodes = model.flowNodes.filter(s => s.id !== id && !boundaryIds.has(s.id));
+  model.sequenceFlows = model.sequenceFlows.filter(f =>
+    f.sourceRef !== id && f.targetRef !== id
+    && !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
   if (model.initialEventId === id) {
     const nextDefault = model.flowNodes.find(s => isStartEventType(s.type));
     model.initialEventId = nextDefault?.id ?? null;
@@ -2485,7 +2714,9 @@ function loadFromObject(obj) {
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
           : undefined,
         assignments: isScriptTaskType(s.type) ? normalizeAssignments(s.assignments) : undefined,
-        script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined
+        script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined,
+        attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
+        errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,

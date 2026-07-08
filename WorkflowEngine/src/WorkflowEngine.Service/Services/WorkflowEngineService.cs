@@ -437,9 +437,11 @@ public sealed class WorkflowEngineService(
             cancellationToken);
 
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
-        var nextStatus = BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-            ? WorkflowInstanceStatuses.Completed
-            : WorkflowInstanceStatuses.Running;
+        var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+            ? WorkflowInstanceStatuses.Faulted
+            : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
+                ? WorkflowInstanceStatuses.Completed
+                : WorkflowInstanceStatuses.Running;
 
         instance = instance with
         {
@@ -508,27 +510,74 @@ public sealed class WorkflowEngineService(
             var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
             var variables = WithContext(stored, actor, instance, definition, currentNode);
 
+            TaskExecutionOutcome? outcome = null;
             if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
             {
-                await ExecuteServiceTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
+                outcome = await ExecuteServiceTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
                 // Reload so downstream gateways/service tasks see any written outputs.
                 stored = await LoadVariablesAsync(instance.Id, cancellationToken);
                 variables = WithContext(stored, actor, instance, definition, currentNode);
             }
-
-            if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
+            else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
             {
-                await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
+                outcome = await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
                 // Reload so the outgoing-flow selector and the next hop see the writes.
                 stored = await LoadVariablesAsync(instance.Id, cancellationToken);
                 variables = WithContext(stored, actor, instance, definition, currentNode);
             }
 
+            // A service/script failure routes out an attached errorBoundaryEvent's
+            // error flow when present (the boundary is itself pass-through and
+            // auto-advances on the next hop); otherwise the transition fails
+            // (rollback + 400), matching the historical no-boundary default.
+            if (outcome is { Success: false })
+            {
+                var boundary = FindErrorBoundary(definition, currentNode.Id);
+                if (boundary is null)
+                {
+                    throw new WorkflowDomainException(outcome.Reason ?? $"Task #{currentNode.Id} failed.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
+                {
+                    await runtime.AddVariableAsync(
+                        instance.Id,
+                        boundary.ErrorVariable!,
+                        boundary.Id,
+                        performedBy,
+                        JsonSerializer.SerializeToElement(outcome.Reason ?? string.Empty),
+                        cancellationToken);
+                }
+
+                await runtime.AddHistoryAsync(
+                    instance.Id,
+                    null,
+                    currentNode.Id,
+                    boundary.Id,
+                    performedBy,
+                    null,
+                    "error",
+                    cancellationToken);
+
+                instance = instance with
+                {
+                    CurrentStepId = boundary.Id,
+                    Status = WorkflowInstanceStatuses.Running,
+                    ClaimedBy = null,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+
+                await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(boundary), instance.Status, null, cancellationToken);
+                continue;
+            }
+
             var flow = SelectPassThroughFlow(definition, currentNode, variables);
             var nextNode = GetFlowNode(definition, flow.TargetRef);
-            var nextStatus = BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                ? WorkflowInstanceStatuses.Completed
-                : WorkflowInstanceStatuses.Running;
+            var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                ? WorkflowInstanceStatuses.Faulted
+                : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
+                    ? WorkflowInstanceStatuses.Completed
+                    : WorkflowInstanceStatuses.Running;
 
             var note = currentNode.Type switch
             {
@@ -536,6 +585,7 @@ public sealed class WorkflowEngineService(
                 var t when BpmnFlowNodeTypes.IsGateway(t) => "gateway",
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
+                var t when BpmnFlowNodeTypes.IsErrorBoundary(t) => "boundary",
                 _ => "automatic"
             };
 
@@ -645,14 +695,18 @@ public sealed class WorkflowEngineService(
                 ? "Start event"
                 : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                     ? "Service task"
-                    : BpmnFlowNodeTypes.IsScriptTask(node.Type) ? "Script task" : "Automatic task";
+                    : BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                        ? "Script task"
+                        : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                            ? "Error boundary event"
+                            : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 
         return outgoing[0];
     }
 
-    private async Task ExecuteServiceTaskAsync(
+    private async Task<TaskExecutionOutcome> ExecuteServiceTaskAsync(
         WorkflowInstanceRecord instance,
         FlowNodeModel node,
         WorkflowModel definition,
@@ -681,18 +735,18 @@ public sealed class WorkflowEngineService(
             await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, cancellationToken);
             await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            return;
+            return TaskExecutionOutcome.Ok();
         }
 
-        if (string.Equals(service.OnError, ServiceTaskErrorModes.Continue, StringComparison.Ordinal))
-        {
-            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
-            await unitOfWork.SaveChangesAsync(cancellationToken);
-            return;
-        }
+        // On failure the HTTP status (0 on transport error) is still written to
+        // the optional statusVariable so the error path can branch on it. If no
+        // errorBoundaryEvent is attached the loop throws (rollback + 400) and this
+        // write rolls back with the transaction; if a boundary catches, it persists.
+        await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
-        throw new WorkflowDomainException($"Service task #{node.Id} call to '{url}' failed ({reason}).");
+        return TaskExecutionOutcome.Fail($"Service task #{node.Id} call to '{url}' failed ({reason}).");
     }
 
     private async Task ApplyServiceOutputsAsync(
@@ -757,8 +811,10 @@ public sealed class WorkflowEngineService(
     //     validated against declared process variables and coerced identically.
     // All staged writes are then persisted (append-only; last write wins) and each
     // distinct target variable's NCalc validation rule is re-checked against the
-    // reloaded map, rejecting the transition just like a bad flow input.
-    private async Task ExecuteScriptTaskAsync(
+    // overlay (the in-memory writes layered over the stored variables + context),
+    // rejecting the transition just like a bad flow input. Validation runs before
+    // persistence so an errorBoundaryEvent catch leaves nothing half-written.
+    private async Task<TaskExecutionOutcome> ExecuteScriptTaskAsync(
         WorkflowInstanceRecord instance,
         FlowNodeModel node,
         WorkflowModel definition,
@@ -777,21 +833,21 @@ public sealed class WorkflowEngineService(
         {
             if (string.IsNullOrWhiteSpace(node.Script))
             {
-                return;
+                return TaskExecutionOutcome.Ok();
             }
 
             var context = new EngineScriptContext(overlay, byName, writes);
             var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
             if (!result.Success)
             {
-                throw new WorkflowDomainException($"Script task #{node.Id} failed: {result.Error}");
+                return TaskExecutionOutcome.Fail($"Script task #{node.Id} failed: {result.Error}");
             }
         }
         else
         {
             if (node.Assignments.Count == 0)
             {
-                return;
+                return TaskExecutionOutcome.Ok();
             }
 
             foreach (var assignment in node.Assignments)
@@ -816,7 +872,26 @@ public sealed class WorkflowEngineService(
 
         if (writes.Count == 0)
         {
-            return;
+            return TaskExecutionOutcome.Ok();
+        }
+
+        // Re-run each distinct target variable's validation rule against the
+        // overlay (the in-memory writes layered over the stored variables + context)
+        // before persisting, so an errorBoundaryEvent catch leaves nothing written.
+        // Functionally equivalent to the prior reload-then-validate path since the
+        // overlay already carries the coerced writes on top of the stored values.
+        foreach (var target in writes.Select(w => w.Target).Distinct())
+        {
+            if (string.IsNullOrWhiteSpace(target.Validation))
+            {
+                continue;
+            }
+
+            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, overlay))
+            {
+                return TaskExecutionOutcome.Fail(
+                    $"Variable '{target.Name}' failed validation: '{target.Validation}'.");
+            }
         }
 
         var performedBy = actor.User;
@@ -826,24 +901,7 @@ public sealed class WorkflowEngineService(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-
-        // Re-read the persisted values (including the just-written assignments) and
-        // re-run each distinct target variable's validation rule against the full context.
-        var reloaded = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var validated = WithContext(reloaded, actor, instance, definition, node);
-        foreach (var target in writes.Select(w => w.Target).Distinct())
-        {
-            if (string.IsNullOrWhiteSpace(target.Validation))
-            {
-                continue;
-            }
-
-            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, validated))
-            {
-                throw new WorkflowDomainException(
-                    $"Variable '{target.Name}' failed validation: '{target.Validation}'.");
-            }
-        }
+        return TaskExecutionOutcome.Ok();
     }
 
     // IScriptContext backing a scriptTask's JavaScript body: reads see the running
@@ -1320,6 +1378,17 @@ public sealed class WorkflowEngineService(
     private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.SourceRef == nodeId).ToList();
 
+    private static IReadOnlyList<SequenceFlowModel> IncomingFlows(WorkflowModel definition, int nodeId) =>
+        definition.SequenceFlows.Where(f => f.TargetRef == nodeId).ToList();
+
+    // Resolves the errorBoundaryEvent attached to a host activity, or null when
+    // none is attached. ValidateDefinition enforces at most one boundary per host;
+    // FirstOrDefault keeps this defensive against a hand-seeded definition that
+    // somehow violates that invariant (avoids an uncaught InvalidOperationException).
+    private static FlowNodeModel? FindErrorBoundary(WorkflowModel definition, int hostNodeId) =>
+        definition.FlowNodes.FirstOrDefault(n =>
+            BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == hostNodeId);
+
     private static void EnsureActionAllowedByClaim(
         FlowNodeModel node,
         WorkflowInstanceRecord instance,
@@ -1417,5 +1486,16 @@ public sealed class WorkflowEngineService(
         }
 
         return values.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
+    }
+
+    // Outcome of executing a serviceTask/scriptTask in the pass-through loop. On
+    // Success the loop advances down the node's single outgoing flow. On Failure
+    // the loop looks up an attached errorBoundaryEvent: if found the token routes
+    // out the boundary's error flow; otherwise the loop throws (rollback + 400),
+    // matching the historical no-boundary default (onError:fail).
+    private sealed record TaskExecutionOutcome(bool Success, string? Reason)
+    {
+        public static TaskExecutionOutcome Ok() => new(true, null);
+        public static TaskExecutionOutcome Fail(string reason) => new(false, reason);
     }
 }
