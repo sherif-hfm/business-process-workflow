@@ -320,11 +320,16 @@ Storage follows the hybrid design:
     started by a caller holding one of those roles; an empty `roles` list is
     open to anyone. `StartInstanceAsync` rejects unauthorized starts with a
     `WorkflowDomainException`.
-  Sequence-flow `roles` are still advisory (not enforced), but `userTask` flows
-  can also carry a `condition` (NCalc) and an `isDefault` flag: the engine filters
-  visible actions in `GetAvailableFlowsAsync` and re-checks the condition before
-  executing `TakeFlowAsync`. In addition, a `userTask` node may itself carry a
-  `condition` (NCalc) that acts as a **visibility gate**: when the condition is
+  Sequence-flow `roles` are enforced at runtime for `userTask` flows (against
+  JWT role claims, same semantics as node roles: empty list = open to anyone).
+  `GetAvailableFlowsAsync` hides a flow whose roles the actor doesn't hold, and
+  `TakeFlowAsync` rejects an attempt with a `WorkflowDomainException`. This
+  stacks on top of the task's own node roles and claim ownership. `userTask`
+  flows can also carry a `condition` (NCalc) and an `isDefault` flag: the engine
+  filters visible actions in `GetAvailableFlowsAsync` and re-checks the
+  condition before executing `TakeFlowAsync`. In addition, a `userTask` node
+  may itself carry a `condition` (NCalc) that acts as a **visibility gate**:
+  when the condition is
   false, the instance is hidden from the actor's inbox, no flows are returned by
   `GetAvailableFlowsAsync`, and `ClaimAsync`/`TakeFlowAsync` reject. The instance
   still rests on the node; the condition does not change routing.
@@ -643,7 +648,7 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "externalId": "FLOW_MGR_APPROVE", // optional free-form integration key (nullable)
   "sourceRef": 2,              // source node id
   "targetRef": 3,              // target node id
-  "roles": [ "Manager" ],      // userTask flow: advisory roles shown in the editor
+  "roles": [ "Manager" ],      // userTask flow: enforced at runtime (empty = anyone)
   "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
   "condition": "amount > 1000",// userTask / exclusiveGateway flow only (nullable)
   "isDefault": false           // userTask / exclusiveGateway default flow
@@ -936,10 +941,12 @@ when extending the model so new features stay close to BPMN terminology.
   ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
 - **Node roles are enforced** at runtime (against JWT role claims) for both
   `userTask` nodes and user-initiated `startEvent` nodes; an empty `roles` list
-  means open to anyone. Sequence-flow `roles` remain advisory, but `userTask`
-  flows can also carry a `condition` (NCalc) and `isDefault` flag that the engine
-  evaluates at both list and execution time. `requiresClaim` ownership is
-  enforced on top of the role check.
+  means open to anyone. Sequence-flow `roles` are enforced at runtime for
+  `userTask` flows (same semantics), stacking on top of the task's own node
+  roles and claim ownership; `userTask` flows can also carry a `condition`
+  (NCalc) and an `isDefault` flag that the engine evaluates at both list and
+  execution time. `requiresClaim` ownership is enforced on top of the role
+  check.
 
 ### If you add BPMN-aligned features later
 

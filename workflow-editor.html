@@ -2325,6 +2325,10 @@ function renderFlowInspector() {
   } else {
     if (isUserTaskFlow) {
       rolesField(flow, () => renderEdges());
+      const rolesHint = document.createElement("p");
+      rolesHint.className = "empty-note";
+      rolesHint.textContent = 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
+      inspector.appendChild(rolesHint);
       field("Condition", "text", flow.condition ?? "", v => {
         flow.condition = v.trim() ? v : null;
         if (flow.condition && flow.isDefault) flow.isDefault = false;

@@ -384,28 +384,48 @@ public sealed class WorkflowEngineService(
             w.Definition.FlowNodes.Any(n =>
                 BpmnFlowNodeTypes.IsUserTask(n.Type) && !string.IsNullOrWhiteSpace(n.Condition)));
 
-        List<InstanceListItem> visible;
-        if (hasNodeCondition)
-        {
-            var instanceIds = candidates.Select(c => c.Id).ToList();
-            var allVars = await runtime.ListVariablesForInstancesAsync(instanceIds, cancellationToken);
-            // instance_variables is append-only (one row per write), so the same
-            // variable name may appear multiple times per instance. Take the last
-            // write (records are ordered by InstanceId then Id ascending, so later
-            // entries overwrite earlier ones).
-            var varsByInstance = new Dictionary<long, Dictionary<string, JsonElement>>();
-            foreach (var v in allVars)
-            {
-                if (!varsByInstance.TryGetValue(v.InstanceId, out var dict))
-                {
-                    dict = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-                    varsByInstance[v.InstanceId] = dict;
-                }
+        // Flow roles on user-task outgoing flows also require per-row evaluation
+        // for an accurate CanAct (a user matching the node but none of its flows'
+        // roles can see the task but cannot act). When any candidate definition has
+        // such a flow, switch to the post-filter path like node conditions do.
+        var hasRoleRestrictedFlows = definitions.Values.Any(w =>
+            w.Definition.FlowNodes.Any(n => HasRoleRestrictedFlows(n, w.Definition)));
 
-                dict[v.VariableName] = v.Value;
+        List<InstanceListItem> visible;
+        Dictionary<long, bool>? canActByInstance = null;
+        if (hasNodeCondition || hasRoleRestrictedFlows)
+        {
+            // Variables/context are only needed for NCalc node-condition evaluation.
+            Dictionary<long, Dictionary<string, JsonElement>>? varsByInstance = null;
+            if (hasNodeCondition)
+            {
+                var instanceIds = candidates.Select(c => c.Id).ToList();
+                var allVars = await runtime.ListVariablesForInstancesAsync(instanceIds, cancellationToken);
+                // instance_variables is append-only (one row per write), so the same
+                // variable name may appear multiple times per instance. Take the last
+                // write (records are ordered by InstanceId then Id ascending, so later
+                // entries overwrite earlier ones).
+                varsByInstance = new Dictionary<long, Dictionary<string, JsonElement>>();
+                foreach (var v in allVars)
+                {
+                    if (!varsByInstance.TryGetValue(v.InstanceId, out var dict))
+                    {
+                        dict = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+                        varsByInstance[v.InstanceId] = dict;
+                    }
+
+                    dict[v.VariableName] = v.Value;
+                }
             }
 
             visible = new List<InstanceListItem>(candidates.Count);
+            // Only carry per-row overrides when flow roles are in play; null otherwise
+            // so ToInboxItem uses its historical node-only CanAct computation.
+            if (hasRoleRestrictedFlows)
+            {
+                canActByInstance = new Dictionary<long, bool>();
+            }
+
             foreach (var row in candidates)
             {
                 var definition = definitions[row.WorkflowDefinitionId];
@@ -420,32 +440,39 @@ public sealed class WorkflowEngineService(
 
                 // Fast path: an unconditioned userTask (or one in a definition without a
                 // condition) is always visible and needs no variable/context evaluation.
-                if (string.IsNullOrWhiteSpace(node.Condition))
+                if (!string.IsNullOrWhiteSpace(node.Condition))
                 {
-                    visible.Add(row);
-                    continue;
+                    var instance = new WorkflowInstanceRecord(
+                        row.Id,
+                        row.WorkflowDefinitionId,
+                        row.CurrentNodeId,
+                        row.Status,
+                        row.ClaimedBy,
+                        row.StartedBy,
+                        row.CreatedAt,
+                        row.UpdatedAt);
+
+                    varsByInstance!.TryGetValue(row.Id, out var stored);
+                    var ctx = WithContext(
+                        stored ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                        actor,
+                        instance,
+                        definition.Definition,
+                        node);
+                    if (!NodeVisible(node, ctx))
+                    {
+                        continue;
+                    }
                 }
 
-                var instance = new WorkflowInstanceRecord(
-                    row.Id,
-                    row.WorkflowDefinitionId,
-                    row.CurrentNodeId,
-                    row.Status,
-                    row.ClaimedBy,
-                    row.StartedBy,
-                    row.CreatedAt,
-                    row.UpdatedAt);
+                visible.Add(row);
 
-                varsByInstance.TryGetValue(row.Id, out var stored);
-                var ctx = WithContext(
-                    stored ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-                    actor,
-                    instance,
-                    definition.Definition,
-                    node);
-                if (NodeVisible(node, ctx))
+                // When flow roles are in play, record whether the actor can take at
+                // least one outgoing flow (empty/null roles = open). A task with no
+                // role-restricted flows leaves canAct to the historical node-only math.
+                if (canActByInstance is not null && HasRoleRestrictedFlows(node, definition.Definition))
                 {
-                    visible.Add(row);
+                    canActByInstance[row.Id] = CanTakeAnyFlow(node, definition.Definition, normalizedRoles);
                 }
             }
         }
@@ -460,11 +487,15 @@ public sealed class WorkflowEngineService(
             .Take(pageSize)
             .ToList();
 
-        var items = pageItems.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles)).ToList();
+        var items = pageItems.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles, canActByInstance)).ToList();
         return new PagedResult<InboxItemDto>(items, page, pageSize, totalCount);
     }
 
-    private static InboxItemDto ToInboxItem(InstanceListItem row, string normalizedUser, IReadOnlySet<string> normalizedRoles)
+    private static InboxItemDto ToInboxItem(
+        InstanceListItem row,
+        string normalizedUser,
+        IReadOnlySet<string> normalizedRoles,
+        Dictionary<long, bool>? canActByInstance = null)
     {
         var claimedByMe = row.ClaimedBy == normalizedUser;
         var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
@@ -473,6 +504,21 @@ public sealed class WorkflowEngineService(
 
         var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
         var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
+
+        // When the inbox post-filter ran for flow roles, refine the action flags:
+        // the actor must additionally be able to take at least one outgoing flow.
+        // A task with role-restricted flows that all exclude the actor is visible
+        // but not actionable (and shouldn't be claimed, since it could never
+        // advance). Tasks without role-restricted flows are absent from the map
+        // and keep the historical node-only results above.
+        if (canActByInstance is not null && canActByInstance.TryGetValue(row.Id, out var canTakeAny))
+        {
+            if (!canTakeAny)
+            {
+                canAct = false;
+                canClaim = false;
+            }
+        }
 
         return new InboxItemDto(
             row.Id,
@@ -513,7 +559,8 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
-        if (!RoleAllowed(node, NormalizeRoles(actor.Roles)))
+        var actorRoles = NormalizeRoles(actor.Roles);
+        if (!RoleAllowed(node, actorRoles))
         {
             return [];
         }
@@ -531,8 +578,9 @@ public sealed class WorkflowEngineService(
         }
 
         return OutgoingFlows(workflow.Definition, node.Id)
-            .Where(f => f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
-                        || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx))
+            .Where(f => RoleAllowed(f.Roles, actorRoles)
+                        && (f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
+                            || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx)))
             .ToList();
     }
 
@@ -645,7 +693,13 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
 
-        EnsureRoleAllowed(node, actor);
+        var actorRoles = NormalizeRoles(actor.Roles);
+        EnsureRoleAllowed(node, actorRoles, actor.User);
+        if (!RoleAllowed(flow.Roles, actorRoles))
+        {
+            throw new WorkflowDomainException(
+                $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
+        }
         EnsureActionAllowedByClaim(node, instance, performedBy);
 
         ValidateVariableValues(flow.Variables, variableValues);
@@ -1998,6 +2052,20 @@ public sealed class WorkflowEngineService(
     private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.SourceRef == nodeId).ToList();
 
+    // True when a userTask has any role-restricted outgoing flow (a flow with a
+    // non-empty roles list). Used to decide whether the inbox needs per-row flow
+    // role evaluation for an accurate CanAct. Mirrors the node-condition trigger.
+    private static bool HasRoleRestrictedFlows(FlowNodeModel node, WorkflowModel definition) =>
+        BpmnFlowNodeTypes.IsUserTask(node.Type)
+        && OutgoingFlows(definition, node.Id).Any(f => f.Roles is { Count: > 0 });
+
+    // True when the actor can take at least one outgoing flow of a userTask: a
+    // flow whose roles the actor holds (empty/null roles = open to anyone). The
+    // node's own roles and the claim are checked elsewhere; this only reflects
+    // flow-level role gating.
+    private static bool CanTakeAnyFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
+        OutgoingFlows(definition, node.Id).Any(f => RoleAllowed(f.Roles, actorRoles));
+
     private static IReadOnlyList<SequenceFlowModel> IncomingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.TargetRef == nodeId).ToList();
 
@@ -2039,16 +2107,25 @@ public sealed class WorkflowEngineService(
             .Select(r => r.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    // Node roles are advisory candidate roles; an empty set means the task is open to anyone.
-    private static bool RoleAllowed(FlowNodeModel node, IReadOnlySet<string> roles) =>
-        node.Roles.Count == 0 || node.Roles.Any(roles.Contains);
+    // Candidate roles; an empty (or null) set means open to anyone. Enforced for
+    // user-task nodes and for user-task sequence flows (the actor must hold at
+    // least one listed role, case-insensitive). Null-tolerant so a hand-authored
+    // definition with explicit "roles": null degrades to "open" instead of NRE.
+    private static bool RoleAllowed(IReadOnlyCollection<string>? allowedRoles, IReadOnlySet<string> actorRoles) =>
+        allowedRoles is null || allowedRoles.Count == 0 || allowedRoles.Any(actorRoles.Contains);
 
-    private static void EnsureRoleAllowed(FlowNodeModel node, ActorContext actor)
+    private static bool RoleAllowed(FlowNodeModel node, IReadOnlySet<string> roles) =>
+        RoleAllowed(node.Roles, roles);
+
+    private static void EnsureRoleAllowed(FlowNodeModel node, ActorContext actor) =>
+        EnsureRoleAllowed(node, NormalizeRoles(actor.Roles), actor.User);
+
+    private static void EnsureRoleAllowed(FlowNodeModel node, IReadOnlySet<string> actorRoles, string? actorUser)
     {
-        if (!RoleAllowed(node, NormalizeRoles(actor.Roles)))
+        if (!RoleAllowed(node, actorRoles))
         {
             throw new WorkflowDomainException(
-                $"'{NormalizeUser(actor.User)}' does not have a role permitted to act on this flow node.");
+                $"'{NormalizeUser(actorUser)}' does not have a role permitted to act on this flow node.");
         }
     }
 
