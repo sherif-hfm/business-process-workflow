@@ -538,16 +538,19 @@ public sealed class WorkflowEngineService(
         // Validate the required custom header: present, equal to the resolved
         // expected value, and (when set) satisfying the NCalc headerValidation rule
         // with the incoming value bound as `header` alongside instance vars/context.
+        // Header failures are domain errors (400), not auth failures (401): the
+        // caller has already authenticated via the client id/secret, so a header
+        // problem is a bad request rather than an identity failure.
         if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
             || incomingHeaderValue is null)
         {
-            throw new WorkflowUnauthorizedException(
+            throw new WorkflowDomainException(
                 $"Required header '{expectedHeaderName}' is missing.");
         }
 
         if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
         {
-            throw new WorkflowUnauthorizedException(
+            throw new WorkflowDomainException(
                 $"Header '{expectedHeaderName}' does not match the expected value.");
         }
 
@@ -563,7 +566,7 @@ public sealed class WorkflowEngineService(
             };
             if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
             {
-                throw new WorkflowUnauthorizedException(
+                throw new WorkflowDomainException(
                     $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
             }
         }

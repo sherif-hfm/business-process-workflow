@@ -114,9 +114,10 @@ public interface IWorkflowEngineService
     /// message payload into instance variables, and advancing down the single
     /// outgoing flow. Returns a slim ack (no definition/variables/history) - null
     /// when the instance does not exist (404); throws
-    /// <c>WorkflowUnauthorizedException</c> on a credential/header mismatch (401)
-    /// and <c>WorkflowDomainException</c> when the instance is not running or not
-    /// resting on a message catch node (400).
+    /// <c>WorkflowUnauthorizedException</c> on a client id/secret mismatch (401)
+    /// and <c>WorkflowDomainException</c> for a header problem (missing/mismatch/
+    /// validation failure) or when the instance is not running or not resting on a
+    /// message catch node (400).
     /// </summary>
     Task<MessageDeliveryAckDto?> DeliverMessageAsync(
         long id,

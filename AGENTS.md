@@ -246,10 +246,11 @@ Storage follows the hybrid design:
   `outputMappings` (`{variable, path}`) extract dotted-path values from the inbound
   JSON message body and write them to instance variables raw/uncoerced (mirrors a
   `serviceTask`'s `ApplyServiceOutputsAsync`; targets need not be declared). The
-  message endpoint is `AllowAnonymous` (it does not use the user JWT); a credential
-  or header mismatch throws `WorkflowUnauthorizedException` (401), while a
-  not-running / not-waiting instance throws `WorkflowDomainException` (400). The
-  resolved client id is recorded as `performedBy`/`sys.user` for attribution.
+  message endpoint is `AllowAnonymous` (it does not use the user JWT); a client
+  id/secret mismatch throws `WorkflowUnauthorizedException` (401), while a header
+  problem (missing/mismatch/validation failure) or a not-running / not-waiting
+  instance throws `WorkflowDomainException` (400). The resolved client id is
+  recorded as `performedBy`/`sys.user` for attribution.
   **Credential/header resolution context.** The `clientId`/`clientSecret`/
   `headerName`/`headerValue` templates are resolved against stored instance
   variables overlaid with `config.*`/`setting.*` and the `sys.*` entries an
@@ -314,8 +315,8 @@ what the cross-version `workflowKey` instance search matches.
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
   `AllowAnonymous` - auth is the node's client id/secret + required header, not
   the user JWT; body is the raw JSON message payload; returns a slim
-  `MessageDeliveryAckDto` (no definition/variables/history), 401 on a
-  credential/header mismatch, 400 when not running/waiting),
+  `MessageDeliveryAckDto` (no definition/variables/history), 401 on a client
+  id/secret mismatch, 400 on a header problem or when not running/waiting),
   `POST /{id}/cancel`. The two list endpoints return
   `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `page` defaults
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
@@ -730,11 +731,11 @@ incoming value bound as `header` against the full context (caller `sys.user`
 included, since the caller is by then authenticated); then applies
 `outputMappings` from the raw JSON message body (dotted-path
 `ServiceTaskTemplating.TryExtract`, written raw via `AddVariableAsync` - targets
-need not be declared, mirroring a `serviceTask`). A credential or header mismatch
-throws `WorkflowUnauthorizedException` (401); a not-running / not-waiting
-instance throws `WorkflowDomainException` (400). The resolved client id is
-recorded as `performedBy` / `sys.user` for attribution. The endpoint returns a
-slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
+need not be declared, mirroring a `serviceTask`). A client id/secret mismatch
+throws `WorkflowUnauthorizedException` (401); a header problem (missing/mismatch/
+validation failure) or a not-running / not-waiting instance throws
+`WorkflowDomainException` (400). The resolved client id is recorded as
+`performedBy` / `sys.user` for attribution. The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
 `CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than the full
 `InstanceDetailDto`, so a node-credentialed webhook caller cannot read the
 workflow definition (which may contain other nodes' literal secrets) or the

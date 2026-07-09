@@ -129,10 +129,11 @@ public static class WorkflowInstanceEndpoints
         // The body is the raw JSON message payload; outputMappings on the catch node
         // extract values from it. Returns a slim ack (no definition/variables/history)
         // so a node-credentialed webhook caller cannot read the full workflow model:
-        // 404 when the instance is missing, 401 on a credential/header mismatch
-        // (WorkflowUnauthorizedException), 400 when not running/waiting
-        // (WorkflowDomainException). A non-JSON content type is treated as no payload
-        // (rather than throwing a 500) so a misconfigured caller gets a clean response.
+        // 404 when the instance is missing, 401 on a client id/secret mismatch
+        // (WorkflowUnauthorizedException), 400 on a header problem (missing/mismatch/
+        // validation failure) or when not running/waiting (WorkflowDomainException).
+        // A non-JSON content type is treated as no payload (rather than throwing a 500)
+        // so a misconfigured caller gets a clean response.
         group.MapPost("/{id:long}/message", async (
             HttpContext context,
             long id,
