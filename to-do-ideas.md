@@ -2,7 +2,7 @@
 - find way to notify (api response) that action fail without the hole instance fail
 - async flow asyncAfter/asyncBefore
 - role for start event
-- show node id in side panel
+- show node id in side panel (done)
 - add endpoint to get latest values of variables  for instance
-- add message event that expose as endpoint can called from other system to make flow sequence continue
+- add message event that expose as endpoint can called from other system to make flow sequence continue (done)
 - inhance ui to be like modern dashboard

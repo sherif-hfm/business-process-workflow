@@ -1210,6 +1210,10 @@ function renderInspector() {
       Lanes: <b>${model.lanes.length}</b><br>
       Flow nodes: <b>${model.flowNodes.length}</b><br>
       Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
+    field("Workflow ID", "number", model.id ?? "", v => {
+      const parsed = parseInt(v, 10);
+      model.id = isNaN(parsed) ? null : parsed;
+    });
     addInitialSelector();
     addWorkflowRolesSection();
     addProcessVariablesSection();
@@ -1287,6 +1291,7 @@ function renderNodeInspector() {
   if (!node) { selected = null; return renderInspector(); }
   applyTypeInvariants(node);
   inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
+  field("Node ID", "text", node.id, null, true);
   field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
   field("External ID", "text", node.externalId ?? "", v => { node.externalId = v.trim() ? v : null; });
   if (isBoundaryEventType(node.type)) {
@@ -2361,13 +2366,17 @@ function renderFlowInspector() {
 }
 
 /* ---------- Inspector helpers ---------- */
-function field(label, type, value, onInput) {
+function field(label, type, value, onInput, disabled = false) {
   const f = document.createElement("div");
   f.className = "field";
   f.innerHTML = `<label>${label}</label>`;
   const input = document.createElement("input");
   input.type = type; input.value = value;
-  input.oninput = () => onInput(input.value);
+  if (disabled) {
+    input.disabled = true;
+  } else {
+    input.oninput = () => onInput(input.value);
+  }
   f.appendChild(input);
   inspector.appendChild(f);
 }
