@@ -753,6 +753,21 @@ function applyTypeInvariants(node) {
     }
   }
 }
+function applyFlowInvariants(flow) {
+  const source = getNode(flow.sourceRef);
+  const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
+  const gateway = source && isGatewayType(source.type);
+  if (!isUserTaskFlow) {
+    flow.roles = [];
+  }
+  if (gateway) {
+    flow.variables = [];
+  } else if (!isUserTaskFlow) {
+    flow.variables = [];
+    flow.condition = null;
+    flow.isDefault = false;
+  }
+}
 function appendUserTaskMarker(g) {
   const icon = el("g", { class: "user-marker", transform: "translate(8,8)" });
   icon.appendChild(el("circle", { cx: 5, cy: 4, r: 3 }));
@@ -911,6 +926,8 @@ function lineIntersectsNode(p1, p2, node) {
 /* ---------- Rendering ---------- */
 function render() {
   wfNameInput.value = model.name || "";
+  model.flowNodes.forEach(applyTypeInvariants);
+  model.sequenceFlows.forEach(applyFlowInvariants);
   renderLanes();
   renderEdges();
   renderNodes();
@@ -2297,8 +2314,8 @@ function renderFlowInspector() {
       })
     );
   } else {
-    rolesField(flow, () => renderEdges());
     if (isUserTaskFlow) {
+      rolesField(flow, () => renderEdges());
       field("Condition", "text", flow.condition ?? "", v => {
         flow.condition = v.trim() ? v : null;
         if (flow.condition && flow.isDefault) flow.isDefault = false;
@@ -2791,6 +2808,8 @@ function defaultFileName() {
 }
 
 async function save() {
+  model.flowNodes.forEach(applyTypeInvariants);
+  model.sequenceFlows.forEach(applyFlowInvariants);
   const data = JSON.stringify(model, null, 2);
 
   if (window.showSaveFilePicker) {
@@ -2985,6 +3004,7 @@ function loadFromObject(obj) {
     model = migrateLegacyToNew(obj);
   }
   model.flowNodes.forEach(applyTypeInvariants);
+  model.sequenceFlows.forEach(applyFlowInvariants);
   clearSelection();
 }
 
