@@ -483,7 +483,7 @@ function normalizeService(service) {
     timeoutSeconds: Number.isFinite(+service.timeoutSeconds) && +service.timeoutSeconds > 0 ? Math.round(+service.timeoutSeconds) : base.timeoutSeconds,
     statusVariable: typeof service.statusVariable === "string" ? service.statusVariable : "",
     outputMappings: Array.isArray(service.outputMappings)
-      ? service.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "" }))
+      ? service.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "", required: !!(m && m.required) }))
       : []
   };
 }
@@ -509,7 +509,7 @@ function normalizeMessage(message) {
     headerValue: typeof message.headerValue === "string" ? message.headerValue : "",
     headerValidation: typeof message.headerValidation === "string" ? message.headerValidation : "",
     outputMappings: Array.isArray(message.outputMappings)
-      ? message.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "" }))
+      ? message.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "", required: !!(m && m.required) }))
       : []
   };
 }
@@ -1571,6 +1571,8 @@ function renderServiceSection(node) {
     pathField.appendChild(pathInput);
     box.appendChild(pathField);
 
+    box.appendChild(variableCheckbox("Required (fail the task if this path is missing)", !!mapping.required, checked => { mapping.required = checked; }));
+
     const del = document.createElement("button");
     del.textContent = "Delete mapping";
     del.className = "danger";
@@ -1584,7 +1586,7 @@ function renderServiceSection(node) {
   const addMappingBtn = document.createElement("button");
   addMappingBtn.textContent = "+ Add mapping";
   addMappingBtn.style.marginTop = "8px";
-  addMappingBtn.onclick = () => { service.outputMappings.push({ variable: "", path: "" }); renderInspector(); };
+  addMappingBtn.onclick = () => { service.outputMappings.push({ variable: "", path: "", required: false }); renderInspector(); };
   inspector.appendChild(addMappingBtn);
 }
 
@@ -1649,6 +1651,8 @@ function renderMessageSection(node) {
     pathField.appendChild(pathInput);
     box.appendChild(pathField);
 
+    box.appendChild(variableCheckbox("Required (reject the delivery with 400 if this path is missing)", !!mapping.required, checked => { mapping.required = checked; }));
+
     const del = document.createElement("button");
     del.textContent = "Delete mapping";
     del.className = "danger";
@@ -1662,7 +1666,7 @@ function renderMessageSection(node) {
   const addMappingBtn = document.createElement("button");
   addMappingBtn.textContent = "+ Add mapping";
   addMappingBtn.style.marginTop = "8px";
-  addMappingBtn.onclick = () => { message.outputMappings.push({ variable: "", path: "" }); renderInspector(); };
+  addMappingBtn.onclick = () => { message.outputMappings.push({ variable: "", path: "", required: false }); renderInspector(); };
   inspector.appendChild(addMappingBtn);
 }
 

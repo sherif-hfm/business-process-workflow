@@ -236,6 +236,13 @@ public sealed class ServiceOutputMappingModel
 
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
+
+    // When true, the engine treats a missing/unresolvable path as a failure:
+    // for a serviceTask the call is failed (routing out an attached
+    // errorBoundaryEvent or, with no boundary, a 400); for a message catch the
+    // delivery is rejected with a 400 before any variables are written.
+    [JsonPropertyName("required")]
+    public bool Required { get; set; }
 }
 
 // Delivery configuration for an intermediateMessageCatchEvent. All scalar

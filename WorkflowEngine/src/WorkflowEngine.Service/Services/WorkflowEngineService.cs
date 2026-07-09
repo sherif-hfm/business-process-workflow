@@ -689,6 +689,9 @@ public sealed class WorkflowEngineService(
     // node's outputMappings, identical to ApplyServiceOutputsAsync for service
     // tasks: dotted-path extraction (numeric segments index arrays), values
     // written raw via AddVariableAsync (no coercion; targets need not be declared).
+    // A `required` mapping whose path cannot be resolved throws a
+    // WorkflowDomainException (400) before any variables are written, so a partial
+    // delivery does not persist. Non-required misses are silently skipped.
     private async Task ApplyMessageOutputsAsync(
         long instanceId,
         int nodeId,
@@ -697,8 +700,20 @@ public sealed class WorkflowEngineService(
         JsonElement? payload,
         CancellationToken cancellationToken)
     {
-        if (message.OutputMappings.Count == 0 || payload is not { } body || body.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        if (message.OutputMappings.Count == 0)
         {
+            return;
+        }
+
+        if (payload is not { } body || body.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            var firstRequired = message.OutputMappings.FirstOrDefault(m => m.Required);
+            if (firstRequired is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Message output mapping for '{firstRequired.Variable}' failed: no message body was provided.");
+            }
+
             return;
         }
 
@@ -709,7 +724,13 @@ public sealed class WorkflowEngineService(
         }
         catch (JsonException)
         {
-            // Non-JSON message body: nothing to map.
+            var firstRequired = message.OutputMappings.FirstOrDefault(m => m.Required);
+            if (firstRequired is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Message output mapping for '{firstRequired.Variable}' (path '{firstRequired.Path}') failed: message body is not valid JSON.");
+            }
+
             return;
         }
 
@@ -720,6 +741,11 @@ public sealed class WorkflowEngineService(
                 if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
                 {
                     await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
+                }
+                else if (mapping.Required)
+                {
+                    throw new WorkflowDomainException(
+                        $"Message output mapping for '{mapping.Variable}' failed: path '{mapping.Path}' was not found in the message body.");
                 }
             }
         }
@@ -1022,7 +1048,19 @@ public sealed class WorkflowEngineService(
 
         if (result.IsSuccess)
         {
-            await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, cancellationToken);
+            var mappingFailure = await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, cancellationToken);
+            if (mappingFailure is not null)
+            {
+                // A required output mapping could not be resolved from the 2xx
+                // response body. Treat it like a service failure: write the status
+                // variable (so an error path can branch on it), then fail the task
+                // so the pass-through loop routes out an attached errorBoundaryEvent
+                // (or, with no boundary, rolls back and returns 400).
+                await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+                return TaskExecutionOutcome.Fail(mappingFailure);
+            }
+
             await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return TaskExecutionOutcome.Ok();
@@ -1039,7 +1077,13 @@ public sealed class WorkflowEngineService(
         return TaskExecutionOutcome.Fail($"Service task #{node.Id} call to '{url}' failed ({reason}).");
     }
 
-    private async Task ApplyServiceOutputsAsync(
+    // Applies a service task's output mappings to the response body. Returns null
+    // on success, or a human-readable failure reason when a `required` mapping's
+    // path cannot be resolved from the body (the caller treats that as a task
+    // failure so an attached errorBoundaryEvent can route the error path, or the
+    // transition rolls back with a 400). Non-required misses are silently skipped,
+    // matching the historical behavior.
+    private async Task<string?> ApplyServiceOutputsAsync(
         long instanceId,
         int nodeId,
         string? setBy,
@@ -1049,7 +1093,7 @@ public sealed class WorkflowEngineService(
     {
         if (service.OutputMappings.Count == 0 || string.IsNullOrWhiteSpace(result.Body))
         {
-            return;
+            return null;
         }
 
         JsonDocument document;
@@ -1059,8 +1103,11 @@ public sealed class WorkflowEngineService(
         }
         catch (JsonException)
         {
-            // Non-JSON response body: nothing to map.
-            return;
+            // Non-JSON response body: any required mapping fails; optional ones are skipped.
+            var firstRequired = service.OutputMappings.FirstOrDefault(m => m.Required);
+            return firstRequired is null
+                ? null
+                : $"Service task output mapping for '{firstRequired.Variable}' (path '{firstRequired.Path}') failed: response body is not valid JSON.";
         }
 
         using (document)
@@ -1071,8 +1118,14 @@ public sealed class WorkflowEngineService(
                 {
                     await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
                 }
+                else if (mapping.Required)
+                {
+                    return $"Service task output mapping for '{mapping.Variable}' failed: path '{mapping.Path}' was not found in the response.";
+                }
             }
         }
+
+        return null;
     }
 
     private async Task WriteStatusVariableAsync(

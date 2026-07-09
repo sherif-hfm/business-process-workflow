@@ -65,7 +65,8 @@
         "outputMappings": [
           {
             "variable": "user-name",
-            "path": "user-name"
+            "path": "user-name",
+            "required": true
           }
         ]
       }

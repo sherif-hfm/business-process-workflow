@@ -243,9 +243,11 @@ Storage follows the hybrid design:
   context) and must be truthy. All credential/header fields are `${var}`-templatable
   (`ServiceTaskTemplating.SubstituteScalar`), so a secret can be sourced from
   `${config.*}` / `${setting.*}` to stay out of the versioned definition JSON.
-  `outputMappings` (`{variable, path}`) extract dotted-path values from the inbound
+  `outputMappings` (`{variable, path, required}`) extract dotted-path values from the inbound
   JSON message body and write them to instance variables raw/uncoerced (mirrors a
-  `serviceTask`'s `ApplyServiceOutputsAsync`; targets need not be declared). The
+  `serviceTask`'s `ApplyServiceOutputsAsync`; targets need not be declared); a
+  `required` mapping whose path is unresolvable rejects the delivery with a 400
+  before any variables are written. The
   message endpoint is `AllowAnonymous` (it does not use the user JWT); a client
   id/secret mismatch throws `WorkflowUnauthorizedException` (401), while a header
   problem (missing/mismatch/validation failure) or a not-running / not-waiting
@@ -676,11 +678,20 @@ The REST configuration on a `serviceTask` flow node (`flowNode.service`).
   "timeoutSeconds": 30,        // per-call timeout (no retries)
   "statusVariable": "creditStatus", // optional; receives the HTTP status (0 on transport error)
   "outputMappings": [          // response field -> instance variable (applied on 2xx)
-    { "variable": "creditScore", "path": "score" },
+    { "variable": "creditScore", "path": "score", "required": true },
     { "variable": "approved", "path": "decision.approved" }
   ]
 }
 ```
+
+Each `outputMappings` entry is `{ variable, path, required }`. When `required` is
+true and the `path` cannot be resolved from the 2xx response body (or the body is
+not valid JSON), the task is failed: the engine routes out an attached
+`errorBoundaryEvent`'s error flow if present, otherwise the transition fails with
+a `WorkflowDomainException` (rollback + 400) - the same path as a non-2xx/timeout
+failure. A non-required miss is silently skipped (the historical behavior). The
+`statusVariable` is still written before the failure so an error path can branch
+on the HTTP status.
 
 A `serviceTask` may also have an attached `errorBoundaryEvent` (see Error
 events); on a non-2xx/timeout/network failure the token routes out the
@@ -711,11 +722,18 @@ versioned definition JSON.
   "headerValue": "${config.webhookToken}", // required custom header value; ${var} templatable
   "headerValidation": "Len(header) >= 16", // optional NCalc; incoming value bound as `header`; must be truthy
   "outputMappings": [                  // extract from the inbound JSON message body (raw/uncoerced)
-    { "variable": "approved", "path": "decision.approved" },
+    { "variable": "approved", "path": "decision.approved", "required": true },
     { "variable": "reference", "path": "ref" }
   ]
 }
 ```
+
+Each `outputMappings` entry is `{ variable, path, required }` (same shape as a
+`serviceTask`'s response mappings). When `required` is true and the `path`
+cannot be resolved from the message body (or the body is missing/not valid
+JSON), the delivery is rejected with a `WorkflowDomainException` (400) before
+any variables are written, so a partial delivery does not persist. A
+non-required miss is silently skipped.
 
 At delivery (`POST /api/instances/{id}/message`, `AllowAnonymous`) the engine:
 resolves the templated `clientId`/`clientSecret`/`headerName`/`headerValue`
@@ -731,11 +749,13 @@ incoming value bound as `header` against the full context (caller `sys.user`
 included, since the caller is by then authenticated); then applies
 `outputMappings` from the raw JSON message body (dotted-path
 `ServiceTaskTemplating.TryExtract`, written raw via `AddVariableAsync` - targets
-need not be declared, mirroring a `serviceTask`). A client id/secret mismatch
-throws `WorkflowUnauthorizedException` (401); a header problem (missing/mismatch/
-validation failure) or a not-running / not-waiting instance throws
-`WorkflowDomainException` (400). The resolved client id is recorded as
-`performedBy` / `sys.user` for attribution. The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
+need not be declared, mirroring a `serviceTask`); a `required` mapping whose path
+is unresolvable (or a missing/invalid JSON body) rejects the delivery with a
+`WorkflowDomainException` (400) before any variables are written. A client
+id/secret mismatch throws `WorkflowUnauthorizedException` (401); a header problem
+(missing/mismatch/validation failure), a required-mapping failure, or a
+not-running / not-waiting instance throws `WorkflowDomainException` (400). The
+resolved client id is recorded as `performedBy` / `sys.user` for attribution. The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
 `CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than the full
 `InstanceDetailDto`, so a node-credentialed webhook caller cannot read the
 workflow definition (which may contain other nodes' literal secrets) or the
