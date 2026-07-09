@@ -1,8 +1,12 @@
+- add External ID (string) to workflow and start instance using it 
+- add endpoint line /api/instances/{id}/flows/{flowId} but using flow External ID
+- manage versions of workflow and change default version and published versions
 - add endpoint to get latest values of variables  for instance
+- add endpoint to get history of instance
 - async flow asyncAfter/asyncBefore
 - inhance ui to be like modern dashboard
 - flow /api/instances/{id}/flows/{flowId} endpoint return a lot of data may need enhancement
-
+- /api/instances/{id} endpoint return a lot of data may need enhancement
 
 - no need to role in flow after Error boundary,start event,meesage,script task,service task (done)
 - find way to notify (api response) that action fail without the hole instance fail (keep status 200 and can set error on variable and the app who call the api should check the variables return in flow endpoint reponse , or check the current node return in flow endpoint reponse ) (done)
