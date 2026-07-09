@@ -231,7 +231,7 @@ public static class WorkflowModelMigrator
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;
-            node.Roles = [];
+            node.Roles ??= [];
             node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))

@@ -50,6 +50,8 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException($"Flow node #{resolvedStartEventId} is not a start event.");
         }
 
+        EnsureRoleAllowed(startEvent, actor);
+
         ValidateVariableValues(startEvent.Variables, variableValues);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);

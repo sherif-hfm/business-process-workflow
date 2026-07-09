@@ -686,7 +686,7 @@ function applyTypeInvariants(node) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
-    node.roles = [];
+    node.roles = normalizeRoles(node.roles);
     node.variables = node.variables || [];
     node.condition = null;
     delete node.message;
@@ -1002,6 +1002,14 @@ function renderNodes() {
       const nameText = el("text", { x: r, y: EVENT_D + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
       nameText.textContent = node.name;
       g.appendChild(nameText);
+      if (isStartEventType(node.type)) {
+        const roles = roleSummary(node.roles);
+        if (roles) {
+          const rolesText = el("text", { x: r, y: EVENT_D + 40, class: "roles", "text-anchor": "middle" });
+          rolesText.textContent = roles;
+          g.appendChild(rolesText);
+        }
+      }
     } else if (isGatewayType(node.type)) {
       const d = GATEWAY_D, h = d / 2;
       g.appendChild(el("polygon", { class: "body", points: `${h},0 ${d},${h} ${h},${d} 0,${h}` }));
@@ -1433,6 +1441,7 @@ function renderNodeInspector() {
   }
 
   if (isStartEventType(node.type)) {
+    rolesField(node, () => { renderNodes(); renderEdges(); });
     renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
   }
 

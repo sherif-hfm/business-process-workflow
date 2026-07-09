@@ -12,8 +12,10 @@
       "type": "startEvent",
       "laneId": null,
       "x": 100,
-      "y": 120,
-      "roles": [],
+      "y": 119,
+      "roles": [
+        "admin"
+      ],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
@@ -68,7 +70,8 @@
             "path": "user-name",
             "required": true
           }
-        ]
+        ],
+        "idempotencyVariable": ""
       }
     },
     {

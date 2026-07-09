@@ -309,12 +309,17 @@ Storage follows the hybrid design:
   `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
   definition/variables/history, since the endpoint is `AllowAnonymous`). No DB
   migration is needed (config is JSONB; the type fits the 32-char `CurrentNodeType`).
-- **Node roles are enforced** at runtime for `userTask` nodes. The caller's
-  identity and roles come from a validated JWT (name + role claims), not from
-  request fields. A `userTask` with a non-empty `roles` list can only be
-  claimed/acted on by a caller holding one of those roles; an empty `roles` list
-  is open to anyone. `GetAvailableFlowsAsync` hides flows when the role does not
-  match; `ClaimAsync`/`TakeFlowAsync` reject with a `WorkflowDomainException`.
+- **Node roles are enforced** at runtime for `userTask` and user-initiated
+  `startEvent` nodes. The caller's identity and roles come from a validated JWT
+  (name + role claims), not from request fields.
+  - A `userTask` with a non-empty `roles` list can only be claimed/acted on by a
+    caller holding one of those roles; an empty `roles` list is open to anyone.
+    `GetAvailableFlowsAsync` hides flows when the role does not match;
+    `ClaimAsync`/`TakeFlowAsync` reject with a `WorkflowDomainException`.
+  - A user-initiated `startEvent` with a non-empty `roles` list can only be
+    started by a caller holding one of those roles; an empty `roles` list is
+    open to anyone. `StartInstanceAsync` rejects unauthorized starts with a
+    `WorkflowDomainException`.
   Sequence-flow `roles` are still advisory (not enforced), but `userTask` flows
   can also carry a `condition` (NCalc) and an `isDefault` flag: the engine filters
   visible actions in `GetAvailableFlowsAsync` and re-checks the condition before
@@ -494,7 +499,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent | messageStartEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
-  "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
+  "roles": [ "Requester" ],    // free-text candidate roles (userTask / user-initiated startEvent)
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
@@ -884,7 +889,7 @@ when extending the model so new features stay close to BPMN terminology.
 | This project | BPMN 2.0 concept | Notes / simplifications |
 | --- | --- | --- |
 | `flowNode` | Flow node | Umbrella term for events, tasks, and gateways. |
-| `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). |
+| `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). `roles` are enforced at runtime against JWT role claims (empty = open to anyone). |
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
@@ -929,11 +934,12 @@ when extending the model so new features stay close to BPMN terminology.
   out of scope.
 - **Integer ids, JSON (not BPMN XML).** Flow nodes and sequence flows use integer
   ids so runtime tables stay integer-keyed; the definition is JSON, not BPMN XML.
-- **Node roles are enforced** at runtime (against JWT role claims); an empty
-  `roles` list means open to anyone. Sequence-flow `roles` remain advisory, but
-  `userTask` flows can also carry a `condition` (NCalc) and `isDefault` flag that
-  the engine evaluates at both list and execution time. `requiresClaim` ownership
-  is enforced on top of the role check.
+- **Node roles are enforced** at runtime (against JWT role claims) for both
+  `userTask` nodes and user-initiated `startEvent` nodes; an empty `roles` list
+  means open to anyone. Sequence-flow `roles` remain advisory, but `userTask`
+  flows can also carry a `condition` (NCalc) and `isDefault` flag that the engine
+  evaluates at both list and execution time. `requiresClaim` ownership is
+  enforced on top of the role check.
 
 ### If you add BPMN-aligned features later
 
