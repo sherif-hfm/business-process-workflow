@@ -65,6 +65,24 @@ public interface IWorkflowEngineService
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Starts a new instance by delivering a message to a <c>messageStartEvent</c>,
+    /// authenticating the caller against the node's expected client id/secret +
+    /// required custom header, mapping the message payload into the node's start
+    /// variables via <c>outputMappings</c>, and (when <c>idempotencyVariable</c> is
+    /// set) deduping a retried webhook by searching for an existing instance of
+    /// the workflowKey already carrying that key value. Returns a slim ack (no
+    /// definition/variables/history). Throws <c>WorkflowUnauthorizedException</c>
+    /// (401) on a client id/secret mismatch and <c>WorkflowDomainException</c>
+    /// (400) for a header problem, a required-mapping failure, no published
+    /// version, or an ambiguous/absent start event.
+    /// </summary>
+    Task<MessageStartAckDto> StartByMessageAsync(
+        int workflowKey,
+        string? startEventExternalId,
+        IncomingMessage message,
+        CancellationToken cancellationToken);
+
     Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
         long? instanceId,

@@ -75,6 +75,20 @@ public sealed record MessageDeliveryAckDto(
     string Status,
     DateTimeOffset UpdatedAt);
 
+// Slim acknowledgment returned by POST /api/workflows/{workflowKey}/message-start.
+// Deliberately excludes the workflow definition, instance variables, and history
+// (the message-start endpoint is AllowAnonymous; auth = the node's client id/secret
+// + required header, not a user JWT), so a webhook caller cannot read the full
+// workflow model or the instance's stored data. The caller gets the new (or, on an
+// idempotent replay, the existing) instance id plus where it now rests.
+public sealed record MessageStartAckDto(
+    long InstanceId,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    string? CurrentNodeExternalId,
+    string Status,
+    DateTimeOffset CreatedAt);
+
 public sealed record InstanceVariableDto(
     long Id,
     string VariableName,

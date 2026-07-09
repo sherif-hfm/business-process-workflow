@@ -276,6 +276,18 @@ public sealed class MessageCatchModel
 
     [JsonPropertyName("outputMappings")]
     public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
+
+    // messageStartEvent only (ignored by an intermediateMessageCatchEvent): names a
+    // declared start variable on the node whose value is used as the idempotency
+    // key. The variable must be mapped by outputMappings; before creating an
+    // instance the engine searches for an existing instance of this workflowKey
+    // already carrying that key value and, if found, returns that instance's ack
+    // instead of creating a duplicate (so a retried webhook is a no-op). The
+    // search is guarded by a transaction-scoped advisory lock so concurrent retries
+    // serialize. null disables idempotency (a retry creates a duplicate).
+    [JsonPropertyName("idempotencyVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? IdempotencyVariable { get; set; }
 }
 
 public static class ClaimModes
@@ -428,6 +440,14 @@ public static class BpmnFlowNodeTypes
     // message is delivered via POST /api/instances/{id}/message, then advances
     // down its single outgoing flow. Async integration / webhook / callback step.
     public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
+    // Entry event started by an external system via
+    // POST /api/workflows/{workflowKey}/message-start. Carries start variables
+    // (like a startEvent) and a message config (credentials + required header +
+    // outputMappings + optional idempotencyVariable). IsStart is intentionally
+    // false: the user POST /api/instances path rejects it, so a message-start
+    // event is system-only. Pass-through: the engine auto-advances off it after
+    // creating the instance (history note "messageStart").
+    public const string MessageStartEvent = "messageStartEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -462,15 +482,25 @@ public static class BpmnFlowNodeTypes
     public static bool IsMessageCatch(string type) =>
         string.Equals(type, IntermediateMessageCatchEvent, StringComparison.Ordinal);
 
+    public static bool IsMessageStart(string type) =>
+        string.Equals(type, MessageStartEvent, StringComparison.Ordinal);
+
+    // Either kind of entry event: a user-facing startEvent or a system-only
+    // messageStartEvent. A workflow must have at least one entry event.
+    public static bool IsEntry(string type) =>
+        IsStart(type) || IsMessageStart(type);
+
     // A boundary event auto-advances down its single outgoing error flow once
     // the token is routed onto it, so it behaves as a pass-through node.
     // A message catch event is intentionally NOT pass-through: it rests until a
     // message is delivered (ResolvePassThroughAsync stops on it).
+    // A message start event IS pass-through: the engine creates the instance on
+    // it then auto-advances, exactly like a plain startEvent.
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type);
+        IsStart(type) || IsMessageStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent or IntermediateMessageCatchEvent;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent or IntermediateMessageCatchEvent or MessageStartEvent;
 }
 
 public static class WorkflowVariableTypes

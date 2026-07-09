@@ -21,6 +21,21 @@ public static class WorkflowModelMigrator
         {
             ApplyNodeInvariants(node);
         }
+
+        // After a type change (e.g. startEvent -> messageStartEvent) the
+        // initialEventId may still reference a node that is no longer a valid
+        // user start event. Fall back to the first remaining startEvent, or
+        // null when the workflow is message-started only.
+        if (model.InitialEventId is not null)
+        {
+            var initialNode = model.FlowNodes.SingleOrDefault(n => n.Id == model.InitialEventId);
+            if (initialNode is null || !BpmnFlowNodeTypes.IsStart(initialNode.Type))
+            {
+                model.InitialEventId = model.FlowNodes
+                    .FirstOrDefault(n => BpmnFlowNodeTypes.IsStart(n.Type))
+                    ?.Id;
+            }
+        }
     }
 
     private static void ConvertLegacy(WorkflowModel model)
@@ -244,6 +259,24 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
+            node.Service = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.Condition = null;
+            node.Message ??= new MessageCatchModel();
+        }
+        else if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
+        {
+            // A message start event is an entry point started by an external
+            // system. It carries start variables (like a startEvent) and the
+            // delivery configuration on node.Message (like a message catch), and
+            // nothing else. Pass-through: the engine auto-advances off it after
+            // creating the instance.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables ??= [];
             node.Service = null;
             node.Assignments = [];
             node.Script = null;

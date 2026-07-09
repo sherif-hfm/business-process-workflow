@@ -74,15 +74,29 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException("Workflow must contain at least one flow node.");
         }
 
-        if (definition.InitialEventId is null || definition.FlowNodes.All(n => n.Id != definition.InitialEventId))
+        // initialEventId is optional: a workflow whose only entry is a
+        // messageStartEvent (system-started) has no user-facing default start.
+        // When set it must reference an existing node that is a user startEvent
+        // (a messageStartEvent is a valid entry but cannot be the default).
+        if (definition.InitialEventId is not null)
         {
-            throw new WorkflowDomainException("Workflow initialEventId must reference an existing flow node.");
+            if (definition.FlowNodes.All(n => n.Id != definition.InitialEventId))
+            {
+                throw new WorkflowDomainException("Workflow initialEventId must reference an existing flow node.");
+            }
+
+            var initialNode = definition.FlowNodes.Single(n => n.Id == definition.InitialEventId);
+            if (!BpmnFlowNodeTypes.IsStart(initialNode.Type))
+            {
+                throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
+            }
         }
 
-        var initialNode = definition.FlowNodes.Single(n => n.Id == definition.InitialEventId);
-        if (!BpmnFlowNodeTypes.IsStart(initialNode.Type))
+        // A workflow must have at least one entry event (a user startEvent started
+        // via POST /api/instances, or a messageStartEvent started via the webhook).
+        if (!definition.FlowNodes.Any(n => BpmnFlowNodeTypes.IsEntry(n.Type)))
         {
-            throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
+            throw new WorkflowDomainException("Workflow must have at least one entry event (startEvent or messageStartEvent).");
         }
 
         ValidateProcessVariables(definition.Variables);
@@ -138,7 +152,8 @@ public sealed class WorkflowDefinitionService(
                     || BpmnFlowNodeTypes.IsServiceTask(node.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(node.Type)
                     || BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
-                    || BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+                    || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsMessageStart(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
@@ -151,7 +166,9 @@ public sealed class WorkflowDefinitionService(
                                 ? "Error boundary event"
                                 : BpmnFlowNodeTypes.IsMessageCatch(node.Type)
                                     ? "Message catch event"
-                                    : "Automatic task";
+                                    : BpmnFlowNodeTypes.IsMessageStart(node.Type)
+                                        ? "Message start event"
+                                        : "Automatic task";
                 throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
             }
 
@@ -173,6 +190,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
             {
                 ValidateMessageCatch(node);
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            {
+                ValidateMessageStart(node);
             }
 
             if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
@@ -300,36 +322,39 @@ public sealed class WorkflowDefinitionService(
     // evaluated with the incoming header value bound as `header`. outputMappings
     // extract dotted-path values from the inbound JSON body. All scalar fields
     // are ${var}-templatable (only presence is checked at author time).
-    private static void ValidateMessageCatch(FlowNodeModel node)
+    // Shared validation for the message config on an intermediateMessageCatchEvent
+    // and a messageStartEvent (creds/header/outputMappings). `kind` labels the
+    // node in messages (e.g. "Message catch event", "Message start event").
+    private static void ValidateMessageConfig(FlowNodeModel node, string kind)
     {
         var message = node.Message
-            ?? throw new WorkflowDomainException($"Message catch event #{node.Id} must have a message configuration.");
+            ?? throw new WorkflowDomainException($"{kind} #{node.Id} must have a message configuration.");
 
         if (string.IsNullOrWhiteSpace(message.ClientId))
         {
-            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a client id.");
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a client id.");
         }
 
         if (string.IsNullOrWhiteSpace(message.ClientSecret))
         {
-            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a client secret.");
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a client secret.");
         }
 
         if (string.IsNullOrWhiteSpace(message.HeaderName))
         {
-            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a header name.");
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a header name.");
         }
 
         if (string.IsNullOrWhiteSpace(message.HeaderValue))
         {
-            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a header value.");
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a header value.");
         }
 
         if (!string.IsNullOrWhiteSpace(message.HeaderValidation)
             && !SequenceFlowConditionEvaluator.IsValid(message.HeaderValidation))
         {
             throw new WorkflowDomainException(
-                $"Message catch event #{node.Id} has an invalid header validation expression: '{message.HeaderValidation}'.");
+                $"{kind} #{node.Id} has an invalid header validation expression: '{message.HeaderValidation}'.");
         }
 
         foreach (var mapping in message.OutputMappings)
@@ -337,13 +362,49 @@ public sealed class WorkflowDefinitionService(
             if (string.IsNullOrWhiteSpace(mapping.Variable))
             {
                 throw new WorkflowDomainException(
-                    $"Message catch event #{node.Id} has an output mapping with no variable name.");
+                    $"{kind} #{node.Id} has an output mapping with no variable name.");
             }
 
             if (string.IsNullOrWhiteSpace(mapping.Path))
             {
                 throw new WorkflowDomainException(
-                    $"Message catch event #{node.Id} output mapping for '{mapping.Variable}' must have a path.");
+                    $"{kind} #{node.Id} output mapping for '{mapping.Variable}' must have a path.");
+            }
+        }
+    }
+
+    private static void ValidateMessageCatch(FlowNodeModel node)
+        => ValidateMessageConfig(node, "Message catch event");
+
+    // A messageStartEvent carries start variables + a message config. The config
+    // is validated like a catch event; additionally, when idempotencyVariable is
+    // set it must name one of the node's declared start variables (the engine
+    // stores the mapped value as an instance variable and dedupes a retried
+    // webhook by searching for an existing instance carrying that key value).
+    private static void ValidateMessageStart(FlowNodeModel node)
+    {
+        ValidateMessageConfig(node, "Message start event");
+
+        if (!string.IsNullOrWhiteSpace(node.Message!.IdempotencyVariable))
+        {
+            var idempotencyVariable = node.Message!.IdempotencyVariable!;
+            var variable = node.Variables.SingleOrDefault(v =>
+                string.Equals(v.Name, idempotencyVariable, StringComparison.Ordinal));
+            if (variable is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' is not a declared start variable on the node.");
+            }
+
+            // The dedupe search looks up the variable by exact string match
+            // (lower(ValueJson #>> '{}') = lower(@value)); a non-string dataType
+            // (e.g. date/number) can store a different textual representation than
+            // the raw mapped value, causing a missed dedupe on retry. Restrict to
+            // string to keep the search predictably exact.
+            if (!string.Equals(variable.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' must have dataType 'string'.");
             }
         }
     }

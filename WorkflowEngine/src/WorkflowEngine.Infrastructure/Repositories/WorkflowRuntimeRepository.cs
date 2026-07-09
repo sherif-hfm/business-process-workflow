@@ -505,6 +505,19 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
+    public async Task AcquireStartLockAsync(int workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken)
+    {
+        // pg_advisory_xact_lock is held until the current transaction commits or
+        // rolls back, serializing concurrent message-start deliveries carrying the
+        // same (workflowKey, idempotency key) so the dedupe-by-variable check is
+        // race-free. The hash is computed by Postgres' hashtext(), which is cluster-
+        // stable, so lock keys are identical across API replicas (unlike .NET's
+        // per-process-randomized GetHashCode). Collisions merely cause harmless
+        // extra serialization.
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock({workflowKey}, hashtext({idempotencyKeyValue}))", cancellationToken);
+    }
+
     private static WorkflowInstanceRecord ToRecord(WorkflowInstanceEntity entity) =>
         new(
             entity.Id,

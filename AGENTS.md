@@ -116,13 +116,14 @@ Storage follows the hybrid design:
   guarded by an empty `CurrentNodeType`).
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
-- **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
-  `task`, `serviceTask`, `scriptTask`, `exclusiveGateway`, and
-  `errorBoundaryEvent` nodes are resolved in the same transaction until the
-  instance rests on a `userTask` or `intermediateMessageCatchEvent`, or
-  terminates on an `endEvent`/`errorEndEvent`. A hop limit (`flowNodes.Count + 1`)
-  guards against cycles. History rows are written with a `start`, `automatic`,
-  `service`, `script`, `gateway`, `boundary`, `error`, or `message` note.
+- **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
+  `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
+  `exclusiveGateway`, and `errorBoundaryEvent` nodes are resolved in the same
+  transaction until the instance rests on a `userTask` or
+  `intermediateMessageCatchEvent`, or terminates on an `endEvent`/`errorEndEvent`.
+  A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
+  written with a `start`, `messageStart`, `automatic`, `service`, `script`,
+  `gateway`, `boundary`, `error`, or `message` note.
 - **Service tasks** call an external REST endpoint during the pass-through hop
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
@@ -275,6 +276,39 @@ Storage follows the hybrid design:
   deduplicate at the source; a future idempotency-key mechanism could address this.
   No timeout escape hatch exists yet (a waiting instance waits indefinitely, like
   an unclaimed `userTask`); a future timer boundary event could address that.
+- **Message start events.** A `messageStartEvent` is an entry point (like a
+  `startEvent`) that is started by an external system via
+  `POST /api/workflows/{workflowKey}/message-start` rather than by a user. It is
+  **system-only**: `IsStart` is intentionally false, so the user `POST /api/instances`
+  path rejects it and the Blazor "pick a start event" page does not list it. It
+  carries start `variables` (typed/required/validated like a `startEvent`'s) and a
+  `message` config (the same `MessageCatchModel` as an intermediate catch:
+  `clientId`/`clientSecret`/`headerName`/`headerValue`/`headerValidation`/
+  `outputMappings`, plus an optional `idempotencyVariable`). The caller addresses
+  the workflow by its stable cross-version `workflowKey` (the latest published
+  version is resolved); an optional `?startEvent={externalId}` selects a specific
+  message-start event when the workflow has more than one (400 if ambiguous and
+  none is given). Auth mirrors the intermediate catch: client id/secret via
+  `X-Client-Id`/`X-Client-Secret` (401 on mismatch) + required header (400 on
+  missing/mismatch/validation failure), all `${var}`-templatable against an
+  instance-less context (`config.*`/`setting.*` + non-caller-influenced `sys.*`;
+  no `sys.user`/`sys.roles`/`sys.instanceId` since there is no caller/instance
+  yet). `outputMappings` extract dotted-path values from the inbound JSON body
+  and feed them as the start-variable values, so declared start `variables`
+  (required/defaults/NCalc `validation`) still apply. It is pass-through: after
+  creating the instance the engine auto-advances off it (history note
+  `messageStart`), like a `startEvent`. **Idempotency.** When `idempotencyVariable`
+  names one of the node's declared start variables, the engine serializes
+  concurrent retries with a transaction-scoped `pg_advisory_xact_lock` keyed on
+  `(workflowKey, hashtext(keyValue))` and, before creating an instance, searches
+  for an existing instance of the workflowKey already carrying that key value
+  (via the variable-search path, any status); if found it returns that instance's
+  ack (no duplicate). The key must be passed via the `Idempotency-Key` or `X-Idempotency-Key`
+  request header (else 400).
+  A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
+  `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
+  definition/variables/history, since the endpoint is `AllowAnonymous`). No DB
+  migration is needed (config is JSONB; the type fits the 32-char `CurrentNodeType`).
 - **Node roles are enforced** at runtime for `userTask` nodes. The caller's
   identity and roles come from a validated JWT (name + role claims), not from
   request fields. A `userTask` with a non-empty `roles` list can only be
@@ -308,7 +342,10 @@ what the cross-version `workflowKey` instance search matches.
 
 - `WorkflowDefinitionEndpoints` (`/api/workflows`): `GET /` (latest per
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
-  `POST /{id}/publish`, `DELETE /{id}`.
+  `POST /{id}/publish`, `DELETE /{id}`,
+  `POST /{workflowKey}/message-start` (start a new instance via a messageStartEvent;
+  `AllowAnonymous` — auth is the node's client id/secret + required header, not
+  the user JWT; returns a slim `MessageStartAckDto`).
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
   `startEventId`), `GET /?status=&instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
   `GET /inbox?instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
@@ -447,14 +484,14 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
-`errorBoundaryEvent`, or `intermediateMessageCatchEvent`.
+`errorBoundaryEvent`, `intermediateMessageCatchEvent`, or `messageStartEvent`.
 
 ```jsonc
 {
   "id": 1,
   "name": "Request Submitted",
   "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
-  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent
+  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent | messageStartEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
@@ -462,7 +499,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
   "condition": null,           // userTask only: NCalc visibility gate; null = always visible
-  "variables": [ /* Variable[] */ ], // startEvent (data to start) / userTask
+  "variables": [ /* Variable[] */ ], // startEvent / messageStartEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
   "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
   "assignments": [ /* Assignment[] */ ], // scriptTask + scriptFormat "ncalc" only (see Assignment)
@@ -570,10 +607,24 @@ Node kinds and their outgoing-flow rules:
   (raw, like a service task), and the engine advances down the flow. No user
   action. Correlation is by instance id only (no cross-instance signal/message
   matching). No timeout escape hatch yet.
+- **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
+  external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
+  single-ring circle with an envelope glyph on canvas. Carries start `variables`
+  (typed/validated like a `startEvent`) and a `message` config (the same shape as
+  an intermediate catch, plus an optional `idempotencyVariable`) and exactly one
+  unconditional outgoing flow. System-only: it is not a `startEvent` (`IsStart` is
+  false), so it cannot be started via `POST /api/instances` and does not appear in
+  the Blazor start picker. The engine creates the instance and auto-advances off
+  it (pass-through, history note `messageStart`). The caller authenticates against
+  the templated client credentials + required header; `outputMappings` feed the
+  start variables (so required/defaults/validation still apply). An optional
+  `idempotencyVariable` dedupes retried webhooks (no duplicate instance).
 
-A workflow may define multiple `startEvent` nodes. `initialEventId` is the
-default. `POST /api/instances` accepts optional `startEventId` to force a
-different start event; that event's variables are collected.
+A workflow may define multiple `startEvent` and/or `messageStartEvent` nodes.
+`initialEventId` is the default **user** start event (optional — a workflow whose
+only entry is a `messageStartEvent` leaves it null); it must reference a
+`startEvent` when set. `POST /api/instances` accepts optional `startEventId` to
+force a different start event; that event's variables are collected.
 
 ### SequenceFlow
 A first-class directed transition between two nodes (rendered as an edge/arrow).
@@ -708,11 +759,11 @@ string inside a string and `null` in a bare position. Output `path` is dotted
 (`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
 
 ### MessageCatchConfig
-The delivery configuration on an `intermediateMessageCatchEvent` flow node
-(`flowNode.message`). All scalar fields are `${var}`-templatable
-(`ServiceTaskTemplating.SubstituteScalar`) against instance variables + context,
-so a secret can be sourced from `${config.*}` / `${setting.*}` to stay out of the
-versioned definition JSON.
+The delivery configuration on an `intermediateMessageCatchEvent` or
+`messageStartEvent` flow node (`flowNode.message`). All scalar fields are
+`${var}`-templatable (`ServiceTaskTemplating.SubstituteScalar`) against instance
+variables + context, so a secret can be sourced from `${config.*}` /
+`${setting.*}` to stay out of the versioned definition JSON.
 
 ```jsonc
 {
@@ -721,6 +772,7 @@ versioned definition JSON.
   "headerName": "X-Webhook-Token",     // required custom header name; ${var} templatable
   "headerValue": "${config.webhookToken}", // required custom header value; ${var} templatable
   "headerValidation": "Len(header) >= 16", // optional NCalc; incoming value bound as `header`; must be truthy
+  "idempotencyVariable": "orderId",    // messageStartEvent only: declared start variable used as dedupe key
   "outputMappings": [                  // extract from the inbound JSON message body (raw/uncoerced)
     { "variable": "approved", "path": "decision.approved", "required": true },
     { "variable": "reference", "path": "ref" }
@@ -731,37 +783,61 @@ versioned definition JSON.
 Each `outputMappings` entry is `{ variable, path, required }` (same shape as a
 `serviceTask`'s response mappings). When `required` is true and the `path`
 cannot be resolved from the message body (or the body is missing/not valid
-JSON), the delivery is rejected with a `WorkflowDomainException` (400) before
-any variables are written, so a partial delivery does not persist. A
+JSON), the delivery/start is rejected with a `WorkflowDomainException` (400)
+before any variables are written, so a partial delivery does not persist. A
 non-required miss is silently skipped.
 
-At delivery (`POST /api/instances/{id}/message`, `AllowAnonymous`) the engine:
-resolves the templated `clientId`/`clientSecret`/`headerName`/`headerValue`
-against the instance variables overlaid with `config.*`/`setting.*` and the
-`sys.*` entries an unverified caller cannot influence (`sys.now`, `sys.today`,
-`sys.instanceId`, `sys.workflowId`, `sys.nodeId`, `sys.nodeName`) - `sys.user`
-and `sys.roles` are excluded so a caller cannot satisfy a credential templated
-from `${sys.user}`; requires the incoming `X-Client-Id`/`X-Client-Secret` to
-equal the resolved client credentials (constant-time compare); requires the
-resolved header to be present, equal the resolved `headerValue` (constant-time
-compare), and (when `headerValidation` is set) satisfy the NCalc rule with the
-incoming value bound as `header` against the full context (caller `sys.user`
-included, since the caller is by then authenticated); then applies
-`outputMappings` from the raw JSON message body (dotted-path
-`ServiceTaskTemplating.TryExtract`, written raw via `AddVariableAsync` - targets
-need not be declared, mirroring a `serviceTask`); a `required` mapping whose path
-is unresolvable (or a missing/invalid JSON body) rejects the delivery with a
+`idempotencyVariable` is a `messageStartEvent`-only optional field (ignored by
+an intermediate catch). When set it must name one of the node's declared start
+variables; the engine looks for the dedupe key value in the request headers
+(`Idempotency-Key` or `X-Idempotency-Key`) and maps it to this variable (see
+the message-start idempotency behavior below).
+
+**Intermediate catch delivery** (`POST /api/instances/{id}/message`,
+`AllowAnonymous`): the engine resolves the templated
+`clientId`/`clientSecret`/`headerName`/`headerValue` against the instance
+variables overlaid with `config.*`/`setting.*` and the `sys.*` entries an
+unverified caller cannot influence (`sys.now`, `sys.today`, `sys.instanceId`,
+`sys.workflowId`, `sys.nodeId`, `sys.nodeName`) - `sys.user` and `sys.roles`
+are excluded so a caller cannot satisfy a credential templated from `${sys.user}`;
+requires the incoming `X-Client-Id`/`X-Client-Secret` to equal the resolved
+client credentials (constant-time compare); requires the resolved header to be
+present, equal the resolved `headerValue` (constant-time compare), and (when
+`headerValidation` is set) satisfy the NCalc rule with the incoming value bound
+as `header` against the full context (caller `sys.user` included, since the
+caller is by then authenticated); then applies `outputMappings` from the raw
+JSON message body (dotted-path `ServiceTaskTemplating.TryExtract`, written raw
+via `AddVariableAsync` - targets need not be declared, mirroring a
+`serviceTask`); a `required` mapping whose path is unresolvable (or a
+missing/invalid JSON body) rejects the delivery with a
 `WorkflowDomainException` (400) before any variables are written. A client
 id/secret mismatch throws `WorkflowUnauthorizedException` (401); a header problem
 (missing/mismatch/validation failure), a required-mapping failure, or a
 not-running / not-waiting instance throws `WorkflowDomainException` (400). The
-resolved client id is recorded as `performedBy` / `sys.user` for attribution. The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
-`CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than the full
-`InstanceDetailDto`, so a node-credentialed webhook caller cannot read the
-workflow definition (which may contain other nodes' literal secrets) or the
+resolved client id is recorded as `performedBy` / `sys.user` for attribution.
+The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`,
+`CurrentNodeName`, `CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than
+the full `InstanceDetailDto`, so a node-credentialed webhook caller cannot read
+the workflow definition (which may contain other nodes' literal secrets) or the
 instance's stored variables/history. There is no delivery idempotency key; a
 retry after a successful delivery gets a `400` because the instance has already
 advanced off the catch node.
+
+**Message-start delivery** (`POST /api/workflows/{workflowKey}/message-start`,
+`AllowAnonymous`): same auth mechanics, but the credential/header templates are
+resolved against an instance-less context (`config.*`/`setting.*` +
+non-caller-influenced `sys.*`; no `sys.instanceId`/`sys.user`/`sys.roles` since
+there is no caller/instance yet). `outputMappings` feed the start-variable values
+(passed into the same validation/resolution pipeline as a user `POST /api/instances`).
+When `idempotencyVariable` is set, before creating an instance the engine acquires
+a transaction-scoped `pg_advisory_xact_lock(workflowKey, hashtext(keyValue))`,
+searches for an existing instance of the workflowKey already carrying that key
+value (via the variable-search path), and returns that instance's ack instead of
+creating a duplicate. The key must be provided in the `Idempotency-Key` or `X-Idempotency-Key`
+request header (else 400).
+A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
+`CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
+definition/variables/history, since the endpoint is `AllowAnonymous`).
 
 ### Context sources (`sys.*` / `config.*` / `setting.*`)
 
@@ -818,6 +894,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
+| `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Carries start `variables` + `message` config (same as an intermediate catch, plus an optional `idempotencyVariable`). System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet); idempotency via an advisory-locked variable-search dedupe (no new table). |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
@@ -837,11 +914,12 @@ when extending the model so new features stay close to BPMN terminology.
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations
   (connectors, expressions, message/send-receive) are out of scope.
-- **Error events and one message catch event (no timer/signal yet).** Plain
+- **Error events, one message catch event, and one message start event (no timer/signal yet).** Plain
   (none) start and end events plus `errorEndEvent` and `errorBoundaryEvent`
-  (catch-all, no error codes) and `intermediateMessageCatchEvent` (correlation
-  by instance id only, no cross-instance signal/message matching, no timeout);
-  no timer/signal events yet.
+  (catch-all, no error codes), `intermediateMessageCatchEvent` (correlation
+  by instance id only, no cross-instance signal/message matching, no timeout),
+  and `messageStartEvent` (instance-less system-only entry with advisory-locked
+  variable-search idempotency); no timer/signal events yet.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so

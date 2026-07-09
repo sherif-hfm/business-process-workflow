@@ -91,6 +91,239 @@ public sealed class WorkflowEngineService(
         return (await BuildDetailAsync(instance.Id, cancellationToken))!;
     }
 
+    public async Task<MessageStartAckDto> StartByMessageAsync(
+        int workflowKey,
+        string? startEventExternalId,
+        IncomingMessage message,
+        CancellationToken cancellationToken)
+    {
+        await LoadSettingsAsync(cancellationToken);
+
+        // Resolve the latest published version by the stable, cross-version key so
+        // a webhook caller addresses the workflow without knowing per-version ids.
+        var workflow = await definitions.GetLatestPublishedByWorkflowKeyAsync(workflowKey, cancellationToken)
+            ?? throw new WorkflowDomainException($"No published workflow found for workflowKey {workflowKey}.");
+
+        // Select the messageStartEvent: match the requested externalId when given;
+        // else the single message-start node; else reject as ambiguous/absent.
+        var definition = workflow.Definition;
+        var startEvents = definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsMessageStart(n.Type)).ToList();
+        FlowNodeModel startEvent;
+        if (!string.IsNullOrWhiteSpace(startEventExternalId))
+        {
+            startEvent = startEvents.SingleOrDefault(n => string.Equals(n.ExternalId, startEventExternalId, StringComparison.Ordinal))
+                ?? throw new WorkflowDomainException($"No message start event with externalId '{startEventExternalId}' was found in workflow '{definition.Name}'.");
+        }
+        else
+        {
+            if (startEvents.Count == 0)
+            {
+                throw new WorkflowDomainException($"Workflow '{definition.Name}' has no message start event.");
+            }
+
+            if (startEvents.Count > 1)
+            {
+                throw new WorkflowDomainException($"Workflow '{definition.Name}' has multiple message start events; specify one via the 'startEvent' query parameter (its externalId).");
+            }
+
+            startEvent = startEvents[0];
+        }
+
+        var messageConfig = startEvent.Message
+            ?? throw new WorkflowDomainException($"Message start event #{startEvent.Id} has no message configuration.");
+
+        // Resolve templated expected credentials + required header against an
+        // instance-less auth context (config/setting + non-caller-influenced sys.*).
+        var actor = message.Actor;
+        var performedBy = actor.User;
+        var authContext = BuildAuthContext(
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            instance: null,
+            definition,
+            startEvent);
+
+        var expectedClientId = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientId, authContext);
+        var expectedClientSecret = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientSecret, authContext);
+        var expectedHeaderName = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderName, authContext);
+        var expectedHeaderValue = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderValue, authContext);
+
+        // Authenticate the caller against the node's expected client id/secret.
+        if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
+            || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
+        {
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        // Validate the required custom header (a domain error, 400, since the
+        // caller has authenticated via the client id/secret): present, equal to the
+        // resolved expected value, and (when set) satisfying the NCalc headerValidation.
+        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
+            || incomingHeaderValue is null)
+        {
+            throw new WorkflowDomainException($"Required header '{expectedHeaderName}' is missing.");
+        }
+
+        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
+        {
+            throw new WorkflowDomainException($"Header '{expectedHeaderName}' does not match the expected value.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
+        {
+            // headerValidation may reference sys.* context (the caller is by now
+            // authenticated); there is no instance yet, so the context is the auth
+            // context plus the incoming header bound as `header`.
+            var validationCtx = new Dictionary<string, JsonElement>(authContext, StringComparer.OrdinalIgnoreCase)
+            {
+                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
+            };
+            if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
+            {
+                throw new WorkflowDomainException(
+                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
+            }
+        }
+
+        // Extract payload -> values via the shared core (required-miss throws 400).
+        var mappedValues = ExtractMessageOutputs(messageConfig, message.Payload);
+
+        // Idempotency: when idempotencyVariable is set, the value for that variable
+        // is supplied via the request headers ('Idempotency-Key' or 'X-Idempotency-Key').
+        // Serialize concurrent retries with an advisory lock, then search for an
+        // existing instance of this workflowKey already carrying that key value;
+        // if found, return its ack (no new instance).
+        var idempotencyVariable = messageConfig.IdempotencyVariable;
+        string? idempotencyKeyValue = null;
+        if (!string.IsNullOrWhiteSpace(idempotencyVariable))
+        {
+            if (message.Headers.TryGetValue("Idempotency-Key", out var headerVal) && !string.IsNullOrWhiteSpace(headerVal))
+            {
+                idempotencyKeyValue = headerVal;
+            }
+            else if (message.Headers.TryGetValue("X-Idempotency-Key", out headerVal) && !string.IsNullOrWhiteSpace(headerVal))
+            {
+                idempotencyKeyValue = headerVal;
+            }
+
+            if (string.IsNullOrWhiteSpace(idempotencyKeyValue))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{startEvent.Id} idempotency variable '{idempotencyVariable}' was not provided via 'Idempotency-Key' or 'X-Idempotency-Key' headers.");
+            }
+
+            // Map it as a start variable so it gets validated and saved on the instance
+            mappedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
+        }
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        if (idempotencyKeyValue is not null)
+        {
+            // pg_advisory_xact_lock(key, hashtext(value)) serializes retries for the
+            // same (workflowKey, idempotency key) within the transaction; the lock
+            // is released on commit/rollback. The hash is computed by Postgres'
+            // hashtext() so the lock key is stable across API replicas. Collisions
+            // only cause extra serialization, never a false dedupe.
+            await runtime.AcquireStartLockAsync(workflowKey, idempotencyKeyValue, cancellationToken);
+
+            var existing = await FindByIdempotencyKeyAsync(workflowKey, idempotencyVariable!, idempotencyKeyValue, cancellationToken);
+            if (existing is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return existing;
+            }
+        }
+
+        // Start the instance on the message-start node (pass-through: the loop
+        // auto-advances off it on the next hop). Mirror StartInstanceAsync.
+        var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), performedBy, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // Validate the mapped values as the start variables (required/defaults/
+        // NCalc validation), overlaid with sys.*/config.* context. Only declared
+        // start variables are persisted; extras are ignored.
+        var startContext = WithContext(
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            actor, instance, definition, startEvent);
+        var startValues = ResolveAndValidateVariables(startEvent.Variables, mappedValues, startContext);
+        foreach (var pair in startValues)
+        {
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
+        }
+
+        // Initialize process-level variables from their authored defaults.
+        var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in startValues)
+        {
+            processContext[pair.Key] = pair.Value;
+        }
+        var processValues = ResolveAndValidateVariables(definition.Variables, null, processContext);
+        foreach (var pair in processValues)
+        {
+            await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        instance = await ResolvePassThroughAsync(instance, definition, actor, cancellationToken);
+        instance = await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return await BuildStartAckAsync(instance.Id, cancellationToken);
+    }
+
+    // Searches for an existing instance of the given workflowKey carrying the
+    // idempotency key value in the named variable, returning a slim start ack for
+    // it (so a retried webhook is a no-op). Returns null when none exists. The
+    // search reuses the variable-search path and spans any status (a completed/
+    // faulted instance with the key still counts as "already started").
+    private async Task<MessageStartAckDto?> FindByIdempotencyKeyAsync(
+        int workflowKey,
+        string idempotencyVariable,
+        string idempotencyKeyValue,
+        CancellationToken cancellationToken)
+    {
+        var filters = new List<VariableFilter>
+        {
+            new(idempotencyVariable, idempotencyKeyValue)
+        };
+        var paged = await runtime.ListInstancesAsync(
+            status: null,
+            instanceId: null,
+            workflowId: null,
+            workflowKey: workflowKey,
+            nodeId: null,
+            nodeExternalId: null,
+            variableFilters: filters,
+            page: 1,
+            pageSize: 1,
+            cancellationToken);
+
+        if (paged.TotalCount == 0)
+        {
+            return null;
+        }
+
+        var existing = paged.Items[0];
+        return await BuildStartAckAsync(existing.Id, cancellationToken);
+    }
+
+    // Builds the slim start ack: only the resting node identity + status, no
+    // definition/variables/history (the message-start endpoint is AllowAnonymous).
+    private async Task<MessageStartAckDto> BuildStartAckAsync(long id, CancellationToken cancellationToken)
+    {
+        var instance = await runtime.GetInstanceAsync(id, cancellationToken)
+            ?? throw new WorkflowDomainException($"Instance #{id} was not found after start.");
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        return new MessageStartAckDto(
+            instance.Id,
+            node.Id,
+            node.Name,
+            node.ExternalId,
+            instance.Status,
+            instance.CreatedAt);
+    }
+
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         string? status,
         long? instanceId,
@@ -627,9 +860,16 @@ public sealed class WorkflowEngineService(
     // sys.user and sys.roles (which come from the unverified X-Client-Id header)
     // and sys.claim.* (JWT claims, absent for an anonymous delivery) so a templated
     // credential cannot be satisfied by the very caller it is supposed to authenticate.
+    // Builds the credential/header resolution context: stored instance variables
+    // (empty for a message start, which has no instance yet) overlaid with
+    // config.*/setting.* and the sys.* entries an unverified caller cannot
+    // influence. For a delivery to an existing instance, sys.instanceId is the
+    // instance id; for a message start (no instance yet) it is absent. sys.user
+    // and sys.roles are deliberately excluded so a templated credential cannot
+    // be satisfied by the very caller it is supposed to authenticate.
     private Dictionary<string, JsonElement> BuildAuthContext(
         Dictionary<string, JsonElement> stored,
-        WorkflowInstanceRecord instance,
+        WorkflowInstanceRecord? instance,
         WorkflowModel definition,
         FlowNodeModel currentNode)
     {
@@ -639,8 +879,18 @@ public sealed class WorkflowEngineService(
 
         Put("sys.now", now.ToString("o", CultureInfo.InvariantCulture));
         Put("sys.today", now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-        Put("sys.instanceId", instance.Id);
-        Put("sys.workflowId", instance.WorkflowDefinitionId);
+        if (instance is not null)
+        {
+            Put("sys.instanceId", instance.Id);
+            Put("sys.workflowId", instance.WorkflowDefinitionId);
+        }
+        else
+        {
+            // A message start resolves the workflow by key; sys.workflowId is not
+            // meaningful (it would be a version row id the caller didn't address).
+            Put("sys.workflowId", 0);
+        }
+
         Put("sys.workflowName", definition.Name);
         Put("sys.nodeId", currentNode.Id);
         Put("sys.nodeName", currentNode.Name);
@@ -685,24 +935,23 @@ public sealed class WorkflowEngineService(
             instance.UpdatedAt);
     }
 
-    // Maps the inbound message payload into instance variables using the catch
-    // node's outputMappings, identical to ApplyServiceOutputsAsync for service
-    // tasks: dotted-path extraction (numeric segments index arrays), values
-    // written raw via AddVariableAsync (no coercion; targets need not be declared).
-    // A `required` mapping whose path cannot be resolved throws a
-    // WorkflowDomainException (400) before any variables are written, so a partial
-    // delivery does not persist. Non-required misses are silently skipped.
-    private async Task ApplyMessageOutputsAsync(
-        long instanceId,
-        int nodeId,
-        string? setBy,
+    // Shared core: parses the inbound message body and extracts each
+    // outputMapping via dotted-path ServiceTaskTemplating.TryExtract into a
+    // name -> value dictionary. A `required` mapping whose path cannot be
+    // resolved (or a missing/invalid JSON body) throws a WorkflowDomainException
+    // so the caller can fail before any variables are written. Non-required
+    // misses are silently skipped (the variable is simply absent from the dict).
+    // Used by the message catch (which then writes the dict to the instance) and
+    // the message start (which feeds the dict as the start-variable values).
+    private static Dictionary<string, JsonElement> ExtractMessageOutputs(
         MessageCatchModel message,
-        JsonElement? payload,
-        CancellationToken cancellationToken)
+        JsonElement? payload)
     {
+        var result = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
         if (message.OutputMappings.Count == 0)
         {
-            return;
+            return result;
         }
 
         if (payload is not { } body || body.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -714,7 +963,7 @@ public sealed class WorkflowEngineService(
                     $"Message output mapping for '{firstRequired.Variable}' failed: no message body was provided.");
             }
 
-            return;
+            return result;
         }
 
         JsonDocument document;
@@ -731,7 +980,7 @@ public sealed class WorkflowEngineService(
                     $"Message output mapping for '{firstRequired.Variable}' (path '{firstRequired.Path}') failed: message body is not valid JSON.");
             }
 
-            return;
+            return result;
         }
 
         using (document)
@@ -740,7 +989,7 @@ public sealed class WorkflowEngineService(
             {
                 if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
                 {
-                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
+                    result[mapping.Variable] = value.Clone();
                 }
                 else if (mapping.Required)
                 {
@@ -748,6 +997,29 @@ public sealed class WorkflowEngineService(
                         $"Message output mapping for '{mapping.Variable}' failed: path '{mapping.Path}' was not found in the message body.");
                 }
             }
+        }
+
+        return result;
+    }
+
+    // Maps the inbound message payload into instance variables using the catch
+    // node's outputMappings: dotted-path extraction (numeric segments index
+    // arrays), values written raw via AddVariableAsync (no coercion; targets need
+    // not be declared, mirroring a serviceTask). A `required` mapping whose path
+    // cannot be resolved throws a WorkflowDomainException (400) before any
+    // variables are written, so a partial delivery does not persist.
+    private async Task ApplyMessageOutputsAsync(
+        long instanceId,
+        int nodeId,
+        string? setBy,
+        MessageCatchModel message,
+        JsonElement? payload,
+        CancellationToken cancellationToken)
+    {
+        var values = ExtractMessageOutputs(message, payload);
+        foreach (var pair in values)
+        {
+            await runtime.AddVariableAsync(instanceId, pair.Key, nodeId, setBy, pair.Value, cancellationToken);
         }
     }
 
@@ -898,6 +1170,7 @@ public sealed class WorkflowEngineService(
             var note = currentNode.Type switch
             {
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
+                var t when BpmnFlowNodeTypes.IsMessageStart(t) => "messageStart",
                 var t when BpmnFlowNodeTypes.IsGateway(t) => "gateway",
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
@@ -1009,13 +1282,15 @@ public sealed class WorkflowEngineService(
         {
             var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                 ? "Start event"
-                : BpmnFlowNodeTypes.IsServiceTask(node.Type)
-                    ? "Service task"
-                    : BpmnFlowNodeTypes.IsScriptTask(node.Type)
-                        ? "Script task"
-                        : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
-                            ? "Error boundary event"
-                            : "Automatic task";
+                : BpmnFlowNodeTypes.IsMessageStart(node.Type)
+                    ? "Message start event"
+                    : BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                        ? "Service task"
+                        : BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                            ? "Script task"
+                            : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                                ? "Error boundary event"
+                                : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 

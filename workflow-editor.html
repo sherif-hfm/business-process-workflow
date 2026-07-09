@@ -186,6 +186,7 @@
   .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
   .node.intermediateMessageCatchEvent circle.body { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 2; }
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
+  .node.messageStartEvent circle.body { fill: #14532d; stroke: #38bdf8; stroke-width: 2; }
   .node .err-mark { fill: var(--red); font-size: 13px; font-weight: 700; text-anchor: middle; }
   .node .msg-glyph rect { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
   .node .msg-glyph path { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
@@ -441,7 +442,8 @@ const NODE_TYPE = {
   EXCLUSIVE_GATEWAY: "exclusiveGateway",
   ERROR_END_EVENT: "errorEndEvent",
   ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
-  MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent"
+  MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
+  MESSAGE_START_EVENT: "messageStartEvent"
 };
 const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.START_EVENT, label: "Start Event" },
@@ -452,7 +454,8 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
-  { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" }
+  { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
+  { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" }
 ];
 const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
 const CLAIM_MODE_OPTIONS = [
@@ -497,7 +500,7 @@ function normalizeAssignments(assignments) {
     }));
 }
 function defaultMessage() {
-  return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [] };
+  return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [], idempotencyVariable: "" };
 }
 function normalizeMessage(message) {
   const base = defaultMessage();
@@ -510,7 +513,8 @@ function normalizeMessage(message) {
     headerValidation: typeof message.headerValidation === "string" ? message.headerValidation : "",
     outputMappings: Array.isArray(message.outputMappings)
       ? message.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "", required: !!(m && m.required) }))
-      : []
+      : [],
+    idempotencyVariable: typeof message.idempotencyVariable === "string" ? message.idempotencyVariable : ""
   };
 }
 let model = newModel();
@@ -574,7 +578,7 @@ function roleSummary(roles, maxLength = 28) {
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
 function isEventType(type) {
-  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.MESSAGE_CATCH_EVENT;
+  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT;
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -603,6 +607,9 @@ function isBoundaryEventType(type) {
 function isMessageCatchEventType(type) {
   return type === NODE_TYPE.MESSAGE_CATCH_EVENT;
 }
+function isMessageStartEventType(type) {
+  return type === NODE_TYPE.MESSAGE_START_EVENT;
+}
 function isGatewayType(type) {
   return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
 }
@@ -612,7 +619,8 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.SERVICE_TASK
     || type === NODE_TYPE.SCRIPT_TASK
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
-    || type === NODE_TYPE.MESSAGE_CATCH_EVENT;
+    || type === NODE_TYPE.MESSAGE_CATCH_EVENT
+    || type === NODE_TYPE.MESSAGE_START_EVENT;
 }
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
@@ -624,9 +632,9 @@ function nodeSize(node) {
   if (isGatewayType(node.type)) return { w: GATEWAY_D, h: GATEWAY_D };
   return { w: NODE_W, h: NODE_H };
 }
-// pass-through nodes advance without a user action (start / automatic task / service task / script task / gateway / error boundary event)
+// pass-through nodes advance without a user action (start / message start / automatic task / service task / script task / gateway / error boundary event)
 function isPassThroughType(type) {
-  return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isGatewayType(type) || isBoundaryEventType(type);
+  return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isMessageStartEventType(type) || isGatewayType(type) || isBoundaryEventType(type);
 }
 function applyTypeInvariants(node) {
   if (isEndEventType(node.type)) {
@@ -707,6 +715,23 @@ function applyTypeInvariants(node) {
     node.inheritClaimFromNodeId = null;
     node.roles = [];
     node.variables = [];
+    node.condition = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    node.message = normalizeMessage(node.message);
+  } else if (isMessageStartEventType(node.type)) {
+    // A message start event is an entry point started by an external system via
+    // POST /api/workflows/{workflowKey}/message-start. It carries start variables
+    // (like a startEvent) and the delivery configuration on node.message (like a
+    // message catch), and nothing else. Pass-through: the engine auto-advances off
+    // it after creating the instance. It is NOT a user startEvent (system-only).
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = node.variables || [];
     node.condition = null;
     delete node.service;
     node.assignments = [];
@@ -945,6 +970,9 @@ function renderNodes() {
       if (isMessageCatchEventType(node.type)) {
         // Intermediate catch: thin double-ring + envelope glyph (no thick ring).
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
+        appendMessageGlyph(g, r);
+      } else if (isMessageStartEventType(node.type)) {
+        // Message start: thin single-ring (start style) + envelope glyph.
         appendMessageGlyph(g, r);
       } else if (isErrorEndEventType(node.type)) {
         const mark = el("text", { x: r, y: r + 6, class: "err-mark", "font-size": "22" });
@@ -1238,12 +1266,19 @@ function addInitialSelector() {
   const f = document.createElement("div");
   f.className = "field";
   f.innerHTML = `<label>Default start event</label>`;
-  const sel = document.createElement("select");
   const startEvents = model.flowNodes.filter(s => isStartEventType(s.type));
-  sel.innerHTML = `<option value="">— none —</option>` +
-    startEvents.map(s => `<option value="${s.id}" ${model.initialEventId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
-  sel.onchange = () => { model.initialEventId = sel.value ? +sel.value : null; render(); };
-  f.appendChild(sel);
+  if (startEvents.length === 0) {
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    note.textContent = "No user start events are defined (the workflow may be started via a message-start event instead).";
+    f.appendChild(note);
+  } else {
+    const sel = document.createElement("select");
+    sel.innerHTML = `<option value="">— none —</option>` +
+      startEvents.map(s => `<option value="${s.id}" ${model.initialEventId === s.id ? "selected" : ""}>#${s.id} ${s.name}</option>`).join("");
+    sel.onchange = () => { model.initialEventId = sel.value ? +sel.value : null; render(); };
+    f.appendChild(sel);
+  }
   inspector.appendChild(f);
 }
 
@@ -1283,6 +1318,13 @@ function renderNodeInspector() {
           model.sequenceFlows = model.sequenceFlows.filter(f =>
             !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
         }
+      }
+      // If the node was the default start event but is no longer a valid
+      // startEvent (e.g. switched to a messageStartEvent), clear initialEventId
+      // so a message-only workflow can be saved without a user start event.
+      if (model.initialEventId === node.id && !isStartEventType(v)) {
+        const nextDefault = model.flowNodes.find(n => n.id !== node.id && isStartEventType(n.type));
+        model.initialEventId = nextDefault?.id ?? null;
       }
       render();
     });
@@ -1363,32 +1405,13 @@ function renderNodeInspector() {
     renderMessageSection(node);
   }
 
+  if (isMessageStartEventType(node.type)) {
+    renderMessageSection(node);
+    renderStartVariablesSection(node, "Variables on the message start event are the data extracted from the inbound message (via outputMappings) and validated/typed like start variables.");
+  }
+
   if (isStartEventType(node.type)) {
-    node.variables = node.variables || [];
-
-    const variablesTitle = document.createElement("h2");
-    variablesTitle.textContent = "Variables";
-    variablesTitle.style.marginTop = "16px";
-    inspector.appendChild(variablesTitle);
-
-    const hint = document.createElement("p");
-    hint.className = "empty-note";
-    hint.textContent = "Variables on the start event are the data required to start the workflow.";
-    inspector.appendChild(hint);
-
-    if (node.variables.length === 0) {
-      const p = document.createElement("p");
-      p.className = "empty-note";
-      p.textContent = "No variables for this node.";
-      inspector.appendChild(p);
-    }
-    node.variables.forEach(variable => variableRow(node, variable));
-
-    const addVariableBtn = document.createElement("button");
-    addVariableBtn.textContent = "+ Add variable";
-    addVariableBtn.style.marginTop = "8px";
-    addVariableBtn.onclick = () => addVariable(node);
-    inspector.appendChild(addVariableBtn);
+    renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
   }
 
   if (!isEndEventType(node.type)) {
@@ -1441,6 +1464,34 @@ function renderNodeInspector() {
   del.style.cssText = "margin-top:16px;width:100%";
   del.onclick = () => deleteNode(node.id);
   inspector.appendChild(del);
+}
+
+function renderStartVariablesSection(node, hint) {
+  node.variables = node.variables || [];
+
+  const variablesTitle = document.createElement("h2");
+  variablesTitle.textContent = "Variables";
+  variablesTitle.style.marginTop = "16px";
+  inspector.appendChild(variablesTitle);
+
+  const hintEl = document.createElement("p");
+  hintEl.className = "empty-note";
+  hintEl.textContent = hint;
+  inspector.appendChild(hintEl);
+
+  if (node.variables.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No variables for this node.";
+    inspector.appendChild(p);
+  }
+  node.variables.forEach(variable => variableRow(node, variable));
+
+  const addVariableBtn = document.createElement("button");
+  addVariableBtn.textContent = "+ Add variable";
+  addVariableBtn.style.marginTop = "8px";
+  addVariableBtn.onclick = () => addVariable(node);
+  inspector.appendChild(addVariableBtn);
 }
 
 function renderServiceSection(node) {
@@ -1593,15 +1644,18 @@ function renderServiceSection(node) {
 function renderMessageSection(node) {
   node.message = normalizeMessage(node.message);
   const message = node.message;
+  const isStart = isMessageStartEventType(node.type);
 
   const title = document.createElement("h2");
-  title.textContent = "Message (delivery)";
+  title.textContent = isStart ? "Message (start)" : "Message (delivery)";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Rests until a message is delivered to POST /api/instances/{id}/message. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below.";
+  hint.textContent = isStart
+    ? "Starts a new instance when a message is delivered to POST /api/workflows/{workflowKey}/message-start. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below."
+    : "Rests until a message is delivered to POST /api/instances/{id}/message. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below.";
   inspector.appendChild(hint);
 
   field("Client id", "text", message.clientId, v => { message.clientId = v; });
@@ -1668,6 +1722,22 @@ function renderMessageSection(node) {
   addMappingBtn.style.marginTop = "8px";
   addMappingBtn.onclick = () => { message.outputMappings.push({ variable: "", path: "", required: false }); renderInspector(); };
   inspector.appendChild(addMappingBtn);
+
+  // Idempotency is a message-start concern: the named start variable's mapped
+  // value is the dedupe key, so a retried webhook returns the existing instance
+  // instead of creating a duplicate. Hidden for an intermediate catch event.
+  if (isStart) {
+    const idemTitle = document.createElement("h2");
+    idemTitle.textContent = "Idempotency (optional)";
+    idemTitle.style.marginTop = "16px";
+    inspector.appendChild(idemTitle);
+
+    const idemHint = document.createElement("p");
+    idemHint.className = "empty-note";
+    idemHint.textContent = "Name a start variable whose mapped value dedupes a retried webhook: before creating an instance the engine searches for an existing instance of this workflowKey already carrying that key value and, if found, returns it instead of creating a duplicate. Leave blank to disable (a retry creates a duplicate).";
+    inspector.appendChild(idemHint);
+    field("Idempotency variable", "text", message.idempotencyVariable, v => { message.idempotencyVariable = v; });
+  }
 }
 
 function renderScriptSection(node) {
@@ -2885,7 +2955,7 @@ function loadFromObject(obj) {
         script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined,
         attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
         errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null,
-        message: isMessageCatchEventType(s.type) ? normalizeMessage(s.message) : undefined
+        message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type)) ? normalizeMessage(s.message) : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,

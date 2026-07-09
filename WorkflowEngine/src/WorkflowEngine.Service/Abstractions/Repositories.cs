@@ -11,6 +11,12 @@ public interface IWorkflowDefinitionRepository
 
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
+    // Resolves the latest published version of a workflow by its stable, cross-
+    // version WorkflowKey (the editor JSON model id). Used by the message-start
+    // webhook so a caller addresses the workflow without knowing per-version row
+    // ids. Returns null when no published version exists for the key.
+    Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(int workflowKey, CancellationToken cancellationToken);
+
     Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken);
 
     Task<WorkflowDefinitionRecord> AddAsync(
@@ -118,6 +124,14 @@ public interface IWorkflowRuntimeRepository
     Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(
         long instanceId,
         CancellationToken cancellationToken);
+
+    // Acquires a transaction-scoped PostgreSQL advisory lock keyed on the
+    // workflow key + a deterministic hash of the idempotency key value, computed
+    // by Postgres' hashtext() so the lock key is stable across API replicas.
+    // Serializes concurrent message-start deliveries that carry the same
+    // idempotency key so the dedupe-by-variable check is race-free. The lock is
+    // released on commit/rollback.
+    Task AcquireStartLockAsync(int workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken);
 }
 
 public interface IWorkflowSettingsRepository
