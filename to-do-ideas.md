@@ -1,0 +1,5 @@
+- no need to role in flow after Error boundary,start event,script task,service task
+- find way to notify (api response) that action fail without the hole instance fail
+- async flow asyncAfter/asyncBefore
+- role for start event
+- show node id in side panel
