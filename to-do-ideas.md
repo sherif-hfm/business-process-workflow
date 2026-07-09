@@ -3,3 +3,4 @@
 - async flow asyncAfter/asyncBefore
 - role for start event
 - show node id in side panel
+- add endpoint to get latest values of variables  for instance
