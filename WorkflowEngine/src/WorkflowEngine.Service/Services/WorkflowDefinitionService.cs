@@ -137,7 +137,8 @@ public sealed class WorkflowDefinitionService(
                     || BpmnFlowNodeTypes.IsAutomatic(node.Type)
                     || BpmnFlowNodeTypes.IsServiceTask(node.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(node.Type)
-                    || BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+                    || BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsMessageCatch(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
@@ -148,7 +149,9 @@ public sealed class WorkflowDefinitionService(
                             ? "Script task"
                             : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                                 ? "Error boundary event"
-                                : "Automatic task";
+                                : BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                                    ? "Message catch event"
+                                    : "Automatic task";
                 throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
             }
 
@@ -165,6 +168,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
             {
                 ValidateScriptTask(node, definition);
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+            {
+                ValidateMessageCatch(node);
             }
 
             if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
@@ -281,6 +289,61 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"Service task #{node.Id} output mapping for '{mapping.Variable}' must have a response path.");
+            }
+        }
+    }
+
+    // An intermediateMessageCatchEvent rests until a message is delivered via
+    // POST /api/instances/{id}/message. The delivery caller is authenticated
+    // against the expected clientId/clientSecret and a required custom header
+    // (headerName/headerValue); headerValidation is an optional NCalc rule
+    // evaluated with the incoming header value bound as `header`. outputMappings
+    // extract dotted-path values from the inbound JSON body. All scalar fields
+    // are ${var}-templatable (only presence is checked at author time).
+    private static void ValidateMessageCatch(FlowNodeModel node)
+    {
+        var message = node.Message
+            ?? throw new WorkflowDomainException($"Message catch event #{node.Id} must have a message configuration.");
+
+        if (string.IsNullOrWhiteSpace(message.ClientId))
+        {
+            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a client id.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.ClientSecret))
+        {
+            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a client secret.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.HeaderName))
+        {
+            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a header name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.HeaderValue))
+        {
+            throw new WorkflowDomainException($"Message catch event #{node.Id} must have a header value.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(message.HeaderValidation)
+            && !SequenceFlowConditionEvaluator.IsValid(message.HeaderValidation))
+        {
+            throw new WorkflowDomainException(
+                $"Message catch event #{node.Id} has an invalid header validation expression: '{message.HeaderValidation}'.");
+        }
+
+        foreach (var mapping in message.OutputMappings)
+        {
+            if (string.IsNullOrWhiteSpace(mapping.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Message catch event #{node.Id} has an output mapping with no variable name.");
+            }
+
+            if (string.IsNullOrWhiteSpace(mapping.Path))
+            {
+                throw new WorkflowDomainException(
+                    $"Message catch event #{node.Id} output mapping for '{mapping.Variable}' must have a path.");
             }
         }
     }

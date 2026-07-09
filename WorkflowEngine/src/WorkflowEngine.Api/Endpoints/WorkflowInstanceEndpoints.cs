@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
@@ -121,6 +122,50 @@ public static class WorkflowInstanceEndpoints
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
             await service.CancelAsync(id, ToActor(principal), cancellationToken) ? Results.NoContent() : Results.NotFound());
+
+        // Delivers a message to an instance resting on an intermediateMessageCatchEvent.
+        // Auth is the node-config client id/secret + required header (not the user JWT),
+        // so this endpoint overrides the group RequireAuthorization() with AllowAnonymous.
+        // The body is the raw JSON message payload; outputMappings on the catch node
+        // extract values from it. Returns a slim ack (no definition/variables/history)
+        // so a node-credentialed webhook caller cannot read the full workflow model:
+        // 404 when the instance is missing, 401 on a credential/header mismatch
+        // (WorkflowUnauthorizedException), 400 when not running/waiting
+        // (WorkflowDomainException). A non-JSON content type is treated as no payload
+        // (rather than throwing a 500) so a misconfigured caller gets a clean response.
+        group.MapPost("/{id:long}/message", async (
+            HttpContext context,
+            long id,
+            IWorkflowEngineService service,
+            CancellationToken cancellationToken) =>
+        {
+            var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
+            var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
+            var headers = context.Request.Headers
+                .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+
+            JsonElement? payload = null;
+            // Only attempt a JSON read when the caller declared a JSON content type;
+            // ReadFromJsonAsync throws InvalidOperationException (not JsonException) for a
+            // non-JSON content type, which would otherwise surface as an unhandled 500.
+            if (context.Request.HasJsonContentType()
+                && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
+            {
+                try
+                {
+                    payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
+                }
+                catch (JsonException)
+                {
+                    payload = null;
+                }
+            }
+
+            var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+            var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
+            var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
+            return ack is null ? Results.NotFound() : Results.Ok(ack);
+        }).AllowAnonymous();
 
         return app;
     }

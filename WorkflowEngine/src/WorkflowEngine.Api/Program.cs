@@ -64,6 +64,11 @@ app.Use(async (context, next) =>
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(new { error = ex.Message });
     }
+    catch (WorkflowUnauthorizedException ex)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+    }
 });
 
 if (app.Environment.IsDevelopment())

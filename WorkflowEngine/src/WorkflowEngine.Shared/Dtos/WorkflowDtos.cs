@@ -60,6 +60,21 @@ public sealed record InstanceDetailDto(
     IReadOnlyList<InstanceVariableDto> Variables,
     IReadOnlyList<InstanceHistoryDto> History);
 
+// Slim acknowledgment returned by POST /api/instances/{id}/message. Deliberately
+// excludes the workflow definition, instance variables, and history: the message
+// endpoint is AllowAnonymous (auth = the catch node's client id/secret + required
+// header, not a user JWT), so a webhook caller should not be able to read the full
+// workflow model (which may contain other nodes' literal secrets) or the instance's
+// stored data. The caller gets only enough to confirm the delivery advanced the
+// instance and where it now rests.
+public sealed record MessageDeliveryAckDto(
+    long Id,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    string? CurrentNodeExternalId,
+    string Status,
+    DateTimeOffset UpdatedAt);
+
 public sealed record InstanceVariableDto(
     long Id,
     string VariableName,

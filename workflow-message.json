@@ -1,0 +1,128 @@
+{
+  "id": 11,
+  "name": "Message Workflow",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": null,
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Confirm",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 247,
+      "y": 113,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "wait for message",
+      "externalId": null,
+      "type": "intermediateMessageCatchEvent",
+      "laneId": null,
+      "x": 574,
+      "y": 118,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null,
+      "assignments": [],
+      "attachedToRef": null,
+      "errorVariable": null,
+      "message": {
+        "clientId": "user",
+        "clientSecret": "123",
+        "headerName": "msg-id",
+        "headerValue": "456",
+        "headerValidation": "",
+        "outputMappings": [
+          {
+            "variable": "user-name",
+            "path": "user-name"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "End",
+      "externalId": null,
+      "type": "endEvent",
+      "laneId": null,
+      "x": 830,
+      "y": 117,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 102,
+      "name": "Confirm",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 103,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
+}

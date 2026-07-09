@@ -160,6 +160,7 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
+            node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsAutomatic(node.Type) || BpmnFlowNodeTypes.IsGateway(node.Type))
         {
@@ -168,6 +169,7 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
+            node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
         {
@@ -179,6 +181,7 @@ public static class WorkflowModelMigrator
             node.Variables = [];
             node.Service ??= new ServiceTaskModel();
             node.Assignments = [];
+            node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
         {
@@ -192,6 +195,7 @@ public static class WorkflowModelMigrator
             node.Roles = [];
             node.Variables = [];
             node.Service = null;
+            node.Message = null;
             if (node.ScriptFormat != ScriptFormats.JavaScript)
             {
                 node.ScriptFormat = ScriptFormats.NCalc;
@@ -213,6 +217,7 @@ public static class WorkflowModelMigrator
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
+            node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
         {
@@ -227,6 +232,23 @@ public static class WorkflowModelMigrator
             node.Assignments = [];
             node.Script = null;
             node.Condition = null;
+            node.Message = null;
+        }
+        else if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+        {
+            // A message catch event rests until a message is delivered; the
+            // delivery configuration lives on node.Message. Like a userTask it
+            // is not pass-through, but it carries no claim/role/variable data.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.Condition = null;
+            node.Message ??= new MessageCatchModel();
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
@@ -240,6 +262,8 @@ public static class WorkflowModelMigrator
             {
                 node.InheritClaimFromNodeId = null;
             }
+
+            node.Message = null;
         }
     }
 }

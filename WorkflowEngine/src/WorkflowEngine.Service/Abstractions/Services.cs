@@ -107,8 +107,40 @@ public interface IWorkflowEngineService
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Delivers a message to an instance currently resting on an
+    /// <c>intermediateMessageCatchEvent</c>, authenticating the caller against the
+    /// node's expected client id/secret + required custom header, mapping the
+    /// message payload into instance variables, and advancing down the single
+    /// outgoing flow. Returns a slim ack (no definition/variables/history) - null
+    /// when the instance does not exist (404); throws
+    /// <c>WorkflowUnauthorizedException</c> on a credential/header mismatch (401)
+    /// and <c>WorkflowDomainException</c> when the instance is not running or not
+    /// resting on a message catch node (400).
+    /// </summary>
+    Task<MessageDeliveryAckDto?> DeliverMessageAsync(
+        long id,
+        IncomingMessage message,
+        CancellationToken cancellationToken);
+
     Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// An inbound message delivered to an instance resting on an
+/// <c>intermediateMessageCatchEvent</c>. <see cref="ClientId"/>/<see cref="ClientSecret"/>
+/// are taken from the <c>X-Client-Id</c>/<c>X-Client-Secret</c> request headers;
+/// <see cref="Headers"/> is the full request header collection (the catch node names
+/// its required header in configuration); <see cref="Payload"/> is the raw JSON body
+/// from which <c>outputMappings</c> extract values. <see cref="Actor"/> carries the
+/// resolved client id as the user for attribution/context (no JWT roles).
+/// </summary>
+public sealed record IncomingMessage(
+    string? ClientId,
+    string? ClientSecret,
+    IReadOnlyDictionary<string, string?> Headers,
+    JsonElement? Payload,
+    ActorContext Actor);
 
 /// <summary>
 /// A fully-resolved outgoing REST request for a service task (all ${var}

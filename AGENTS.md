@@ -119,10 +119,10 @@ Storage follows the hybrid design:
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`, automatic
   `task`, `serviceTask`, `scriptTask`, `exclusiveGateway`, and
   `errorBoundaryEvent` nodes are resolved in the same transaction until the
-  instance rests on a `userTask` or terminates on an `endEvent`/`errorEndEvent`.
-  A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
-  written with a `start`, `automatic`, `service`, `script`, `gateway`,
-  `boundary`, or `error` note.
+  instance rests on a `userTask` or `intermediateMessageCatchEvent`, or
+  terminates on an `endEvent`/`errorEndEvent`. A hop limit (`flowNodes.Count + 1`)
+  guards against cycles. History rows are written with a `start`, `automatic`,
+  `service`, `script`, `gateway`, `boundary`, `error`, or `message` note.
 - **Service tasks** call an external REST endpoint during the pass-through hop
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
@@ -229,6 +229,49 @@ Storage follows the hybrid design:
   `serviceTask.onError` (fail|continue) field has been removed in favor of
   boundary events (old definitions load tolerantly; the dropped `onError` value
   is ignored, and behavior is the no-boundary default = fail).
+- **Intermediate message catch events.** An `intermediateMessageCatchEvent` is a
+  resting node (like a `userTask`) that waits for an external system to deliver a
+  message via `POST /api/instances/{id}/message`; it then maps the message payload
+  into instance variables and advances down its single outgoing flow. Correlation
+  is by instance id only (the instance must be `Running` and currently resting on
+  the catch node); there is no cross-instance message-name/signal matching. The
+  delivery caller authenticates against the catch node's expected `clientId` /
+  `clientSecret` (sent as `X-Client-Id` / `X-Client-Secret` headers) and a required
+  custom header named by `headerName` whose value must equal `headerValue`; an
+  optional `headerValidation` NCalc rule is evaluated with the incoming header
+  value bound as `header` (plus instance variables + `sys.*`/`config.*`/`setting.*`
+  context) and must be truthy. All credential/header fields are `${var}`-templatable
+  (`ServiceTaskTemplating.SubstituteScalar`), so a secret can be sourced from
+  `${config.*}` / `${setting.*}` to stay out of the versioned definition JSON.
+  `outputMappings` (`{variable, path}`) extract dotted-path values from the inbound
+  JSON message body and write them to instance variables raw/uncoerced (mirrors a
+  `serviceTask`'s `ApplyServiceOutputsAsync`; targets need not be declared). The
+  message endpoint is `AllowAnonymous` (it does not use the user JWT); a credential
+  or header mismatch throws `WorkflowUnauthorizedException` (401), while a
+  not-running / not-waiting instance throws `WorkflowDomainException` (400). The
+  resolved client id is recorded as `performedBy`/`sys.user` for attribution.
+  **Credential/header resolution context.** The `clientId`/`clientSecret`/
+  `headerName`/`headerValue` templates are resolved against stored instance
+  variables overlaid with `config.*`/`setting.*` and the `sys.*` entries an
+  unverified caller cannot influence (`sys.now`, `sys.today`, `sys.instanceId`,
+  `sys.workflowId`, `sys.nodeId`, `sys.nodeName`) - **`sys.user` and `sys.roles`
+  are deliberately excluded**, since for an anonymous delivery they come from the
+  unverified `X-Client-Id` header and would otherwise let a caller satisfy a
+  credential templated as `${sys.user}`. (The `headerValidation` NCalc rule, run
+  only after the caller is authenticated, may still reference `sys.user`.) Secrets
+  in credential/header fields should be sourced from `${config.*}`/`${setting.*}`,
+  never written as literals in the definition JSON.
+  **Response shape.** The endpoint returns a slim `MessageDeliveryAckDto`
+  (`Id`, `CurrentNodeId`, `CurrentNodeName`, `CurrentNodeExternalId`, `Status`,
+  `UpdatedAt`) - not the full `InstanceDetailDto` - so a node-credentialed webhook
+  caller cannot read the workflow definition (which may contain other nodes'
+  literal secrets) or the instance's stored variables/history.
+  **Idempotency.** There is no delivery idempotency key: a webhook that retries
+  after a successful delivery gets a `400` ("not currently waiting for a message")
+  because the instance has already advanced off the catch node. Integrators should
+  deduplicate at the source; a future idempotency-key mechanism could address this.
+  No timeout escape hatch exists yet (a waiting instance waits indefinitely, like
+  an unclaimed `userTask`); a future timer boundary event could address that.
 - **Node roles are enforced** at runtime for `userTask` nodes. The caller's
   identity and roles come from a validated JWT (name + role claims), not from
   request fields. A `userTask` with a non-empty `roles` list can only be
@@ -268,6 +311,11 @@ what the cross-version `workflowKey` instance search matches.
   `GET /inbox?instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
+  `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
+  `AllowAnonymous` - auth is the node's client id/secret + required header, not
+  the user JWT; body is the raw JSON message payload; returns a slim
+  `MessageDeliveryAckDto` (no definition/variables/history), 401 on a
+  credential/header mismatch, 400 when not running/waiting),
   `POST /{id}/cancel`. The two list endpoints return
   `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `page` defaults
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
@@ -395,15 +443,15 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
-`serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`, or
-`errorBoundaryEvent`.
+`serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
+`errorBoundaryEvent`, or `intermediateMessageCatchEvent`.
 
 ```jsonc
 {
   "id": 1,
   "name": "Request Submitted",
   "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
-  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent
+  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask only)
@@ -417,7 +465,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "assignments": [ /* Assignment[] */ ], // scriptTask + scriptFormat "ncalc" only (see Assignment)
   "script": null,              // scriptTask + scriptFormat "javascript" only (see below)
   "attachedToRef": null,       // errorBoundaryEvent only: host serviceTask/scriptTask id
-  "errorVariable": null        // errorBoundaryEvent only, optional: captures the failure reason
+  "errorVariable": null,       // errorBoundaryEvent only, optional: captures the failure reason
+  "message": { /* MessageCatchConfig */ } // intermediateMessageCatchEvent only (see MessageCatchConfig)
 }
 ```
 
@@ -507,6 +556,17 @@ Node kinds and their outgoing-flow rules:
   attached, a failure fails the transition (rollback + 400). A boundary is
   pass-through (auto-advances its error flow) and may have no incoming flows;
   at most one boundary per host.
+- **`intermediateMessageCatchEvent`**: a resting node (like a `userTask`) that
+  waits for an external system to deliver a message via
+  `POST /api/instances/{id}/message`; a thin double-ring circle with an envelope
+  glyph on canvas. Carries a `message` config (clientId, clientSecret, headerName,
+  headerValue, headerValidation, outputMappings) and exactly one unconditional
+  outgoing flow. The instance rests on it until a matching message is delivered;
+  the caller authenticates against the templated client credentials + required
+  header, the payload is mapped into instance variables via `outputMappings`
+  (raw, like a service task), and the engine advances down the flow. No user
+  action. Correlation is by instance id only (no cross-instance signal/message
+  matching). No timeout escape hatch yet.
 
 A workflow may define multiple `startEvent` nodes. `initialEventId` is the
 default. `POST /api/instances` accepts optional `startEventId` to force a
@@ -635,6 +695,53 @@ a bare value position becomes the variable's JSON representation (so
 string inside a string and `null` in a bare position. Output `path` is dotted
 (`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
 
+### MessageCatchConfig
+The delivery configuration on an `intermediateMessageCatchEvent` flow node
+(`flowNode.message`). All scalar fields are `${var}`-templatable
+(`ServiceTaskTemplating.SubstituteScalar`) against instance variables + context,
+so a secret can be sourced from `${config.*}` / `${setting.*}` to stay out of the
+versioned definition JSON.
+
+```jsonc
+{
+  "clientId": "svc-orders",            // expected X-Client-Id; ${var} templatable
+  "clientSecret": "${config.orderSecret}", // expected X-Client-Secret; ${var} templatable
+  "headerName": "X-Webhook-Token",     // required custom header name; ${var} templatable
+  "headerValue": "${config.webhookToken}", // required custom header value; ${var} templatable
+  "headerValidation": "Len(header) >= 16", // optional NCalc; incoming value bound as `header`; must be truthy
+  "outputMappings": [                  // extract from the inbound JSON message body (raw/uncoerced)
+    { "variable": "approved", "path": "decision.approved" },
+    { "variable": "reference", "path": "ref" }
+  ]
+}
+```
+
+At delivery (`POST /api/instances/{id}/message`, `AllowAnonymous`) the engine:
+resolves the templated `clientId`/`clientSecret`/`headerName`/`headerValue`
+against the instance variables overlaid with `config.*`/`setting.*` and the
+`sys.*` entries an unverified caller cannot influence (`sys.now`, `sys.today`,
+`sys.instanceId`, `sys.workflowId`, `sys.nodeId`, `sys.nodeName`) - `sys.user`
+and `sys.roles` are excluded so a caller cannot satisfy a credential templated
+from `${sys.user}`; requires the incoming `X-Client-Id`/`X-Client-Secret` to
+equal the resolved client credentials (constant-time compare); requires the
+resolved header to be present, equal the resolved `headerValue` (constant-time
+compare), and (when `headerValidation` is set) satisfy the NCalc rule with the
+incoming value bound as `header` against the full context (caller `sys.user`
+included, since the caller is by then authenticated); then applies
+`outputMappings` from the raw JSON message body (dotted-path
+`ServiceTaskTemplating.TryExtract`, written raw via `AddVariableAsync` - targets
+need not be declared, mirroring a `serviceTask`). A credential or header mismatch
+throws `WorkflowUnauthorizedException` (401); a not-running / not-waiting
+instance throws `WorkflowDomainException` (400). The resolved client id is
+recorded as `performedBy` / `sys.user` for attribution. The endpoint returns a
+slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`, `CurrentNodeName`,
+`CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than the full
+`InstanceDetailDto`, so a node-credentialed webhook caller cannot read the
+workflow definition (which may contain other nodes' literal secrets) or the
+instance's stored variables/history. There is no delivery idempotency key; a
+retry after a successful delivery gets a `400` because the instance has already
+advanced off the catch node.
+
 ### Context sources (`sys.*` / `config.*` / `setting.*`)
 
 Beyond stored instance variables, service-task templates, exclusive-gateway
@@ -689,6 +796,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
+| `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
@@ -708,9 +816,11 @@ when extending the model so new features stay close to BPMN terminology.
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations
   (connectors, expressions, message/send-receive) are out of scope.
-- **Error events only (no timer/message/signal).** Plain (none) start and end
-  events plus `errorEndEvent` and `errorBoundaryEvent` (catch-all, no error
-  codes); no timer/message/signal events yet.
+- **Error events and one message catch event (no timer/signal yet).** Plain
+  (none) start and end events plus `errorEndEvent` and `errorBoundaryEvent`
+  (catch-all, no error codes) and `intermediateMessageCatchEvent` (correlation
+  by instance id only, no cross-instance signal/message matching, no timeout);
+  no timer/signal events yet.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -734,8 +844,8 @@ when extending the model so new features stay close to BPMN terminology.
   `WorkflowModelMigrator` (.NET) so older documents still load.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
   `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`,
-  `IsUserTask`, `IsGateway`, `IsPassThrough`) and `ValidateDefinition` together
-  so the engine and editor agree.
+  `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsPassThrough`) and
+  `ValidateDefinition` together so the engine and editor agree.
 
 ---
 
@@ -771,6 +881,10 @@ when extending the model so new features stay close to BPMN terminology.
   the pass-through loop with `automatic` / `start` history notes. `serviceTask`
   and `scriptTask` are also pass-through (single unconditional outgoing flow),
   logged with `service` / `script` notes.
+- **Message catch flow**: an `intermediateMessageCatchEvent` owns one
+  unconditional outgoing flow, drawn as a solid (non-dashed) edge since the node
+  rests (it is not pass-through). The engine advances down it on message
+  delivery, logged with a `message` history note.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
   `isDefault` marker; the editor shows the condition/`default` beneath the edge
   and enforces a single default per gateway.

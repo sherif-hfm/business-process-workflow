@@ -184,7 +184,11 @@
   .node.errorEndEvent circle.body { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
   .node.errorBoundaryEvent circle.body { fill: #1f0a0a; stroke: var(--red); stroke-width: 3; }
   .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
+  .node.intermediateMessageCatchEvent circle.body { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 2; }
+  .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
   .node .err-mark { fill: var(--red); font-size: 13px; font-weight: 700; text-anchor: middle; }
+  .node .msg-glyph rect { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
+  .node .msg-glyph path { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
   .node.selected rect,
   .node.selected circle.body,
   .node.selected polygon.body { stroke: #fff; stroke-width: 3; }
@@ -436,7 +440,8 @@ const NODE_TYPE = {
   SCRIPT_TASK: "scriptTask",
   EXCLUSIVE_GATEWAY: "exclusiveGateway",
   ERROR_END_EVENT: "errorEndEvent",
-  ERROR_BOUNDARY_EVENT: "errorBoundaryEvent"
+  ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
+  MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent"
 };
 const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.START_EVENT, label: "Start Event" },
@@ -446,7 +451,8 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
-  { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" }
+  { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
+  { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" }
 ];
 const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
 const CLAIM_MODE_OPTIONS = [
@@ -489,6 +495,23 @@ function normalizeAssignments(assignments) {
       variable: typeof a.variable === "string" ? a.variable : "",
       expression: typeof a.expression === "string" ? a.expression : ""
     }));
+}
+function defaultMessage() {
+  return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [] };
+}
+function normalizeMessage(message) {
+  const base = defaultMessage();
+  if (!message || typeof message !== "object") return base;
+  return {
+    clientId: typeof message.clientId === "string" ? message.clientId : "",
+    clientSecret: typeof message.clientSecret === "string" ? message.clientSecret : "",
+    headerName: typeof message.headerName === "string" ? message.headerName : "",
+    headerValue: typeof message.headerValue === "string" ? message.headerValue : "",
+    headerValidation: typeof message.headerValidation === "string" ? message.headerValidation : "",
+    outputMappings: Array.isArray(message.outputMappings)
+      ? message.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "" }))
+      : []
+  };
 }
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
@@ -551,7 +574,7 @@ function roleSummary(roles, maxLength = 28) {
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
 function isEventType(type) {
-  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT;
+  return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.MESSAGE_CATCH_EVENT;
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -577,6 +600,9 @@ function isErrorEndEventType(type) {
 function isBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
 }
+function isMessageCatchEventType(type) {
+  return type === NODE_TYPE.MESSAGE_CATCH_EVENT;
+}
 function isGatewayType(type) {
   return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
 }
@@ -585,7 +611,8 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.TASK
     || type === NODE_TYPE.SERVICE_TASK
     || type === NODE_TYPE.SCRIPT_TASK
-    || type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
+    || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
+    || type === NODE_TYPE.MESSAGE_CATCH_EVENT;
 }
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
@@ -609,6 +636,7 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.condition = null;
+    delete node.message;
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -616,6 +644,7 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.condition = null;
+    delete node.message;
   } else if (isServiceTaskType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -627,6 +656,7 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
+    delete node.message;
   } else if (isScriptTaskType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -635,6 +665,7 @@ function applyTypeInvariants(node) {
     node.variables = [];
     node.condition = null;
     delete node.service;
+    delete node.message;
     if (node.scriptFormat !== SCRIPT_FORMAT.JAVASCRIPT) node.scriptFormat = SCRIPT_FORMAT.NCALC;
     if (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT) {
       node.assignments = [];
@@ -650,6 +681,7 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = node.variables || [];
     node.condition = null;
+    delete node.message;
   } else if (isBoundaryEventType(node.type)) {
     // A boundary event is attached to a service/script task; it carries only
     // attachedToRef and the optional errorVariable, nothing else.
@@ -663,12 +695,29 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     node.script = null;
+    delete node.message;
     if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
     if (typeof node.errorVariable !== "string" || !node.errorVariable.trim()) node.errorVariable = null;
+  } else if (isMessageCatchEventType(node.type)) {
+    // A message catch event rests (like a userTask) until a matching message is
+    // delivered via POST /api/instances/{id}/message. The delivery configuration
+    // lives on node.message; it carries no claim/role/variable data.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.condition = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    node.message = normalizeMessage(node.message);
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
     if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+    delete node.message;
   }
 
   if (isSingleOutgoingType(node.type)) {
@@ -704,6 +753,13 @@ function appendConditionMarker(g) {
   const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
   t.textContent = "COND";
   g.appendChild(t);
+}
+// Envelope glyph drawn inside a message catch event's double-ring circle.
+function appendMessageGlyph(g, r) {
+  const glyph = el("g", { class: "msg-glyph", transform: `translate(${r - 8},${r - 5})` });
+  glyph.appendChild(el("rect", { x: 0, y: 0, width: 16, height: 10, rx: 1, ry: 1 }));
+  glyph.appendChild(el("path", { d: "M0 0 L8 6 L16 0" }));
+  g.appendChild(glyph);
 }
 
 /* ---------- Sample seed ---------- */
@@ -886,7 +942,11 @@ function renderNodes() {
     } else if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
-      if (isErrorEndEventType(node.type)) {
+      if (isMessageCatchEventType(node.type)) {
+        // Intermediate catch: thin double-ring + envelope glyph (no thick ring).
+        g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
+        appendMessageGlyph(g, r);
+      } else if (isErrorEndEventType(node.type)) {
         const mark = el("text", { x: r, y: r + 6, class: "err-mark", "font-size": "22" });
         mark.textContent = "!";
         g.appendChild(mark);
@@ -1299,6 +1359,10 @@ function renderNodeInspector() {
     renderScriptSection(node);
   }
 
+  if (isMessageCatchEventType(node.type)) {
+    renderMessageSection(node);
+  }
+
   if (isStartEventType(node.type)) {
     node.variables = node.variables || [];
 
@@ -1521,6 +1585,84 @@ function renderServiceSection(node) {
   addMappingBtn.textContent = "+ Add mapping";
   addMappingBtn.style.marginTop = "8px";
   addMappingBtn.onclick = () => { service.outputMappings.push({ variable: "", path: "" }); renderInspector(); };
+  inspector.appendChild(addMappingBtn);
+}
+
+function renderMessageSection(node) {
+  node.message = normalizeMessage(node.message);
+  const message = node.message;
+
+  const title = document.createElement("h2");
+  title.textContent = "Message (delivery)";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Rests until a message is delivered to POST /api/instances/{id}/message. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below.";
+  inspector.appendChild(hint);
+
+  field("Client id", "text", message.clientId, v => { message.clientId = v; });
+  field("Client secret", "text", message.clientSecret, v => { message.clientSecret = v; });
+  field("Header name", "text", message.headerName, v => { message.headerName = v; });
+  field("Header value", "text", message.headerValue, v => { message.headerValue = v; });
+
+  const valHint = document.createElement("p");
+  valHint.className = "empty-note";
+  valHint.textContent = "Optional NCalc rule evaluated with the incoming header value bound as `header` (plus instance vars/context); must be truthy. e.g. Len(header) >= 8";
+  inspector.appendChild(valHint);
+  field("Header validation (NCalc, optional)", "text", message.headerValidation, v => { message.headerValidation = v; });
+
+  // Output mappings (mirror the service-task response mappings UI)
+  const outTitle = document.createElement("h2");
+  outTitle.textContent = "Output mappings";
+  outTitle.style.marginTop = "16px";
+  inspector.appendChild(outTitle);
+
+  const outHint = document.createElement("p");
+  outHint.className = "empty-note";
+  outHint.textContent = "Write fields from the inbound message JSON body into instance variables. Path is dotted, e.g. decision.approved or items.0.id.";
+  inspector.appendChild(outHint);
+
+  message.outputMappings.forEach((mapping, index) => {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+
+    const varField = document.createElement("div");
+    varField.className = "field";
+    varField.innerHTML = "<label>Variable</label>";
+    const varInput = document.createElement("input");
+    varInput.type = "text";
+    varInput.value = mapping.variable;
+    varInput.oninput = () => { mapping.variable = varInput.value; };
+    varField.appendChild(varInput);
+    box.appendChild(varField);
+
+    const pathField = document.createElement("div");
+    pathField.className = "field";
+    pathField.innerHTML = "<label>Body path</label>";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.value = mapping.path;
+    pathInput.oninput = () => { mapping.path = pathInput.value; };
+    pathField.appendChild(pathInput);
+    box.appendChild(pathField);
+
+    const del = document.createElement("button");
+    del.textContent = "Delete mapping";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => { message.outputMappings.splice(index, 1); renderInspector(); };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const addMappingBtn = document.createElement("button");
+  addMappingBtn.textContent = "+ Add mapping";
+  addMappingBtn.style.marginTop = "8px";
+  addMappingBtn.onclick = () => { message.outputMappings.push({ variable: "", path: "" }); renderInspector(); };
   inspector.appendChild(addMappingBtn);
 }
 
@@ -2738,7 +2880,8 @@ function loadFromObject(obj) {
         assignments: isScriptTaskType(s.type) ? normalizeAssignments(s.assignments) : undefined,
         script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined,
         attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
-        errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null
+        errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null,
+        message: isMessageCatchEventType(s.type) ? normalizeMessage(s.message) : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,

@@ -480,6 +480,265 @@ public sealed class WorkflowEngineService(
         return await BuildDetailAsync(id, cancellationToken);
     }
 
+    public async Task<MessageDeliveryAckDto?> DeliverMessageAsync(
+        long id,
+        IncomingMessage message,
+        CancellationToken cancellationToken)
+    {
+        await LoadSettingsAsync(cancellationToken);
+        var actor = message.Actor;
+        var performedBy = actor.User;
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
+        if (instance is null)
+        {
+            return null;
+        }
+
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            throw new WorkflowDomainException("Only running instances can receive a message.");
+        }
+
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        if (!BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+        {
+            throw new WorkflowDomainException("The instance is not currently waiting for a message.");
+        }
+
+        var messageConfig = node.Message
+            ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no message configuration.");
+
+        // Resolve the templated expected credentials + required header. Credentials
+        // and the header name/value are resolved against stored instance variables
+        // overlaid with read-only config.*/setting.* context ONLY - the caller's
+        // sys.user/sys.roles are intentionally excluded so an unverified caller
+        // cannot satisfy a credential by templating it from ${sys.user} (the value
+        // would resolve to the empty string they don't send). sys.* context the
+        // caller cannot influence (sys.now/sys.today/sys.instanceId/sys.workflowId/
+        // sys.nodeId/sys.nodeName) is still available since it is not attacker-
+        // controlled and may be useful in a headerValue/headerValidation template.
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var authContext = BuildAuthContext(stored, instance, workflow.Definition, node);
+
+        var expectedClientId = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientId, authContext);
+        var expectedClientSecret = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientSecret, authContext);
+        var expectedHeaderName = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderName, authContext);
+        var expectedHeaderValue = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderValue, authContext);
+
+        // Authenticate the caller against the node's expected client id/secret.
+        if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
+            || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
+        {
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        // Validate the required custom header: present, equal to the resolved
+        // expected value, and (when set) satisfying the NCalc headerValidation rule
+        // with the incoming value bound as `header` alongside instance vars/context.
+        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
+            || incomingHeaderValue is null)
+        {
+            throw new WorkflowUnauthorizedException(
+                $"Required header '{expectedHeaderName}' is missing.");
+        }
+
+        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
+        {
+            throw new WorkflowUnauthorizedException(
+                $"Header '{expectedHeaderName}' does not match the expected value.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
+        {
+            // The headerValidation rule may legitimately reference sys.user (the
+            // now-authenticated client id) and other sys.* context, so it is evaluated
+            // against the full context (caller actor included) plus the incoming header.
+            var fullContext = WithContext(stored, actor, instance, workflow.Definition, node);
+            var validationCtx = new Dictionary<string, JsonElement>(fullContext, StringComparer.OrdinalIgnoreCase)
+            {
+                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
+            };
+            if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
+            {
+                throw new WorkflowUnauthorizedException(
+                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
+            }
+        }
+
+        // Map the inbound message payload into instance variables (raw/uncoerced),
+        // mirroring ApplyServiceOutputsAsync: dotted-path extraction via
+        // ServiceTaskTemplating.TryExtract, written via AddVariableAsync.
+        await ApplyMessageOutputsAsync(instance.Id, node.Id, performedBy, messageConfig, message.Payload, cancellationToken);
+
+        // Advance down the single unconditional outgoing flow (ValidateDefinition
+        // enforced exactly one for a message catch event). SingleOrDefault + a
+        // domain exception keeps a malformed legacy definition from surfacing as a
+        // bare 500 (matching SelectPassThroughFlow's style).
+        var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault()
+            ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no outgoing sequence flow.");
+        var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
+        var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+            ? WorkflowInstanceStatuses.Faulted
+            : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
+                ? WorkflowInstanceStatuses.Completed
+                : WorkflowInstanceStatuses.Running;
+
+        await runtime.AddHistoryAsync(
+            instance.Id,
+            null,
+            node.Id,
+            nextNode.Id,
+            performedBy,
+            null,
+            "message",
+            cancellationToken);
+
+        instance = instance with
+        {
+            CurrentStepId = nextNode.Id,
+            Status = nextStatus,
+            ClaimedBy = null,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(nextNode), instance.Status, null, cancellationToken);
+        // Flush mapped variables so pass-through gateways can read them within this transaction.
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
+        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        // Return a slim ack (no definition/variables/history) so an AllowAnonymous
+        // webhook caller cannot read the full workflow model or instance data.
+        return await BuildMessageAckAsync(instance.Id, cancellationToken);
+    }
+
+    // Builds the credential/header resolution context: stored instance variables
+    // overlaid with config.*/setting.* and the sys.* entries an unverified caller
+    // cannot influence (now/today/instance/workflow/node). It deliberately omits
+    // sys.user and sys.roles (which come from the unverified X-Client-Id header)
+    // and sys.claim.* (JWT claims, absent for an anonymous delivery) so a templated
+    // credential cannot be satisfied by the very caller it is supposed to authenticate.
+    private Dictionary<string, JsonElement> BuildAuthContext(
+        Dictionary<string, JsonElement> stored,
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        FlowNodeModel currentNode)
+    {
+        var merged = new Dictionary<string, JsonElement>(stored, StringComparer.OrdinalIgnoreCase);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        void Put(string key, object? value) => merged[key] = JsonSerializer.SerializeToElement(value);
+
+        Put("sys.now", now.ToString("o", CultureInfo.InvariantCulture));
+        Put("sys.today", now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        Put("sys.instanceId", instance.Id);
+        Put("sys.workflowId", instance.WorkflowDefinitionId);
+        Put("sys.workflowName", definition.Name);
+        Put("sys.nodeId", currentNode.Id);
+        Put("sys.nodeName", currentNode.Name);
+
+        if (contextOptions.Config is { } config)
+        {
+            foreach (var pair in config)
+            {
+                merged[$"config.{pair.Key}"] = JsonSerializer.SerializeToElement(pair.Value);
+            }
+        }
+
+        if (_settingsCache is { } cache)
+        {
+            foreach (var pair in cache)
+            {
+                merged[pair.Key] = pair.Value;
+            }
+        }
+
+        return merged;
+    }
+
+    // Builds the slim delivery ack: only the resting node identity + status, no
+    // definition/variables/history (the message endpoint is AllowAnonymous).
+    private async Task<MessageDeliveryAckDto?> BuildMessageAckAsync(long id, CancellationToken cancellationToken)
+    {
+        var instance = await runtime.GetInstanceAsync(id, cancellationToken);
+        if (instance is null)
+        {
+            return null;
+        }
+
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        return new MessageDeliveryAckDto(
+            instance.Id,
+            node.Id,
+            node.Name,
+            node.ExternalId,
+            instance.Status,
+            instance.UpdatedAt);
+    }
+
+    // Maps the inbound message payload into instance variables using the catch
+    // node's outputMappings, identical to ApplyServiceOutputsAsync for service
+    // tasks: dotted-path extraction (numeric segments index arrays), values
+    // written raw via AddVariableAsync (no coercion; targets need not be declared).
+    private async Task ApplyMessageOutputsAsync(
+        long instanceId,
+        int nodeId,
+        string? setBy,
+        MessageCatchModel message,
+        JsonElement? payload,
+        CancellationToken cancellationToken)
+    {
+        if (message.OutputMappings.Count == 0 || payload is not { } body || body.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body.GetRawText());
+        }
+        catch (JsonException)
+        {
+            // Non-JSON message body: nothing to map.
+            return;
+        }
+
+        using (document)
+        {
+            foreach (var mapping in message.OutputMappings)
+            {
+                if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
+                {
+                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
+                }
+            }
+        }
+    }
+
+    // Constant-time string comparison to avoid leaking secret length/prefix via timing.
+    private static bool ConstantTimeEquals(string a, string b)
+    {
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        var diff = 0;
+        for (var i = 0; i < a.Length; i++)
+        {
+            diff |= a[i] ^ b[i];
+        }
+
+        return diff == 0;
+    }
+
     public async Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken)
     {
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);

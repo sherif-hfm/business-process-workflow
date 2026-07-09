@@ -123,6 +123,16 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ServiceTaskModel? Service { get; set; }
 
+    // intermediateMessageCatchEvent only: delivery configuration. The node rests
+    // (like a userTask) until a matching message is delivered via
+    // POST /api/instances/{id}/message, which authenticates against the expected
+    // clientId/clientSecret + a required custom header, then maps the message
+    // payload into instance variables via outputMappings and advances down the
+    // single outgoing flow.
+    [JsonPropertyName("message")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MessageCatchModel? Message { get; set; }
+
     // scriptTask only: which authoring mode is active. "ncalc" (default) uses
     // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
     // JS body with a bound `execution` host object). Exactly one mode's data is
@@ -226,6 +236,39 @@ public sealed class ServiceOutputMappingModel
 
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
+}
+
+// Delivery configuration for an intermediateMessageCatchEvent. All scalar
+// fields are ${var}-templatable (ServiceTaskTemplating.SubstituteScalar) against
+// the instance variables + sys.*/config.*/setting.* context, so an expected
+// secret can be sourced from ${config.apiSecret} to stay out of the definition
+// JSON. The delivery caller (POST /api/instances/{id}/message) is authenticated
+// against the resolved clientId/clientSecret (sent as X-Client-Id / X-Client-Secret
+// headers) and must supply a header matching headerName/headerValue. When
+// headerValidation is set, it is an NCalc rule evaluated with the incoming header
+// value bound as `header` (plus instance vars/context); it must be truthy.
+// outputMappings extract dotted-path values from the inbound JSON message body
+// and write them to instance variables raw/uncoerced (mirrors serviceTask).
+public sealed class MessageCatchModel
+{
+    [JsonPropertyName("clientId")]
+    public string ClientId { get; set; } = string.Empty;
+
+    [JsonPropertyName("clientSecret")]
+    public string ClientSecret { get; set; } = string.Empty;
+
+    [JsonPropertyName("headerName")]
+    public string HeaderName { get; set; } = string.Empty;
+
+    [JsonPropertyName("headerValue")]
+    public string HeaderValue { get; set; } = string.Empty;
+
+    [JsonPropertyName("headerValidation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? HeaderValidation { get; set; }
+
+    [JsonPropertyName("outputMappings")]
+    public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
 }
 
 public static class ClaimModes
@@ -374,6 +417,10 @@ public static class BpmnFlowNodeTypes
     // the host fails at runtime, the token routes out the boundary's single
     // outgoing "error" flow instead of failing the transition.
     public const string ErrorBoundaryEvent = "errorBoundaryEvent";
+    // Intermediate catch event that rests (like a userTask) until a matching
+    // message is delivered via POST /api/instances/{id}/message, then advances
+    // down its single outgoing flow. Async integration / webhook / callback step.
+    public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -405,13 +452,18 @@ public static class BpmnFlowNodeTypes
     public static bool IsGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
 
+    public static bool IsMessageCatch(string type) =>
+        string.Equals(type, IntermediateMessageCatchEvent, StringComparison.Ordinal);
+
     // A boundary event auto-advances down its single outgoing error flow once
     // the token is routed onto it, so it behaves as a pass-through node.
+    // A message catch event is intentionally NOT pass-through: it rests until a
+    // message is delivered (ResolvePassThroughAsync stops on it).
     public static bool IsPassThrough(string type) =>
         IsStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent or IntermediateMessageCatchEvent;
 }
 
 public static class WorkflowVariableTypes
