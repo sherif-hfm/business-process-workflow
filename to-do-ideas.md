@@ -5,3 +5,4 @@
 - show node id in side panel
 - add endpoint to get latest values of variables  for instance
 - add message event that expose as endpoint can called from other system to make flow sequence continue
+- inhance ui to be like modern dashboard
