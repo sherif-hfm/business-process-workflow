@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
         services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();
+        services.AddScoped<IEngineSettingsRepository, EngineSettingsRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>();

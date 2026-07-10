@@ -10,6 +10,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<IWorkflowEngineService, WorkflowEngineService>();
+        services.AddScoped<IEngineSettingsService, EngineSettingsService>();
         return services;
     }
 }

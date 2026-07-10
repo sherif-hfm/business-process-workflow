@@ -135,6 +135,14 @@ public interface IWorkflowSettingsRepository
     Task<IReadOnlyDictionary<string, JsonElement>> LoadAllAsync(CancellationToken cancellationToken);
 }
 
+public interface IEngineSettingsRepository
+{
+    Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken);
+    Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
+    Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(string key, CancellationToken cancellationToken);
+}
+
 public interface IWorkflowTransaction : IAsyncDisposable
 {
     Task CommitAsync(CancellationToken cancellationToken);

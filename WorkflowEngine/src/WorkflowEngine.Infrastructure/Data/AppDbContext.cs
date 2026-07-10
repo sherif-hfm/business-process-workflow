@@ -15,6 +15,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<WorkflowSettingEntity> WorkflowSettings => Set<WorkflowSettingEntity>();
 
+    public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
@@ -102,6 +104,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Namespace, e.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<EngineSettingEntity>(entity =>
+        {
+            entity.ToTable("engine_settings");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Namespace).HasMaxLength(300);
+            entity.Property(e => e.Key).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Value).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Namespace, e.Key }).IsUnique();
         });
     }
 }

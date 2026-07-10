@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WorkflowEngine.Service.Models;
 using WorkflowEngine.Shared.Dtos;
 using WorkflowEngine.Shared.Models;
 
@@ -291,4 +292,12 @@ public interface IScriptEvaluator
     /// (<c>ValidateDefinition</c>); does not execute the script.
     /// </summary>
     bool IsValid(string script, out string? error);
+}
+
+public interface IEngineSettingsService
+{
+    Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken);
+    Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
+    Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(string key, CancellationToken cancellationToken);
 }

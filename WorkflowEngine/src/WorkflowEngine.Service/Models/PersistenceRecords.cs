@@ -75,6 +75,14 @@ public sealed record InstanceHistoryRecord(
     string? Note,
     DateTimeOffset PerformedAt);
 
+public sealed record EngineSettingRecord(
+    long Id,
+    string? Namespace,
+    string Key,
+    string Value,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
 public static class WorkflowInstanceStatuses
 {
     public const string Running = "running";

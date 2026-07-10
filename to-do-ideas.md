@@ -1,5 +1,5 @@
 - protect workflow endpoints
-- add engine settings table 
+
 - enable docmentation in swegger
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - manage versions of workflow and change default version and published versions
@@ -15,6 +15,7 @@
 
 
 
+- add engine settings table  (done)
 - load workflow direct from file not past data (done)
 - convert "WorkflowKey" column and id in json to string and can start instance using it  (done)
 - no need to role in flow after Error boundary,start event,meesage,script task,service task (done)
