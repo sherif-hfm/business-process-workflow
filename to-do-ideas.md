@@ -1,4 +1,6 @@
-- add External ID (string) to workflow and start instance using it 
+- convert "WorkflowKey" column and id in json to string and can start instance using it 
+- enhance user inbox show roles and claimed or roles & search by claim
+- add engine settings table 
 - add endpoint line /api/instances/{id}/flows/{flowId} but using flow External ID
 - manage versions of workflow and change default version and published versions
 - add endpoint to get latest values of variables  for instance
