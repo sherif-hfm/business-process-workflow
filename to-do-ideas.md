@@ -1,5 +1,4 @@
 - protect workflow endpoints
-- load workflow direct from file not past data
 - add engine settings table 
 - enable docmentation in swegger
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
@@ -16,6 +15,7 @@
 
 
 
+- load workflow direct from file not past data (done)
 - convert "WorkflowKey" column and id in json to string and can start instance using it  (done)
 - no need to role in flow after Error boundary,start event,meesage,script task,service task (done)
 - find way to notify (api response) that action fail without the hole instance fail (keep status 200 and can set error on variable and the app who call the api should check the variables return in flow endpoint reponse , or check the current node return in flow endpoint reponse ) (done)
