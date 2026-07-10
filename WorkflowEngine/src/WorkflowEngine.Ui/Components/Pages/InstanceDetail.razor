@@ -65,11 +65,17 @@ else
         {
             if (string.IsNullOrWhiteSpace(instance.ClaimedBy))
             {
-                <div class="alert alert-info">Claim this task before taking an action.</div>
+                if (availableFlows.Any(f => !f.CanActWithoutClaim))
+                {
+                    <div class="alert alert-info">Claim this task before taking standard actions.</div>
+                }
             }
             else if (!CanTakeActions)
             {
-                <div class="alert alert-info">This task is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take actions.</div>
+                if (availableFlows.Any(f => !f.CanActWithoutClaim))
+                {
+                    <div class="alert alert-info">This task is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take standard actions.</div>
+                }
             }
         }
         @if (availableFlows.Count == 0)
@@ -104,7 +110,7 @@ else
                                 }
 
                                 <button class="btn btn-primary"
-                                        disabled="@(!CanTakeActions)"
+                                        disabled="@(!CanTakeFlow(flow))"
                                         @onclick="() => TakeFlowAsync(flow)">Take action</button>
                             </div>
                         </div>
@@ -218,6 +224,28 @@ else
             return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
                 && instance.ClaimedBy == ActingUser;
         }
+    }
+
+    private bool CanTakeFlow(SequenceFlowModel flow)
+    {
+        if (instance is null || instance.Status != "running")
+        {
+            return false;
+        }
+
+        var node = CurrentNode;
+        if (node is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
+        {
+            return false;
+        }
+
+        if (!node.RequiresClaim || flow.CanActWithoutClaim)
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
+            && instance.ClaimedBy == ActingUser;
     }
 
     private bool CanUnclaim

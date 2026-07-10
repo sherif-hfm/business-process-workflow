@@ -8,6 +8,7 @@
     {
       "id": 1,
       "name": "start",
+      "externalId": null,
       "type": "startEvent",
       "laneId": null,
       "x": 100,
@@ -17,27 +18,34 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 2,
       "name": "user-confirm",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 284,
       "y": 120,
       "roles": [
-        "User"
+        "User",
+        "Manager"
       ],
       "requiresClaim": true,
       "claimMode": "fromNode",
       "inheritClaimFromNodeId": 2,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 3,
       "name": "manager-confirm",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 652,
@@ -49,11 +57,14 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
       "name": "end",
+      "externalId": null,
       "type": "endEvent",
       "laneId": null,
       "x": 1036,
@@ -63,43 +74,56 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
       "name": "",
+      "externalId": null,
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "canActWithoutClaim": false
     },
     {
       "id": 102,
       "name": "confirm",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 3,
-      "roles": [],
+      "roles": [
+        "User"
+      ],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "canActWithoutClaim": false
     },
     {
       "id": 103,
-      "name": "",
+      "name": "confirm",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 4,
-      "roles": [],
+      "roles": [
+        "Manager"
+      ],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "canActWithoutClaim": false
     },
     {
       "id": 104,
       "name": "retry",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 2,
       "roles": [
@@ -107,21 +131,28 @@
       ],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "canActWithoutClaim": false
     },
     {
       "id": 105,
       "name": "reject",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [
-        "User"
+        "Manager"
       ],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "canActWithoutClaim": true
     }
   ],
-  "cancelRoles": [],
-  "unclaimRoles": []
+  "cancelRoles": [
+    "Manager"
+  ],
+  "unclaimRoles": [
+    "Manager"
+  ]
 }

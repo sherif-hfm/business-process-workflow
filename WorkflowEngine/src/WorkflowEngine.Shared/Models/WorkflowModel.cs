@@ -327,6 +327,9 @@ public sealed class SequenceFlowModel
 
     [JsonPropertyName("isDefault")]
     public bool IsDefault { get; set; }
+
+    [JsonPropertyName("canActWithoutClaim")]
+    public bool CanActWithoutClaim { get; set; }
 }
 
 public sealed class VariableModel

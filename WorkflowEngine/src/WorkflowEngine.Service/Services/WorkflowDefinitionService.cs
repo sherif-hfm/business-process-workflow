@@ -121,6 +121,11 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Sequence flow #{flow.Id} has variables but its source node is not a user task.");
             }
 
+            if (flow.CanActWithoutClaim && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} is marked to act without claim, but its source node is not a user task.");
+            }
+
             ValidateVariables(flow.Variables ?? [], $"sequence flow #{flow.Id}");
         }
 

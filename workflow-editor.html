@@ -2349,6 +2349,14 @@ function renderFlowInspector() {
           renderEdges();
         })
       );
+      if (source && source.requiresClaim) {
+        inspector.appendChild(
+          variableCheckbox("Can act without claim", flow.canActWithoutClaim, checked => {
+            flow.canActWithoutClaim = checked;
+            renderInspector();
+          })
+        );
+      }
     }
   }
 
@@ -2731,7 +2739,7 @@ function assignNodeLane(nodeId) {
 /* ---------- Connect mode ---------- */
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
-                 roles: [], variables: [], condition: null, isDefault: false };
+                 roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false };
   model.sequenceFlows.push(flow);
   return flow;
 }
@@ -2915,18 +2923,18 @@ function migrateLegacyToNew(obj) {
       }
       if (target != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
-                             roles: [], variables: [], condition: null, isDefault: false });
+                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false });
       }
     } else if (isAutomaticType(type)) {
       if (s.nextStepId != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
-                             roles: [], variables: [], condition: null, isDefault: false });
+                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false });
       }
     } else {
       for (const a of actions) {
         if (a.toStepId == null) continue;
         sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
-                             roles: a.roles, variables: a.variables, condition: null, isDefault: false });
+                             roles: a.roles, variables: a.variables, condition: null, isDefault: false, canActWithoutClaim: false });
       }
     }
 
@@ -3006,7 +3014,8 @@ function loadFromObject(obj) {
         roles: normalizeRoles(f.roles),
         variables: (f.variables || []).map(normalizeVariable),
         condition: f.condition ?? null,
-        isDefault: !!f.isDefault
+        isDefault: !!f.isDefault,
+        canActWithoutClaim: !!f.canActWithoutClaim
       })),
       cancelRoles: normalizeRoles(obj.cancelRoles),
       unclaimRoles: normalizeRoles(obj.unclaimRoles)

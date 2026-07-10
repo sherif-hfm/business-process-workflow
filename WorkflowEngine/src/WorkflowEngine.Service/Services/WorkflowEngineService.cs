@@ -406,9 +406,13 @@ public sealed class WorkflowEngineService(
         var hasRoleRestrictedFlows = definitions.Values.Any(w =>
             w.Definition.FlowNodes.Any(n => HasRoleRestrictedFlows(n, w.Definition)));
 
+        var hasBypassClaimFlows = definitions.Values.Any(w =>
+            w.Definition.FlowNodes.Any(n => BpmnFlowNodeTypes.IsUserTask(n.Type) && OutgoingFlows(w.Definition, n.Id).Any(f => f.CanActWithoutClaim)));
+
         List<InstanceListItem> visible;
         Dictionary<long, bool>? canActByInstance = null;
-        if (hasNodeCondition || hasRoleRestrictedFlows)
+        Dictionary<long, bool>? hasBypassClaimByInstance = null;
+        if (hasNodeCondition || hasRoleRestrictedFlows || hasBypassClaimFlows)
         {
             // Variables/context are only needed for NCalc node-condition evaluation.
             Dictionary<long, Dictionary<string, JsonElement>>? varsByInstance = null;
@@ -439,6 +443,10 @@ public sealed class WorkflowEngineService(
             if (hasRoleRestrictedFlows)
             {
                 canActByInstance = new Dictionary<long, bool>();
+            }
+            if (hasBypassClaimFlows)
+            {
+                hasBypassClaimByInstance = new Dictionary<long, bool>();
             }
 
             foreach (var row in candidates)
@@ -489,6 +497,11 @@ public sealed class WorkflowEngineService(
                 {
                     canActByInstance[row.Id] = CanTakeAnyFlow(node, definition.Definition, normalizedRoles);
                 }
+
+                if (hasBypassClaimByInstance is not null)
+                {
+                    hasBypassClaimByInstance[row.Id] = CanTakeAnyBypassClaimFlow(node, definition.Definition, normalizedRoles);
+                }
             }
         }
         else
@@ -502,7 +515,7 @@ public sealed class WorkflowEngineService(
             .Take(pageSize)
             .ToList();
 
-        var items = pageItems.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles, canActByInstance)).ToList();
+        var items = pageItems.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles, canActByInstance, hasBypassClaimByInstance)).ToList();
         return new PagedResult<InboxItemDto>(items, page, pageSize, totalCount);
     }
 
@@ -510,7 +523,8 @@ public sealed class WorkflowEngineService(
         InstanceListItem row,
         string normalizedUser,
         IReadOnlySet<string> normalizedRoles,
-        Dictionary<long, bool>? canActByInstance = null)
+        Dictionary<long, bool>? canActByInstance = null,
+        Dictionary<long, bool>? hasBypassClaimByInstance = null)
     {
         var claimedByMe = row.ClaimedBy == normalizedUser;
         var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
@@ -519,6 +533,17 @@ public sealed class WorkflowEngineService(
 
         var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
         var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
+
+        // If the task has a bypass-claim flow and the user has the role to take it,
+        // they can act directly on it even if it requires a claim and is unclaimed
+        // (or claimed by someone else).
+        if (hasBypassClaimByInstance is not null && hasBypassClaimByInstance.TryGetValue(row.Id, out var hasBypass) && hasBypass)
+        {
+            if (roleMatch)
+            {
+                canAct = true;
+            }
+        }
 
         // When the inbox post-filter ran for flow roles, refine the action flags:
         // the actor must additionally be able to take at least one outgoing flow.
@@ -580,11 +605,6 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
-        if (node.RequiresClaim && string.IsNullOrWhiteSpace(instance.ClaimedBy))
-        {
-            return [];
-        }
-
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
         if (!NodeVisible(node, evalCtx))
@@ -592,8 +612,12 @@ public sealed class WorkflowEngineService(
             return [];
         }
 
+        var normalizedUser = NormalizeUser(actor.User);
+        var claimedByMe = instance.ClaimedBy == normalizedUser;
+
         return OutgoingFlows(workflow.Definition, node.Id)
             .Where(f => RoleAllowed(f.Roles, actorRoles)
+                        && (!node.RequiresClaim || claimedByMe || f.CanActWithoutClaim)
                         && (f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx)))
             .ToList();
@@ -715,7 +739,7 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
         }
-        EnsureActionAllowedByClaim(node, instance, performedBy);
+        EnsureActionAllowedByClaim(node, flow, instance, performedBy);
 
         ValidateVariableValues(flow.Variables, variableValues);
 
@@ -2094,10 +2118,11 @@ public sealed class WorkflowEngineService(
 
     private static void EnsureActionAllowedByClaim(
         FlowNodeModel node,
+        SequenceFlowModel flow,
         WorkflowInstanceRecord instance,
         string? performedBy)
     {
-        if (!node.RequiresClaim)
+        if (!node.RequiresClaim || flow.CanActWithoutClaim)
         {
             return;
         }
@@ -2112,6 +2137,10 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException($"Only '{instance.ClaimedBy}' can act on this flow node.");
         }
     }
+
+    private static bool CanTakeAnyBypassClaimFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
+        BpmnFlowNodeTypes.IsUserTask(node.Type)
+        && OutgoingFlows(definition, node.Id).Any(f => f.CanActWithoutClaim && RoleAllowed(f.Roles, actorRoles));
 
     private static string NormalizeUser(string? user) =>
         string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
