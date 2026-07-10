@@ -81,13 +81,7 @@ if (app.Environment.IsDevelopment())
 
     using var scope = app.Services.CreateScope();
     var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
-    var seedPath = Path.GetFullPath(Path.Combine(
-        app.Environment.ContentRootPath,
-        "..",
-        "..",
-        "..",
-        "workflow.json"));
-    await initializer.ApplyMigrationsAndSeedAsync(seedPath);
+    await initializer.InitializeDatabaseAsync();
 }
 
 app.UseHttpsRedirection();
