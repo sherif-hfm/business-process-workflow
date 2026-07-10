@@ -22,7 +22,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("workflow_definitions");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
-            entity.Property(e => e.WorkflowKey).IsRequired().HasDefaultValue(0);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
             entity.Property(e => e.Definition).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Name, e.Version }).IsUnique();

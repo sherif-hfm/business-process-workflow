@@ -536,7 +536,7 @@ const resizer = document.getElementById('sidebar-resizer');
 
 function newModel() {
   return {
-    id: 1,
+    id: "1",
     name: "New Workflow",
     initialEventId: null,
     variables: [],
@@ -805,7 +805,7 @@ function appendMessageGlyph(g, r) {
 /* ---------- Sample seed ---------- */
 function seedSample() {
   model = {
-    id: 1,
+    id: "purchase-request-approval",
     name: "Purchase Request Approval",
     initialEventId: 1,
     variables: [
@@ -1235,9 +1235,8 @@ function renderInspector() {
       Lanes: <b>${model.lanes.length}</b><br>
       Flow nodes: <b>${model.flowNodes.length}</b><br>
       Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
-    field("Workflow ID", "number", model.id ?? "", v => {
-      const parsed = parseInt(v, 10);
-      model.id = isNaN(parsed) ? null : parsed;
+    field("Workflow ID", "text", model.id ?? "", v => {
+      model.id = v ? String(v).trim() : "";
     });
     addInitialSelector();
     addWorkflowRolesSection();

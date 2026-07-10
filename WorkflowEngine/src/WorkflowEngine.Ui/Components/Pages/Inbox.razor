@@ -40,7 +40,7 @@ else
         </div>
         <div>
             <label class="form-label">Workflow key</label>
-            <input type="number" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="1" />
+            <input type="text" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="purchase-request" />
         </div>
         <div>
             <label class="form-label">Node id</label>
@@ -129,7 +129,7 @@ else
     private string? variableFilter;
     private long? instanceId;
     private long? workflowId;
-    private int? workflowKey;
+    private string? workflowKey;
     private int? nodeId;
     private string? nodeExternalId;
     private string? error;

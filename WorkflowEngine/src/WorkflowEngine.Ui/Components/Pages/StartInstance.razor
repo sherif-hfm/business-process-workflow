@@ -142,6 +142,7 @@ else
             var variables = BuildPayload(startEvent.Variables);
             var instance = await Api.StartInstanceAsync(new StartInstanceRequest(
                 workflow.Id,
+                null,
                 selectedStartEventId,
                 variables));
             if (instance is not null)

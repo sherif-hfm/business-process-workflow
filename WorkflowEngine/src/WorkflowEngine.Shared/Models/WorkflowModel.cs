@@ -6,7 +6,8 @@ namespace WorkflowEngine.Shared.Models;
 public sealed class WorkflowModel
 {
     [JsonPropertyName("id")]
-    public int Id { get; set; }
+    [JsonConverter(typeof(WorkflowIdConverter))]
+    public string Id { get; set; } = string.Empty;
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
@@ -510,4 +511,26 @@ public static class WorkflowVariableTypes
     public const string Boolean = "boolean";
     public const string Date = "date";
     public const string DateTime = "datetime";
+}
+
+public sealed class WorkflowIdConverter : JsonConverter<string>
+{
+    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            if (reader.TryGetInt64(out long longVal)) return longVal.ToString();
+            if (reader.TryGetDouble(out double doubleVal)) return doubleVal.ToString();
+        }
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return reader.GetString() ?? string.Empty;
+        }
+        throw new JsonException("Workflow ID must be a number or string.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value);
+    }
 }

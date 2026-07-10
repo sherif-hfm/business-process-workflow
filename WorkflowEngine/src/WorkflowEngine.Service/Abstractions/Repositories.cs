@@ -11,11 +11,7 @@ public interface IWorkflowDefinitionRepository
 
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
-    // Resolves the latest published version of a workflow by its stable, cross-
-    // version WorkflowKey (the editor JSON model id). Used by the message-start
-    // webhook so a caller addresses the workflow without knowing per-version row
-    // ids. Returns null when no published version exists for the key.
-    Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(int workflowKey, CancellationToken cancellationToken);
+    Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);
 
     Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken);
 
@@ -43,7 +39,7 @@ public interface IWorkflowRuntimeRepository
         string? status,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -56,7 +52,7 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyCollection<string> roles,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -71,7 +67,7 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyCollection<string> roles,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -131,7 +127,7 @@ public interface IWorkflowRuntimeRepository
     // Serializes concurrent message-start deliveries that carry the same
     // idempotency key so the dedupe-by-variable check is race-free. The lock is
     // released on commit/rollback.
-    Task AcquireStartLockAsync(int workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken);
+    Task AcquireStartLockAsync(string workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken);
 }
 
 public interface IWorkflowSettingsRepository

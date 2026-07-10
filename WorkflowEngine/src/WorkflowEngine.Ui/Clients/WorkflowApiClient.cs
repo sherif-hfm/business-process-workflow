@@ -32,7 +32,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         int? nodeId = null,
         long? instanceId = null,
         long? workflowId = null,
-        int? workflowKey = null,
+        string? workflowKey = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
@@ -51,9 +51,9 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             url += $"&workflowId={workflowId.Value}";
         }
 
-        if (workflowKey is not null)
+        if (!string.IsNullOrEmpty(workflowKey))
         {
-            url += $"&workflowKey={workflowKey.Value}";
+            url += $"&workflowKey={Uri.EscapeDataString(workflowKey)}";
         }
 
         if (nodeId is not null)
@@ -80,7 +80,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         int? nodeId = null,
         long? instanceId = null,
         long? workflowId = null,
-        int? workflowKey = null,
+        string? workflowKey = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances/inbox?page={page}&pageSize={pageSize}";
@@ -94,9 +94,9 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             url += $"&workflowId={workflowId.Value}";
         }
 
-        if (workflowKey is not null)
+        if (!string.IsNullOrEmpty(workflowKey))
         {
-            url += $"&workflowKey={workflowKey.Value}";
+            url += $"&workflowKey={Uri.EscapeDataString(workflowKey)}";
         }
 
         if (nodeId is not null)

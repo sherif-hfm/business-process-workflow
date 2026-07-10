@@ -29,7 +29,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext) : IWork
         return entity is null ? null : ToRecord(entity);
     }
 
-    public async Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(int workflowKey, CancellationToken cancellationToken)
+    public async Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken)
     {
         var entity = await dbContext.WorkflowDefinitions.AsNoTracking()
             .Where(w => w.WorkflowKey == workflowKey && w.IsPublished)

@@ -1,0 +1,127 @@
+{
+  "id": "101",
+  "name": "user inbox",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 2,
+      "name": "user-confirm",
+      "type": "userTask",
+      "laneId": null,
+      "x": 284,
+      "y": 120,
+      "roles": [
+        "User"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fromNode",
+      "inheritClaimFromNodeId": 2,
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 3,
+      "name": "manager-confirm",
+      "type": "userTask",
+      "laneId": null,
+      "x": 652,
+      "y": 120,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 4,
+      "name": "end",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1036,
+      "y": 122,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "condition": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 102,
+      "name": "confirm",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 103,
+      "name": "",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 104,
+      "name": "retry",
+      "sourceRef": 3,
+      "targetRef": 2,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    },
+    {
+      "id": 105,
+      "name": "reject",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "User"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
+}

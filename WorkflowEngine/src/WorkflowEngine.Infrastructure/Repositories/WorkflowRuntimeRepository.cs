@@ -47,7 +47,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? status,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -99,7 +99,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<string> roles,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -139,7 +139,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<string> roles,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -162,7 +162,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<string> roles,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters)
@@ -253,14 +253,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     private static void AppendWorkflowKeyFilter(
         StringBuilder where,
         List<(string Name, object Value)> args,
-        int? workflowKey)
+        string? workflowKey)
     {
         if (workflowKey is null)
         {
             return;
         }
 
-        args.Add(("workflowKey", workflowKey.Value));
+        args.Add(("workflowKey", workflowKey));
         where.Append(
             " AND EXISTS (SELECT 1 FROM workflow_definitions d" +
             " WHERE d.\"Id\" = w.\"WorkflowDefinitionId\" AND d.\"WorkflowKey\" = @workflowKey)");
@@ -505,7 +505,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
-    public async Task AcquireStartLockAsync(int workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken)
+    public async Task AcquireStartLockAsync(string workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken)
     {
         // pg_advisory_xact_lock is held until the current transaction commits or
         // rolls back, serializing concurrent message-start deliveries carrying the
@@ -515,7 +515,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // per-process-randomized GetHashCode). Collisions merely cause harmless
         // extra serialization.
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT pg_advisory_xact_lock({workflowKey}, hashtext({idempotencyKeyValue}))", cancellationToken);
+            $"SELECT pg_advisory_xact_lock(hashtext({workflowKey}), hashtext({idempotencyKeyValue}))", cancellationToken);
     }
 
     private static WorkflowInstanceRecord ToRecord(WorkflowInstanceEntity entity) =>

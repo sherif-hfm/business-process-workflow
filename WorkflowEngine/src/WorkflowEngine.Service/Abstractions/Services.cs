@@ -59,7 +59,8 @@ public interface IWorkflowDefinitionService
 public interface IWorkflowEngineService
 {
     Task<InstanceDetailDto> StartInstanceAsync(
-        long workflowId,
+        long? workflowId,
+        string? workflowKey,
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
@@ -78,7 +79,7 @@ public interface IWorkflowEngineService
     /// version, or an ambiguous/absent start event.
     /// </summary>
     Task<MessageStartAckDto> StartByMessageAsync(
-        int workflowKey,
+        string workflowKey,
         string? startEventExternalId,
         IncomingMessage message,
         CancellationToken cancellationToken);
@@ -87,7 +88,7 @@ public interface IWorkflowEngineService
         string? status,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -99,7 +100,7 @@ public interface IWorkflowEngineService
         ActorContext actor,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,

@@ -6,7 +6,7 @@ namespace WorkflowEngine.Shared.Dtos;
 public sealed record WorkflowSummaryDto(
     long Id,
     string Name,
-    int WorkflowKey,
+    string WorkflowKey,
     int Version,
     bool IsPublished,
     DateTimeOffset CreatedAt);
@@ -14,7 +14,7 @@ public sealed record WorkflowSummaryDto(
 public sealed record WorkflowDetailDto(
     long Id,
     string Name,
-    int WorkflowKey,
+    string WorkflowKey,
     int Version,
     bool IsPublished,
     DateTimeOffset CreatedAt,
@@ -25,7 +25,8 @@ public sealed record CreateWorkflowRequest(WorkflowModel Definition, bool Publis
 public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publish = false);
 
 public sealed record StartInstanceRequest(
-    long WorkflowId,
+    long? WorkflowId,
+    string? WorkflowKey,
     int? StartEventId,
     Dictionary<string, JsonElement>? Variables);
 

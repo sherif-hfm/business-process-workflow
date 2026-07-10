@@ -8,7 +8,7 @@ public sealed class WorkflowDefinitionEntity
 
     public string Name { get; set; } = string.Empty;
 
-    public int WorkflowKey { get; set; }
+    public string WorkflowKey { get; set; } = string.Empty;
 
     public int Version { get; set; }
 

@@ -73,9 +73,9 @@ public static class WorkflowDefinitionEndpoints
         // idempotency key returns the existing instance's ack (no duplicate). A
         // non-JSON content type is treated as no payload (rather than throwing a
         // 500) so a misconfigured caller gets a clean response.
-        group.MapPost("/{workflowKey:int}/message-start", async (
+        group.MapPost("/{workflowKey}/message-start", async (
             HttpContext context,
-            int workflowKey,
+            string workflowKey,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {

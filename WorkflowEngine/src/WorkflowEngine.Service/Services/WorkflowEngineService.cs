@@ -32,7 +32,8 @@ public sealed class WorkflowEngineService(
     }
 
     public async Task<InstanceDetailDto> StartInstanceAsync(
-        long workflowId,
+        long? workflowId,
+        string? workflowKey,
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
@@ -40,7 +41,21 @@ public sealed class WorkflowEngineService(
     {
         await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
-        var workflow = await GetPublishedWorkflowAsync(workflowId, cancellationToken);
+        
+        WorkflowDefinitionRecord workflow;
+        if (workflowId.HasValue)
+        {
+            workflow = await GetPublishedWorkflowAsync(workflowId.Value, cancellationToken);
+        }
+        else if (!string.IsNullOrEmpty(workflowKey))
+        {
+            workflow = await definitions.GetLatestPublishedByWorkflowKeyAsync(workflowKey, cancellationToken)
+                ?? throw new WorkflowDomainException($"No published workflow found for workflowKey '{workflowKey}'.");
+        }
+        else
+        {
+            throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
+        }
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
             ?? throw new WorkflowDomainException("Workflow has no default start event.");
 
@@ -94,7 +109,7 @@ public sealed class WorkflowEngineService(
     }
 
     public async Task<MessageStartAckDto> StartByMessageAsync(
-        int workflowKey,
+        string workflowKey,
         string? startEventExternalId,
         IncomingMessage message,
         CancellationToken cancellationToken)
@@ -279,7 +294,7 @@ public sealed class WorkflowEngineService(
     // search reuses the variable-search path and spans any status (a completed/
     // faulted instance with the key still counts as "already started").
     private async Task<MessageStartAckDto?> FindByIdempotencyKeyAsync(
-        int workflowKey,
+        string workflowKey,
         string idempotencyVariable,
         string idempotencyKeyValue,
         CancellationToken cancellationToken)
@@ -330,7 +345,7 @@ public sealed class WorkflowEngineService(
         string? status,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -348,7 +363,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         long? instanceId,
         long? workflowId,
-        int? workflowKey,
+        string? workflowKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,

@@ -22,6 +22,7 @@ public static class WorkflowInstanceEndpoints
         {
             var instance = await service.StartInstanceAsync(
                 request.WorkflowId,
+                request.WorkflowKey,
                 ToActor(principal),
                 request.StartEventId,
                 request.Variables,
@@ -33,7 +34,7 @@ public static class WorkflowInstanceEndpoints
             string? status,
             long? instanceId,
             long? workflowId,
-            int? workflowKey,
+            string? workflowKey,
             int? nodeId,
             string? nodeExternalId,
             [FromQuery(Name = "var")] string[]? variables,
@@ -49,7 +50,7 @@ public static class WorkflowInstanceEndpoints
         group.MapGet("/inbox", async (
             long? instanceId,
             long? workflowId,
-            int? workflowKey,
+            string? workflowKey,
             int? nodeId,
             string? nodeExternalId,
             [FromQuery(Name = "var")] string[]? variables,

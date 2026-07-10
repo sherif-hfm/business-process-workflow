@@ -45,6 +45,7 @@ public sealed class DatabaseInitializer(AppDbContext dbContext)
         dbContext.WorkflowDefinitions.Add(new WorkflowDefinitionEntity
         {
             Name = workflow.Name,
+            WorkflowKey = workflow.Id,
             Version = 1,
             Definition = workflow,
             IsPublished = true,
