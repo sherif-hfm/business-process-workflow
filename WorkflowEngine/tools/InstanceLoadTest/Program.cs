@@ -27,15 +27,6 @@ http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer
 var workflowId = options.WorkflowId ?? await ResolveWorkflowIdAsync(http, cancellationToken: default);
 Console.WriteLine($"Using workflow id {workflowId}");
 
-var bodyJson = JsonSerializer.Serialize(new StartInstancePayload(
-    workflowId,
-    null,
-    new Dictionary<string, JsonElement>
-    {
-        ["requester"] = JsonSerializer.SerializeToElement("load-test"),
-        ["amount"] = JsonSerializer.SerializeToElement(options.Amount)
-    }));
-
 var progress = new ProgressTracker(options.Count);
 var gate = new SemaphoreSlim(options.Concurrency);
 var errors = new List<string>();
@@ -48,6 +39,14 @@ var tasks = Enumerable.Range(0, options.Count)
         await gate.WaitAsync();
         try
         {
+            var amount = Random.Shared.Next(100, 1001);
+            var bodyJson = JsonSerializer.Serialize(new StartInstancePayload(
+                workflowId,
+                null,
+                new Dictionary<string, JsonElement>
+                {
+                    ["amount"] = JsonSerializer.SerializeToElement(amount)
+                }));
             using var content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
             using var response = await http.PostAsync("api/instances", content);
             if (!response.IsSuccessStatusCode)
@@ -133,9 +132,6 @@ static Options ParseArgs(string[] args)
             case "--workflow-id" when i + 1 < args.Length && long.TryParse(args[++i], out var workflowId):
                 result = result with { WorkflowId = workflowId };
                 break;
-            case "--amount" when i + 1 < args.Length && decimal.TryParse(args[++i], out var amount):
-                result = result with { Amount = amount };
-                break;
             case "--jwt-key" when i + 1 < args.Length:
                 result = result with { JwtKey = args[++i] };
                 break;
@@ -160,9 +156,10 @@ static void PrintHelp()
           --count <n>            Number of instances to create (default: 200000)
           --concurrency <n>      Parallel HTTP requests (default: 32)
           --workflow-id <id>     Published workflow id (default: first published)
-          --amount <n>           Start variable 'amount' (default: 500)
           --jwt-key <key>        JWT signing key (default: dev appsettings key)
           -h, --help             Show this help
+
+        Each start uses a random 'amount' from 100 to 1000.
 
         Example:
           dotnet run --project WorkflowEngine/tools/InstanceLoadTest -- --count 200000 --concurrency 48
@@ -213,7 +210,6 @@ sealed record Options(
     int Count = 200_000,
     int Concurrency = 32,
     long? WorkflowId = null,
-    decimal Amount = 500,
     string JwtKey = Defaults.JwtKey,
     string Issuer = Defaults.Issuer,
     string Audience = Defaults.Audience);
@@ -234,6 +230,8 @@ sealed class ProgressTracker(int total)
 {
     private int _succeeded;
     private int _failed;
+    private int _lastReportedDone;
+    private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private readonly Stopwatch _reportTimer = Stopwatch.StartNew();
 
     public int Succeeded => Volatile.Read(ref _succeeded);
@@ -266,9 +264,27 @@ sealed class ProgressTracker(int total)
                 return;
             }
 
-            var rate = done / _reportTimer.Elapsed.TotalSeconds;
+            var intervalSec = _reportTimer.Elapsed.TotalSeconds;
+            var elapsed = _elapsed.Elapsed;
+            var delta = done - _lastReportedDone;
+            var instantRate = intervalSec > 0 ? delta / intervalSec : 0;
+            var avgRate = elapsed.TotalSeconds > 0 ? done / elapsed.TotalSeconds : 0;
+            var remaining = Math.Max(0, total - done);
+            var eta = avgRate > 0
+                ? TimeSpan.FromSeconds(remaining / avgRate)
+                : Timeout.InfiniteTimeSpan;
+
+            var etaText = eta == Timeout.InfiniteTimeSpan
+                ? "ETA --:--:--"
+                : $"ETA {eta:hh\\:mm\\:ss}";
+
             Console.WriteLine(
-                $"  {done:N0}/{total:N0} ({100.0 * done / total:F1}%) — {rate:N1}/sec, failed {Failed:N0}");
+                $"  {done:N0}/{total:N0} ({100.0 * done / total:F1}%) | " +
+                $"{instantRate:N1}/sec now, {avgRate:N1}/sec avg | " +
+                $"elapsed {elapsed:hh\\:mm\\:ss}, {etaText} | " +
+                $"failed {Failed:N0}");
+
+            _lastReportedDone = done;
             _reportTimer.Restart();
         }
     }
@@ -276,7 +292,11 @@ sealed class ProgressTracker(int total)
     public void Finish()
     {
         var done = Succeeded + Failed;
-        Console.WriteLine($"  {done:N0}/{total:N0} (100%) — failed {Failed:N0}");
+        var elapsed = _elapsed.Elapsed;
+        var avgRate = elapsed.TotalSeconds > 0 ? done / elapsed.TotalSeconds : 0;
+        Console.WriteLine(
+            $"  {done:N0}/{total:N0} (100%) | {avgRate:N1}/sec avg | " +
+            $"elapsed {elapsed:hh\\:mm\\:ss} | failed {Failed:N0}");
     }
 }
 

@@ -17,7 +17,17 @@
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "variables": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": false,
+          "defaultValue": null,
+          "validation": null
+        }
+      ],
       "condition": null,
       "attachedToRef": null,
       "errorVariable": null
@@ -38,7 +48,7 @@
       "claimMode": "fromNode",
       "inheritClaimFromNodeId": 2,
       "variables": [],
-      "condition": null,
+      "condition": "amount > 500",
       "attachedToRef": null,
       "errorVariable": null
     },
@@ -121,23 +131,22 @@
       "canActWithoutClaim": false
     },
     {
-      "id": 104,
-      "name": "retry",
+      "id": 105,
+      "name": "reject",
       "externalId": null,
-      "sourceRef": 3,
-      "targetRef": 2,
+      "sourceRef": 2,
+      "targetRef": 4,
       "roles": [
         "Manager"
       ],
       "variables": [],
       "condition": null,
       "isDefault": false,
-      "canActWithoutClaim": false
+      "canActWithoutClaim": true
     },
     {
-      "id": 105,
-      "name": "reject",
-      "externalId": null,
+      "id": 106,
+      "name": "confirm by manager",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [
