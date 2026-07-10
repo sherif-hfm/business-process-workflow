@@ -141,13 +141,13 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             $"/api/instances/{id}/flows",
             cancellationToken) ?? [];
 
-    public async Task<InstanceDetailDto?> StartInstanceAsync(
+    public async Task<StartInstanceResultDto?> StartInstanceAsync(
         StartInstanceRequest request,
         CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsJsonAsync("/api/instances", request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
-        return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
+        return await response.Content.ReadFromJsonAsync<StartInstanceResultDto>(cancellationToken);
     }
 
     public async Task<InstanceDetailDto?> ClaimAsync(long id, CancellationToken cancellationToken = default)

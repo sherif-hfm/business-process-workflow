@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -25,6 +26,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(dataSource);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
+        services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
         services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();

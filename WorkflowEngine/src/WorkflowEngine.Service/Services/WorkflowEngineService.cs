@@ -39,6 +39,40 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement>? variableValues,
         CancellationToken cancellationToken)
     {
+        var (instance, definition) = await StartInstanceCoreAsync(workflowId, workflowKey, actor, startEventId, variableValues, cancellationToken);
+        return (await BuildDetailAsync(instance.Id, cancellationToken))!;
+    }
+
+    public async Task<StartInstanceResultDto> StartInstanceSlimAsync(
+        long? workflowId,
+        string? workflowKey,
+        ActorContext actor,
+        int? startEventId,
+        Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken)
+    {
+        var (instance, definition) = await StartInstanceCoreAsync(workflowId, workflowKey, actor, startEventId, variableValues, cancellationToken);
+        var node = GetFlowNode(definition, instance.CurrentStepId);
+        return new StartInstanceResultDto(
+            instance.Id,
+            node.Id,
+            node.Name,
+            node.ExternalId,
+            instance.Status,
+            instance.ClaimedBy,
+            instance.StartedBy,
+            instance.CreatedAt,
+            instance.UpdatedAt);
+    }
+
+    private async Task<(WorkflowInstanceRecord Instance, WorkflowModel Definition)> StartInstanceCoreAsync(
+        long? workflowId,
+        string? workflowKey,
+        ActorContext actor,
+        int? startEventId,
+        Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken)
+    {
         await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
         
@@ -71,7 +105,6 @@ public sealed class WorkflowEngineService(
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), startedBy, cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
 
         // Resolve templated defaults and run NCalc validation against the final values
         // overlaid with sys.*/config.* context, then persist each resolved value.
@@ -105,7 +138,7 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return (await BuildDetailAsync(instance.Id, cancellationToken))!;
+        return (instance, workflow.Definition);
     }
 
     public async Task<MessageStartAckDto> StartByMessageAsync(
@@ -1175,6 +1208,13 @@ public sealed class WorkflowEngineService(
     {
         var performedBy = actor.User;
         var maxHops = definition.FlowNodes.Count + 1;
+
+        // Load variables once before the loop. The overlay is maintained in memory
+        // across hops so we avoid a SELECT instance_variables on every hop. Writes
+        // (service/script task outputs, error-variable captures) update the overlay
+        // alongside the staged EF entities, so the next hop sees them without a reload.
+        var storedOverlay = await LoadVariablesAsync(instance.Id, cancellationToken);
+
         for (var hop = 0; hop < maxHops; hop++)
         {
             if (instance.Status != WorkflowInstanceStatuses.Running)
@@ -1188,25 +1228,25 @@ public sealed class WorkflowEngineService(
                 return instance;
             }
 
-            // Stored instance variables overlaid with read-only sys.*/config.* context.
-            // The merged map is used only for evaluation and is never persisted.
-            var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-            var variables = WithContext(stored, actor, instance, definition, currentNode);
+            // Build the evaluation context from the in-memory overlay overlaid with
+            // read-only sys.*/config.* context. The merged map is for evaluation only
+            // and is never persisted.
+            var variables = WithContext(storedOverlay, actor, instance, definition, currentNode);
 
             TaskExecutionOutcome? outcome = null;
             if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
             {
-                outcome = await ExecuteServiceTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
-                // Reload so downstream gateways/service tasks see any written outputs.
-                stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-                variables = WithContext(stored, actor, instance, definition, currentNode);
+                outcome = await ExecuteServiceTaskAsync(instance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
+                // The overlay was updated in-place by ExecuteServiceTaskAsync; rebuild
+                // the context so downstream gateways/service tasks see the written outputs.
+                variables = WithContext(storedOverlay, actor, instance, definition, currentNode);
             }
             else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
             {
-                outcome = await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, cancellationToken);
-                // Reload so the outgoing-flow selector and the next hop see the writes.
-                stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-                variables = WithContext(stored, actor, instance, definition, currentNode);
+                outcome = await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
+                // The overlay was updated in-place by ExecuteScriptTaskAsync; rebuild
+                // the context so the outgoing-flow selector and the next hop see writes.
+                variables = WithContext(storedOverlay, actor, instance, definition, currentNode);
             }
 
             // A service/script failure routes out an attached errorBoundaryEvent's
@@ -1223,13 +1263,15 @@ public sealed class WorkflowEngineService(
 
                 if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
                 {
+                    var errorValue = JsonSerializer.SerializeToElement(outcome.Reason ?? string.Empty);
                     await runtime.AddVariableAsync(
                         instance.Id,
                         boundary.ErrorVariable!,
                         boundary.Id,
                         performedBy,
-                        JsonSerializer.SerializeToElement(outcome.Reason ?? string.Empty),
+                        errorValue,
                         cancellationToken);
+                    storedOverlay[boundary.ErrorVariable!] = errorValue;
                 }
 
                 await runtime.AddHistoryAsync(
@@ -1398,6 +1440,7 @@ public sealed class WorkflowEngineService(
         WorkflowModel definition,
         ActorContext actor,
         IReadOnlyDictionary<string, JsonElement> variables,
+        Dictionary<string, JsonElement> storedOverlay,
         CancellationToken cancellationToken)
     {
         var service = node.Service
@@ -1418,7 +1461,7 @@ public sealed class WorkflowEngineService(
 
         if (result.IsSuccess)
         {
-            var mappingFailure = await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, cancellationToken);
+            var mappingFailure = await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, storedOverlay, cancellationToken);
             if (mappingFailure is not null)
             {
                 // A required output mapping could not be resolved from the 2xx
@@ -1426,12 +1469,12 @@ public sealed class WorkflowEngineService(
                 // variable (so an error path can branch on it), then fail the task
                 // so the pass-through loop routes out an attached errorBoundaryEvent
                 // (or, with no boundary, rolls back and returns 400).
-                await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
+                await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
                 return TaskExecutionOutcome.Fail(mappingFailure);
             }
 
-            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
+            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return TaskExecutionOutcome.Ok();
         }
@@ -1440,7 +1483,7 @@ public sealed class WorkflowEngineService(
         // the optional statusVariable so the error path can branch on it. If no
         // errorBoundaryEvent is attached the loop throws (rollback + 400) and this
         // write rolls back with the transaction; if a boundary catches, it persists.
-        await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, cancellationToken);
+        await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
@@ -1459,6 +1502,7 @@ public sealed class WorkflowEngineService(
         string? setBy,
         ServiceTaskModel service,
         ServiceTaskResult result,
+        Dictionary<string, JsonElement> storedOverlay,
         CancellationToken cancellationToken)
     {
         if (service.OutputMappings.Count == 0 || string.IsNullOrWhiteSpace(result.Body))
@@ -1486,7 +1530,9 @@ public sealed class WorkflowEngineService(
             {
                 if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
                 {
-                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, value.Clone(), cancellationToken);
+                    var cloned = value.Clone();
+                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, cloned, cancellationToken);
+                    storedOverlay[mapping.Variable] = cloned;
                 }
                 else if (mapping.Required)
                 {
@@ -1504,6 +1550,7 @@ public sealed class WorkflowEngineService(
         string? setBy,
         ServiceTaskModel service,
         int statusCode,
+        Dictionary<string, JsonElement> storedOverlay,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(service.StatusVariable))
@@ -1513,6 +1560,7 @@ public sealed class WorkflowEngineService(
 
         var value = JsonSerializer.SerializeToElement(statusCode);
         await runtime.AddVariableAsync(instanceId, service.StatusVariable, nodeId, setBy, value, cancellationToken);
+        storedOverlay[service.StatusVariable] = value;
     }
 
     // Executes a scriptTask inside the pass-through loop, in either authoring mode:
@@ -1533,6 +1581,7 @@ public sealed class WorkflowEngineService(
         WorkflowModel definition,
         ActorContext actor,
         IReadOnlyDictionary<string, JsonElement> variables,
+        Dictionary<string, JsonElement> storedOverlay,
         CancellationToken cancellationToken)
     {
         var byName = definition.Variables
@@ -1611,6 +1660,7 @@ public sealed class WorkflowEngineService(
         foreach (var (target, value) in writes)
         {
             await runtime.AddVariableAsync(instance.Id, target.Name!, node.Id, performedBy, value, cancellationToken);
+            storedOverlay[target.Name!] = value;
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);

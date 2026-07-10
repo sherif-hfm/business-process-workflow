@@ -1,14 +1,28 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using WorkflowEngine.Infrastructure.Data;
 using WorkflowEngine.Service.Abstractions;
 
 namespace WorkflowEngine.Infrastructure.Repositories;
 
-public sealed class WorkflowSettingsRepository(AppDbContext dbContext) : IWorkflowSettingsRepository
+public sealed class WorkflowSettingsRepository(AppDbContext dbContext, IMemoryCache cache) : IWorkflowSettingsRepository
 {
+    private static readonly MemoryCacheEntryOptions CacheOptions = new()
+    {
+        SlidingExpiration = TimeSpan.FromMinutes(30),
+        Size = 1
+    };
+
+    private const string CacheKey = "wf:settings";
+
     public async Task<IReadOnlyDictionary<string, JsonElement>> LoadAllAsync(CancellationToken cancellationToken)
     {
+        if (cache.TryGetValue(CacheKey, out Dictionary<string, JsonElement>? cached) && cached is not null)
+        {
+            return cached;
+        }
+
         var settings = await dbContext.WorkflowSettings
             .AsNoTracking()
             .Select(s => new { s.Namespace, s.Name, s.Value })
@@ -23,6 +37,7 @@ public sealed class WorkflowSettingsRepository(AppDbContext dbContext) : IWorkfl
             result[key] = setting.Value.Clone();
         }
 
+        cache.Set(CacheKey, result, CacheOptions);
         return result;
     }
 }

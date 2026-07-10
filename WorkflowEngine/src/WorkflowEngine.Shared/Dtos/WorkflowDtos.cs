@@ -30,6 +30,21 @@ public sealed record StartInstanceRequest(
     int? StartEventId,
     Dictionary<string, JsonElement>? Variables);
 
+// Slim response for POST /api/instances (default). Avoids the 4 extra SELECTs
+// and large JSON serialization that InstanceDetailDto requires. The Blazor UI
+// only needs the Id to navigate to the detail page. Callers that need the full
+// detail can pass ?detail=full to get the original InstanceDetailDto response.
+public sealed record StartInstanceResultDto(
+    long Id,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    string? CurrentNodeExternalId,
+    string Status,
+    string? ClaimedBy,
+    string? StartedBy,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
 public sealed record TakeFlowRequest(
     Dictionary<string, JsonElement>? Variables);
 

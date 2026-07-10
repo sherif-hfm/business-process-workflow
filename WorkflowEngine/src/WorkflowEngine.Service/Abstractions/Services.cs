@@ -67,6 +67,20 @@ public interface IWorkflowEngineService
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Starts a new instance and returns a slim result (no definition/variables/
+    /// history). This is the high-throughput path: it avoids the 4 extra SELECTs
+    /// that <see cref="StartInstanceAsync"/> runs in BuildDetailAsync. Use this
+    /// overload when the caller only needs the instance id and resting node.
+    /// </summary>
+    Task<StartInstanceResultDto> StartInstanceSlimAsync(
+        long? workflowId,
+        string? workflowKey,
+        ActorContext actor,
+        int? startEventId,
+        Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Starts a new instance by delivering a message to a <c>messageStartEvent</c>,
     /// authenticating the caller against the node's expected client id/secret +
     /// required custom header, mapping the message payload into the node's start

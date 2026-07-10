@@ -16,18 +16,32 @@ public static class WorkflowInstanceEndpoints
 
         group.MapPost("/", async (
             StartInstanceRequest request,
+            string? detail,
             ClaimsPrincipal principal,
             IWorkflowEngineService service,
             CancellationToken cancellationToken) =>
         {
-            var instance = await service.StartInstanceAsync(
+            var actor = ToActor(principal);
+            if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
+            {
+                var instance = await service.StartInstanceAsync(
+                    request.WorkflowId,
+                    request.WorkflowKey,
+                    actor,
+                    request.StartEventId,
+                    request.Variables,
+                    cancellationToken);
+                return Results.Created($"/api/instances/{instance.Id}", instance);
+            }
+
+            var result = await service.StartInstanceSlimAsync(
                 request.WorkflowId,
                 request.WorkflowKey,
-                ToActor(principal),
+                actor,
                 request.StartEventId,
                 request.Variables,
                 cancellationToken);
-            return Results.Created($"/api/instances/{instance.Id}", instance);
+            return Results.Created($"/api/instances/{result.Id}", result);
         });
 
         group.MapGet("/", async (

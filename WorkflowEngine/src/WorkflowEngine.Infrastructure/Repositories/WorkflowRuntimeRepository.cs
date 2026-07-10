@@ -384,6 +384,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? claimedBy,
         CancellationToken cancellationToken)
     {
+        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
+        if (entity is not null)
+        {
+            entity.CurrentStepId = currentStepId;
+            entity.Status = status;
+            entity.ClaimedBy = claimedBy;
+            entity.UpdatedAt = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        // Fallback for the rare case where the entity is not tracked (e.g. a
+        // direct repository call outside the normal engine flow).
         var now = DateTimeOffset.UtcNow;
         await dbContext.WorkflowInstances
             .Where(i => i.Id == id)
@@ -403,6 +415,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? claimedBy,
         CancellationToken cancellationToken)
     {
+        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
+        if (entity is not null)
+        {
+            entity.CurrentStepId = node.Id;
+            entity.CurrentNodeName = node.Name;
+            entity.CurrentNodeExternalId = node.ExternalId;
+            entity.CurrentNodeType = node.Type;
+            entity.CurrentNodeRoles = node.Roles.ToList();
+            entity.CurrentRequiresClaim = node.RequiresClaim;
+            entity.Status = status;
+            entity.ClaimedBy = claimedBy;
+            entity.UpdatedAt = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        // Fallback for the rare case where the entity is not tracked.
         var now = DateTimeOffset.UtcNow;
         var roles = node.Roles.ToList();
         await dbContext.WorkflowInstances
