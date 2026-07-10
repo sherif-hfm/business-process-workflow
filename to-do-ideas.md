@@ -1,18 +1,17 @@
-- enable docmentation in swegger
-- add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - manage versions of workflow and change default version and published versions
+- inhance ui to be like modern dashboard
+- add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - add endpoint to get latest values of variables  for instance
 - add endpoint to get history of instance
 - async flow asyncAfter/asyncBefore
 - add Parallel Gateways
 - Timers events
-- inhance ui to be like modern dashboard
 - flow /api/instances/{id}/flows/{flowId} endpoint return a lot of data may need enhancement
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 
 
-
+- enable docmentation in swagger (done)
 - protect workflow endpoints (done)
 - add serilog .net logging (done)
 - add engine settings table  (done)

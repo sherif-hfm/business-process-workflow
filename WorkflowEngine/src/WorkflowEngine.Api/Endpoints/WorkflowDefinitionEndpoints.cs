@@ -5,11 +5,20 @@ using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
+using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Api.Endpoints;
 
+/// <summary>
+/// Exposes API endpoints for managing workflow definitions.
+/// </summary>
 public static class WorkflowDefinitionEndpoints
 {
+    /// <summary>
+    /// Maps the workflow definition endpoints to the application's route builder.
+    /// </summary>
+    /// <param name="app">The route builder to map endpoints onto.</param>
+    /// <returns>The modified endpoint route builder.</returns>
     public static IEndpointRouteBuilder MapWorkflowDefinitionEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/workflows")
@@ -53,107 +62,231 @@ public static class WorkflowDefinitionEndpoints
             return await next(invocationContext);
         });
 
-        group.MapGet("/", async (
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-            Results.Ok(await service.ListLatestAsync(cancellationToken)));
+        group.MapGet("/", GetLatestWorkflows)
+            .Produces<IReadOnlyList<WorkflowSummaryDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
-        group.MapGet("/{id:long}", async (
-            long id,
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-        {
-            var workflow = await service.GetAsync(id, cancellationToken);
-            return workflow is null ? Results.NotFound() : Results.Ok(workflow);
-        });
+        group.MapGet("/{id:long}", GetWorkflowById)
+            .Produces<WorkflowDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
 
-        group.MapPost("/", async (
-            CreateWorkflowRequest request,
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-        {
-            var created = await service.CreateAsync(request.Definition, request.Publish, cancellationToken);
-            return Results.Created($"/api/workflows/{created.Id}", created);
-        });
+        group.MapPost("/", CreateWorkflow)
+            .Produces<WorkflowDetailDto>(StatusCodes.Status201Created)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
-        group.MapPut("/{id:long}", async (
-            long id,
-            UpdateWorkflowRequest request,
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-        {
-            var created = await service.CreateNewVersionAsync(
-                id,
-                request.Definition,
-                request.Publish,
-                cancellationToken);
-            return created is null ? Results.NotFound() : Results.Ok(created);
-        });
+        group.MapPut("/{id:long}", CreateWorkflowNewVersion)
+            .Produces<WorkflowDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
 
-        group.MapPost("/{id:long}/publish", async (
-            long id,
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-            await service.PublishAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
+        group.MapPost("/{id:long}/publish", PublishWorkflow)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
 
-        group.MapDelete("/{id:long}", async (
-            long id,
-            IWorkflowDefinitionService service,
-            CancellationToken cancellationToken) =>
-            await service.DeleteAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
+        group.MapDelete("/{id:long}", DeleteWorkflow)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
 
-        // Starts a new instance by delivering a message to a messageStartEvent.
-        // Auth is the node-config client id/secret + required header (not a user
-        // JWT), so this endpoint overrides any group auth with AllowAnonymous. The
-        // caller addresses the workflow by its stable cross-version workflowKey;
-        // an optional ?startEvent={externalId} selects a specific message-start
-        // event when the workflow has more than one. The body is the raw JSON
-        // message payload; outputMappings on the start node extract values into the
-        // node's declared start variables. Returns a slim ack (no
-        // definition/variables/history): 401 on a client id/secret mismatch, 400 on
-        // a header problem / required-mapping failure / no published version /
-        // ambiguous or absent start event. A retried delivery with the same
-        // idempotency key returns the existing instance's ack (no duplicate). A
-        // non-JSON content type is treated as no payload (rather than throwing a
-        // 500) so a misconfigured caller gets a clean response.
-        group.MapPost("/{workflowKey}/message-start", async (
-            HttpContext context,
-            string workflowKey,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var startEventExternalId = context.Request.Query["startEvent"].FirstOrDefault();
-            var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
-            var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
-            var headers = context.Request.Headers
-                .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
-
-            Log.Information("Message-start request for workflowKey {WorkflowKey} from client '{ClientId}' (startEvent={StartEvent})",
-                workflowKey, clientId, startEventExternalId ?? "(default)");
-
-            JsonElement? payload = null;
-            if (context.Request.HasJsonContentType()
-                && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
-            {
-                try
-                {
-                    payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
-                }
-                catch (JsonException ex)
-                {
-                    Log.Warning(ex, "Failed to parse incoming JSON payload on message-start endpoint for workflowKey {WorkflowKey}.", workflowKey);
-                    payload = null;
-                }
-            }
-
-            var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-            var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
-            var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
-            Log.Information("Message-start for workflowKey {WorkflowKey} acknowledged. Instance: {InstanceId}, Status: {Status}, resting on node {NodeId}.",
-                workflowKey, ack.InstanceId, ack.Status, ack.CurrentNodeId);
-            return Results.Ok(ack);
-        }).AllowAnonymous();
+        group.MapPost("/{workflowKey}/message-start", StartWorkflowByMessage)
+            .AllowAnonymous()
+            .Produces<MessageStartAckDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized);
 
         return app;
+    }
+
+    /// <summary>
+    /// Lists the latest versions of all workflow definitions.
+    /// </summary>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Returns one summary per workflow definition - the most recent version of each
+    /// (regardless of publish state). Use a specific version id with
+    /// <c>GET /api/workflows/{id}</c> to fetch the full definition JSON.
+    /// </remarks>
+    public static async Task<IResult> GetLatestWorkflows(
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        return Results.Ok(await service.ListLatestAsync(cancellationToken));
+    }
+
+    /// <summary>
+    /// Retrieves a specific workflow definition version by its database ID.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow definition version.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Each version gets its own database id, so this returns the exact version requested,
+    /// not necessarily the latest. Use the returned <c>WorkflowKey</c> to correlate across
+    /// versions of the same workflow.
+    /// </remarks>
+    public static async Task<IResult> GetWorkflowById(
+        long id,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        var workflow = await service.GetAsync(id, cancellationToken);
+        return workflow is null ? Results.NotFound() : Results.Ok(workflow);
+    }
+
+    /// <summary>
+    /// Creates a new workflow definition (Version 1).
+    /// </summary>
+    /// <param name="request">The definition details and whether to publish immediately.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// The <c>Definition</c> is the workflow JSON model produced by the visual editor
+    /// (see <c>workflow.json</c> for an example). Validates the definition before
+    /// storing. Set <c>Publish</c> to make it immediately startable. A 400 is returned
+    /// when the definition fails validation (missing entry, dangling sequence flow
+    /// references, invalid NCalc expressions, etc.).
+    /// </remarks>
+    public static async Task<IResult> CreateWorkflow(
+        CreateWorkflowRequest request,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        var created = await service.CreateAsync(request.Definition, request.Publish, cancellationToken);
+        return Results.Created($"/api/workflows/{created.Id}", created);
+    }
+
+    /// <summary>
+    /// Creates a new version of an existing workflow definition.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow version to base the update on.</param>
+    /// <param name="request">The updated workflow structure and whether to publish it.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// The new version shares the <c>WorkflowKey</c> (stamped from the JSON model id) of
+    /// the source version. A 404 is returned when <paramref name="id"/> does not match an
+    /// existing version; a 400 is returned when the updated definition fails validation.
+    /// </remarks>
+    public static async Task<IResult> CreateWorkflowNewVersion(
+        long id,
+        UpdateWorkflowRequest request,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        var created = await service.CreateNewVersionAsync(
+            id,
+            request.Definition,
+            request.Publish,
+            cancellationToken);
+        return created is null ? Results.NotFound() : Results.Ok(created);
+    }
+
+    /// <summary>
+    /// Publishes a specific version of a workflow definition, making it the active version for starting new instances.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow version to publish.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Only one version per <c>WorkflowKey</c> is published at a time; publishing this
+    /// version unpublishes the previous one. Returns 204 on success or 404 when the
+    /// version does not exist.
+    /// </remarks>
+    public static async Task<IResult> PublishWorkflow(
+        long id,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        return await service.PublishAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Deletes a specific version of a workflow definition.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow version to delete.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Deletes a single version row. Instances already running against this version are
+    /// not affected (the definition snapshot is retained on the instance). Returns 204
+    /// on success or 404 when the version does not exist.
+    /// </remarks>
+    public static async Task<IResult> DeleteWorkflow(
+        long id,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        return await service.DeleteAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Starts a new workflow instance by delivering an initial message payload to a system-only message start event.
+    /// </summary>
+    /// <param name="context">The HTTP request context containing custom correlation headers.</param>
+    /// <param name="workflowKey">The stable cross-version key identifying the workflow.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// This endpoint is <c>AllowAnonymous</c> - authentication is the message-start node's
+    /// configured client id/secret (sent as <c>X-Client-Id</c>/<c>X-Client-Secret</c>) plus a
+    /// required custom header named by the node's <c>headerName</c>. The latest published
+    /// version of the workflow is resolved by <paramref name="workflowKey"/>. The message
+    /// payload is mapped into the node's start variables via <c>outputMappings</c>, so
+    /// required/defaults/NCalc <c>validation</c> still apply. When <c>idempotencyVariable</c>
+    /// is set on the node, a retried webhook with the same idempotency key returns the
+    /// existing instance instead of creating a duplicate.
+    ///
+    /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
+    /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400
+    /// is returned for a missing/mismatched header, a failed <c>headerValidation</c> rule, a
+    /// required-mapping failure, no published version, or an ambiguous/absent start event.
+    /// </remarks>
+    public static async Task<IResult> StartWorkflowByMessage(
+        HttpContext context,
+        string workflowKey,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var startEventExternalId = context.Request.Query["startEvent"].FirstOrDefault();
+        var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
+        var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
+        var headers = context.Request.Headers
+            .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+
+        Log.Information("Message-start request for workflowKey {WorkflowKey} from client '{ClientId}' (startEvent={StartEvent})",
+            workflowKey, clientId, startEventExternalId ?? "(default)");
+
+        JsonElement? payload = null;
+        if (context.Request.HasJsonContentType()
+            && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
+        {
+            try
+            {
+                payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                Log.Warning(ex, "Failed to parse incoming JSON payload on message-start endpoint for workflowKey {WorkflowKey}.", workflowKey);
+                payload = null;
+            }
+        }
+
+        var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+        var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
+        var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
+        Log.Information("Message-start for workflowKey {WorkflowKey} acknowledged. Instance: {InstanceId}, Status: {Status}, resting on node {NodeId}.",
+            workflowKey, ack.InstanceId, ack.Status, ack.CurrentNodeId);
+        return Results.Ok(ack);
     }
 }

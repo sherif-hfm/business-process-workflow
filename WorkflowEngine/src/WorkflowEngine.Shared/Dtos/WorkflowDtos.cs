@@ -3,6 +3,15 @@ using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Shared.Dtos;
 
+/// <summary>
+/// Represents a summary of a workflow definition version.
+/// </summary>
+/// <param name="Id">The unique database ID of this workflow version.</param>
+/// <param name="Name">The human-readable name of the workflow.</param>
+/// <param name="WorkflowKey">The stable cross-version identifier of the workflow.</param>
+/// <param name="Version">The version number (starts at 1).</param>
+/// <param name="IsPublished">Indicates if this version is published and can start new instances.</param>
+/// <param name="CreatedAt">The timestamp when this version was created.</param>
 public sealed record WorkflowSummaryDto(
     long Id,
     string Name,
@@ -11,6 +20,16 @@ public sealed record WorkflowSummaryDto(
     bool IsPublished,
     DateTimeOffset CreatedAt);
 
+/// <summary>
+/// Represents detailed metadata and structural definition of a workflow version.
+/// </summary>
+/// <param name="Id">The unique database ID of this workflow version.</param>
+/// <param name="Name">The human-readable name of the workflow.</param>
+/// <param name="WorkflowKey">The stable cross-version identifier of the workflow.</param>
+/// <param name="Version">The version number (starts at 1).</param>
+/// <param name="IsPublished">Indicates if this version is published and can start new instances.</param>
+/// <param name="CreatedAt">The timestamp when this version was created.</param>
+/// <param name="Definition">The full structural workflow JSON model representation.</param>
 public sealed record WorkflowDetailDto(
     long Id,
     string Name,
@@ -20,20 +39,45 @@ public sealed record WorkflowDetailDto(
     DateTimeOffset CreatedAt,
     WorkflowModel Definition);
 
+/// <summary>
+/// Request payload for creating a new workflow definition.
+/// </summary>
+/// <param name="Definition">The structural JSON model of the workflow to create.</param>
+/// <param name="Publish">Whether to publish this workflow immediately after creation.</param>
 public sealed record CreateWorkflowRequest(WorkflowModel Definition, bool Publish = false);
 
+/// <summary>
+/// Request payload for updating an existing workflow definition to a new version.
+/// </summary>
+/// <param name="Definition">The structural JSON model of the workflow to update.</param>
+/// <param name="Publish">Whether to publish this new version immediately.</param>
 public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publish = false);
 
+/// <summary>
+/// Request payload for starting a new workflow instance.
+/// </summary>
+/// <param name="WorkflowId">Optional. The specific database ID of the workflow version to start.</param>
+/// <param name="WorkflowKey">Optional. The stable key of the workflow (resolves to the latest published version).</param>
+/// <param name="StartEventId">Optional. The specific start event node ID to trigger.</param>
+/// <param name="Variables">Optional. Initial process variables to set.</param>
 public sealed record StartInstanceRequest(
     long? WorkflowId,
     string? WorkflowKey,
     int? StartEventId,
     Dictionary<string, JsonElement>? Variables);
 
-// Slim response for POST /api/instances (default). Avoids the 4 extra SELECTs
-// and large JSON serialization that InstanceDetailDto requires. The Blazor UI
-// only needs the Id to navigate to the detail page. Callers that need the full
-// detail can pass ?detail=full to get the original InstanceDetailDto response.
+/// <summary>
+/// Slim response returned when starting a new workflow instance.
+/// </summary>
+/// <param name="Id">The database ID of the created instance.</param>
+/// <param name="CurrentNodeId">The ID of the flow node where the instance is currently resting.</param>
+/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
+/// <param name="Status">The current execution status (e.g., "running", "completed", "faulted").</param>
+/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
+/// <param name="StartedBy">The username of the actor who started the instance.</param>
+/// <param name="CreatedAt">The timestamp when the instance was started.</param>
+/// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 public sealed record StartInstanceResultDto(
     long Id,
     int CurrentNodeId,
@@ -45,9 +89,28 @@ public sealed record StartInstanceResultDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// Request payload for advancing a workflow instance down a sequence flow.
+/// </summary>
+/// <param name="Variables">Variables to merge or set during the transition.</param>
 public sealed record TakeFlowRequest(
     Dictionary<string, JsonElement>? Variables);
 
+/// <summary>
+/// Represents a summary of a workflow instance.
+/// </summary>
+/// <param name="Id">The database ID of the instance.</param>
+/// <param name="WorkflowId">The database ID of the workflow version.</param>
+/// <param name="WorkflowName">The name of the workflow.</param>
+/// <param name="WorkflowVersion">The version of the workflow definition.</param>
+/// <param name="CurrentNodeId">The ID of the current resting flow node.</param>
+/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
+/// <param name="Status">The current execution status of the instance.</param>
+/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
+/// <param name="StartedBy">The username of the actor who started the instance.</param>
+/// <param name="CreatedAt">The timestamp when the instance was created.</param>
+/// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 public sealed record InstanceSummaryDto(
     long Id,
     long WorkflowId,
@@ -62,6 +125,21 @@ public sealed record InstanceSummaryDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// Represents full details of a workflow instance, including variable values and history.
+/// </summary>
+/// <param name="Id">The database ID of the instance.</param>
+/// <param name="Workflow">The workflow definition and metadata associated with this instance.</param>
+/// <param name="CurrentNodeId">The ID of the current resting flow node.</param>
+/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
+/// <param name="Status">The current execution status of the instance.</param>
+/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
+/// <param name="StartedBy">The username of the actor who started the instance.</param>
+/// <param name="CreatedAt">The timestamp when the instance was created.</param>
+/// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
+/// <param name="Variables">The complete list of instance variables and their values.</param>
+/// <param name="History">The complete execution history of sequence flow hops and resting states.</param>
 public sealed record InstanceDetailDto(
     long Id,
     WorkflowDetailDto Workflow,
@@ -76,13 +154,15 @@ public sealed record InstanceDetailDto(
     IReadOnlyList<InstanceVariableDto> Variables,
     IReadOnlyList<InstanceHistoryDto> History);
 
-// Slim acknowledgment returned by POST /api/instances/{id}/message. Deliberately
-// excludes the workflow definition, instance variables, and history: the message
-// endpoint is AllowAnonymous (auth = the catch node's client id/secret + required
-// header, not a user JWT), so a webhook caller should not be able to read the full
-// workflow model (which may contain other nodes' literal secrets) or the instance's
-// stored data. The caller gets only enough to confirm the delivery advanced the
-// instance and where it now rests.
+/// <summary>
+/// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.
+/// </summary>
+/// <param name="Id">The database ID of the workflow instance.</param>
+/// <param name="CurrentNodeId">The ID of the current resting flow node after the delivery.</param>
+/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
+/// <param name="Status">The execution status of the instance after the delivery.</param>
+/// <param name="UpdatedAt">The timestamp when the instance was updated.</param>
 public sealed record MessageDeliveryAckDto(
     long Id,
     int CurrentNodeId,
@@ -91,12 +171,15 @@ public sealed record MessageDeliveryAckDto(
     string Status,
     DateTimeOffset UpdatedAt);
 
-// Slim acknowledgment returned by POST /api/workflows/{workflowKey}/message-start.
-// Deliberately excludes the workflow definition, instance variables, and history
-// (the message-start endpoint is AllowAnonymous; auth = the node's client id/secret
-// + required header, not a user JWT), so a webhook caller cannot read the full
-// workflow model or the instance's stored data. The caller gets the new (or, on an
-// idempotent replay, the existing) instance id plus where it now rests.
+/// <summary>
+/// Slim acknowledgment returned when starting a workflow instance via a message start event.
+/// </summary>
+/// <param name="InstanceId">The database ID of the created workflow instance.</param>
+/// <param name="CurrentNodeId">The ID of the current resting flow node after starting.</param>
+/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
+/// <param name="Status">The execution status of the instance after starting.</param>
+/// <param name="CreatedAt">The timestamp when the instance was started.</param>
 public sealed record MessageStartAckDto(
     long InstanceId,
     int CurrentNodeId,
@@ -105,6 +188,15 @@ public sealed record MessageStartAckDto(
     string Status,
     DateTimeOffset CreatedAt);
 
+/// <summary>
+/// Represents a variable currently stored in a workflow instance.
+/// </summary>
+/// <param name="Id">The unique database ID of the variable record.</param>
+/// <param name="VariableName">The declared name of the variable.</param>
+/// <param name="SourceFlowId">Optional. The ID of the sequence flow that was taken when setting this variable.</param>
+/// <param name="SetBy">The username of the actor or background task that set the variable.</param>
+/// <param name="Value">The JSON value of the variable.</param>
+/// <param name="SetAt">The timestamp when the variable was set.</param>
 public sealed record InstanceVariableDto(
     long Id,
     string VariableName,
@@ -113,6 +205,17 @@ public sealed record InstanceVariableDto(
     JsonElement Value,
     DateTimeOffset SetAt);
 
+/// <summary>
+/// Represents a single step in the execution history of a workflow instance.
+/// </summary>
+/// <param name="Id">The unique database ID of the history record.</param>
+/// <param name="SequenceFlowId">Optional. The ID of the sequence flow taken during this step.</param>
+/// <param name="FromNodeId">The ID of the source flow node transitioned from.</param>
+/// <param name="ToNodeId">The ID of the destination flow node transitioned to.</param>
+/// <param name="PerformedBy">The username of the actor who triggered or performed this step.</param>
+/// <param name="Payload">Optional. The input payload or variables submitted during the transition.</param>
+/// <param name="Note">Optional. Execution notes describing internal hops or transition kinds.</param>
+/// <param name="PerformedAt">The timestamp when this step was executed.</param>
 public sealed record InstanceHistoryDto(
     long Id,
     int? SequenceFlowId,
@@ -123,12 +226,37 @@ public sealed record InstanceHistoryDto(
     string? Note,
     DateTimeOffset PerformedAt);
 
+/// <summary>
+/// Generic wrapper representing a paged list of items.
+/// </summary>
+/// <typeparam name="T">The type of items in the page.</typeparam>
+/// <param name="Items">The collection of items on the current page.</param>
+/// <param name="Page">The 1-based page index.</param>
+/// <param name="PageSize">The maximum number of items in the page.</param>
+/// <param name="TotalCount">The total number of matching items across all pages.</param>
 public sealed record PagedResult<T>(
     IReadOnlyList<T> Items,
     int Page,
     int PageSize,
     long TotalCount);
 
+/// <summary>
+/// Represents a user task in the inbox of an actor.
+/// </summary>
+/// <param name="InstanceId">The database ID of the workflow instance.</param>
+/// <param name="WorkflowId">The database ID of the workflow version.</param>
+/// <param name="WorkflowName">The name of the workflow.</param>
+/// <param name="CurrentNodeId">The ID of the current userTask flow node.</param>
+/// <param name="CurrentNodeName">The name of the current userTask flow node.</param>
+/// <param name="CurrentNodeExternalId">The user-defined external ID of the current flow node.</param>
+/// <param name="NodeRoles">The roles allowed to claim/act on this userTask.</param>
+/// <param name="RequiresClaim">Indicates whether the task must be claimed before taking any actions.</param>
+/// <param name="ClaimedBy">The username of the actor who has currently claimed the task.</param>
+/// <param name="ClaimedByMe">True if the current caller is the one who claimed this task.</param>
+/// <param name="CanClaim">True if the current caller is authorized to claim this task based on role constraints.</param>
+/// <param name="CanAct">True if the current caller is authorized to act on this task.</param>
+/// <param name="CreatedAt">The timestamp when the instance was started.</param>
+/// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 public sealed record InboxItemDto(
     long InstanceId,
     long WorkflowId,

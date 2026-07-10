@@ -3,15 +3,27 @@ using System.Text.Json.Serialization;
 
 namespace WorkflowEngine.Shared.Models;
 
+/// <summary>
+/// Represents the complete structure and schema of a workflow definition.
+/// </summary>
 public sealed class WorkflowModel
 {
+    /// <summary>
+    /// The unique identifier of the workflow definition (string or number).
+    /// </summary>
     [JsonPropertyName("id")]
     [JsonConverter(typeof(WorkflowIdConverter))]
     public string Id { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The human-readable name of the workflow.
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The ID of the initial start event node.
+    /// </summary>
     [JsonPropertyName("initialEventId")]
     public int? InitialEventId { get; set; }
 
@@ -20,21 +32,39 @@ public sealed class WorkflowModel
     // initialized from `defaultValue` at instance start and mutated by scriptTask
     // nodes during pass-through routing. Visible to gateways, service tasks, and
     // validation rules through the same WithContext overlay as other variables.
+    /// <summary>
+    /// The list of process-level variables declared in the workflow.
+    /// </summary>
     [JsonPropertyName("variables")]
     public List<VariableModel> Variables { get; set; } = [];
 
+    /// <summary>
+    /// The list of swimlanes used to group nodes or define roles/permissions.
+    /// </summary>
     [JsonPropertyName("lanes")]
     public List<LaneModel> Lanes { get; set; } = [];
 
+    /// <summary>
+    /// The list of flow nodes (steps, tasks, gateways, events) in the workflow.
+    /// </summary>
     [JsonPropertyName("flowNodes")]
     public List<FlowNodeModel> FlowNodes { get; set; } = [];
 
+    /// <summary>
+    /// The list of sequence flows (directed edges) connecting the flow nodes.
+    /// </summary>
     [JsonPropertyName("sequenceFlows")]
     public List<SequenceFlowModel> SequenceFlows { get; set; } = [];
 
+    /// <summary>
+    /// The list of roles allowed to cancel instances of this workflow.
+    /// </summary>
     [JsonPropertyName("cancelRoles")]
     public List<string> CancelRoles { get; set; } = [];
 
+    /// <summary>
+    /// The list of roles allowed to unclaim tasks in this workflow.
+    /// </summary>
     [JsonPropertyName("unclaimRoles")]
     public List<string> UnclaimRoles { get; set; } = [];
 
@@ -56,70 +86,136 @@ public sealed class WorkflowModel
     public List<LegacyStepModel>? LegacySteps { get; set; }
 }
 
+/// <summary>
+/// Represents a swimlane container in a workflow layout.
+/// </summary>
 public sealed class LaneModel
 {
+    /// <summary>
+    /// The unique integer ID of the lane.
+    /// </summary>
     [JsonPropertyName("id")]
     public int Id { get; set; }
 
+    /// <summary>
+    /// The display name of the lane.
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// An optional external identifier mapping the lane to business structures.
+    /// </summary>
     [JsonPropertyName("externalId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ExternalId { get; set; }
 
+    /// <summary>
+    /// The X coordinate of the lane on the designer canvas.
+    /// </summary>
     [JsonPropertyName("x")]
     public int X { get; set; }
 
+    /// <summary>
+    /// The Y coordinate of the lane on the designer canvas.
+    /// </summary>
     [JsonPropertyName("y")]
     public int Y { get; set; }
 
+    /// <summary>
+    /// The width of the lane.
+    /// </summary>
     [JsonPropertyName("w")]
     public int W { get; set; }
 
+    /// <summary>
+    /// The height of the lane.
+    /// </summary>
     [JsonPropertyName("h")]
     public int H { get; set; }
 }
 
+/// <summary>
+/// Represents a flow node (event, task, gateway) inside a workflow.
+/// </summary>
 public sealed class FlowNodeModel
 {
+    /// <summary>
+    /// The unique integer ID of the node.
+    /// </summary>
     [JsonPropertyName("id")]
     public int Id { get; set; }
 
+    /// <summary>
+    /// The name of the node.
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The user-defined external ID of the node.
+    /// </summary>
     [JsonPropertyName("externalId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ExternalId { get; set; }
 
+    /// <summary>
+    /// The type of the flow node (e.g. userTask, serviceTask, gateway, etc.).
+    /// </summary>
     [JsonPropertyName("type")]
     public string Type { get; set; } = BpmnFlowNodeTypes.UserTask;
 
+    /// <summary>
+    /// The ID of the lane this node resides in.
+    /// </summary>
     [JsonPropertyName("laneId")]
     public int? LaneId { get; set; }
 
+    /// <summary>
+    /// The X coordinate on the designer canvas.
+    /// </summary>
     [JsonPropertyName("x")]
     public int X { get; set; }
 
+    /// <summary>
+    /// The Y coordinate on the designer canvas.
+    /// </summary>
     [JsonPropertyName("y")]
     public int Y { get; set; }
 
+    /// <summary>
+    /// The roles authorized to claim or act on this userTask.
+    /// </summary>
     [JsonPropertyName("roles")]
     public List<string> Roles { get; set; } = [];
 
+    /// <summary>
+    /// Whether the task requires claiming before actions can be taken.
+    /// </summary>
     [JsonPropertyName("requiresClaim")]
     public bool RequiresClaim { get; set; }
 
+    /// <summary>
+    /// How claims are inherited (fresh, previous, fromNode).
+    /// </summary>
     [JsonPropertyName("claimMode")]
     public string ClaimMode { get; set; } = ClaimModes.Fresh;
 
+    /// <summary>
+    /// The node ID from which to inherit the claim when claimMode is fromNode.
+    /// </summary>
     [JsonPropertyName("inheritClaimFromNodeId")]
     public int? InheritClaimFromNodeId { get; set; }
 
+    /// <summary>
+    /// Declared variables scope limit for this node.
+    /// </summary>
     [JsonPropertyName("variables")]
     public List<VariableModel> Variables { get; set; } = [];
 
+    /// <summary>
+    /// Service task HTTP call configurations.
+    /// </summary>
     [JsonPropertyName("service")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ServiceTaskModel? Service { get; set; }
@@ -130,6 +226,9 @@ public sealed class FlowNodeModel
     // clientId/clientSecret + a required custom header, then maps the message
     // payload into instance variables via outputMappings and advances down the
     // single outgoing flow.
+    /// <summary>
+    /// Delivery and message correlation configuration for catch/start events.
+    /// </summary>
     [JsonPropertyName("message")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MessageCatchModel? Message { get; set; }
@@ -138,6 +237,9 @@ public sealed class FlowNodeModel
     // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
     // JS body with a bound `execution` host object). Exactly one mode's data is
     // populated at a time; ApplyNodeInvariants clears the other.
+    /// <summary>
+    /// The script task format (ncalc or javascript).
+    /// </summary>
     [JsonPropertyName("scriptFormat")]
     public string ScriptFormat { get; set; } = ScriptFormats.NCalc;
 
@@ -146,6 +248,9 @@ public sealed class FlowNodeModel
     // expression evaluated against the current variables + sys.*/config.* context;
     // the typed result is coerced to the target variable's declared dataType and
     // persisted. A later assignment can reference an earlier one in the same list.
+    /// <summary>
+    /// Ordered list of assignments executed in NCalc format.
+    /// </summary>
     [JsonPropertyName("assignments")]
     public List<AssignmentModel> Assignments { get; set; } = [];
 
@@ -155,6 +260,9 @@ public sealed class FlowNodeModel
     // setVariable targets must be declared process variables (model.Variables);
     // the value is coerced to the target's dataType and its validation re-checked,
     // exactly like an NCalc assignment.
+    /// <summary>
+    /// The JavaScript code body to execute (for script tasks).
+    /// </summary>
     [JsonPropertyName("script")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Script { get; set; }
@@ -162,6 +270,9 @@ public sealed class FlowNodeModel
     // userTask only: optional NCalc visibility gate. When present and false, the
     // task is hidden from the inbox and no outgoing flows can be shown or taken.
     // It does not affect routing; the instance still rests on the node.
+    /// <summary>
+    /// Optional NCalc visibility gate expression.
+    /// </summary>
     [JsonPropertyName("condition")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Condition { get; set; }
@@ -169,6 +280,9 @@ public sealed class FlowNodeModel
     // errorBoundaryEvent only: the host activity (serviceTask/scriptTask) id this
     // boundary is attached to. The boundary renders on the host's border and its
     // single outgoing flow is the error path taken when the host fails at runtime.
+    /// <summary>
+    /// The ID of the host serviceTask or scriptTask this boundary catches errors for.
+    /// </summary>
     [JsonPropertyName("attachedToRef")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? AttachedToRef { get; set; }
@@ -177,6 +291,9 @@ public sealed class FlowNodeModel
     // to this instance variable when the boundary catches a host failure, so the
     // error path can branch on or display it. No declaration required (mirrors
     // serviceTask statusVariable).
+    /// <summary>
+    /// The variable name where the failure reason is written when caught.
+    /// </summary>
     [JsonPropertyName("errorVariable")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorVariable { get; set; }
@@ -188,53 +305,104 @@ public static class ScriptFormats
     public const string JavaScript = "javascript";
 }
 
+/// <summary>
+/// Represents a variable assignment inside a script task.
+/// </summary>
 public sealed class AssignmentModel
 {
+    /// <summary>
+    /// The name of the process variable to assign the value to.
+    /// </summary>
     [JsonPropertyName("variable")]
     public string Variable { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The expression (NCalc) to evaluate and assign.
+    /// </summary>
     [JsonPropertyName("expression")]
     public string Expression { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// Configures the HTTP REST call made by a service task.
+/// </summary>
 public sealed class ServiceTaskModel
 {
+    /// <summary>
+    /// The HTTP method to use (e.g. GET, POST, PUT).
+    /// </summary>
     [JsonPropertyName("method")]
     public string Method { get; set; } = "GET";
 
+    /// <summary>
+    /// The target REST API URL (supports variable interpolation).
+    /// </summary>
     [JsonPropertyName("url")]
     public string Url { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional HTTP header values to send with the request.
+    /// </summary>
     [JsonPropertyName("headers")]
     public List<ServiceHeaderModel> Headers { get; set; } = [];
 
+    /// <summary>
+    /// Optional body payload to send (for POST/PUT).
+    /// </summary>
     [JsonPropertyName("body")]
     public string? Body { get; set; }
 
+    /// <summary>
+    /// Timeout limit in seconds before the HTTP request is considered failed.
+    /// </summary>
     [JsonPropertyName("timeoutSeconds")]
     public int TimeoutSeconds { get; set; } = 30;
 
+    /// <summary>
+    /// Optional variable name to store the returned HTTP status code.
+    /// </summary>
     [JsonPropertyName("statusVariable")]
     public string? StatusVariable { get; set; }
 
+    /// <summary>
+    /// Dotted-path maps to extract fields from the JSON response and write to variables.
+    /// </summary>
     [JsonPropertyName("outputMappings")]
     public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
 }
 
+/// <summary>
+/// Represents a key-value HTTP header entry.
+/// </summary>
 public sealed class ServiceHeaderModel
 {
+    /// <summary>
+    /// The HTTP header name (e.g., Authorization).
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The HTTP header value (supports variable interpolation).
+    /// </summary>
     [JsonPropertyName("value")]
     public string Value { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// Mappings to extract values from HTTP responses or inbound messages into variables.
+/// </summary>
 public sealed class ServiceOutputMappingModel
 {
+    /// <summary>
+    /// The name of the process variable to write the extracted value to.
+    /// </summary>
     [JsonPropertyName("variable")]
     public string Variable { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The dotted path within the JSON response body to extract the value from.
+    /// </summary>
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
 
@@ -242,6 +410,9 @@ public sealed class ServiceOutputMappingModel
     // for a serviceTask the call is failed (routing out an attached
     // errorBoundaryEvent or, with no boundary, a 400); for a message catch the
     // delivery is rejected with a 400 before any variables are written.
+    /// <summary>
+    /// If true, a missing or unresolvable path will fail the step.
+    /// </summary>
     [JsonPropertyName("required")]
     public bool Required { get; set; }
 }
@@ -257,24 +428,45 @@ public sealed class ServiceOutputMappingModel
 // value bound as `header` (plus instance vars/context); it must be truthy.
 // outputMappings extract dotted-path values from the inbound JSON message body
 // and write them to instance variables raw/uncoerced (mirrors serviceTask).
+/// <summary>
+/// Delivery configuration for catching external messages or webhooks.
+/// </summary>
 public sealed class MessageCatchModel
 {
+    /// <summary>
+    /// The expected OAuth/Client credential ID.
+    /// </summary>
     [JsonPropertyName("clientId")]
     public string ClientId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The expected OAuth/Client credential secret.
+    /// </summary>
     [JsonPropertyName("clientSecret")]
     public string ClientSecret { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The required custom header name for correlation.
+    /// </summary>
     [JsonPropertyName("headerName")]
     public string HeaderName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The required header value for validation.
+    /// </summary>
     [JsonPropertyName("headerValue")]
     public string HeaderValue { get; set; } = string.Empty;
 
+    /// <summary>
+    /// An optional NCalc validation rule for additional header value checks.
+    /// </summary>
     [JsonPropertyName("headerValidation")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? HeaderValidation { get; set; }
 
+    /// <summary>
+    /// Dotted-path maps to extract fields from the incoming JSON message body.
+    /// </summary>
     [JsonPropertyName("outputMappings")]
     public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
 
@@ -286,66 +478,134 @@ public sealed class MessageCatchModel
     // instead of creating a duplicate (so a retried webhook is a no-op). The
     // search is guarded by a transaction-scoped advisory lock so concurrent retries
     // serialize. null disables idempotency (a retry creates a duplicate).
+    /// <summary>
+    /// Optional start variable name used as an idempotency key (messageStartEvent only).
+    /// </summary>
     [JsonPropertyName("idempotencyVariable")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? IdempotencyVariable { get; set; }
 }
 
+/// <summary>
+/// Defines the claim modes for user tasks.
+/// </summary>
 public static class ClaimModes
 {
+    /// <summary>
+    /// Fresh claim mode, unclaimed on entry.
+    /// </summary>
     public const string Fresh = "fresh";
+
+    /// <summary>
+    /// Inherits the claim from the previous actor in the history.
+    /// </summary>
     public const string Previous = "previous";
+
+    /// <summary>
+    /// Inherits the claim from a specific prior node.
+    /// </summary>
     public const string FromNode = "fromNode";
 }
 
+/// <summary>
+/// Represents a directed sequence flow (transition connection) in a workflow.
+/// </summary>
 public sealed class SequenceFlowModel
 {
+    /// <summary>
+    /// The unique integer ID of the sequence flow.
+    /// </summary>
     [JsonPropertyName("id")]
     public int Id { get; set; }
 
+    /// <summary>
+    /// The name of the sequence flow.
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The user-defined external ID of the sequence flow.
+    /// </summary>
     [JsonPropertyName("externalId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ExternalId { get; set; }
 
+    /// <summary>
+    /// The ID of the source flow node.
+    /// </summary>
     [JsonPropertyName("sourceRef")]
     public int SourceRef { get; set; }
 
+    /// <summary>
+    /// The ID of the target flow node.
+    /// </summary>
     [JsonPropertyName("targetRef")]
     public int TargetRef { get; set; }
 
+    /// <summary>
+    /// Roles authorized to transition along this flow (userTask flows only).
+    /// </summary>
     [JsonPropertyName("roles")]
     public List<string> Roles { get; set; } = [];
 
+    /// <summary>
+    /// Required input variable declarations for this transition flow.
+    /// </summary>
     [JsonPropertyName("variables")]
     public List<VariableModel> Variables { get; set; } = [];
 
+    /// <summary>
+    /// The NCalc condition expression evaluated to determine if this flow is taken.
+    /// </summary>
     [JsonPropertyName("condition")]
     public string? Condition { get; set; }
 
+    /// <summary>
+    /// If true, this flow acts as the default fallback when other conditions fail.
+    /// </summary>
     [JsonPropertyName("isDefault")]
     public bool IsDefault { get; set; }
 
+    /// <summary>
+    /// If true, an actor can trigger this flow without claiming the userTask first.
+    /// </summary>
     [JsonPropertyName("canActWithoutClaim")]
     public bool CanActWithoutClaim { get; set; }
 }
 
+/// <summary>
+/// Represents a variable declaration model within a scope.
+/// </summary>
 public sealed class VariableModel
 {
+    /// <summary>
+    /// The unique integer ID of the variable declaration.
+    /// </summary>
     [JsonPropertyName("id")]
     public int Id { get; set; }
 
+    /// <summary>
+    /// The declared variable name.
+    /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The data type of the variable (string, number, boolean, date, datetime).
+    /// </summary>
     [JsonPropertyName("dataType")]
     public string DataType { get; set; } = WorkflowVariableTypes.String;
 
+    /// <summary>
+    /// If true, the variable holds an array of values instead of a single scalar.
+    /// </summary>
     [JsonPropertyName("isArray")]
     public bool IsArray { get; set; }
 
+    /// <summary>
+    /// If true, the variable must be supplied before advancing the transition.
+    /// </summary>
     [JsonPropertyName("required")]
     public bool Required { get; set; }
 
@@ -353,6 +613,9 @@ public sealed class VariableModel
     // at start / flow-take. Held as raw JSON so any data type round-trips. A string
     // default may contain ${...} placeholders (other variables + sys.*/config.*
     // context) that are resolved before the value is coerced and persisted.
+    /// <summary>
+    /// The default value used when no input is supplied.
+    /// </summary>
     [JsonPropertyName("defaultValue")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonElement? DefaultValue { get; set; }
@@ -361,6 +624,9 @@ public sealed class VariableModel
     // collected values (supplied + resolved defaults) overlaid with sys.*/config.*
     // context. A falsy or unresolvable expression rejects the operation. Empty means
     // no rule. Parse-checked at author time in ValidateDefinition.
+    /// <summary>
+    /// An optional NCalc validation expression.
+    /// </summary>
     [JsonPropertyName("validation")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Validation { get; set; }

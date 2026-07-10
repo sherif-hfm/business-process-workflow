@@ -1,201 +1,447 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
+using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Api.Endpoints;
 
+/// <summary>
+/// Exposes API endpoints for managing workflow instances.
+/// </summary>
 public static class WorkflowInstanceEndpoints
 {
+    /// <summary>
+    /// Maps the workflow instance endpoints to the application's route builder.
+    /// </summary>
+    /// <param name="app">The route builder to map endpoints onto.</param>
+    /// <returns>The modified endpoint route builder.</returns>
     public static IEndpointRouteBuilder MapWorkflowInstanceEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/instances")
             .WithTags("Workflow Instances")
             .RequireAuthorization();
 
-        group.MapPost("/", async (
-            StartInstanceRequest request,
-            string? detail,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var actor = ToActor(principal);
-            if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
-            {
-                var instance = await service.StartInstanceAsync(
-                    request.WorkflowId,
-                    request.WorkflowKey,
-                    actor,
-                    request.StartEventId,
-                    request.Variables,
-                    cancellationToken);
-                return Results.Created($"/api/instances/{instance.Id}", instance);
-            }
+        group.MapPost("/", StartInstance)
+            .Produces<StartInstanceResultDto>(StatusCodes.Status201Created)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized);
 
-            var result = await service.StartInstanceSlimAsync(
+        group.MapGet("/", ListInstances)
+            .Produces<PagedResult<InstanceSummaryDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized);
+
+        group.MapGet("/inbox", GetInbox)
+            .Produces<PagedResult<InboxItemDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized);
+
+        group.MapGet("/{id:long}", GetInstance)
+            .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapGet("/{id:long}/flows", GetAvailableFlows)
+            .Produces<IReadOnlyList<SequenceFlowModel>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized);
+
+        group.MapPost("/{id:long}/claim", ClaimInstance)
+            .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/unclaim", UnclaimInstance)
+            .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/flows/{flowId:int}", TakeFlow)
+            .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/cancel", CancelInstance)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/message", DeliverMessage)
+            .AllowAnonymous()
+            .Produces<MessageDeliveryAckDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
+        return app;
+    }
+
+    /// <summary>
+    /// Starts a new workflow instance based on a workflow definition ID or key.
+    /// </summary>
+    /// <param name="request">Parameters specifying the workflow to start and initial variables.</param>
+    /// <param name="detail">Optional. If set to 'full', returns the detailed instance DTO instead of the slim version.</param>
+    /// <param name="principal">The security principal containing the actor identity.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Provide either <c>WorkflowId</c> (a specific version database id) or
+    /// <c>WorkflowKey</c> (the stable cross-version key - the latest published version is
+    /// resolved). <c>StartEventId</c> is optional and selects a non-default start event when
+    /// the workflow defines more than one. <c>Variables</c> supplies the start event's
+    /// declared variables; required variables must be present and each is validated against
+    /// its NCalc <c>validation</c> rule.
+    ///
+    /// By default the response is the slim <see cref="StartInstanceResultDto"/> (instance id
+    /// + resting node); pass <paramref name="detail"/>=<c>"full"</c> to get the full
+    /// <see cref="InstanceDetailDto"/> (definition, variables, history) instead. The instance
+    /// is created and pass-through routing runs in the same transaction, so the resting node
+    /// reflects any automatic nodes (task/serviceTask/scriptTask/exclusiveGateway) between
+    /// the start event and the first userTask / message catch / end event.
+    ///
+    /// A 400 is returned for an unpublished/missing workflow, a missing required variable, a
+    /// failed validation rule, or a start-event role mismatch (all domain errors). A 401 is
+    /// returned when no bearer JWT is supplied.
+    /// </remarks>
+    public static async Task<IResult> StartInstance(
+        StartInstanceRequest request,
+        string? detail,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var actor = ToActor(principal);
+        if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
+        {
+            var instance = await service.StartInstanceAsync(
                 request.WorkflowId,
                 request.WorkflowKey,
                 actor,
                 request.StartEventId,
                 request.Variables,
                 cancellationToken);
-            return Results.Created($"/api/instances/{result.Id}", result);
-        });
+            return Results.Created($"/api/instances/{instance.Id}", instance);
+        }
 
-        group.MapGet("/", async (
-            string? status,
-            long? instanceId,
-            long? workflowId,
-            string? workflowKey,
-            int? nodeId,
-            string? nodeExternalId,
-            [FromQuery(Name = "var")] string[]? variables,
-            int? page,
-            int? pageSize,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
+        var result = await service.StartInstanceSlimAsync(
+            request.WorkflowId,
+            request.WorkflowKey,
+            actor,
+            request.StartEventId,
+            request.Variables,
+            cancellationToken);
+        return Results.Created($"/api/instances/{result.Id}", result);
+    }
+
+    /// <summary>
+    /// Lists workflow instances matching filter criteria.
+    /// </summary>
+    /// <param name="status">Optional. Filter by execution status (<c>running</c>, <c>completed</c>, <c>faulted</c>, <c>cancelled</c>).</param>
+    /// <param name="instanceId">Optional. Filter by unique instance ID.</param>
+    /// <param name="workflowId">Optional. Filter by specific workflow version ID.</param>
+    /// <param name="workflowKey">Optional. Filter by stable cross-version workflow key (spans all versions).</param>
+    /// <param name="nodeId">Optional. Filter by the ID of the current resting flow node.</param>
+    /// <param name="nodeExternalId">Optional. Filter by the external ID of the current resting flow node (case-insensitive).</param>
+    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
+    /// <param name="page">Optional. The 1-based page index (default 1).</param>
+    /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Returns a <see cref="PagedResult{T}"/> of <see cref="InstanceSummaryDto"/> ordered by
+    /// <c>UpdatedAt DESC, Id DESC</c>. All filters AND-combine. A 400 is returned for a
+    /// malformed <c>var</c> entry (missing <c>:</c> or empty name). Array/object variables
+    /// never match the <c>var</c> filter.
+    /// </remarks>
+    public static async Task<IResult> ListInstances(
+        string? status,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
+        [FromQuery(Name = "var")] string[]? variables,
+        int? page,
+        int? pageSize,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var (p, s) = NormalizePaging(page, pageSize);
+        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+    }
+
+    /// <summary>
+    /// Retrieves user tasks pending claim or action for the current authenticated actor.
+    /// </summary>
+    /// <param name="instanceId">Optional. Filter by unique instance ID.</param>
+    /// <param name="workflowId">Optional. Filter by workflow definition version ID.</param>
+    /// <param name="workflowKey">Optional. Filter by stable workflow key (spans all versions).</param>
+    /// <param name="nodeId">Optional. Filter by flow node ID.</param>
+    /// <param name="nodeExternalId">Optional. Filter by flow node external ID (case-insensitive).</param>
+    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
+    /// <param name="page">Optional. The 1-based page index (default 1).</param>
+    /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
+    /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Actor-scoped: returns only <c>running</c> instances resting on a <c>userTask</c>
+    /// whose node roles (if any) the caller holds, minus tasks already claimed by someone
+    /// else. Tasks the caller has claimed are included and flagged with
+    /// <c>ClaimedByMe = true</c>. Each <see cref="InboxItemDto"/> carries precomputed
+    /// <c>CanClaim</c>/<c>CanAct</c> flags based on the caller's roles. When a reached
+    /// <c>userTask</c> has a <c>condition</c> visibility gate, the inbox switches to
+    /// exact-count post-filtering (the fast SQL-only path is used otherwise). A 400 is
+    /// returned for a malformed <c>var</c> entry.
+    /// </remarks>
+    public static async Task<IResult> GetInbox(
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        int? nodeId,
+        string? nodeExternalId,
+        [FromQuery(Name = "var")] string[]? variables,
+        int? page,
+        int? pageSize,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var (p, s) = NormalizePaging(page, pageSize);
+        return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+    }
+
+    /// <summary>
+    /// Retrieves full structural and execution details of a specific workflow instance.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Returns the full <see cref="InstanceDetailDto"/>: the embedded workflow definition,
+    /// the current resting node, the complete list of instance variables, and the full
+    /// execution history. Returns 404 when the instance does not exist.
+    /// </remarks>
+    public static async Task<IResult> GetInstance(
+        long id,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var instance = await service.GetInstanceAsync(id, cancellationToken);
+        return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Lists all sequence flows currently available to be taken from the resting node of a workflow instance.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Returns the <see cref="SequenceFlowModel"/> list the current actor may take, after
+    /// the engine applies node roles, sequence-flow roles, claim ownership, the task's
+    /// visibility <c>condition</c>, and (for <c>exclusiveGateway</c> / <c>userTask</c>
+    /// flows) the flow <c>condition</c>/<c>isDefault</c> rules. Returns an empty array (not
+    /// 404) when the instance does not exist, is not running, is not resting on a
+    /// <c>userTask</c>, the actor is not authorized, or the visibility gate is false.
+    /// </remarks>
+    public static async Task<IResult> GetAvailableFlows(
+        long id,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        return Results.Ok(await service.GetAvailableFlowsAsync(id, ToActor(principal), cancellationToken));
+    }
+
+    /// <summary>
+    /// Claims a userTask within a workflow instance for the current authenticated actor.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="principal">The security principal of the current actor claiming the task.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Locks the resting <c>userTask</c> to the current actor (required before taking any
+    /// flow when the node has <c>requiresClaim</c> = true). The actor must hold one of the
+    /// node's roles (if any are set); the task must not already be claimed by someone
+    /// else. The claim is released when a flow is taken. Returns the updated
+    /// <see cref="InstanceDetailDto"/>. A 400 is returned for a non-claimable node, a role
+    /// mismatch, a false visibility gate, or an already-claimed task; 404 when the instance
+    /// does not exist.
+    /// </remarks>
+    public static async Task<IResult> ClaimInstance(
+        long id,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var instance = await service.ClaimAsync(id, ToActor(principal), cancellationToken);
+        return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Releases a previously claimed userTask, returning it to the pool of unclaimed tasks.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="principal">The security principal of the current actor releasing the claim.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Clears the claim on the resting <c>userTask</c> so another actor can claim it. The
+    /// caller must be the current claimant or hold a role listed in the workflow's
+    /// <c>unclaimRoles</c>. Returns the updated <see cref="InstanceDetailDto"/>. A 400 is
+    /// returned when the caller is neither the claimant nor in <c>unclaimRoles</c>; 404 when
+    /// the instance does not exist.
+    /// </remarks>
+    public static async Task<IResult> UnclaimInstance(
+        long id,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var instance = await service.UnclaimAsync(id, ToActor(principal), cancellationToken);
+        return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Executes a transition flow from the current resting node to the next step.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="flowId">The unique integer ID of the sequence flow to transition along.</param>
+    /// <param name="request">Transition payload containing values for variables to submit/set.</param>
+    /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Takes the named sequence flow from the resting <c>userTask</c>: validates the
+    /// caller's roles (node + flow), claim ownership (if <c>requiresClaim</c>), the flow's
+    /// own <c>condition</c>/<c>isDefault</c> (if any), and the declared flow variables
+    /// (required presence + NCalc <c>validation</c>). Then runs pass-through routing in the
+    /// same transaction - automatic nodes (task/serviceTask/scriptTask/exclusiveGateway,
+    /// including errorBoundaryEvent error paths) are resolved until the instance rests on
+    /// the next <c>userTask</c> or <c>intermediateMessageCatchEvent</c>, or terminates on an
+    /// <c>endEvent</c>/<c>errorEndEvent</c>. Returns the updated <see cref="InstanceDetailDto"/>.
+    ///
+    /// A 400 is returned for an unavailable flow, a role/claim mismatch, a missing required
+    /// variable, a failed validation rule, a gateway with no matching/default flow, or a
+    /// service/script task failure with no attached error boundary; 404 when the instance
+    /// does not exist.
+    /// </remarks>
+    public static async Task<IResult> TakeFlow(
+        long id,
+        int flowId,
+        TakeFlowRequest request,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var instance = await service.TakeFlowAsync(
+            id,
+            flowId,
+            ToActor(principal),
+            request.Variables,
+            cancellationToken);
+        return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Cancels an active workflow instance.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow instance to cancel.</param>
+    /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Transitions a <c>running</c> instance to the <c>cancelled</c> status. The caller must
+    /// hold a role listed in the workflow's <c>cancelRoles</c>. Returns 204 on success. A
+    /// 400 is returned when the instance is not running or the caller lacks a cancel role;
+    /// 404 when the instance does not exist.
+    /// </remarks>
+    public static async Task<IResult> CancelInstance(
+        long id,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        return await service.CancelAsync(id, ToActor(principal), cancellationToken) ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Delivers an external system message payload to a workflow instance resting on an intermediate message catch event.
+    /// </summary>
+    /// <param name="context">The HTTP request context containing correlation and credential headers.</param>
+    /// <param name="id">The database ID of the workflow instance waiting for the message.</param>
+    /// <param name="service">The workflow engine service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// This endpoint is <c>AllowAnonymous</c> - authentication is the catch node's configured
+    /// client id/secret (sent as <c>X-Client-Id</c>/<c>X-Client-Secret</c>) plus a required
+    /// custom header named by the node's <c>headerName</c> whose value must equal
+    /// <c>headerValue</c> (and satisfy the optional NCalc <c>headerValidation</c> rule, with
+    /// the incoming header value bound as <c>header</c>). The raw JSON message body is then
+    /// mapped into instance variables via <c>outputMappings</c> (dotted paths; a
+    /// <c>required</c> mapping that cannot be resolved rejects the delivery before any
+    /// variables are written) and the engine advances down the catch node's single outgoing
+    /// flow.
+    ///
+    /// Returns a slim <see cref="MessageDeliveryAckDto"/> (no definition/variables/history,
+    /// since the endpoint is anonymous). Correlation is by instance id only - the instance
+    /// must be <c>running</c> and currently resting on the catch node. A 401 is returned on a
+    /// client id/secret mismatch; a 400 for a missing/mismatched header, a failed
+    /// <c>headerValidation</c> rule, a required-mapping failure, or a not-running/not-waiting
+    /// instance; 404 when the instance does not exist. There is no delivery idempotency key -
+    /// a retry after a successful delivery gets a 400 because the instance has already
+    /// advanced off the catch node.
+    /// </remarks>
+    public static async Task<IResult> DeliverMessage(
+        HttpContext context,
+        long id,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
+        var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
+        var headers = context.Request.Headers
+            .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+
+        Log.Information("Message delivery request to instance {InstanceId} from client '{ClientId}'", id, clientId);
+
+        JsonElement? payload = null;
+        if (context.Request.HasJsonContentType()
+            && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
         {
-            var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
-        });
-
-        group.MapGet("/inbox", async (
-            long? instanceId,
-            long? workflowId,
-            string? workflowKey,
-            int? nodeId,
-            string? nodeExternalId,
-            [FromQuery(Name = "var")] string[]? variables,
-            int? page,
-            int? pageSize,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var (p, s) = NormalizePaging(page, pageSize);
-            return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
-        });
-
-        group.MapGet("/{id:long}", async (
-            long id,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var instance = await service.GetInstanceAsync(id, cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(instance);
-        });
-
-        group.MapGet("/{id:long}/flows", async (
-            long id,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-            Results.Ok(await service.GetAvailableFlowsAsync(id, ToActor(principal), cancellationToken)));
-
-        group.MapPost("/{id:long}/claim", async (
-            long id,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var instance = await service.ClaimAsync(id, ToActor(principal), cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(instance);
-        });
-
-        group.MapPost("/{id:long}/unclaim", async (
-            long id,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var instance = await service.UnclaimAsync(id, ToActor(principal), cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(instance);
-        });
-
-        group.MapPost("/{id:long}/flows/{flowId:int}", async (
-            long id,
-            int flowId,
-            TakeFlowRequest request,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var instance = await service.TakeFlowAsync(
-                id,
-                flowId,
-                ToActor(principal),
-                request.Variables,
-                cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(instance);
-        });
-
-        group.MapPost("/{id:long}/cancel", async (
-            long id,
-            ClaimsPrincipal principal,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-            await service.CancelAsync(id, ToActor(principal), cancellationToken) ? Results.NoContent() : Results.NotFound());
-
-        // Delivers a message to an instance resting on an intermediateMessageCatchEvent.
-        // Auth is the node-config client id/secret + required header (not the user JWT),
-        // so this endpoint overrides the group RequireAuthorization() with AllowAnonymous.
-        // The body is the raw JSON message payload; outputMappings on the catch node
-        // extract values from it. Returns a slim ack (no definition/variables/history)
-        // so a node-credentialed webhook caller cannot read the full workflow model:
-        // 404 when the instance is missing, 401 on a client id/secret mismatch
-        // (WorkflowUnauthorizedException), 400 on a header problem (missing/mismatch/
-        // validation failure) or when not running/waiting (WorkflowDomainException).
-        // A non-JSON content type is treated as no payload (rather than throwing a 500)
-        // so a misconfigured caller gets a clean response.
-        group.MapPost("/{id:long}/message", async (
-            HttpContext context,
-            long id,
-            IWorkflowEngineService service,
-            CancellationToken cancellationToken) =>
-        {
-            var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
-            var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
-            var headers = context.Request.Headers
-                .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
-
-            Log.Information("Message delivery request to instance {InstanceId} from client '{ClientId}'", id, clientId);
-
-            JsonElement? payload = null;
-            // Only attempt a JSON read when the caller declared a JSON content type;
-            // ReadFromJsonAsync throws InvalidOperationException (not JsonException) for a
-            // non-JSON content type, which would otherwise surface as an unhandled 500.
-            if (context.Request.HasJsonContentType()
-                && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
+            try
             {
-                try
-                {
-                    payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
-                }
-                catch (JsonException ex)
-                {
-                    Log.Warning(ex, "Failed to parse incoming JSON payload on DeliverMessage endpoint for instance {InstanceId}.", id);
-                    payload = null;
-                }
+                payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
             }
-
-            var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-            var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
-            var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
-            if (ack is null)
+            catch (JsonException ex)
             {
-                Log.Information("Message delivery to instance {InstanceId}: instance not found.", id);
-                return Results.NotFound();
+                Log.Warning(ex, "Failed to parse incoming JSON payload on DeliverMessage endpoint for instance {InstanceId}.", id);
+                payload = null;
             }
+        }
 
-            Log.Information("Message delivery to instance {InstanceId} acknowledged. Status: {Status}, resting on node {NodeId}.",
-                id, ack.Status, ack.CurrentNodeId);
-            return Results.Ok(ack);
-        }).AllowAnonymous();
+        var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+        var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
+        var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
+        if (ack is null)
+        {
+            Log.Information("Message delivery to instance {InstanceId}: instance not found.", id);
+            return Results.NotFound();
+        }
 
-        return app;
+        Log.Information("Message delivery to instance {InstanceId} acknowledged. Status: {Status}, resting on node {NodeId}.",
+            id, ack.Status, ack.CurrentNodeId);
+        return Results.Ok(ack);
     }
 
     private const int DefaultPageSize = 50;

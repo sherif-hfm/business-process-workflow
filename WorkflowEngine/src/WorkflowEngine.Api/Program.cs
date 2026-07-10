@@ -1,6 +1,10 @@
 using System.Text;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.OpenApi;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using Serilog;
 using WorkflowEngine.Api.Endpoints;
 using WorkflowEngine.Infrastructure.Data;
@@ -44,7 +48,107 @@ try
         });
     builder.Services.AddAuthorization();
 
-    builder.Services.AddOpenApi();
+    builder.Services.AddOpenApi(options =>
+    {
+        options.AddDocumentTransformer((document, _, _) =>
+        {
+            document.Info = new OpenApiInfo
+            {
+                Title = "Workflow Engine API",
+                Version = "1.0.0",
+                Description = """
+                    Runtime engine for BPMN-aligned business process workflows.
+
+                    Workflow definitions are immutable, versioned JSON snapshots created in the
+                    single-file visual editor (`workflow-editor.html`). Definitions are loaded,
+                    validated, published, and then instantiated. Instances progress through flow
+                    nodes (startEvent, userTask, task, serviceTask, scriptTask, exclusiveGateway,
+                    endEvent, errorEndEvent, errorBoundaryEvent, intermediateMessageCatchEvent,
+                    messageStartEvent) connected by sequence flows, with pass-through routing,
+                    role enforcement, claim locking, and NCalc condition evaluation.
+
+                    ## Authentication
+                    The `/api/instances` and `/api/workflows` groups require a bearer JWT
+                    validated against a shared symmetric key (`Jwt:Key`). The Blazor UI mints its
+                    own dev token from `/token`; for production swap `AddJwtBearer` to a real OIDC
+                    identity provider. The two message endpoints
+                    (`POST /api/instances/{id}/message` and `POST /api/workflows/{workflowKey}/message-start`)
+                    are `AllowAnonymous` - they authenticate the caller against the node's
+                    configured client id/secret + required custom header, not the user JWT.
+
+                    ## Status codes
+                    - 200 OK, 201 Created, 204 No Content for success
+                    - 400 Bad Request for domain errors (WorkflowDomainException) - unpublished
+                    workflow, missing variable, unavailable/forbidden flow, role/claim mismatch,
+                    gateway with no match, service/script task failure with no error boundary
+                    - 401 Unauthorized for a client id/secret mismatch on the message endpoints
+                    - 403 Forbidden for a missing required role on the workflow-definition endpoints
+                    - 404 Not Found when a referenced instance or definition id does not exist
+                    """,
+            };
+
+            document.Tags = new HashSet<OpenApiTag>
+            {
+                new()
+                {
+                    Name = "Workflow Definitions",
+                    Description = "Create, version, publish, and delete workflow definitions (JSON snapshots from the visual editor)."
+                },
+                new()
+                {
+                    Name = "Workflow Instances",
+                    Description = "Start, list, inspect, claim, advance, cancel, and message workflow instances."
+                }
+            };
+
+            document.Components ??= new OpenApiComponents();
+            var securityScheme = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "JWT",
+                Description = "JWT bearer token validated against the configured `Jwt:Key`."
+            };
+            document.Components.SecuritySchemes = document.Components.SecuritySchemes ?? new Dictionary<string, IOpenApiSecurityScheme>();
+            document.Components.SecuritySchemes["Bearer"] = securityScheme;
+
+            return Task.CompletedTask;
+        });
+
+        // Attach Bearer security only to operations that are NOT AllowAnonymous, and
+        // fill in the description Swagger can't infer for the renamed `var` query param.
+        options.AddOperationTransformer((operation, context, _) =>
+        {
+            // The AllowAnonymous metadata is exposed via the descriptor's endpoint
+            // metadata collection; when absent the operation requires the group's
+            // JWT authorization, so attach the Bearer security requirement.
+            var endpointMetadata = context.Description.ActionDescriptor.EndpointMetadata;
+            var isAnonymous = endpointMetadata is not null
+                && endpointMetadata.Any(m => m is IAllowAnonymous || (m?.GetType().Name == "AllowAnonymousAttribute"));
+
+            if (!isAnonymous)
+            {
+                operation.Security ??= [];
+                operation.Security.Add(new OpenApiSecurityRequirement
+                {
+                    [new OpenApiSecuritySchemeReference("Bearer", context.Document)] = []
+                });
+            }
+
+            if (operation.Parameters is not null)
+            {
+                foreach (var param in operation.Parameters)
+                {
+                    if (string.Equals(param.Name, "var", StringComparison.Ordinal) && param.In == ParameterLocation.Query)
+                    {
+                        param.Description = "Repeated `var=name:value` filter. Exact, case-insensitive match on an instance variable's scalar value. Multiple entries are AND-combined. Array/object variables never match.";
+                    }
+                }
+            }
+
+            return Task.CompletedTask;
+        });
+    });
 
     // Read-only workflow context sources (sys.* / config.*) and a clock for sys.now/today.
     var workflowContextOptions = builder.Configuration
