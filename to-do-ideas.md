@@ -1,5 +1,3 @@
-- protect workflow endpoints
-
 - enable docmentation in swegger
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - manage versions of workflow and change default version and published versions
@@ -11,10 +9,12 @@
 - inhance ui to be like modern dashboard
 - flow /api/instances/{id}/flows/{flowId} endpoint return a lot of data may need enhancement
 - /api/instances/{id} endpoint return a lot of data may need enhancement
-- add serilog .net logging
 
 
 
+
+- protect workflow endpoints (done)
+- add serilog .net logging (done)
 - add engine settings table  (done)
 - load workflow direct from file not past data (done)
 - convert "WorkflowKey" column and id in json to string and can start instance using it  (done)

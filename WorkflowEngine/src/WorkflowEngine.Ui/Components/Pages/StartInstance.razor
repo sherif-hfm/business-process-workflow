@@ -88,23 +88,31 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        workflow = await Api.GetWorkflowAsync(WorkflowId);
-        if (workflow is not null)
+        try
         {
-            var allowedStartEvents = AllowedStartEvents();
+            error = null;
+            workflow = await Api.GetWorkflowAsync(WorkflowId);
+            if (workflow is not null)
+            {
+                var allowedStartEvents = AllowedStartEvents();
 
-            if (allowedStartEvents.Any(e => e.Id == workflow.Definition.InitialEventId))
-            {
-                selectedStartEventId = workflow.Definition.InitialEventId;
+                if (allowedStartEvents.Any(e => e.Id == workflow.Definition.InitialEventId))
+                {
+                    selectedStartEventId = workflow.Definition.InitialEventId;
+                }
+                else if (allowedStartEvents.Count > 0)
+                {
+                    selectedStartEventId = allowedStartEvents[0].Id;
+                }
+                else
+                {
+                    selectedStartEventId = null;
+                }
             }
-            else if (allowedStartEvents.Count > 0)
-            {
-                selectedStartEventId = allowedStartEvents[0].Id;
-            }
-            else
-            {
-                selectedStartEventId = null;
-            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
         }
     }
 

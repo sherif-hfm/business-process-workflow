@@ -90,8 +90,16 @@
 
     private async Task LoadAsync()
     {
-        error = null;
-        workflows = await Api.GetWorkflowsAsync();
+        try
+        {
+            error = null;
+            workflows = await Api.GetWorkflowsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            workflows = [];
+        }
     }
 
     private async Task OnInputFileChange(InputFileChangeEventArgs e)

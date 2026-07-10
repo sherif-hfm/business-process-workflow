@@ -1,4 +1,7 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
@@ -9,7 +12,46 @@ public static class WorkflowDefinitionEndpoints
 {
     public static IEndpointRouteBuilder MapWorkflowDefinitionEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/workflows").WithTags("Workflow Definitions");
+        var group = app.MapGroup("/api/workflows")
+            .WithTags("Workflow Definitions")
+            .RequireAuthorization();
+
+        group.AddEndpointFilter(async (invocationContext, next) =>
+        {
+            var httpContext = invocationContext.HttpContext;
+
+            // Skip auth check if the endpoint has AllowAnonymous metadata
+            var endpoint = httpContext.GetEndpoint();
+            if (endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+            {
+                return await next(invocationContext);
+            }
+
+            var settingsService = httpContext.RequestServices.GetRequiredService<IEngineSettingsService>();
+
+            // Fetch the required role from engine settings, defaulting to "admin" if not configured
+            var setting = await settingsService.GetByKeyAsync("Workflow.RequiredRole", httpContext.RequestAborted);
+            var requiredRole = !string.IsNullOrWhiteSpace(setting?.Value) ? setting.Value : "admin";
+
+            var allowedRoles = requiredRole.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            // Check if the user is in any of the allowed roles (case-insensitive)
+            var userRoles = httpContext.User.FindAll(System.Security.Claims.ClaimTypes.Role)
+                .Select(c => c.Value)
+                .Concat(httpContext.User.FindAll("role").Select(c => c.Value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (!allowedRoles.Any(r => userRoles.Contains(r)))
+            {
+                Log.Warning("User '{User}' with roles [{Roles}] is forbidden from accessing workflow definitions. Required role(s): '{RequiredRole}'",
+                    httpContext.User.Identity?.Name ?? "anonymous",
+                    string.Join(", ", userRoles),
+                    requiredRole);
+                return Results.Forbid();
+            }
+
+            return await next(invocationContext);
+        });
 
         group.MapGet("/", async (
             IWorkflowDefinitionService service,

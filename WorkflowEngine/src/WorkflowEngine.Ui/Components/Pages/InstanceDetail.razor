@@ -293,8 +293,16 @@ else
 
     private async Task LoadAsync()
     {
-        instance = await Api.GetInstanceAsync(InstanceId);
-        availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+        try
+        {
+            error = null;
+            instance = await Api.GetInstanceAsync(InstanceId);
+            availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
     }
 
     private async Task ClaimAsync() => await RefreshFrom(async () =>
