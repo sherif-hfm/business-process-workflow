@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Jint;
 using Jint.Runtime;
+using Microsoft.Extensions.Logging;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Services;
 
@@ -19,7 +20,7 @@ namespace WorkflowEngine.Infrastructure.Scripting;
 /// perform bulk work in a single CLR call that bypasses per-step constraint checks
 /// (sebastienros/jint#2486), so the in-engine limits alone cannot be fully trusted.
 /// </summary>
-public sealed class JintScriptEvaluator(ScriptOptions options) : IScriptEvaluator
+public sealed class JintScriptEvaluator(ScriptOptions options, ILogger<JintScriptEvaluator> logger) : IScriptEvaluator
 {
     public ScriptResult Evaluate(string script, IScriptContext context, CancellationToken cancellationToken)
     {
@@ -37,9 +38,12 @@ public sealed class JintScriptEvaluator(ScriptOptions options) : IScriptEvaluato
 
         engine.SetValue("execution", new ExecutionBinding(context));
 
+        logger.LogInformation("Executing Jint JavaScript sandbox script...");
+
         try
         {
             engine.Execute(script);
+            logger.LogInformation("Jint JavaScript sandbox script executed successfully.");
             return ScriptResult.Ok;
         }
         catch (WorkflowDomainException)
@@ -52,28 +56,34 @@ public sealed class JintScriptEvaluator(ScriptOptions options) : IScriptEvaluato
         }
         catch (JavaScriptException ex)
         {
+            logger.LogWarning(ex, "Jint script encountered a JavaScriptException: {Message}", ex.Message);
             return ScriptResult.Fail(ex.Message);
         }
         catch (TimeoutException)
         {
+            logger.LogWarning("Jint script execution exceeded timeout of {TimeoutSeconds}s.", options.TimeoutSeconds);
             return ScriptResult.Fail($"Script execution exceeded the {options.TimeoutSeconds}s timeout.");
         }
         catch (MemoryLimitExceededException)
         {
+            logger.LogWarning("Jint script execution exceeded the memory limit of {MemoryBytes} bytes.", options.MemoryBytes);
             return ScriptResult.Fail($"Script exceeded the {options.MemoryBytes}-byte memory limit.");
         }
         catch (StatementsCountOverflowException)
         {
+            logger.LogWarning("Jint script execution exceeded the statement limit of {MaxStatements}.", options.MaxStatements);
             return ScriptResult.Fail($"Script exceeded the {options.MaxStatements}-statement limit.");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             // The linked token was cancelled by our own CancelAfter guard, not by
             // the caller's cancellation - treat it as a timeout.
+            logger.LogWarning("Jint script execution exceeded timeout of {TimeoutSeconds}s (cancelled by CancelAfter guard).", options.TimeoutSeconds);
             return ScriptResult.Fail($"Script execution exceeded the {options.TimeoutSeconds}s timeout.");
         }
         catch (Exception ex)
         {
+            logger.LogError(ex, "Jint script execution failed with unexpected exception.");
             return ScriptResult.Fail(ex.Message);
         }
     }

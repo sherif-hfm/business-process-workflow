@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 
 namespace WorkflowEngine.Ui.Auth;
@@ -9,7 +10,7 @@ namespace WorkflowEngine.Ui.Auth;
 /// Mints a JWT signed with the shared symmetric key (Option A). This is a development
 /// test convenience only; production should obtain tokens from a real identity provider.
 /// </summary>
-public sealed class DevTokenFactory(IConfiguration configuration)
+public sealed class DevTokenFactory(IConfiguration configuration, ILogger<DevTokenFactory> logger)
 {
     public string Create(string? user, IEnumerable<string> roles, int expiresInMinutes)
     {
@@ -44,6 +45,9 @@ public sealed class DevTokenFactory(IConfiguration configuration)
             expires: DateTime.UtcNow.AddMinutes(Math.Max(1, expiresInMinutes)),
             signingCredentials: credentials);
 
-        return new JwtSecurityTokenHandler().WriteToken(token);
+        var jwt = new JwtSecurityTokenHandler().WriteToken(token);
+        logger.LogInformation("Minted dev JWT for user '{User}' with roles [{Roles}] valid for {Minutes}m.",
+            name, string.Join(",", roles), expiresInMinutes);
+        return jwt;
     }
 }

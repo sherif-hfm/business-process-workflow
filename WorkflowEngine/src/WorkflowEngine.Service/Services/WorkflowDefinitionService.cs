@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
 using WorkflowEngine.Shared.Dtos;
@@ -8,7 +9,8 @@ namespace WorkflowEngine.Service.Services;
 
 public sealed class WorkflowDefinitionService(
     IWorkflowDefinitionRepository definitions,
-    IScriptEvaluator scriptEvaluator)
+    IScriptEvaluator scriptEvaluator,
+    ILogger<WorkflowDefinitionService> logger)
     : IWorkflowDefinitionService
 {
     public async Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken)
@@ -33,6 +35,7 @@ public sealed class WorkflowDefinitionService(
         var name = definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
         var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
+        logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}).", created.Id, name, version, publish);
         return ToDetail(created);
     }
 
@@ -45,6 +48,7 @@ public sealed class WorkflowDefinitionService(
         var source = await definitions.GetAsync(sourceWorkflowId, cancellationToken);
         if (source is null)
         {
+            logger.LogInformation("Create new version from workflow {WorkflowId}: source not found.", sourceWorkflowId);
             return null;
         }
 
@@ -53,14 +57,37 @@ public sealed class WorkflowDefinitionService(
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
         var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
+        logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}).", created.Id, name, version, sourceWorkflowId, publish);
         return ToDetail(created);
     }
 
-    public Task<bool> PublishAsync(long id, CancellationToken cancellationToken) =>
-        definitions.SetPublishedAsync(id, true, cancellationToken);
+    public async Task<bool> PublishAsync(long id, CancellationToken cancellationToken)
+    {
+        var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
+        if (published)
+        {
+            logger.LogInformation("Workflow definition {WorkflowId} published.", id);
+        }
+        else
+        {
+            logger.LogInformation("Publish workflow {WorkflowId}: definition not found.", id);
+        }
+        return published;
+    }
 
-    public Task<bool> DeleteAsync(long id, CancellationToken cancellationToken) =>
-        definitions.DeleteAsync(id, cancellationToken);
+    public async Task<bool> DeleteAsync(long id, CancellationToken cancellationToken)
+    {
+        var deleted = await definitions.DeleteAsync(id, cancellationToken);
+        if (deleted)
+        {
+            logger.LogInformation("Workflow definition {WorkflowId} deleted.", id);
+        }
+        else
+        {
+            logger.LogInformation("Delete workflow {WorkflowId}: definition not found.", id);
+        }
+        return deleted;
+    }
 
     internal void ValidateDefinition(WorkflowModel definition)
     {

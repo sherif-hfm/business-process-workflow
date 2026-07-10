@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
 using WorkflowEngine.Shared.Dtos;
@@ -16,7 +17,8 @@ public sealed class WorkflowEngineService(
     IScriptEvaluator scriptEvaluator,
     WorkflowContextOptions contextOptions,
     TimeProvider timeProvider,
-    IWorkflowSettingsRepository settings)
+    IWorkflowSettingsRepository settings,
+    ILogger<WorkflowEngineService> logger)
     : IWorkflowEngineService
 {
     private Dictionary<string, JsonElement>? _settingsCache;
@@ -88,14 +90,19 @@ public sealed class WorkflowEngineService(
         }
         else
         {
+            logger.LogWarning("Start instance rejected: neither WorkflowId nor WorkflowKey was specified.");
             throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
         }
+
+        logger.LogInformation("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
+
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
             ?? throw new WorkflowDomainException("Workflow has no default start event.");
 
         var startEvent = GetFlowNode(workflow.Definition, resolvedStartEventId);
         if (!BpmnFlowNodeTypes.IsStart(startEvent.Type))
         {
+            logger.LogWarning("Start instance rejected: flow node #{NodeId} is not a start event.", resolvedStartEventId);
             throw new WorkflowDomainException($"Flow node #{resolvedStartEventId} is not a start event.");
         }
 
@@ -138,6 +145,9 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
+        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        logger.LogInformation("Successfully started workflow instance {InstanceId} resting on step {CurrentStepId} ({CurrentStepType})", instance.Id, instance.CurrentStepId, restingNode.Type);
+
         return (instance, workflow.Definition);
     }
 
@@ -179,6 +189,9 @@ public sealed class WorkflowEngineService(
             startEvent = startEvents[0];
         }
 
+        logger.LogInformation("Starting workflow instance by message on workflowKey {WorkflowKey} using start node #{StartNodeId} ({StartNodeName})",
+            workflowKey, startEvent.Id, startEvent.Name);
+
         var messageConfig = startEvent.Message
             ?? throw new WorkflowDomainException($"Message start event #{startEvent.Id} has no message configuration.");
 
@@ -201,6 +214,7 @@ public sealed class WorkflowEngineService(
         if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
             || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
         {
+            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: invalid client credentials (client id '{ClientId}').", workflowKey, message.ClientId);
             throw new WorkflowUnauthorizedException("Invalid client credentials.");
         }
 
@@ -210,11 +224,13 @@ public sealed class WorkflowEngineService(
         if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
             || incomingHeaderValue is null)
         {
+            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: required header '{HeaderName}' is missing.", workflowKey, expectedHeaderName);
             throw new WorkflowDomainException($"Required header '{expectedHeaderName}' is missing.");
         }
 
         if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
         {
+            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: header '{HeaderName}' value mismatch.", workflowKey, expectedHeaderName);
             throw new WorkflowDomainException($"Header '{expectedHeaderName}' does not match the expected value.");
         }
 
@@ -229,6 +245,7 @@ public sealed class WorkflowEngineService(
             };
             if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
             {
+                logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: header '{HeaderName}' failed validation '{Validation}'.", workflowKey, expectedHeaderName, messageConfig.HeaderValidation);
                 throw new WorkflowDomainException(
                     $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
             }
@@ -257,6 +274,7 @@ public sealed class WorkflowEngineService(
 
             if (string.IsNullOrWhiteSpace(idempotencyKeyValue))
             {
+                logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: idempotency variable '{Variable}' was not provided via headers.", workflowKey, idempotencyVariable);
                 throw new WorkflowDomainException(
                     $"Message start event #{startEvent.Id} idempotency variable '{idempotencyVariable}' was not provided via 'Idempotency-Key' or 'X-Idempotency-Key' headers.");
             }
@@ -278,6 +296,8 @@ public sealed class WorkflowEngineService(
             var existing = await FindByIdempotencyKeyAsync(workflowKey, idempotencyVariable!, idempotencyKeyValue, cancellationToken);
             if (existing is not null)
             {
+                logger.LogInformation("Message start request for workflowKey {WorkflowKey} with idempotency key '{IdempotencyKey}' was deduplicated. Existing instance: {InstanceId}",
+                    workflowKey, idempotencyKeyValue, existing.InstanceId);
                 await transaction.CommitAsync(cancellationToken);
                 return existing;
             }
@@ -317,6 +337,9 @@ public sealed class WorkflowEngineService(
         instance = await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation("Successfully started workflow instance {InstanceId} by message correlation. Status: {Status}, resting on node {CurrentStepId}",
+            instance.Id, instance.Status, instance.CurrentStepId);
 
         return await BuildStartAckAsync(instance.Id, cancellationToken);
     }
@@ -666,6 +689,7 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
+            logger.LogInformation("Claim instance {InstanceId}: instance not found.", id);
             return null;
         }
 
@@ -673,6 +697,8 @@ public sealed class WorkflowEngineService(
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         if (instance.Status != WorkflowInstanceStatuses.Running || !node.RequiresClaim)
         {
+            logger.LogWarning("Claim rejected on instance {InstanceId}: node #{NodeId} is not claimable (status={Status}, requiresClaim={RequiresClaim}).",
+                id, node.Id, instance.Status, node.RequiresClaim);
             throw new WorkflowDomainException("The current flow node cannot be claimed.");
         }
 
@@ -682,12 +708,16 @@ public sealed class WorkflowEngineService(
         var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
         if (!NodeVisible(node, evalCtx))
         {
+            logger.LogWarning("Claim rejected on instance {InstanceId}: node #{NodeId} condition '{Condition}' evaluated to false.",
+                id, node.Id, node.Condition);
             throw new WorkflowDomainException("The current flow node is not currently visible.");
         }
 
         var normalizedUser = NormalizeUser(actor.User);
         if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != normalizedUser)
         {
+            logger.LogWarning("Claim rejected on instance {InstanceId}: node already claimed by '{ClaimedBy}', requested by '{User}'.",
+                id, instance.ClaimedBy, normalizedUser);
             throw new WorkflowDomainException($"The current flow node is already claimed by '{instance.ClaimedBy}'.");
         }
 
@@ -700,6 +730,9 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
+        logger.LogInformation("Instance {InstanceId} claimed by user '{User}' on node #{NodeId} ({NodeName}).",
+            id, normalizedUser, node.Id, node.Name);
+
         return await BuildDetailAsync(id, cancellationToken);
     }
 
@@ -709,6 +742,7 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
+            logger.LogInformation("Unclaim instance {InstanceId}: instance not found.", id);
             return null;
         }
 
@@ -725,6 +759,8 @@ public sealed class WorkflowEngineService(
 
             if (!isClaimant && !hasUnclaimRole)
             {
+                logger.LogWarning("Unclaim rejected on instance {InstanceId}: user '{User}' is not the claimant ('{ClaimedBy}') and lacks an unclaim role.",
+                    id, normalizedUser, instance.ClaimedBy);
                 throw new WorkflowDomainException($"Only the user who claimed the task ('{instance.ClaimedBy}') or users with unclaim permissions can unclaim this task.");
             }
         }
@@ -732,6 +768,9 @@ public sealed class WorkflowEngineService(
         await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation("Instance {InstanceId} unclaimed by user '{User}' (previous claimant: '{PreviousClaimedBy}').",
+            id, normalizedUser, instance.ClaimedBy);
 
         return await BuildDetailAsync(id, cancellationToken);
     }
@@ -749,11 +788,13 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
+            logger.LogInformation("Take flow {FlowId} on instance {InstanceId}: instance not found.", flowId, id);
             return null;
         }
 
         if (instance.Status != WorkflowInstanceStatuses.Running)
         {
+            logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: instance status is {Status} (not Running).", flowId, id, instance.Status);
             throw new WorkflowDomainException("Only running instances can take a sequence flow.");
         }
 
@@ -762,13 +803,20 @@ public sealed class WorkflowEngineService(
         var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId);
         if (flow is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
+            logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: flow not available from current node #{NodeId} ({NodeType}).",
+                flowId, id, node.Id, node.Type);
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
+
+        logger.LogInformation("Taking sequence flow {FlowId} ({FlowName}) on instance {InstanceId} from node {SourceNodeId} ({SourceNodeType}) to {TargetNodeId} by user '{User}'",
+            flowId, flow.Name, id, node.Id, node.Type, flow.TargetRef, performedBy ?? "anonymous");
 
         var actorRoles = NormalizeRoles(actor.Roles);
         EnsureRoleAllowed(node, actorRoles, actor.User);
         if (!RoleAllowed(flow.Roles, actorRoles))
         {
+            logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: user '{User}' lacks a flow role ({FlowRoles}).",
+                flowId, id, performedBy, string.Join(",", flow.Roles ?? []));
             throw new WorkflowDomainException(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
         }
@@ -782,6 +830,8 @@ public sealed class WorkflowEngineService(
         var flowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
         if (!NodeVisible(node, flowContext))
         {
+            logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: node #{NodeId} condition '{Condition}' evaluated to false.",
+                flowId, id, node.Id, node.Condition);
             throw new WorkflowDomainException("The current flow node is not currently visible.");
         }
 
@@ -794,6 +844,8 @@ public sealed class WorkflowEngineService(
         if (!flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition)
             && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, flowContext))
         {
+            logger.LogWarning("Take flow {FlowId} ({FlowName}) rejected on instance {InstanceId}: flow condition '{Condition}' evaluated to false.",
+                flowId, flow.Name, id, flow.Condition);
             throw new WorkflowDomainException(
                 $"Sequence flow '{flow.Name}' condition is not satisfied: '{flow.Condition}'.");
         }
@@ -838,6 +890,10 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
+        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        logger.LogInformation("Successfully completed transition for instance {InstanceId} through flow {FlowId}. Current status: {Status}, resting on node {CurrentStepId} ({CurrentStepType})",
+            instance.Id, flowId, instance.Status, instance.CurrentStepId, restingNode.Type);
+
         return await BuildDetailAsync(id, cancellationToken);
     }
 
@@ -854,11 +910,13 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
+            logger.LogInformation("Deliver message to instance {InstanceId}: instance not found.", id);
             return null;
         }
 
         if (instance.Status != WorkflowInstanceStatuses.Running)
         {
+            logger.LogWarning("Deliver message to instance {InstanceId} rejected: instance status is {Status} (not Running).", id, instance.Status);
             throw new WorkflowDomainException("Only running instances can receive a message.");
         }
 
@@ -866,8 +924,12 @@ public sealed class WorkflowEngineService(
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         if (!BpmnFlowNodeTypes.IsMessageCatch(node.Type))
         {
+            logger.LogWarning("Deliver message to instance {InstanceId} rejected: current node #{NodeId} ({NodeType}) is not a message catch event.", id, node.Id, node.Type);
             throw new WorkflowDomainException("The instance is not currently waiting for a message.");
         }
+
+        logger.LogInformation("Delivering message to catch node #{NodeId} ({NodeName}) on instance {InstanceId} for client '{ClientId}'",
+            node.Id, node.Name, id, message.ClientId);
 
         var messageConfig = node.Message
             ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no message configuration.");
@@ -893,6 +955,7 @@ public sealed class WorkflowEngineService(
         if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
             || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
         {
+            logger.LogWarning("Deliver message to instance {InstanceId} rejected: invalid client credentials (client id '{ClientId}').", id, message.ClientId);
             throw new WorkflowUnauthorizedException("Invalid client credentials.");
         }
 
@@ -905,12 +968,14 @@ public sealed class WorkflowEngineService(
         if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
             || incomingHeaderValue is null)
         {
+            logger.LogWarning("Deliver message to instance {InstanceId} rejected: required header '{HeaderName}' is missing.", id, expectedHeaderName);
             throw new WorkflowDomainException(
                 $"Required header '{expectedHeaderName}' is missing.");
         }
 
         if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
         {
+            logger.LogWarning("Deliver message to instance {InstanceId} rejected: header '{HeaderName}' value mismatch.", id, expectedHeaderName);
             throw new WorkflowDomainException(
                 $"Header '{expectedHeaderName}' does not match the expected value.");
         }
@@ -927,6 +992,7 @@ public sealed class WorkflowEngineService(
             };
             if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
             {
+                logger.LogWarning("Deliver message to instance {InstanceId} rejected: header '{HeaderName}' failed validation '{Validation}'.", id, expectedHeaderName, messageConfig.HeaderValidation);
                 throw new WorkflowDomainException(
                     $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
             }
@@ -976,6 +1042,10 @@ public sealed class WorkflowEngineService(
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+
+        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        logger.LogInformation("Successfully delivered message to instance {InstanceId} on node {NodeId}. Advancing to {NextNodeId} ({NextNodeType})",
+            instance.Id, node.Id, instance.CurrentStepId, restingNode.Type);
 
         // Return a slim ack (no definition/variables/history) so an AllowAnonymous
         // webhook caller cannot read the full workflow model or instance data.
@@ -1071,7 +1141,7 @@ public sealed class WorkflowEngineService(
     // misses are silently skipped (the variable is simply absent from the dict).
     // Used by the message catch (which then writes the dict to the instance) and
     // the message start (which feeds the dict as the start-variable values).
-    private static Dictionary<string, JsonElement> ExtractMessageOutputs(
+    private Dictionary<string, JsonElement> ExtractMessageOutputs(
         MessageCatchModel message,
         JsonElement? payload)
     {
@@ -1099,8 +1169,9 @@ public sealed class WorkflowEngineService(
         {
             document = JsonDocument.Parse(body.GetRawText());
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            logger.LogWarning(ex, "Failed to parse message payload JSON.");
             var firstRequired = message.OutputMappings.FirstOrDefault(m => m.Required);
             if (firstRequired is not null)
             {
@@ -1174,6 +1245,7 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
         if (instance is null)
         {
+            logger.LogInformation("Cancel instance {InstanceId}: instance not found.", id);
             return false;
         }
 
@@ -1184,6 +1256,8 @@ public sealed class WorkflowEngineService(
             var actorRoles = NormalizeRoles(actor.Roles);
             if (!cancelRoles.Any(r => actorRoles.Contains(r)))
             {
+                logger.LogWarning("Cancel rejected on instance {InstanceId}: user '{User}' lacks a cancel role ({CancelRoles}).",
+                    id, actor.User, string.Join(",", cancelRoles));
                 throw new WorkflowDomainException("You do not have permission to cancel this workflow instance.");
             }
         }
@@ -1196,6 +1270,8 @@ public sealed class WorkflowEngineService(
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation("Instance {InstanceId} cancelled by user '{User}'.", id, actor.User ?? "anonymous");
 
         return true;
     }
@@ -1219,14 +1295,19 @@ public sealed class WorkflowEngineService(
         {
             if (instance.Status != WorkflowInstanceStatuses.Running)
             {
+                logger.LogInformation("Instance {InstanceId} pass-through ended with status {Status} at node #{NodeId}.", instance.Id, instance.Status, instance.CurrentStepId);
                 return instance;
             }
 
             var currentNode = GetFlowNode(definition, instance.CurrentStepId);
             if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
             {
+                logger.LogInformation("Instance {InstanceId} pass-through resting on node #{NodeId} ({NodeType}).", instance.Id, currentNode.Id, currentNode.Type);
                 return instance;
             }
+
+            logger.LogInformation("Instance {InstanceId} processing pass-through hop {Hop}: current node #{NodeId} ({NodeType})",
+                instance.Id, hop, currentNode.Id, currentNode.Type);
 
             // Build the evaluation context from the in-memory overlay overlaid with
             // read-only sys.*/config.* context. The merged map is for evaluation only
@@ -1258,8 +1339,12 @@ public sealed class WorkflowEngineService(
                 var boundary = FindErrorBoundary(definition, currentNode.Id);
                 if (boundary is null)
                 {
+                    logger.LogError("Task #{NodeId} failed on instance {InstanceId} and no error boundary was found. Reason: {Reason}", currentNode.Id, instance.Id, outcome.Reason);
                     throw new WorkflowDomainException(outcome.Reason ?? $"Task #{currentNode.Id} failed.");
                 }
+
+                logger.LogWarning("Task #{NodeId} failed on instance {InstanceId}. Routing to error boundary #{BoundaryId}. Reason: {Reason}",
+                    currentNode.Id, instance.Id, boundary.Id, outcome.Reason);
 
                 if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
                 {
@@ -1315,6 +1400,9 @@ public sealed class WorkflowEngineService(
                 _ => "automatic"
             };
 
+            logger.LogInformation("Instance {InstanceId} pass-through node #{NodeId} ({NodeType}) advancing to #{NextNodeId} ({NextNodeType}) via flow #{FlowId}",
+                instance.Id, currentNode.Id, currentNode.Type, nextNode.Id, nextNode.Type, flow.Id);
+
             await runtime.AddHistoryAsync(
                 instance.Id,
                 null,
@@ -1336,6 +1424,7 @@ public sealed class WorkflowEngineService(
             await runtime.UpdateInstanceNodeAsync(instance.Id, ToSnapshot(nextNode), instance.Status, null, cancellationToken);
         }
 
+        logger.LogError("Pass-through routing cycle detected on instance {InstanceId} after {MaxHops} hops.", instance.Id, maxHops);
         throw new WorkflowDomainException("Pass-through routing cycle detected.");
     }
 
@@ -1380,10 +1469,12 @@ public sealed class WorkflowEngineService(
 
         if (string.IsNullOrWhiteSpace(claimant))
         {
+            logger.LogInformation("Instance {InstanceId}: claim mode '{ClaimMode}' found no prior actor to inherit; leaving unclaimed.", instance.Id, node.ClaimMode);
             return instance;
         }
 
         await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, claimant, cancellationToken);
+        logger.LogInformation("Instance {InstanceId}: claim mode '{ClaimMode}' inherited claim to user '{Claimant}' for node #{NodeId}.", instance.Id, node.ClaimMode, claimant, node.Id);
         return instance with { ClaimedBy = claimant, UpdatedAt = DateTimeOffset.UtcNow };
     }
 
@@ -1396,21 +1487,25 @@ public sealed class WorkflowEngineService(
 
         if (BpmnFlowNodeTypes.IsGateway(node.Type))
         {
+            logger.LogInformation("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
             var match = outgoing.FirstOrDefault(f =>
                 !f.IsDefault
                 && !string.IsNullOrWhiteSpace(f.Condition)
                 && SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables));
             if (match is not null)
             {
+                logger.LogInformation("Exclusive gateway #{NodeId} evaluated flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.Id, match.Name, match.Condition);
                 return match;
             }
 
             var defaultFlow = outgoing.FirstOrDefault(f => f.IsDefault);
             if (defaultFlow is not null)
             {
+                logger.LogInformation("Exclusive gateway #{NodeId} condition did not match any flow; taking default flow {FlowId} ({FlowName})", node.Id, defaultFlow.Id, defaultFlow.Name);
                 return defaultFlow;
             }
 
+            logger.LogWarning("Exclusive gateway #{NodeId} evaluated all conditions as False and has no default flow", node.Id);
             throw new WorkflowDomainException(
                 $"Exclusive gateway #{node.Id} has no matching condition and no default flow.");
         }
@@ -1455,6 +1550,7 @@ public sealed class WorkflowEngineService(
             : ServiceTaskTemplating.SubstituteJson(service.Body, variables);
 
         var request = new ServiceTaskRequest(service.Method, url, headers, body, service.TimeoutSeconds);
+        logger.LogInformation("Service task #{NodeId} on instance {InstanceId}: invoking {Method} {Url}", node.Id, instance.Id, service.Method, url);
         var result = await serviceTaskInvoker.InvokeAsync(request, cancellationToken);
 
         var performedBy = actor.User;
@@ -1469,11 +1565,13 @@ public sealed class WorkflowEngineService(
                 // variable (so an error path can branch on it), then fail the task
                 // so the pass-through loop routes out an attached errorBoundaryEvent
                 // (or, with no boundary, rolls back and returns 400).
+                logger.LogWarning("Service task #{NodeId} on instance {InstanceId}: output mapping failed: {Reason}", node.Id, instance.Id, mappingFailure);
                 await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
                 return TaskExecutionOutcome.Fail(mappingFailure);
             }
 
+            logger.LogInformation("Service task #{NodeId} on instance {InstanceId} succeeded with HTTP {StatusCode}.", node.Id, instance.Id, result.StatusCode);
             await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return TaskExecutionOutcome.Ok();
@@ -1483,6 +1581,7 @@ public sealed class WorkflowEngineService(
         // the optional statusVariable so the error path can branch on it. If no
         // errorBoundaryEvent is attached the loop throws (rollback + 400) and this
         // write rolls back with the transaction; if a boundary catches, it persists.
+        logger.LogWarning("Service task #{NodeId} on instance {InstanceId} failed with HTTP {StatusCode}: {Reason}", node.Id, instance.Id, result.StatusCode, result.Error);
         await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
@@ -1515,8 +1614,9 @@ public sealed class WorkflowEngineService(
         {
             document = JsonDocument.Parse(result.Body);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            logger.LogWarning(ex, "Failed to parse HTTP service task response body as JSON. Body: {Body}", result.Body);
             // Non-JSON response body: any required mapping fails; optional ones are skipped.
             var firstRequired = service.OutputMappings.FirstOrDefault(m => m.Required);
             return firstRequired is null
@@ -1602,6 +1702,7 @@ public sealed class WorkflowEngineService(
             var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
             if (!result.Success)
             {
+                logger.LogWarning("Script task #{NodeId} (javascript) on instance {InstanceId} failed: {Error}", node.Id, instance.Id, result.Error);
                 return TaskExecutionOutcome.Fail($"Script task #{node.Id} failed: {result.Error}");
             }
         }
@@ -1651,6 +1752,8 @@ public sealed class WorkflowEngineService(
 
             if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, overlay))
             {
+                logger.LogWarning("Script task #{NodeId} on instance {InstanceId}: variable '{Variable}' failed validation '{Validation}'.",
+                    node.Id, instance.Id, target.Name, target.Validation);
                 return TaskExecutionOutcome.Fail(
                     $"Variable '{target.Name}' failed validation: '{target.Validation}'.");
             }

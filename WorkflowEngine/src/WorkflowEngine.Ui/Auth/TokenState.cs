@@ -1,5 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using Serilog;
 
 namespace WorkflowEngine.Ui.Auth;
 
@@ -102,8 +103,9 @@ public sealed class TokenState
                 .ToList();
             return (user, roles);
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warning(ex, "Failed to read or parse JWT token.");
             return (null, []);
         }
     }

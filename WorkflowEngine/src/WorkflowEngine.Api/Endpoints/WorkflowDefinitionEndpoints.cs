@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Serilog;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
 
@@ -85,6 +86,9 @@ public static class WorkflowDefinitionEndpoints
             var headers = context.Request.Headers
                 .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
 
+            Log.Information("Message-start request for workflowKey {WorkflowKey} from client '{ClientId}' (startEvent={StartEvent})",
+                workflowKey, clientId, startEventExternalId ?? "(default)");
+
             JsonElement? payload = null;
             if (context.Request.HasJsonContentType()
                 && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
@@ -93,8 +97,9 @@ public static class WorkflowDefinitionEndpoints
                 {
                     payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
+                    Log.Warning(ex, "Failed to parse incoming JSON payload on message-start endpoint for workflowKey {WorkflowKey}.", workflowKey);
                     payload = null;
                 }
             }
@@ -102,6 +107,8 @@ public static class WorkflowDefinitionEndpoints
             var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
             var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
             var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
+            Log.Information("Message-start for workflowKey {WorkflowKey} acknowledged. Instance: {InstanceId}, Status: {Status}, resting on node {NodeId}.",
+                workflowKey, ack.InstanceId, ack.Status, ack.CurrentNodeId);
             return Results.Ok(ack);
         }).AllowAnonymous();
 

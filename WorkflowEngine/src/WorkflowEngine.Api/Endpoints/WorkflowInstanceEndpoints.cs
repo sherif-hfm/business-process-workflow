@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Serilog;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Shared.Dtos;
 
@@ -160,6 +161,8 @@ public static class WorkflowInstanceEndpoints
             var headers = context.Request.Headers
                 .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
 
+            Log.Information("Message delivery request to instance {InstanceId} from client '{ClientId}'", id, clientId);
+
             JsonElement? payload = null;
             // Only attempt a JSON read when the caller declared a JSON content type;
             // ReadFromJsonAsync throws InvalidOperationException (not JsonException) for a
@@ -171,8 +174,9 @@ public static class WorkflowInstanceEndpoints
                 {
                     payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
+                    Log.Warning(ex, "Failed to parse incoming JSON payload on DeliverMessage endpoint for instance {InstanceId}.", id);
                     payload = null;
                 }
             }
@@ -180,7 +184,15 @@ public static class WorkflowInstanceEndpoints
             var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
             var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
             var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
-            return ack is null ? Results.NotFound() : Results.Ok(ack);
+            if (ack is null)
+            {
+                Log.Information("Message delivery to instance {InstanceId}: instance not found.", id);
+                return Results.NotFound();
+            }
+
+            Log.Information("Message delivery to instance {InstanceId} acknowledged. Status: {Status}, resting on node {NodeId}.",
+                id, ack.Status, ack.CurrentNodeId);
+            return Results.Ok(ack);
         }).AllowAnonymous();
 
         return app;

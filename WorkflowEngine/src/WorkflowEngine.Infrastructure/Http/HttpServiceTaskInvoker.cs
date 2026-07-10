@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using WorkflowEngine.Service.Abstractions;
 
 namespace WorkflowEngine.Infrastructure.Http;
@@ -11,7 +12,7 @@ namespace WorkflowEngine.Infrastructure.Http;
 /// none is attached, fail the transition); a completed call reports its real
 /// status code and body regardless of success.
 /// </summary>
-public sealed class HttpServiceTaskInvoker(HttpClient httpClient) : IServiceTaskInvoker
+public sealed class HttpServiceTaskInvoker(HttpClient httpClient, ILogger<HttpServiceTaskInvoker> logger) : IServiceTaskInvoker
 {
     public async Task<ServiceTaskResult> InvokeAsync(
         ServiceTaskRequest request,
@@ -61,18 +62,23 @@ public sealed class HttpServiceTaskInvoker(HttpClient httpClient) : IServiceTask
             };
         }
 
+        logger.LogInformation("Sending outbound REST request to {Method} {Url} with timeout {TimeoutSeconds}s", request.Method, request.Url, request.TimeoutSeconds);
+
         try
         {
             using var response = await httpClient.SendAsync(httpRequest, linkedCts.Token);
             var body = await response.Content.ReadAsStringAsync(linkedCts.Token);
+            logger.LogInformation("Outbound REST request to {Method} {Url} completed with status {StatusCode}", request.Method, request.Url, (int)response.StatusCode);
             return new ServiceTaskResult(true, (int)response.StatusCode, body, null);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
+            logger.LogWarning("Outbound REST request to {Method} {Url} timed out after {TimeoutSeconds}s", request.Method, request.Url, request.TimeoutSeconds);
             return new ServiceTaskResult(false, 0, null, $"Request timed out after {request.TimeoutSeconds}s.");
         }
         catch (HttpRequestException ex)
         {
+            logger.LogError(ex, "Outbound REST request to {Method} {Url} failed", request.Method, request.Url);
             return new ServiceTaskResult(false, 0, null, ex.Message);
         }
     }
