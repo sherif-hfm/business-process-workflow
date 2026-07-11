@@ -11,6 +11,7 @@ namespace WorkflowEngine.Shared.Dtos;
 /// <param name="WorkflowKey">The stable cross-version identifier of the workflow.</param>
 /// <param name="Version">The version number (starts at 1).</param>
 /// <param name="IsPublished">Indicates if this version is published and can start new instances.</param>
+/// <param name="IsDefault">Indicates if this is the default version for its workflow key (used when starting instances by key).</param>
 /// <param name="CreatedAt">The timestamp when this version was created.</param>
 public sealed record WorkflowSummaryDto(
     long Id,
@@ -18,6 +19,7 @@ public sealed record WorkflowSummaryDto(
     string WorkflowKey,
     int Version,
     bool IsPublished,
+    bool IsDefault,
     DateTimeOffset CreatedAt);
 
 /// <summary>
@@ -28,6 +30,7 @@ public sealed record WorkflowSummaryDto(
 /// <param name="WorkflowKey">The stable cross-version identifier of the workflow.</param>
 /// <param name="Version">The version number (starts at 1).</param>
 /// <param name="IsPublished">Indicates if this version is published and can start new instances.</param>
+/// <param name="IsDefault">Indicates if this is the default version for its workflow key (used when starting instances by key).</param>
 /// <param name="CreatedAt">The timestamp when this version was created.</param>
 /// <param name="Definition">The full structural workflow JSON model representation.</param>
 public sealed record WorkflowDetailDto(
@@ -36,6 +39,7 @@ public sealed record WorkflowDetailDto(
     string WorkflowKey,
     int Version,
     bool IsPublished,
+    bool IsDefault,
     DateTimeOffset CreatedAt,
     WorkflowModel Definition);
 
@@ -57,7 +61,7 @@ public sealed record UpdateWorkflowRequest(WorkflowModel Definition, bool Publis
 /// Request payload for starting a new workflow instance.
 /// </summary>
 /// <param name="WorkflowId">Optional. The specific database ID of the workflow version to start.</param>
-/// <param name="WorkflowKey">Optional. The stable key of the workflow (resolves to the latest published version).</param>
+/// <param name="WorkflowKey">Optional. The stable key of the workflow (resolves to the default published version).</param>
 /// <param name="StartEventId">Optional. The specific start event node ID to trigger.</param>
 /// <param name="Variables">Optional. Initial process variables to set.</param>
 public sealed record StartInstanceRequest(

@@ -85,8 +85,8 @@ public sealed class WorkflowEngineService(
         }
         else if (!string.IsNullOrEmpty(workflowKey))
         {
-            workflow = await definitions.GetLatestPublishedByWorkflowKeyAsync(workflowKey, cancellationToken)
-                ?? throw new WorkflowDomainException($"No published workflow found for workflowKey '{workflowKey}'.");
+            workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
+                ?? throw new WorkflowDomainException($"No default workflow found for workflowKey '{workflowKey}'.");
         }
         else
         {
@@ -159,10 +159,10 @@ public sealed class WorkflowEngineService(
     {
         await LoadSettingsAsync(cancellationToken);
 
-        // Resolve the latest published version by the stable, cross-version key so
+        // Resolve the default version by the stable, cross-version key so
         // a webhook caller addresses the workflow without knowing per-version ids.
-        var workflow = await definitions.GetLatestPublishedByWorkflowKeyAsync(workflowKey, cancellationToken)
-            ?? throw new WorkflowDomainException($"No published workflow found for workflowKey {workflowKey}.");
+        var workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
+            ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
 
         // Select the messageStartEvent: match the requested externalId when given;
         // else the single message-start node; else reject as ambiguous/absent.

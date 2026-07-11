@@ -67,6 +67,11 @@ public static class WorkflowDefinitionEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
 
+        group.MapGet("/{workflowKey}/versions", GetWorkflowVersions)
+            .Produces<IReadOnlyList<WorkflowSummaryDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
         group.MapGet("/{id:long}", GetWorkflowById)
             .Produces<WorkflowDetailDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -88,6 +93,20 @@ public static class WorkflowDefinitionEndpoints
 
         group.MapPost("/{id:long}/publish", PublishWorkflow)
             .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/unpublish", UnpublishWorkflow)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/set-default", SetDefaultWorkflow)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound);
@@ -193,15 +212,36 @@ public static class WorkflowDefinitionEndpoints
     }
 
     /// <summary>
-    /// Publishes a specific version of a workflow definition, making it the active version for starting new instances.
+    /// Lists all versions of a workflow definition identified by its workflow key.
+    /// </summary>
+    /// <param name="workflowKey">The stable cross-version key identifying the workflow.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Returns all version rows sharing the given <c>WorkflowKey</c>, ordered by version
+    /// descending. Each row includes <c>IsPublished</c> and <c>IsDefault</c> flags so the
+    /// caller can see which version is active for starting instances and which is the default.
+    /// </remarks>
+    public static async Task<IResult> GetWorkflowVersions(
+        string workflowKey,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        var versions = await service.ListVersionsAsync(workflowKey, cancellationToken);
+        return Results.Ok(versions);
+    }
+
+    /// <summary>
+    /// Publishes a specific version of a workflow definition, making it available for starting new instances.
     /// </summary>
     /// <param name="id">The database ID of the workflow version to publish.</param>
     /// <param name="service">The workflow definition service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
-    /// Only one version per <c>WorkflowKey</c> is published at a time; publishing this
-    /// version unpublishes the previous one. Returns 204 on success or 404 when the
-    /// version does not exist.
+    /// Publishing a version makes it available for starting instances. Multiple versions
+    /// of the same workflow key can be published simultaneously; the default version
+    /// (set via <c>POST /api/workflows/{id}/set-default</c>) is the one used when starting
+    /// by <c>WorkflowKey</c>. Returns 204 on success or 404 when the version does not exist.
     /// </remarks>
     public static async Task<IResult> PublishWorkflow(
         long id,
@@ -209,6 +249,47 @@ public static class WorkflowDefinitionEndpoints
         CancellationToken cancellationToken)
     {
         return await service.PublishAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Unpublishes a specific version of a workflow definition, making it unavailable for starting new instances.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow version to unpublish.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Unpublishing removes the version from the set of versions available for starting
+    /// instances. Running instances are not affected. The current default version cannot
+    /// be unpublished; set a different version as default first. Returns 204 on success,
+    /// 404 when the version does not exist, or 400 when attempting to unpublish the default.
+    /// </remarks>
+    public static async Task<IResult> UnpublishWorkflow(
+        long id,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        return await service.UnpublishAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Sets a specific version as the default for its workflow key.
+    /// </summary>
+    /// <param name="id">The database ID of the workflow version to set as default.</param>
+    /// <param name="service">The workflow definition service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// The default version is the one used when starting instances by <c>WorkflowKey</c>
+    /// (including message-start events). Only one version per <c>WorkflowKey</c> can be
+    /// the default at a time; setting a new default clears the previous one. The target
+    /// version must be published; attempting to set an unpublished version as default
+    /// returns 400. Returns 204 on success or 404 when the version does not exist.
+    /// </remarks>
+    public static async Task<IResult> SetDefaultWorkflow(
+        long id,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken)
+    {
+        return await service.SetDefaultAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound();
     }
 
     /// <summary>
@@ -240,7 +321,7 @@ public static class WorkflowDefinitionEndpoints
     /// <remarks>
     /// This endpoint is <c>AllowAnonymous</c> - authentication is the message-start node's
     /// configured client id/secret (sent as <c>X-Client-Id</c>/<c>X-Client-Secret</c>) plus a
-    /// required custom header named by the node's <c>headerName</c>. The latest published
+    /// required custom header named by the node's <c>headerName</c>. The default
     /// version of the workflow is resolved by <paramref name="workflowKey"/>. The message
     /// payload is mapped into the node's start variables via <c>outputMappings</c>, so
     /// required/defaults/NCalc <c>validation</c> still apply. When <c>idempotencyVariable</c>
@@ -250,7 +331,7 @@ public static class WorkflowDefinitionEndpoints
     /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
     /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400
     /// is returned for a missing/mismatched header, a failed <c>headerValidation</c> rule, a
-    /// required-mapping failure, no published version, or an ambiguous/absent start event.
+    /// required-mapping failure, no default version, or an ambiguous/absent start event.
     /// </remarks>
     public static async Task<IResult> StartWorkflowByMessage(
         HttpContext context,

@@ -16,6 +16,8 @@ public sealed class WorkflowDefinitionEntity
 
     public bool IsPublished { get; set; }
 
+    public bool IsDefault { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<WorkflowInstanceEntity> Instances { get; set; } = [];

@@ -9,9 +9,11 @@ public interface IWorkflowDefinitionRepository
 {
     Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<WorkflowDefinitionRecord>> ListVersionsByKeyAsync(string workflowKey, CancellationToken cancellationToken);
+
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
-    Task<WorkflowDefinitionRecord?> GetLatestPublishedByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);
+    Task<WorkflowDefinitionRecord?> GetDefaultByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);
 
     Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken);
 
@@ -23,6 +25,8 @@ public interface IWorkflowDefinitionRepository
         CancellationToken cancellationToken);
 
     Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken);
+
+    Task<bool> SetDefaultAsync(long id, bool isDefault, CancellationToken cancellationToken);
 
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
 }

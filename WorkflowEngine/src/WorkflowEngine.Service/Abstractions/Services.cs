@@ -39,6 +39,8 @@ public interface IWorkflowDefinitionService
 {
     Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<WorkflowSummaryDto>> ListVersionsAsync(string workflowKey, CancellationToken cancellationToken);
+
     Task<WorkflowDetailDto?> GetAsync(long id, CancellationToken cancellationToken);
 
     Task<WorkflowDetailDto> CreateAsync(
@@ -53,6 +55,10 @@ public interface IWorkflowDefinitionService
         CancellationToken cancellationToken);
 
     Task<bool> PublishAsync(long id, CancellationToken cancellationToken);
+
+    Task<bool> UnpublishAsync(long id, CancellationToken cancellationToken);
+
+    Task<bool> SetDefaultAsync(long id, CancellationToken cancellationToken);
 
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
 }
@@ -90,8 +96,8 @@ public interface IWorkflowEngineService
     /// the workflowKey already carrying that key value. Returns a slim ack (no
     /// definition/variables/history). Throws <c>WorkflowUnauthorizedException</c>
     /// (401) on a client id/secret mismatch and <c>WorkflowDomainException</c>
-    /// (400) for a header problem, a required-mapping failure, no published
-    /// version, or an ambiguous/absent start event.
+    /// (400) for a header problem, a required-mapping failure, no default
+    /// published version, or an ambiguous/absent start event.
     /// </summary>
     Task<MessageStartAckDto> StartByMessageAsync(
         string workflowKey,

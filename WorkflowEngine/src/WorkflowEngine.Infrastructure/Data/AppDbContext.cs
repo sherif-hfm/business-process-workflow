@@ -26,6 +26,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
             entity.Property(e => e.Definition).HasColumnType("jsonb");
+            entity.Property(e => e.IsPublished);
+            entity.Property(e => e.IsDefault);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Name, e.Version }).IsUnique();
             // Supports the cross-version workflowKey instance search.

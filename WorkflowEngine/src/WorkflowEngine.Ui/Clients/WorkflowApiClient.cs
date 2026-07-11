@@ -23,6 +23,47 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<WorkflowDetailDto>(cancellationToken);
     }
 
+    public async Task<WorkflowDetailDto?> CreateNewVersionAsync(
+        long sourceWorkflowId,
+        UpdateWorkflowRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PutAsJsonAsync($"/api/workflows/{sourceWorkflowId}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowDetailDto>(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowVersionsAsync(
+        string workflowKey,
+        CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(
+            $"/api/workflows/{Uri.EscapeDataString(workflowKey)}/versions",
+            cancellationToken) ?? [];
+
+    public async Task PublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/workflows/{id}/publish", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task UnpublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/workflows/{id}/unpublish", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task SetDefaultWorkflowAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/workflows/{id}/set-default", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task DeleteWorkflowAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.DeleteAsync($"/api/workflows/{id}", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
     public async Task<PagedResult<InstanceSummaryDto>> GetInstancesAsync(
         string? status = null,
         int page = 1,

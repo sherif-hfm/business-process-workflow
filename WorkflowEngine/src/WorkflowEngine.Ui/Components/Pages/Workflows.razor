@@ -14,7 +14,7 @@
 
 <section class="mb-4">
     <h2 class="h4">Import editor JSON</h2>
-    <p class="text-muted">Select the JSON file exported by <code>workflow-editor.html</code> to import and publish it.</p>
+    <p class="text-muted">Select the JSON file exported by <code>workflow-editor.html</code> to import it.</p>
     <div class="mb-3">
         <InputFile @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json" />
     </div>
@@ -32,11 +32,22 @@
             </div>
         </div>
     }
-    <button class="btn btn-primary" @onclick="ImportAsync" disabled="@(string.IsNullOrWhiteSpace(workflowJson))">Import and publish</button>
+    <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-primary" @onclick="ImportAsync" disabled="@(string.IsNullOrWhiteSpace(workflowJson))">
+            @(publishOnImport ? "Import and publish" : "Import")
+        </button>
+        <div class="form-check ms-2">
+            <input type="checkbox" class="form-check-input" id="publishOnImport" @bind="publishOnImport" />
+            <label class="form-check-label" for="publishOnImport">Publish on import</label>
+        </div>
+    </div>
 </section>
 
 <section>
-    <h2 class="h4">Latest definitions</h2>
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <h2 class="h4 mb-0">Definitions</h2>
+        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync">Refresh</button>
+    </div>
     @if (workflows is null)
     {
         <p>Loading...</p>
@@ -47,29 +58,112 @@
     }
     else
     {
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Version</th>
-                    <th>Published</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var workflow in workflows)
-                {
-                    <tr>
-                        <td>@workflow.Name</td>
-                        <td>@workflow.Version</td>
-                        <td>@(workflow.IsPublished ? "Yes" : "No")</td>
-                        <td class="text-end">
-                            <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{workflow.Id}/start")">Start</a>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+        <div class="accordion" id="workflowAccordion">
+            @foreach (var workflow in workflows)
+            {
+                var isExpanded = expandedKeys.Contains(workflow.WorkflowKey);
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button @(isExpanded ? "" : "collapsed")" type="button"
+                                @onclick="() => ToggleExpand(workflow.WorkflowKey)">
+                            <span class="me-3"><strong>@workflow.Name</strong></span>
+                            <span class="badge bg-secondary me-2">v@(workflow.Version)</span>
+                            @if (workflow.IsDefault)
+                            {
+                                <span class="badge bg-primary me-2">Default</span>
+                            }
+                            @if (workflow.IsPublished)
+                            {
+                                <span class="badge bg-success">Published</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-warning text-dark">Unpublished</span>
+                            }
+                        </button>
+                    </h2>
+                    @if (isExpanded)
+                    {
+                        <div class="accordion-body">
+                            @if (loadingKeys.Contains(workflow.WorkflowKey))
+                            {
+                                <p>Loading versions...</p>
+                            }
+                            else if (!versionsByKey.TryGetValue(workflow.WorkflowKey, out var rows) || rows.Count == 0)
+                            {
+                                <p class="text-muted">No versions found.</p>
+                            }
+                            else
+                            {
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Version</th>
+                                            <th>Published</th>
+                                            <th>Default</th>
+                                            <th>Created</th>
+                                            <th class="text-end">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var v in rows)
+                                        {
+                                            <tr>
+                                                <td>v@(v.Version)</td>
+                                                <td>
+                                                    @if (v.IsPublished)
+                                                    {
+                                                        <span class="badge bg-success">Yes</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="badge bg-warning text-dark">No</span>
+                                                    }
+                                                </td>
+                                                <td>
+                                                    @if (v.IsDefault)
+                                                    {
+                                                        <span class="badge bg-primary">Default</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-muted">-</span>
+                                                    }
+                                                </td>
+                                                <td class="small text-muted">@v.CreatedAt.ToLocalTime().ToString("g")</td>
+                                                <td class="text-end">
+                                                    @if (v.IsPublished)
+                                                    {
+                                                        <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{v.Id}/start")">Start</a>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-muted small ms-1" title="Publish this version to start instances">Unpublished</span>
+                                                    }
+                                                    @if (v.IsPublished)
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-warning ms-1" @onclick="() => UnpublishAsync(v.Id)">Unpublish</button>
+                                                    }
+                                                    else
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-success ms-1" @onclick="() => PublishAsync(v.Id)">Publish</button>
+                                                    }
+                                                    @if (!v.IsDefault)
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-primary ms-1" @onclick="() => SetDefaultAsync(v.Id)" disabled="@(!v.IsPublished)">Set Default</button>
+                                                    }
+                                                    <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => DeleteAsync(v.Id)">Delete</button>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
     }
 </section>
 
@@ -80,11 +174,15 @@
     };
 
     private IReadOnlyList<WorkflowSummaryDto>? workflows;
+    private Dictionary<string, IReadOnlyList<WorkflowSummaryDto>> versionsByKey = new();
+    private HashSet<string> expandedKeys = new();
+    private HashSet<string> loadingKeys = new();
     private string? workflowJson;
     private string? error;
     private string? fileName;
     private long? fileSize;
     private object inputFileKey = new();
+    private bool publishOnImport = true;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -99,6 +197,39 @@
         {
             error = ex.Message;
             workflows = [];
+        }
+    }
+
+    private async Task ToggleExpand(string workflowKey)
+    {
+        if (expandedKeys.Contains(workflowKey))
+        {
+            expandedKeys.Remove(workflowKey);
+        }
+        else
+        {
+            expandedKeys.Add(workflowKey);
+            await LoadVersionsAsync(workflowKey);
+        }
+    }
+
+    private async Task LoadVersionsAsync(string workflowKey)
+    {
+        try
+        {
+            loadingKeys.Add(workflowKey);
+            error = null;
+            var rows = await Api.GetWorkflowVersionsAsync(workflowKey);
+            versionsByKey[workflowKey] = rows;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            versionsByKey[workflowKey] = [];
+        }
+        finally
+        {
+            loadingKeys.Remove(workflowKey);
         }
     }
 
@@ -132,7 +263,7 @@
             error = null;
             var definition = JsonSerializer.Deserialize<WorkflowModel>(workflowJson ?? string.Empty, JsonOptions)
                 ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
-            await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: true));
+            await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: publishOnImport));
             workflowJson = null;
             fileName = null;
             fileSize = null;
@@ -142,6 +273,71 @@
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+    }
+
+    private async Task PublishAsync(long id)
+    {
+        try
+        {
+            error = null;
+            await Api.PublishWorkflowAsync(id);
+            await ReloadVersionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task UnpublishAsync(long id)
+    {
+        try
+        {
+            error = null;
+            await Api.UnpublishWorkflowAsync(id);
+            await ReloadVersionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task SetDefaultAsync(long id)
+    {
+        try
+        {
+            error = null;
+            await Api.SetDefaultWorkflowAsync(id);
+            await ReloadVersionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task DeleteAsync(long id)
+    {
+        try
+        {
+            error = null;
+            await Api.DeleteWorkflowAsync(id);
+            await ReloadVersionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task ReloadVersionsAsync()
+    {
+        await LoadAsync();
+        foreach (var key in expandedKeys.ToList())
+        {
+            await LoadVersionsAsync(key);
         }
     }
 }

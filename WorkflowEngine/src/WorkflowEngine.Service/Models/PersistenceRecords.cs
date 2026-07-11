@@ -10,6 +10,7 @@ public sealed record WorkflowDefinitionRecord(
     int Version,
     WorkflowModel Definition,
     bool IsPublished,
+    bool IsDefault,
     DateTimeOffset CreatedAt);
 
 public sealed record WorkflowInstanceRecord(

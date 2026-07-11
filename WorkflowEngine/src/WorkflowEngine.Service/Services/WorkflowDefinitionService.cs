@@ -19,6 +19,12 @@ public sealed class WorkflowDefinitionService(
         return records.Select(ToSummary).ToList();
     }
 
+    public async Task<IReadOnlyList<WorkflowSummaryDto>> ListVersionsAsync(string workflowKey, CancellationToken cancellationToken)
+    {
+        var records = await definitions.ListVersionsByKeyAsync(workflowKey, cancellationToken);
+        return records.Select(ToSummary).ToList();
+    }
+
     public async Task<WorkflowDetailDto?> GetAsync(long id, CancellationToken cancellationToken)
     {
         var record = await definitions.GetAsync(id, cancellationToken);
@@ -35,7 +41,7 @@ public sealed class WorkflowDefinitionService(
         var name = definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
         var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
-        logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}).", created.Id, name, version, publish);
+        logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, version, publish, created.IsDefault);
         return ToDetail(created);
     }
 
@@ -57,7 +63,7 @@ public sealed class WorkflowDefinitionService(
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
         var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
-        logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}).", created.Id, name, version, sourceWorkflowId, publish);
+        logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, version, sourceWorkflowId, publish, created.IsDefault);
         return ToDetail(created);
     }
 
@@ -73,6 +79,34 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Publish workflow {WorkflowId}: definition not found.", id);
         }
         return published;
+    }
+
+    public async Task<bool> UnpublishAsync(long id, CancellationToken cancellationToken)
+    {
+        var unpublished = await definitions.SetPublishedAsync(id, false, cancellationToken);
+        if (unpublished)
+        {
+            logger.LogInformation("Workflow definition {WorkflowId} unpublished.", id);
+        }
+        else
+        {
+            logger.LogInformation("Unpublish workflow {WorkflowId}: definition not found.", id);
+        }
+        return unpublished;
+    }
+
+    public async Task<bool> SetDefaultAsync(long id, CancellationToken cancellationToken)
+    {
+        var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
+        if (set)
+        {
+            logger.LogInformation("Workflow definition {WorkflowId} set as default.", id);
+        }
+        else
+        {
+            logger.LogInformation("Set default workflow {WorkflowId}: definition not found.", id);
+        }
+        return set;
     }
 
     public async Task<bool> DeleteAsync(long id, CancellationToken cancellationToken)
@@ -665,8 +699,8 @@ public sealed class WorkflowDefinitionService(
     }
 
     internal static WorkflowSummaryDto ToSummary(WorkflowDefinitionRecord record) =>
-        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.CreatedAt);
+        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.IsDefault, record.CreatedAt);
 
     internal static WorkflowDetailDto ToDetail(WorkflowDefinitionRecord record) =>
-        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.CreatedAt, record.Definition);
+        new(record.Id, record.Name, record.WorkflowKey, record.Version, record.IsPublished, record.IsDefault, record.CreatedAt, record.Definition);
 }

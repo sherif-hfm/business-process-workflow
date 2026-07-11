@@ -1,4 +1,4 @@
-- manage versions of workflow and change default version and published versions
+
 - inhance ui to be like modern dashboard
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - add endpoint to get latest values of variables  for instance
@@ -11,6 +11,7 @@
 
 
 
+- manage versions of workflow and change default version and published versions (done)
 - enable docmentation in swagger (done)
 - protect workflow endpoints (done)
 - add serilog .net logging (done)
