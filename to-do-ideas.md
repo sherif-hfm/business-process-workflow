@@ -1,11 +1,13 @@
 
 - inhance ui to be like modern dashboard
+-  parallel multi instance and sequence multi instance
+- add Parallel Gateways
+- async flow asyncAfter/asyncBefore
+- Timers events
+
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - add endpoint to get latest values of variables  for instance
 - add endpoint to get history of instance
-- async flow asyncAfter/asyncBefore
-- add Parallel Gateways
-- Timers events
 - flow /api/instances/{id}/flows/{flowId} endpoint return a lot of data may need enhancement
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
