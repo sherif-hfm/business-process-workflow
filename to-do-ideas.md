@@ -1,10 +1,11 @@
 
-- inhance ui to be like modern dashboard
--  parallel multi instance and sequence multi instance
+
+- parallel multi instance and sequence multi instance for user task
 - add Parallel Gateways
 - async flow asyncAfter/asyncBefore
 - Timers events
 
+- inhance ui to be like modern dashboard
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - add endpoint to get latest values of variables  for instance
 - add endpoint to get history of instance
