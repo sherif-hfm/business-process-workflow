@@ -16,15 +16,16 @@ public sealed record WorkflowDefinitionRecord(
 public sealed record WorkflowInstanceRecord(
     long Id,
     long WorkflowDefinitionId,
+    long ActiveTokenId,
     int CurrentStepId,
+    long? ActiveUserTaskId,
     string Status,
     string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
-// Snapshot of the flow node an instance currently rests on, denormalized onto
-// the instance row so the list/inbox read path never parses the definition JSON.
+// Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
     int Id,
     string Name,
@@ -33,14 +34,16 @@ public sealed record CurrentNodeSnapshot(
     IReadOnlyList<string> Roles,
     bool RequiresClaim);
 
-// Flattened read row for the paged list/inbox queries: instance columns plus the
-// joined workflow name/version and the denormalized current-node fields.
+// Compatibility projection for the existing instance-oriented API. TokenId and
+// UserTaskId keep the persistence boundary ready for task/token-addressed APIs.
 public sealed record InstanceListItem(
     long Id,
     long WorkflowId,
     long WorkflowDefinitionId,
     string WorkflowName,
     int WorkflowVersion,
+    long TokenId,
+    long? UserTaskId,
     int CurrentNodeId,
     string CurrentNodeName,
     string? CurrentNodeExternalId,

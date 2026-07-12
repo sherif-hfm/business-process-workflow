@@ -8,21 +8,7 @@ public sealed class WorkflowInstanceEntity
 
     public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
 
-    public int CurrentStepId { get; set; }
-
-    public string CurrentNodeName { get; set; } = string.Empty;
-
-    public string? CurrentNodeExternalId { get; set; }
-
-    public string CurrentNodeType { get; set; } = string.Empty;
-
-    public List<string> CurrentNodeRoles { get; set; } = [];
-
-    public bool CurrentRequiresClaim { get; set; }
-
     public string Status { get; set; } = "running";
-
-    public string? ClaimedBy { get; set; }
 
     public string? StartedBy { get; set; }
 
@@ -33,4 +19,8 @@ public sealed class WorkflowInstanceEntity
     public List<InstanceVariableEntity> Variables { get; set; } = [];
 
     public List<InstanceHistoryEntity> History { get; set; } = [];
+
+    public List<ExecutionTokenEntity> Tokens { get; set; } = [];
+
+    public List<UserTaskEntity> UserTasks { get; set; } = [];
 }

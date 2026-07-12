@@ -91,29 +91,24 @@ Storage follows the hybrid design:
   stamped from the editor JSON model `id` on every save; it is the same across all
   versions of a workflow, so it acts as a stable cross-version key for instance
   search (see the workflow key search below).
-- Runtime state is normalized in `workflow_instances`, `instance_variables`, and
-  `instance_history`. These tables keep integer ids and their original column
-  names (`CurrentStepId`, `ActionId`, `FromStepId`, `ToStepId`,
-  `SourceActionId`); the columns now simply carry flow-node / sequence-flow ids,
-  so no database migration was needed for the BPMN rename.
-- **Denormalized current-node columns.** `workflow_instances` also carries
-  `CurrentNodeName`, `CurrentNodeExternalId` (nullable), `CurrentNodeType`,
-  `CurrentNodeRoles` (Postgres `text[]`),
-  and `CurrentRequiresClaim`, stamped from the resting flow node on every node
-  change (`AddInstanceAsync`, `TakeFlowAsync`, and each `ResolvePassThroughAsync`
-  hop via `UpdateInstanceNodeAsync`; claim/unclaim/cancel leave them untouched).
-  These let the list and inbox read paths filter, sort, and page entirely in SQL
-  without parsing the definition JSONB. The inbox query
-  (`WorkflowRuntimeRepository.ListInboxAsync`) is parameterized raw SQL:
-  `Status = 'running' AND CurrentNodeType = 'userTask'` plus a claim/role
-  predicate (`ClaimedBy = @me`, or case-insensitive `CurrentNodeRoles`
-  overlap with the actor roles while excluding tasks claimed by someone else),
-  ordered by `UpdatedAt DESC, Id DESC`. Indexes:
-  `(Status, CurrentNodeType, UpdatedAt)`, `(Status, UpdatedAt, Id)`, and a GIN
-  index on `CurrentNodeRoles`. The action flags (`CanClaim`/`CanAct`/
-  `ClaimedByMe`) are computed per page row from these columns. Pre-existing rows
-  are backfilled once at dev startup (`DatabaseInitializer.BackfillCurrentNodeAsync`,
-  guarded by an empty `CurrentNodeType`).
+- Runtime state is normalized in `workflow_instances`, `execution_tokens`,
+  `user_tasks`, `instance_variables`, and `instance_history`. An instance row owns
+  lifecycle status and timestamps but no longer stores a single current step or
+  claim. `execution_tokens` own execution position and its node snapshot;
+  `user_tasks` are work items created when a token rests on a `userTask` and own
+  roles, claim requirements, claimant, and task lifecycle timestamps. The current
+  engine preserves one active token/task per instance, while the schema and
+  repository records carry token/task ids for future parallel and multi-instance
+  execution.
+- **Token/task projections.** Instance list node filters and current-node display
+  are projected from the latest execution token. Inbox reads query active
+  `user_tasks` directly and apply claim/role predicates there, ordered by task
+  `UpdatedAt DESC, Id DESC`; they do not infer work from `workflow_instances`.
+  Entering a user task creates an active work item, leaving completes it, and
+  cancellation cancels it. Claim/unclaim updates the work item. The migration
+  backfills one token and (where applicable) one active user task for existing
+  instances before dropping the old `CurrentStepId`, `CurrentNode*`,
+  `CurrentRequiresClaim`, and `ClaimedBy` instance columns.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
@@ -193,7 +188,7 @@ Storage follows the hybrid design:
 - `requiresClaim` **is** enforced at runtime: such a `userTask` must be claimed
   (`POST /claim`) before its flows are available or can be taken, only the
   claiming user may act, and the claim is released on transition. `unclaim`
-  clears it. Claim ownership is tracked on `workflow_instances.claimed_by`
+  clears it. Claim ownership is tracked on `user_tasks.ClaimedBy`
   (users default to `anonymous` when unspecified).
 - **Claim inheritance** (`claimMode` on a `requiresClaim` `userTask`) lets a
   resting task auto-claim to a prior actor instead of re-prompting, resolved from
@@ -307,8 +302,8 @@ Storage follows the hybrid design:
   request header (else 400).
   A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
   `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
-  definition/variables/history, since the endpoint is `AllowAnonymous`). No DB
-  migration is needed (config is JSONB; the type fits the 32-char `CurrentNodeType`).
+  definition/variables/history, since the endpoint is `AllowAnonymous`). Its
+  node type fits the 32-character execution-token `NodeType` column.
 - **Node roles are enforced** at runtime for `userTask` and user-initiated
   `startEvent` nodes. The caller's identity and roles come from a validated JWT
   (name + role claims), not from request fields.
@@ -410,20 +405,19 @@ what the cross-version `workflowKey` instance search matches.
   uniqueness, so if two definitions share a JSON `id` the search spans both. A
   `WorkflowKey` index on `workflow_definitions` backs the lookup.
 - **Current-node id search.** Both list endpoints accept an optional integer
-  `nodeId=` query param, an exact match on the denormalized `CurrentStepId`
-  column (`w."CurrentStepId" = @nodeId`, value bound as a parameter). A null /
-  absent value applies no filter. It AND-combines with `status` /
-  `nodeExternalId` / `var` (and the inbox actor scope). Because the node id is a
-  version-scoped integer, it is most meaningful combined with a specific
-  workflow; the pre-existing `CurrentStepId` index backs the lookup.
+  `nodeId=` query param. The instance list matches the projected execution-token
+  `NodeId`; the inbox matches the active user-task `NodeId`. A null / absent value
+  applies no filter. It AND-combines with `status` / `nodeExternalId` / `var`
+  (and the inbox actor scope). Because the node id is version-scoped, it is most
+  meaningful combined with a specific workflow. Token/task node indexes back the
+  lookup.
 - **Current-node externalId search.** Both list endpoints accept an optional
-  `nodeExternalId=` query param, an exact, case-insensitive match on the
-  denormalized `CurrentNodeExternalId` column
-  (`lower(w."CurrentNodeExternalId") = lower(@nodeExternalId)`, value bound as a
-  parameter). Empty/whitespace input applies no filter. It AND-combines with
-  `status` / `var` (and the inbox actor scope). Because externalId is a
-  version-stable integration key it survives definition re-versioning (unlike the
-  integer node id). A `(Status, CurrentNodeExternalId)` index backs the lookup.
+  `nodeExternalId=` query param, an exact, case-insensitive match on the execution
+  token (instance list) or active user task (inbox). Empty/whitespace input applies
+  no filter. It AND-combines with `status` / `var` (and the inbox actor scope).
+  Because externalId is a version-stable integration key it survives definition
+  re-versioning (unlike the integer node id). Token/task external-id indexes back
+  the lookup.
 - `WorkflowDomainException` maps to problem responses for invalid operations
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).

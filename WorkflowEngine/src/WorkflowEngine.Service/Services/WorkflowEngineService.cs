@@ -524,7 +524,9 @@ public sealed class WorkflowEngineService(
                     var instance = new WorkflowInstanceRecord(
                         row.Id,
                         row.WorkflowDefinitionId,
+                        row.TokenId,
                         row.CurrentNodeId,
+                        row.UserTaskId,
                         row.Status,
                         row.ClaimedBy,
                         row.StartedBy,

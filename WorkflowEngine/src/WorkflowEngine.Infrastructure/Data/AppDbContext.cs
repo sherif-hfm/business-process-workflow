@@ -13,6 +13,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
 
+    public DbSet<ExecutionTokenEntity> ExecutionTokens => Set<ExecutionTokenEntity>();
+
+    public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
+
     public DbSet<WorkflowSettingEntity> WorkflowSettings => Set<WorkflowSettingEntity>();
 
     public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
@@ -40,27 +44,59 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("workflow_instances");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
-            entity.Property(e => e.CurrentNodeName).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
-            entity.Property(e => e.CurrentNodeExternalId).HasMaxLength(300);
-            entity.Property(e => e.CurrentNodeType).HasMaxLength(32).IsRequired().HasDefaultValue(string.Empty);
-            entity.Property(e => e.CurrentNodeRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
-            entity.Property(e => e.CurrentRequiresClaim).IsRequired().HasDefaultValue(false);
-            entity.Property(e => e.ClaimedBy).HasMaxLength(300);
             entity.Property(e => e.StartedBy).HasMaxLength(300);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => e.CurrentStepId);
-            // Supports the inbox filter (running user tasks) and its UpdatedAt ordering.
-            entity.HasIndex(e => new { e.Status, e.CurrentNodeType, e.UpdatedAt });
             // Supports the paged instance list ordered by UpdatedAt.
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
-            // Supports array-overlap role matching in the inbox filter.
-            entity.HasIndex(e => e.CurrentNodeRoles).HasMethod("gin");
-            // Supports the current-node externalId filter on the list/inbox reads.
-            entity.HasIndex(e => new { e.Status, e.CurrentNodeExternalId });
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ExecutionTokenEntity>(entity =>
+        {
+            entity.ToTable("execution_tokens");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeExternalId).HasMaxLength(300);
+            entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.NodeId, e.Status });
+            entity.HasIndex(e => new { e.NodeExternalId, e.Status });
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.Tokens)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserTaskEntity>(entity =>
+        {
+            entity.ToTable("user_tasks");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeExternalId).HasMaxLength(300);
+            entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ClaimedBy).HasMaxLength(300);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.NodeId, e.Status });
+            entity.HasIndex(e => new { e.NodeExternalId, e.Status });
+            entity.HasIndex(e => e.Roles).HasMethod("gin");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.UserTasks)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Token)
+                .WithMany(e => e.UserTasks)
+                .HasForeignKey(e => e.TokenId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

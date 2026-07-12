@@ -22,21 +22,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var entity = new WorkflowInstanceEntity
         {
             WorkflowDefinitionId = workflowDefinitionId,
-            CurrentStepId = node.Id,
-            CurrentNodeName = node.Name,
-            CurrentNodeExternalId = node.ExternalId,
-            CurrentNodeType = node.Type,
-            CurrentNodeRoles = node.Roles.ToList(),
-            CurrentRequiresClaim = node.RequiresClaim,
             Status = WorkflowInstanceStatuses.Running,
             StartedBy = startedBy,
             CreatedAt = now,
             UpdatedAt = now
         };
 
+        var token = NewToken(entity, node, now);
+        entity.Tokens.Add(token);
+        if (node.Type == BpmnFlowNodeTypes.UserTask)
+        {
+            entity.UserTasks.Add(NewUserTask(entity, token, node, now));
+        }
+
         dbContext.WorkflowInstances.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToRecord(entity);
+        return ToRecord(entity, token, entity.UserTasks.SingleOrDefault());
     }
 
     // EF1002: the SQL is assembled from static fragments plus @paramName placeholders
@@ -73,7 +74,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
+                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where}",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
@@ -85,7 +86,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         };
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                $"SELECT w.* FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -113,7 +114,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w{where}",
+                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w JOIN user_tasks ut ON ut.\"InstanceId\" = w.\"Id\"{where}",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
@@ -125,7 +126,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         };
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                $"SELECT w.* FROM workflow_instances w JOIN user_tasks ut ON ut.\"InstanceId\" = w.\"Id\"{where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -149,7 +150,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT * FROM workflow_instances w{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC",
+                $"SELECT w.* FROM workflow_instances w JOIN user_tasks ut ON ut.\"InstanceId\" = w.\"Id\"{where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC",
                 BuildParameters(args))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -179,18 +180,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // Aliased as w so the variable EXISTS filters can correlate on w."Id".
         var where = new StringBuilder("""
              WHERE w."Status" = @status
-              AND w."CurrentNodeType" = @userTask
+              AND ut."Status" = @activeTask
               AND (
-                    w."ClaimedBy" = @user
+                    ut."ClaimedBy" = @user
                  OR (
-                      ( cardinality(w."CurrentNodeRoles") = 0
+                      ( cardinality(ut."Roles") = 0
                         OR EXISTS (
-                            SELECT 1 FROM unnest(w."CurrentNodeRoles") AS node_role
+                            SELECT 1 FROM unnest(ut."Roles") AS node_role
                             WHERE lower(node_role) = ANY(@lowerRoles)
                         ) )
-                      AND NOT (w."CurrentRequiresClaim"
-                               AND w."ClaimedBy" IS NOT NULL
-                               AND w."ClaimedBy" <> @user)
+                      AND NOT (ut."RequiresClaim"
+                               AND ut."ClaimedBy" IS NOT NULL
+                               AND ut."ClaimedBy" <> @user)
                     )
                   )
             """);
@@ -198,7 +199,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var args = new List<(string Name, object Value)>
         {
             ("status", WorkflowInstanceStatuses.Running),
-            ("userTask", BpmnFlowNodeTypes.UserTask),
+            ("activeTask", UserTaskStatuses.Active),
             ("user", user),
             ("lowerRoles", lowerRoles)
         };
@@ -266,7 +267,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             " WHERE d.\"Id\" = w.\"WorkflowDefinitionId\" AND d.\"WorkflowKey\" = @workflowKey)");
     }
 
-    // Filters on the resting-node id (CurrentStepId). The value is parameter-bound,
+    // Filters on the token/task node id. The value is parameter-bound,
     // so there is no SQL injection surface.
     private static void AppendNodeIdFilter(
         StringBuilder where,
@@ -279,10 +280,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         args.Add(("nodeId", nodeId.Value));
-        where.Append(" AND w.\"CurrentStepId\" = @nodeId");
+        where.Append(where.ToString().Contains("ut.\"Status\"")
+            ? " AND ut.\"NodeId\" = @nodeId"
+            : " AND t.\"NodeId\" = @nodeId");
     }
 
-    // Filters on the denormalized resting-node externalId (exact, case-insensitive).
+    // Filters on the projected token/task externalId (exact, case-insensitive).
     // The value is parameter-bound, so there is no SQL injection surface.
     private static void AppendNodeExternalIdFilter(
         StringBuilder where,
@@ -295,7 +298,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         args.Add(("nodeExternalId", nodeExternalId.Trim()));
-        where.Append(" AND lower(w.\"CurrentNodeExternalId\") = lower(@nodeExternalId)");
+        where.Append(where.ToString().Contains("ut.\"Status\"")
+            ? " AND lower(ut.\"NodeExternalId\") = lower(@nodeExternalId)"
+            : " AND lower(t.\"NodeExternalId\") = lower(@nodeExternalId)");
     }
 
     // Appends one correlated EXISTS per filter: the variable must exist on the
@@ -339,23 +344,46 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .Select(d => new { d.Id, d.Name, d.Version })
             .ToDictionaryAsync(d => d.Id, cancellationToken);
 
+        var instanceIds = entities.Select(e => e.Id).Distinct().ToList();
+        var tokens = await dbContext.ExecutionTokens.AsNoTracking()
+            .Where(t => instanceIds.Contains(t.InstanceId))
+            .OrderByDescending(t => t.Id)
+            .ToListAsync(cancellationToken);
+        var latestTokens = tokens
+            .GroupBy(t => t.InstanceId)
+            .ToDictionary(g => g.Key, g => g.First());
+        var activeTasks = await dbContext.UserTasks.AsNoTracking()
+            .Where(t => instanceIds.Contains(t.InstanceId) && t.Status == UserTaskStatuses.Active)
+            .OrderByDescending(t => t.Id)
+            .ToListAsync(cancellationToken);
+        var tasksByInstance = activeTasks
+            .GroupBy(t => t.InstanceId)
+            .ToDictionary(g => g.Key, g => g.First());
+
         return entities.Select(e =>
         {
             definitions.TryGetValue(e.WorkflowDefinitionId, out var definition);
+            if (!latestTokens.TryGetValue(e.Id, out var token))
+            {
+                throw new InvalidOperationException($"Workflow instance #{e.Id} has no execution token.");
+            }
+            tasksByInstance.TryGetValue(e.Id, out var task);
             return new InstanceListItem(
                 e.Id,
                 definition?.Id ?? 0,
                 e.WorkflowDefinitionId,
                 definition?.Name ?? string.Empty,
                 definition?.Version ?? 0,
-                e.CurrentStepId,
-                e.CurrentNodeName,
-                e.CurrentNodeExternalId,
-                e.CurrentNodeType,
-                e.CurrentNodeRoles,
-                e.CurrentRequiresClaim,
+                token.Id,
+                task?.Id,
+                token.NodeId,
+                token.NodeName,
+                token.NodeExternalId,
+                token.NodeType,
+                task?.Roles ?? [],
+                task?.RequiresClaim ?? false,
                 e.Status,
-                e.ClaimedBy,
+                task?.ClaimedBy,
                 e.StartedBy,
                 e.CreatedAt,
                 e.UpdatedAt);
@@ -366,7 +394,20 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         var entity = await dbContext.WorkflowInstances.AsNoTracking()
             .SingleOrDefaultAsync(i => i.Id == id, cancellationToken);
-        return entity is null ? null : ToRecord(entity);
+        if (entity is null)
+        {
+            return null;
+        }
+
+        var token = await dbContext.ExecutionTokens.AsNoTracking()
+            .Where(t => t.InstanceId == id)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        var task = await dbContext.UserTasks.AsNoTracking()
+            .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        return token is null ? null : ToRecord(entity, token, task);
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(long id, CancellationToken cancellationToken)
@@ -374,7 +415,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var entity = await dbContext.WorkflowInstances
             .FromSqlInterpolated($"SELECT * FROM workflow_instances WHERE \"Id\" = {id} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
-        return entity is null ? null : ToRecord(entity);
+        if (entity is null)
+        {
+            return null;
+        }
+
+        var token = await dbContext.ExecutionTokens
+            .FromSqlInterpolated($"SELECT * FROM execution_tokens WHERE \"InstanceId\" = {id} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        var task = await dbContext.UserTasks
+            .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"InstanceId\" = {id} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        return token is null ? null : ToRecord(entity, token, task);
     }
 
     public async Task UpdateInstanceAsync(
@@ -384,28 +436,47 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? claimedBy,
         CancellationToken cancellationToken)
     {
-        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
-        if (entity is not null)
+        var now = DateTimeOffset.UtcNow;
+        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id)
+            ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == id, cancellationToken);
+        entity.Status = status;
+        entity.UpdatedAt = now;
+
+        var token = dbContext.ExecutionTokens.Local
+            .Where(t => t.InstanceId == id)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefault()
+            ?? await dbContext.ExecutionTokens
+                .Where(t => t.InstanceId == id)
+                .OrderByDescending(t => t.Id)
+                .FirstAsync(cancellationToken);
+
+        var task = dbContext.UserTasks.Local
+            .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefault()
+            ?? await dbContext.UserTasks
+                .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
+                .OrderByDescending(t => t.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+        if (status == WorkflowInstanceStatuses.Running)
         {
-            entity.CurrentStepId = currentStepId;
-            entity.Status = status;
-            entity.ClaimedBy = claimedBy;
-            entity.UpdatedAt = DateTimeOffset.UtcNow;
+            if (token.NodeId != currentStepId)
+            {
+                throw new InvalidOperationException("UpdateInstanceAsync cannot move an execution token; use UpdateInstanceNodeAsync.");
+            }
+            if (task is not null)
+            {
+                task.ClaimedBy = claimedBy;
+                task.UpdatedAt = now;
+            }
             return;
         }
 
-        // Fallback for the rare case where the entity is not tracked (e.g. a
-        // direct repository call outside the normal engine flow).
-        var now = DateTimeOffset.UtcNow;
-        await dbContext.WorkflowInstances
-            .Where(i => i.Id == id)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(i => i.CurrentStepId, currentStepId)
-                    .SetProperty(i => i.Status, status)
-                    .SetProperty(i => i.ClaimedBy, claimedBy)
-                    .SetProperty(i => i.UpdatedAt, now),
-                cancellationToken);
+        token.Status = ToTokenStatus(status);
+        token.UpdatedAt = now;
+        CompleteTask(task, status == WorkflowInstanceStatuses.Cancelled, now);
     }
 
     public async Task UpdateInstanceNodeAsync(
@@ -415,38 +486,40 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? claimedBy,
         CancellationToken cancellationToken)
     {
-        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
-        if (entity is not null)
-        {
-            entity.CurrentStepId = node.Id;
-            entity.CurrentNodeName = node.Name;
-            entity.CurrentNodeExternalId = node.ExternalId;
-            entity.CurrentNodeType = node.Type;
-            entity.CurrentNodeRoles = node.Roles.ToList();
-            entity.CurrentRequiresClaim = node.RequiresClaim;
-            entity.Status = status;
-            entity.ClaimedBy = claimedBy;
-            entity.UpdatedAt = DateTimeOffset.UtcNow;
-            return;
-        }
-
-        // Fallback for the rare case where the entity is not tracked.
         var now = DateTimeOffset.UtcNow;
-        var roles = node.Roles.ToList();
-        await dbContext.WorkflowInstances
-            .Where(i => i.Id == id)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(i => i.CurrentStepId, node.Id)
-                    .SetProperty(i => i.CurrentNodeName, node.Name)
-                    .SetProperty(i => i.CurrentNodeExternalId, node.ExternalId)
-                    .SetProperty(i => i.CurrentNodeType, node.Type)
-                    .SetProperty(i => i.CurrentNodeRoles, roles)
-                    .SetProperty(i => i.CurrentRequiresClaim, node.RequiresClaim)
-                    .SetProperty(i => i.Status, status)
-                    .SetProperty(i => i.ClaimedBy, claimedBy)
-                    .SetProperty(i => i.UpdatedAt, now),
-                cancellationToken);
+        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id)
+            ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == id, cancellationToken);
+        var token = dbContext.ExecutionTokens.Local
+            .Where(t => t.InstanceId == id)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefault()
+            ?? await dbContext.ExecutionTokens
+                .Where(t => t.InstanceId == id)
+                .OrderByDescending(t => t.Id)
+                .FirstAsync(cancellationToken);
+        var task = dbContext.UserTasks.Local
+            .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefault()
+            ?? await dbContext.UserTasks
+                .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
+                .OrderByDescending(t => t.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+        CompleteTask(task, status == WorkflowInstanceStatuses.Cancelled, now);
+        token.NodeId = node.Id;
+        token.NodeName = node.Name;
+        token.NodeExternalId = node.ExternalId;
+        token.NodeType = node.Type;
+        token.Status = ToTokenStatus(status);
+        token.UpdatedAt = now;
+        entity.Status = status;
+        entity.UpdatedAt = now;
+
+        if (status == WorkflowInstanceStatuses.Running && node.Type == BpmnFlowNodeTypes.UserTask)
+        {
+            dbContext.UserTasks.Add(NewUserTask(entity, token, node, now, claimedBy));
+        }
     }
 
     public Task AddVariableAsync(
@@ -546,16 +619,79 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             $"SELECT pg_advisory_xact_lock(hashtext({workflowKey}), hashtext({idempotencyKeyValue}))", cancellationToken);
     }
 
-    private static WorkflowInstanceRecord ToRecord(WorkflowInstanceEntity entity) =>
+    private static WorkflowInstanceRecord ToRecord(
+        WorkflowInstanceEntity entity,
+        ExecutionTokenEntity token,
+        UserTaskEntity? task) =>
         new(
             entity.Id,
             entity.WorkflowDefinitionId,
-            entity.CurrentStepId,
+            token.Id,
+            token.NodeId,
+            task?.Id,
             entity.Status,
-            entity.ClaimedBy,
+            task?.ClaimedBy,
             entity.StartedBy,
             entity.CreatedAt,
             entity.UpdatedAt);
+
+    private static ExecutionTokenEntity NewToken(
+        WorkflowInstanceEntity instance,
+        CurrentNodeSnapshot node,
+        DateTimeOffset now) =>
+        new()
+        {
+            Instance = instance,
+            NodeId = node.Id,
+            NodeName = node.Name,
+            NodeExternalId = node.ExternalId,
+            NodeType = node.Type,
+            Status = ExecutionTokenStatuses.Active,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+    private static UserTaskEntity NewUserTask(
+        WorkflowInstanceEntity instance,
+        ExecutionTokenEntity token,
+        CurrentNodeSnapshot node,
+        DateTimeOffset now,
+        string? claimedBy = null) =>
+        new()
+        {
+            Instance = instance,
+            Token = token,
+            NodeId = node.Id,
+            NodeName = node.Name,
+            NodeExternalId = node.ExternalId,
+            Roles = node.Roles.ToList(),
+            RequiresClaim = node.RequiresClaim,
+            Status = UserTaskStatuses.Active,
+            ClaimedBy = claimedBy,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+    private static void CompleteTask(UserTaskEntity? task, bool cancelled, DateTimeOffset now)
+    {
+        if (task is null)
+        {
+            return;
+        }
+
+        task.Status = cancelled ? UserTaskStatuses.Cancelled : UserTaskStatuses.Completed;
+        task.CompletedAt = now;
+        task.UpdatedAt = now;
+    }
+
+    private static string ToTokenStatus(string instanceStatus) => instanceStatus switch
+    {
+        WorkflowInstanceStatuses.Running => ExecutionTokenStatuses.Active,
+        WorkflowInstanceStatuses.Completed => ExecutionTokenStatuses.Completed,
+        WorkflowInstanceStatuses.Faulted => ExecutionTokenStatuses.Faulted,
+        WorkflowInstanceStatuses.Cancelled => ExecutionTokenStatuses.Cancelled,
+        _ => throw new InvalidOperationException($"Unknown workflow instance status '{instanceStatus}'.")
+    };
 
     private static InstanceVariableRecord ToRecord(InstanceVariableEntity entity) =>
         new(

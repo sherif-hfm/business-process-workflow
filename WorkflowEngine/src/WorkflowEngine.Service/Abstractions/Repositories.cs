@@ -64,8 +64,8 @@ public interface IWorkflowRuntimeRepository
         int pageSize,
         CancellationToken cancellationToken);
 
-    // Returns the full actor-filtered inbox candidate set (running user tasks) without
-    // paging, so a caller can evaluate node-level visibility conditions and re-page.
+    // Returns the full actor-filtered active user-task set without paging, so a
+    // caller can evaluate node-level visibility conditions and re-page.
     Task<IReadOnlyList<InstanceListItem>> ListInboxCandidatesAsync(
         string user,
         IReadOnlyCollection<string> roles,

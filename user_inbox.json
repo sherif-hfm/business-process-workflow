@@ -17,17 +17,7 @@
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "variables": [
-        {
-          "id": 1,
-          "name": "amount",
-          "dataType": "number",
-          "isArray": false,
-          "required": false,
-          "defaultValue": null,
-          "validation": null
-        }
-      ],
+      "variables": [],
       "condition": null,
       "attachedToRef": null,
       "errorVariable": null
@@ -48,7 +38,7 @@
       "claimMode": "fromNode",
       "inheritClaimFromNodeId": 2,
       "variables": [],
-      "condition": "amount > 500",
+      "condition": "[sys.user]  = \"alice\" or [sys.user]  = \"alice2\" ",
       "attachedToRef": null,
       "errorVariable": null
     },
@@ -131,22 +121,8 @@
       "canActWithoutClaim": false
     },
     {
-      "id": 105,
-      "name": "reject",
-      "externalId": null,
-      "sourceRef": 2,
-      "targetRef": 4,
-      "roles": [
-        "Manager"
-      ],
-      "variables": [],
-      "condition": null,
-      "isDefault": false,
-      "canActWithoutClaim": true
-    },
-    {
-      "id": 106,
-      "name": "confirm by manager",
+      "id": 104,
+      "name": "Manager Confirm",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [
