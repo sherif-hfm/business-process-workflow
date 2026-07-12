@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace WorkflowEngine.Infrastructure.Entities;
 
 public sealed class UserTaskEntity
@@ -17,10 +19,19 @@ public sealed class UserTaskEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAt { get; set; }
+    public long? MultiInstanceExecutionId { get; set; }
+    public MultiInstanceExecutionEntity? MultiInstanceExecution { get; set; }
+    public int? ItemIndex { get; set; }
+    public JsonDocument? ItemValueJson { get; set; }
+    public string? Assignee { get; set; }
+    public int? SelectedFlowId { get; set; }
+    public JsonDocument? ResultJson { get; set; }
+    public string? CompletedBy { get; set; }
 }
 
 public static class UserTaskStatuses
 {
+    public const string Pending = "pending";
     public const string Active = "active";
     public const string Completed = "completed";
     public const string Cancelled = "cancelled";

@@ -97,9 +97,8 @@ Storage follows the hybrid design:
   claim. `execution_tokens` own execution position and its node snapshot;
   `user_tasks` are work items created when a token rests on a `userTask` and own
   roles, claim requirements, claimant, and task lifecycle timestamps. The current
-  engine preserves one active token/task per instance, while the schema and
-  repository records carry token/task ids for future parallel and multi-instance
-  execution.
+  engine preserves one active execution token per instance; a multi-instance user
+  task can own many active or pending work items beneath that parent token.
 - **Token/task projections.** Instance list node filters and current-node display
   are projected from the latest execution token. Inbox reads query active
   `user_tasks` directly and apply claim/role predicates there, ordered by task
@@ -109,6 +108,23 @@ Storage follows the hybrid design:
   backfills one token and (where applicable) one active user task for existing
   instances before dropping the old `CurrentStepId`, `CurrentNode*`,
   `CurrentRequiresClaim`, and `ClaimedBy` instance columns.
+- **Multi-instance user tasks.** A `userTask.multiInstance` configuration creates
+  parallel or sequential work items while retaining one parent execution token.
+  `collection` mode snapshots a declared `string[]` and directly assigns each
+  username; `cardinality` mode evaluates an NCalc count and uses the normal
+  role/claim pool. Fan-out is bounded by `Workflow.MultiInstance.MaxInstances`
+  (default 1000). Each item records its selected flow and local submitted values.
+  An outcome flow with `isSelectable=false` is engine-only: it remains in the
+  diagram and may win aggregate/default routing, but is omitted from available
+  actions and rejected by user action endpoints. Engine-only flows are supported
+  only on multi-instance user tasks; older definitions default to selectable.
+  Outcome-flow `completionCondition` expressions use `CountFlow(flowId)`,
+  `PercentFlow(flowId)`, and `mi.total/completed/remaining`; the lowest
+  `completionPriority` wins. A winning quorum or an interrupting flow atomically
+  cancels unfinished items, writes the ordered JSON result collection, and advances
+  the parent token once. If all items finish without a match, the required default
+  outcome wins. Task-specific operations use `/api/user-tasks/{taskId}`; legacy
+  instance-addressed actions return 409 when multiple active tasks are ambiguous.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
@@ -455,6 +471,8 @@ Serilog uses Warning level and console/file I/O does not dominate the result:
 dotnet run --no-launch-profile --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj -- --environment LoadTest --urls http://localhost:5017
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 1000 --concurrency 32
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 200000 --concurrency 32
+# For an already-started cardinality multi-instance task whose normal outcome is flow 201:
+dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --multi-instance-id 42 --flow-id 201 --concurrency 64
 ```
 
 Use the first run as warm-up; short cold runs include JIT, connection-pool, and
@@ -657,7 +675,8 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "roles": [ "Manager" ],      // userTask flow: enforced at runtime (empty = anyone)
   "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
   "condition": "amount > 1000",// userTask / exclusiveGateway flow only (nullable)
-  "isDefault": false           // userTask / exclusiveGateway default flow
+  "isDefault": false,          // userTask / exclusiveGateway default flow
+  "isSelectable": true         // multi-instance user action; false = engine-only
 }
 ```
 
@@ -914,6 +933,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
+| `sequenceFlow.isSelectable` | Engine extension | On a multi-instance user-task flow, `false` makes the route engine-only: not a user action, but still eligible for aggregate completion/default routing. Defaults to `true`. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
 | `variables` (start/flow) | Data Object / Property | Typed data captured at a start event or on a user-task flow. |
@@ -1008,7 +1028,10 @@ when extending the model so new features stay close to BPMN terminology.
   and enforces a single default per gateway.
 - **User-task flows**: `userTask` outgoing flows may also carry a `condition` (NCalc)
   and an `isDefault` marker; the editor shows both roles and condition/default beneath
-  the edge and enforces a single default per user task.
+  the edge and enforces a single default per user task. Multi-instance flows may set
+  `isSelectable=false`; the editor marks these edges `engine-only`, the API never
+  exposes or accepts them as user actions, and only completion/default routing may
+  choose them.
 - **User-task node condition**: a `userTask` may itself carry a `condition` (NCalc)
   that acts as a visibility gate. When false, the task is hidden from the inbox,
   `GetAvailableFlowsAsync` returns no flows, and `ClaimAsync`/`TakeFlowAsync` reject.

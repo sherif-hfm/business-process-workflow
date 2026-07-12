@@ -100,6 +100,53 @@ public sealed record StartInstanceResultDto(
 public sealed record TakeFlowRequest(
     Dictionary<string, JsonElement>? Variables);
 
+public sealed record MultiInstanceFlowCountDto(int FlowId, int Count, double Percent);
+
+public sealed record MultiInstanceProgressDto(
+    long ExecutionId,
+    string Mode,
+    string Status,
+    int Total,
+    int Completed,
+    int Active,
+    int Pending,
+    int Cancelled,
+    int? WinningFlowId,
+    string? CompletionReason,
+    IReadOnlyList<MultiInstanceFlowCountDto> FlowCounts);
+
+public sealed record UserTaskDto(
+    long Id,
+    long InstanceId,
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    IReadOnlyList<string> Roles,
+    bool RequiresClaim,
+    string Status,
+    string? ClaimedBy,
+    string? Assignee,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    int? SelectedFlowId,
+    MultiInstanceProgressDto? MultiInstance,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+public sealed record UserTaskActionAckDto(
+    long UserTaskId,
+    long InstanceId,
+    string TaskStatus,
+    string InstanceStatus,
+    int SelectedFlowId,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    string? CurrentNodeExternalId,
+    MultiInstanceProgressDto? MultiInstance,
+    DateTimeOffset UpdatedAt);
+
 /// <summary>
 /// Represents a summary of a workflow instance.
 /// </summary>
@@ -144,6 +191,7 @@ public sealed record InstanceSummaryDto(
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 /// <param name="Variables">The complete list of instance variables and their values.</param>
 /// <param name="History">The complete execution history of sequence flow hops and resting states.</param>
+/// <param name="MultiInstance">Progress for the active multi-instance user task, when present.</param>
 public sealed record InstanceDetailDto(
     long Id,
     WorkflowDetailDto Workflow,
@@ -156,7 +204,8 @@ public sealed record InstanceDetailDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<InstanceVariableDto> Variables,
-    IReadOnlyList<InstanceHistoryDto> History);
+    IReadOnlyList<InstanceHistoryDto> History,
+    MultiInstanceProgressDto? MultiInstance);
 
 /// <summary>
 /// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.
@@ -213,6 +262,10 @@ public sealed record InstanceVariableDto(
 /// Represents a single step in the execution history of a workflow instance.
 /// </summary>
 /// <param name="Id">The unique database ID of the history record.</param>
+/// <param name="TokenId">The execution token correlated to this history row.</param>
+/// <param name="UserTaskId">The user-task work item correlated to this history row.</param>
+/// <param name="MultiInstanceExecutionId">The multi-instance execution correlated to this row.</param>
+/// <param name="ItemIndex">The zero-based multi-instance item index.</param>
 /// <param name="SequenceFlowId">Optional. The ID of the sequence flow taken during this step.</param>
 /// <param name="FromNodeId">The ID of the source flow node transitioned from.</param>
 /// <param name="ToNodeId">The ID of the destination flow node transitioned to.</param>
@@ -222,6 +275,10 @@ public sealed record InstanceVariableDto(
 /// <param name="PerformedAt">The timestamp when this step was executed.</param>
 public sealed record InstanceHistoryDto(
     long Id,
+    long? TokenId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
     int? SequenceFlowId,
     int FromNodeId,
     int ToNodeId,
@@ -248,6 +305,12 @@ public sealed record PagedResult<T>(
 /// Represents a user task in the inbox of an actor.
 /// </summary>
 /// <param name="InstanceId">The database ID of the workflow instance.</param>
+/// <param name="UserTaskId">The exact work-item ID represented by this inbox row.</param>
+/// <param name="MultiInstanceExecutionId">The owning multi-instance execution, when applicable.</param>
+/// <param name="ItemIndex">The zero-based multi-instance item index.</param>
+/// <param name="ItemValue">The snapshotted collection item.</param>
+/// <param name="Assignee">The direct username assignment for collection mode.</param>
+/// <param name="MultiInstance">Aggregate progress for the owning multi-instance execution.</param>
 /// <param name="WorkflowId">The database ID of the workflow version.</param>
 /// <param name="WorkflowName">The name of the workflow.</param>
 /// <param name="CurrentNodeId">The ID of the current userTask flow node.</param>
@@ -263,6 +326,12 @@ public sealed record PagedResult<T>(
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 public sealed record InboxItemDto(
     long InstanceId,
+    long UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    string? Assignee,
+    MultiInstanceProgressDto? MultiInstance,
     long WorkflowId,
     string WorkflowName,
     int CurrentNodeId,

@@ -32,7 +32,48 @@ public sealed record CurrentNodeSnapshot(
     string? ExternalId,
     string Type,
     IReadOnlyList<string> Roles,
-    bool RequiresClaim);
+    bool RequiresClaim,
+    bool IsMultiInstance = false);
+
+public sealed record MultiInstanceExecutionRecord(
+    long Id,
+    long InstanceId,
+    long TokenId,
+    int NodeId,
+    string Mode,
+    string Source,
+    string ResultVariable,
+    string Status,
+    int TotalCount,
+    int CompletedCount,
+    int CancelledCount,
+    int? WinningFlowId,
+    string? CompletionReason,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+public sealed record UserTaskRecord(
+    long Id,
+    long InstanceId,
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    IReadOnlyList<string> Roles,
+    bool RequiresClaim,
+    string Status,
+    string? ClaimedBy,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    string? Assignee,
+    int? SelectedFlowId,
+    Dictionary<string, JsonElement>? Result,
+    string? CompletedBy,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
 
 // Compatibility projection for the existing instance-oriented API. TokenId and
 // UserTaskId keep the persistence boundary ready for task/token-addressed APIs.
@@ -44,6 +85,10 @@ public sealed record InstanceListItem(
     int WorkflowVersion,
     long TokenId,
     long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    string? Assignee,
     int CurrentNodeId,
     string CurrentNodeName,
     string? CurrentNodeExternalId,
@@ -71,6 +116,10 @@ public sealed record InstanceVariableRecord(
 public sealed record InstanceHistoryRecord(
     long Id,
     long InstanceId,
+    long? TokenId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
     int? ActionId,
     int FromStepId,
     int ToStepId,
@@ -95,4 +144,20 @@ public static class WorkflowInstanceStatuses
     // Terminal status set when an instance enters an errorEndEvent (vs the
     // Completed status set by a plain endEvent). Filterable in the list/inbox.
     public const string Faulted = "faulted";
+}
+
+public static class UserTaskRecordStatuses
+{
+    public const string Pending = "pending";
+    public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Cancelled = "cancelled";
+}
+
+public static class MultiInstanceRecordStatuses
+{
+    public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Interrupted = "interrupted";
+    public const string Cancelled = "cancelled";
 }

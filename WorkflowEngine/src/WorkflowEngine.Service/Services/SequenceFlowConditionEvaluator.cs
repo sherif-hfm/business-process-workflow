@@ -77,6 +77,41 @@ public static class SequenceFlowConditionEvaluator
     }
 
     /// <summary>
+    /// Evaluates a multi-instance aggregate completion condition. CountFlow(id)
+    /// and PercentFlow(id) read the transactionally maintained outcome counters.
+    /// </summary>
+    public static bool EvaluateCompletion(
+        string? condition,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        IReadOnlyDictionary<int, int> flowCounts,
+        int totalCount)
+    {
+        var expression = Normalize(condition);
+        if (expression is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var ncalc = CreateExpression(expression, variables, flowCounts, totalCount);
+            return IsTruthy(ncalc.Evaluate());
+        }
+        catch (NCalcException)
+        {
+            return false;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns true when the expression parses successfully. Used for
     /// author-time validation of gateway conditions.
     /// </summary>
@@ -146,7 +181,9 @@ public static class SequenceFlowConditionEvaluator
     /// </summary>
     private static Expression CreateExpression(
         string expression,
-        IReadOnlyDictionary<string, JsonElement>? variables)
+        IReadOnlyDictionary<string, JsonElement>? variables,
+        IReadOnlyDictionary<int, int>? flowCounts = null,
+        int totalCount = 0)
     {
         var ncalc = new Expression(expression, Options);
         if (variables is not null)
@@ -154,8 +191,46 @@ public static class SequenceFlowConditionEvaluator
             ncalc.Parameters = BuildParameters(variables);
         }
 
-        ncalc.EvaluateFunction += EvaluateCustomFunction;
+        ncalc.EvaluateFunction += (name, args) =>
+        {
+            if (flowCounts is not null && TryEvaluateMultiInstanceFunction(name, args, flowCounts, totalCount))
+            {
+                return;
+            }
+            EvaluateCustomFunction(name, args);
+        };
         return ncalc;
+    }
+
+    private static bool TryEvaluateMultiInstanceFunction(
+        string name,
+        FunctionEventArgs args,
+        IReadOnlyDictionary<int, int> flowCounts,
+        int totalCount)
+    {
+        if (!name.Equals("CountFlow", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("PercentFlow", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (args.Parameters.Count < 1)
+        {
+            return false;
+        }
+
+        var raw = args.Parameters.Evaluate(0);
+        if (!int.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var flowId))
+        {
+            return false;
+        }
+
+        var count = flowCounts.GetValueOrDefault(flowId);
+        args.Result = name.Equals("CountFlow", StringComparison.OrdinalIgnoreCase)
+            ? count
+            : totalCount <= 0 ? 0d : count * 100d / totalCount;
+        return true;
     }
 
     /// <summary>

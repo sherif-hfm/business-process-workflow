@@ -34,6 +34,15 @@ else
             <p>Status: <strong>@instance.Status</strong></p>
             <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
             <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
+            @if (instance.MultiInstance is not null)
+            {
+                var progress = instance.MultiInstance;
+                <p>Multi-instance: <strong>@progress.Completed / @progress.Total completed</strong>, @progress.Active active, @progress.Pending pending, @progress.Cancelled cancelled</p>
+                @foreach (var count in progress.FlowCounts)
+                {
+                    <span class="badge text-bg-secondary me-1">Flow #@count.FlowId: @count.Count (@count.Percent.ToString("0.#")%)</span>
+                }
+            }
 
             <p>Acting as: <strong>@ActingUser</strong>
                 <span class="text-muted">
@@ -41,7 +50,7 @@ else
                 </span>
             </p>
 
-            @if (instance.Status == "running" && currentNode?.RequiresClaim == true)
+            @if (instance.Status == "running" && currentNode?.RequiresClaim == true && instance.MultiInstance is null)
             {
                 <div class="d-flex gap-2 mb-3">
                     <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
@@ -59,6 +68,10 @@ else
         </div>
     </div>
 
+    @if (instance.MultiInstance is not null)
+    {
+        <div class="alert alert-info">Open a specific work item from the Inbox to claim or take an action.</div>
+    }
     <section class="mb-4">
         <h2 class="h4">Available actions</h2>
         @if (currentNode?.RequiresClaim == true && instance.Status == "running")
@@ -78,7 +91,11 @@ else
                 }
             }
         }
-        @if (availableFlows.Count == 0)
+        @if (instance.MultiInstance is not null)
+        {
+            <p>Actions are task-specific for multi-instance work.</p>
+        }
+        else if (availableFlows.Count == 0)
         {
             <p>No user actions are available.</p>
         }
@@ -297,7 +314,7 @@ else
         {
             error = null;
             instance = await Api.GetInstanceAsync(InstanceId);
-            availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+            availableFlows = instance is null || instance.MultiInstance is not null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
         }
         catch (Exception ex)
         {
@@ -339,7 +356,7 @@ else
             error = null;
             await action();
             instance ??= await Api.GetInstanceAsync(InstanceId);
-            availableFlows = instance is null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+            availableFlows = instance is null || instance.MultiInstance is not null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
         }
         catch (Exception ex)
         {

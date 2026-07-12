@@ -181,6 +181,12 @@ try
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context.Response.WriteAsJsonAsync(new { error = ex.Message });
         }
+        catch (WorkflowConflictException ex)
+        {
+            Log.Warning(ex, "Workflow conflict: {Message}", ex.Message);
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+        }
         catch (WorkflowUnauthorizedException ex)
         {
             Log.Warning(ex, "Workflow unauthorized exception: {Message}", ex.Message);
@@ -212,6 +218,7 @@ try
     app.MapGet("/", () => Results.Redirect("/swagger"));
     app.MapWorkflowDefinitionEndpoints();
     app.MapWorkflowInstanceEndpoints();
+    app.MapUserTaskEndpoints();
 
     app.Run();
 }

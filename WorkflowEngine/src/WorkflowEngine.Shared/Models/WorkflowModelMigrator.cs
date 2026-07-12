@@ -168,6 +168,11 @@ public static class WorkflowModelMigrator
 
     private static void ApplyNodeInvariants(FlowNodeModel node)
     {
+        if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
+        {
+            node.MultiInstance = null;
+        }
+
         if (BpmnFlowNodeTypes.IsEnd(node.Type))
         {
             node.RequiresClaim = false;
@@ -297,6 +302,24 @@ public static class WorkflowModelMigrator
             }
 
             node.Message = null;
+
+            if (node.MultiInstance is not null)
+            {
+                node.MultiInstance.Mode = node.MultiInstance.Mode == MultiInstanceModes.Sequential
+                    ? MultiInstanceModes.Sequential
+                    : MultiInstanceModes.Parallel;
+                node.MultiInstance.Source = node.MultiInstance.Source == MultiInstanceSources.Cardinality
+                    ? MultiInstanceSources.Cardinality
+                    : MultiInstanceSources.Collection;
+                if (node.MultiInstance.Source == MultiInstanceSources.Collection)
+                {
+                    node.MultiInstance.CardinalityExpression = null;
+                }
+                else
+                {
+                    node.MultiInstance.CollectionVariable = null;
+                }
+            }
         }
     }
 }

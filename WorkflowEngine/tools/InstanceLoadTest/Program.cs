@@ -17,12 +17,24 @@ Console.WriteLine($"  WorkflowId:  {(options.WorkflowId?.ToString() ?? "(auto)")
 Console.WriteLine();
 
 var token = CreateToken(options);
+if (options.PrintToken)
+{
+    Console.WriteLine(token);
+    return;
+}
 using var http = new HttpClient
 {
     BaseAddress = new Uri(options.ApiBase.TrimEnd('/') + "/"),
     Timeout = TimeSpan.FromMinutes(5)
 };
 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+if (options.MultiInstanceId is long multiInstanceId)
+{
+    if (options.FlowId is null) throw new ArgumentException("--flow-id is required with --multi-instance-id.");
+    await RunMultiInstanceAsync(http, multiInstanceId, options.FlowId.Value, options.Concurrency);
+    return;
+}
 
 var workflowId = options.WorkflowId ?? await ResolveWorkflowIdAsync(http, cancellationToken: default);
 Console.WriteLine($"Using workflow id {workflowId}");
@@ -132,8 +144,20 @@ static Options ParseArgs(string[] args)
             case "--workflow-id" when i + 1 < args.Length && long.TryParse(args[++i], out var workflowId):
                 result = result with { WorkflowId = workflowId };
                 break;
+            case "--multi-instance-id" when i + 1 < args.Length && long.TryParse(args[++i], out var instanceId):
+                result = result with { MultiInstanceId = instanceId };
+                break;
+            case "--flow-id" when i + 1 < args.Length && int.TryParse(args[++i], out var flowId):
+                result = result with { FlowId = flowId };
+                break;
             case "--jwt-key" when i + 1 < args.Length:
                 result = result with { JwtKey = args[++i] };
+                break;
+            case "--user" when i + 1 < args.Length:
+                result = result with { User = args[++i] };
+                break;
+            case "--print-token":
+                result = result with { PrintToken = true };
                 break;
             case "--help":
             case "-h":
@@ -156,7 +180,11 @@ static void PrintHelp()
           --count <n>            Number of instances to create (default: 200000)
           --concurrency <n>      Parallel HTTP requests (default: 32)
           --workflow-id <id>     Published workflow id (default: first published)
+          --multi-instance-id <id> Drain active tasks for one multi-instance process
+          --flow-id <id>         Outcome flow used with --multi-instance-id
           --jwt-key <key>        JWT signing key (default: dev appsettings key)
+          --user <name>          JWT username (default: load-test)
+          --print-token          Print the generated development JWT and exit
           -h, --help             Show this help
 
         Each start uses a random 'amount' from 100 to 1000.
@@ -179,10 +207,12 @@ static string CreateToken(Options options)
 
     var claims = new[]
     {
-        new Claim(ClaimTypes.Name, "load-test"),
-        new Claim(JwtRegisteredClaimNames.Sub, "load-test"),
+        new Claim(ClaimTypes.Name, options.User),
+        new Claim(JwtRegisteredClaimNames.Sub, options.User),
         new Claim(ClaimTypes.Role, "Requester"),
-        new Claim(ClaimTypes.Role, "Manager")
+        new Claim(ClaimTypes.Role, "Manager"),
+        new Claim(ClaimTypes.Role, "admin"),
+        new Claim(ClaimTypes.Role, "sysAdmin")
     };
 
     var token = new JwtSecurityToken(
@@ -207,6 +237,50 @@ static async Task<long> ResolveWorkflowIdAsync(HttpClient http, CancellationToke
     return published.Id;
 }
 
+static async Task RunMultiInstanceAsync(HttpClient http, long instanceId, int flowId, int concurrency)
+{
+    Console.WriteLine($"Draining multi-instance work for instance #{instanceId} through flow #{flowId}...");
+    var stopwatch = Stopwatch.StartNew();
+    var completed = 0;
+    while (true)
+    {
+        var page = await http.GetFromJsonAsync<TaskPage>(
+            $"api/instances/{instanceId}/user-tasks?status=active&page=1&pageSize=200")
+            ?? throw new InvalidOperationException("The active user-task page was empty.");
+        if (page.Items.Count == 0) break;
+
+        using var gate = new SemaphoreSlim(concurrency);
+        var failures = new List<string>();
+        await Task.WhenAll(page.Items.Select(async task =>
+        {
+            await gate.WaitAsync();
+            try
+            {
+                if (task.RequiresClaim)
+                {
+                    using var claim = await http.PostAsync($"api/user-tasks/{task.Id}/claim", null);
+                    if (!claim.IsSuccessStatusCode)
+                        throw new InvalidOperationException($"Claim #{task.Id}: HTTP {(int)claim.StatusCode}");
+                }
+                using var action = await http.PostAsJsonAsync($"api/user-tasks/{task.Id}/flows/{flowId}", new { variables = new { } });
+                if (!action.IsSuccessStatusCode)
+                    throw new InvalidOperationException($"Complete #{task.Id}: HTTP {(int)action.StatusCode} {await action.Content.ReadAsStringAsync()}");
+                Interlocked.Increment(ref completed);
+            }
+            catch (Exception ex)
+            {
+                lock (failures) failures.Add(ex.Message);
+            }
+            finally { gate.Release(); }
+        }));
+        if (failures.Count > 0)
+            throw new InvalidOperationException(string.Join(Environment.NewLine, failures.Take(10)));
+    }
+    stopwatch.Stop();
+    Console.WriteLine($"Completed {completed:N0} work items in {stopwatch.Elapsed}; {completed / Math.Max(.001, stopwatch.Elapsed.TotalSeconds):N1} items/sec.");
+    if (completed == 0) throw new InvalidOperationException("No active work items were completed.");
+}
+
 static string Truncate(string value, int max) =>
     value.Length <= max ? value : value[..max] + "...";
 
@@ -215,6 +289,10 @@ sealed record Options(
     int Count = 200_000,
     int Concurrency = 32,
     long? WorkflowId = null,
+    long? MultiInstanceId = null,
+    int? FlowId = null,
+    bool PrintToken = false,
+    string User = "load-test",
     string JwtKey = Defaults.JwtKey,
     string Issuer = Defaults.Issuer,
     string Audience = Defaults.Audience);
@@ -230,6 +308,9 @@ sealed record WorkflowSummary(
     int Version,
     bool IsPublished,
     DateTimeOffset CreatedAt);
+
+sealed record TaskPage(IReadOnlyList<TaskItem> Items, int Page, int PageSize, long TotalCount);
+sealed record TaskItem(long Id, bool RequiresClaim);
 
 sealed class ProgressTracker(int total)
 {

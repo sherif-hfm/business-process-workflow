@@ -140,6 +140,24 @@ public interface IWorkflowEngineService
 
     Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 
+    Task<UserTaskDto?> GetUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskActionAckDto?> TakeUserTaskFlowAsync(
+        long taskId,
+        int flowId,
+        ActorContext actor,
+        Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken);
+    Task<PagedResult<UserTaskDto>> ListUserTasksAsync(
+        long instanceId,
+        string? status,
+        int page,
+        int pageSize,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
     Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
         int flowId,

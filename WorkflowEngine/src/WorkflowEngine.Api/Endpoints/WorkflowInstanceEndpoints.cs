@@ -45,6 +45,9 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{id:long}/user-tasks", ListUserTasks)
+            .Produces<PagedResult<UserTaskDto>>(StatusCodes.Status200OK);
+
         group.MapGet("/{id:long}/flows", GetAvailableFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized);
@@ -260,6 +263,20 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         return Results.Ok(await service.GetAvailableFlowsAsync(id, ToActor(principal), cancellationToken));
+    }
+
+    private static async Task<IResult> ListUserTasks(
+        long id,
+        string? status,
+        int? page,
+        int? pageSize,
+        ClaimsPrincipal principal,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var paging = NormalizePaging(page, pageSize);
+        return Results.Ok(await service.ListUserTasksAsync(id, status, paging.Page, paging.PageSize,
+            ToActor(principal), cancellationToken));
     }
 
     /// <summary>

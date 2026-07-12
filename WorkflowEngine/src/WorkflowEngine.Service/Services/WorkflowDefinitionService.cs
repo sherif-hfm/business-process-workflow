@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using WorkflowEngine.Service.Abstractions;
 using WorkflowEngine.Service.Models;
@@ -205,6 +206,13 @@ public sealed class WorkflowDefinitionService(
             var outgoing = definition.SequenceFlows.Where(f => f.SourceRef == node.Id).ToList();
             var incoming = definition.SequenceFlows.Where(f => f.TargetRef == node.Id).ToList();
 
+            if (outgoing.Any(f => !f.IsSelectable)
+                && (!BpmnFlowNodeTypes.IsUserTask(node.Type) || node.MultiInstance is null))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow isSelectable=false is supported only on multi-instance user task #{node.Id}.");
+            }
+
             // errorEndEvent is covered by IsEnd (no outgoing). errorBoundaryEvent
             // has exactly one outgoing (the error path) and no incoming flows
             // (it is attached, not reached via a normal sequence flow).
@@ -271,6 +279,18 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsUserTask(node.Type))
             {
                 ValidateClaimMode(node, definition);
+
+                if (node.MultiInstance is not null)
+                {
+                    ValidateMultiInstance(node, outgoing, definition);
+                }
+                else if (outgoing.Any(f => f.CancelRemainingInstances
+                                           || f.CompletionPriority is not null
+                                           || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+                {
+                    throw new WorkflowDomainException(
+                        $"User task #{node.Id} has multi-instance flow settings but no multiInstance configuration.");
+                }
 
                 var userTaskDefaultCount = outgoing.Count(f => f.IsDefault);
                 if (userTaskDefaultCount > 1)
@@ -557,6 +577,131 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
+    private static void ValidateMultiInstance(
+        FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        WorkflowModel definition)
+    {
+        var multi = node.MultiInstance!;
+        if (multi.Mode is not (MultiInstanceModes.Parallel or MultiInstanceModes.Sequential))
+        {
+            throw new WorkflowDomainException($"User task #{node.Id} has unsupported multi-instance mode '{multi.Mode}'.");
+        }
+        if (multi.Source is not (MultiInstanceSources.Collection or MultiInstanceSources.Cardinality))
+        {
+            throw new WorkflowDomainException($"User task #{node.Id} has unsupported multi-instance source '{multi.Source}'.");
+        }
+
+        var result = definition.Variables.SingleOrDefault(v =>
+            string.Equals(v.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
+        if (result is null || result.DataType != WorkflowVariableTypes.Json || result.IsArray
+            || result.DefaultValue is null || result.DefaultValue.Value.ValueKind != JsonValueKind.Array)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} resultVariable must reference a declared json process variable initialized to [].");
+        }
+
+        if (multi.Source == MultiInstanceSources.Collection)
+        {
+            if (!string.IsNullOrWhiteSpace(multi.CardinalityExpression))
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} collection source cannot define cardinalityExpression.");
+            }
+            var collection = definition.Variables.SingleOrDefault(v =>
+                string.Equals(v.Name, multi.CollectionVariable, StringComparison.OrdinalIgnoreCase));
+            if (collection is null || collection.DataType != WorkflowVariableTypes.String || !collection.IsArray)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} collectionVariable must reference a declared string[] process variable.");
+            }
+            if (string.Equals(collection.Name, result.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} collectionVariable and resultVariable must be different.");
+            }
+            if (node.RequiresClaim || node.ClaimMode != ClaimModes.Fresh)
+            {
+                throw new WorkflowDomainException(
+                    $"Collection multi-instance user task #{node.Id} must use requiresClaim=false and claimMode='fresh'.");
+            }
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(multi.CollectionVariable)
+                || !SequenceFlowConditionEvaluator.IsValid(multi.CardinalityExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} cardinality source requires a valid cardinalityExpression and no collectionVariable.");
+            }
+            if (node.ClaimMode != ClaimModes.Fresh)
+            {
+                throw new WorkflowDomainException($"Cardinality multi-instance user task #{node.Id} must use claimMode='fresh'.");
+            }
+        }
+
+        var outcomes = outgoing.Where(f => !f.CancelRemainingInstances).ToList();
+        var interrupts = outgoing.Where(f => f.CancelRemainingInstances).ToList();
+        if (outcomes.Count == 0 || outcomes.Count(f => f.IsDefault) != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Multi-instance user task #{node.Id} requires at least one outcome flow and exactly one default outcome flow.");
+        }
+        if (!outcomes.Any(f => f.IsSelectable))
+        {
+            throw new WorkflowDomainException(
+                $"Multi-instance user task #{node.Id} requires at least one selectable outcome flow.");
+        }
+        if (interrupts.Any(f => !f.IsSelectable))
+        {
+            throw new WorkflowDomainException(
+                $"Interrupting flows from multi-instance user task #{node.Id} must be selectable.");
+        }
+        var engineOnly = outcomes.Where(f => !f.IsSelectable).ToList();
+        if (engineOnly.Any(f => f.Roles.Count > 0 || f.Variables.Count > 0
+                                || !string.IsNullOrWhiteSpace(f.Condition) || f.CanActWithoutClaim))
+        {
+            throw new WorkflowDomainException(
+                $"Engine-only flows from multi-instance user task #{node.Id} cannot define roles, action variables, condition, or canActWithoutClaim.");
+        }
+        if (interrupts.Any(f => f.IsDefault || f.CompletionPriority is not null
+                                || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        {
+            throw new WorkflowDomainException(
+                $"Interrupting flows from multi-instance user task #{node.Id} cannot be default or define completion rules.");
+        }
+        if (outcomes.Any(f => f.CompletionPriority is null or <= 0)
+            || outcomes.Select(f => f.CompletionPriority!.Value).Distinct().Count() != outcomes.Count)
+        {
+            throw new WorkflowDomainException(
+                $"Outcome flows from multi-instance user task #{node.Id} require unique positive completionPriority values.");
+        }
+        if (outcomes.Any(f => !f.IsDefault && string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default outcome flow from multi-instance user task #{node.Id} requires completionCondition.");
+        }
+
+        var selectableOutcomeIds = outcomes.Where(f => f.IsSelectable).Select(f => f.Id).ToHashSet();
+        foreach (var flow in outcomes.Where(f => !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        {
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.CompletionCondition))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has an invalid completionCondition.");
+            }
+
+            foreach (Match match in Regex.Matches(
+                         flow.CompletionCondition!,
+                         @"(?i)\b(?:CountFlow|PercentFlow)\s*\(\s*([^\)]+)\s*\)"))
+            {
+                if (!int.TryParse(match.Groups[1].Value.Trim(), out var referencedFlowId)
+                    || !selectableOutcomeIds.Contains(referencedFlowId))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} completionCondition references a non-selectable outcome flow.");
+                }
+            }
+        }
+    }
+
     private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
     {
         ValidateVariables(variables, owner, requireDefault: false);
@@ -581,7 +726,8 @@ public sealed class WorkflowDefinitionService(
             WorkflowVariableTypes.Number,
             WorkflowVariableTypes.Boolean,
             WorkflowVariableTypes.Date,
-            WorkflowVariableTypes.DateTime
+            WorkflowVariableTypes.DateTime,
+            WorkflowVariableTypes.Json
         };
 
         foreach (var variable in variables)
@@ -593,10 +739,11 @@ public sealed class WorkflowDefinitionService(
 
             if (variable.Name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
                 || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
-                || variable.Name.StartsWith("setting.", StringComparison.OrdinalIgnoreCase))
+                || variable.Name.StartsWith("setting.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("mi.", StringComparison.OrdinalIgnoreCase))
             {
                 throw new WorkflowDomainException(
-                    $"Variable '{variable.Name}' on {owner} uses the reserved 'sys.'/'config.'/'setting.' prefix.");
+                    $"Variable '{variable.Name}' on {owner} uses a reserved context prefix.");
             }
 
             if (!allowedTypes.Contains(variable.DataType))

@@ -1,26 +1,39 @@
 {
-  "id": 300,
-  "name": "Votes",
+  "id": "votes",
+  "name": "Quorum Vote",
   "initialEventId": 1,
   "variables": [
     {
       "id": 1,
-      "name": "votes",
-      "dataType": "number",
-      "isArray": false,
-      "required": false,
-      "defaultValue": 0,
-      "validation": null
-    },
-    {
-      "id": 2,
-      "name": "users",
+      "name": "voters",
       "dataType": "string",
       "isArray": true,
       "required": false,
       "defaultValue": [
-        "a"
+        "alice",
+        "bob",
+        "carol",
+        "dave",
+        "erin"
       ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "requiredApprovals",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 3,
+      "validation": "requiredApprovals > 0"
+    },
+    {
+      "id": 3,
+      "name": "voteResults",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": [],
       "validation": null
     }
   ],
@@ -28,157 +41,185 @@
   "flowNodes": [
     {
       "id": 1,
-      "name": "Start",
+      "name": "Start Vote",
       "externalId": null,
       "type": "startEvent",
       "laneId": null,
-      "x": 101,
+      "x": 100,
       "y": 120,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 2,
-      "name": "user vote",
+      "name": "Cast Vote",
       "externalId": null,
       "type": "userTask",
       "laneId": null,
-      "x": 588,
-      "y": 117,
-      "roles": [],
+      "x": 615,
+      "y": 118,
+      "roles": [
+        "User",
+        "Manager"
+      ],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": "Contains([voters], [sys.user]) and NOT(Contains([users], [sys.user]))"
+      "condition": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "voters",
+        "cardinalityExpression": null,
+        "resultVariable": "voteResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 3,
-      "name": "New Node",
+      "name": "Approved",
       "externalId": null,
-      "type": "scriptTask",
+      "type": "endEvent",
       "laneId": null,
-      "x": 930,
-      "y": 123,
+      "x": 1004,
+      "y": 106,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
       "condition": null,
-      "scriptFormat": "javascript",
-      "assignments": [],
-      "script": "var votes = execution.getVariable(\"votes\");\nvar users = execution.getVariable(\"users\");\n\n// Perform logic\nvotes = votes + 1;\n\nvar usersList = [];\nif (users) {\n    for (var i = 0; i < users.length; i++) {\n        usersList.push(users[i]);\n    }\n}\nvar currentUser = execution.getVariable(\"sys.user\");\nif (currentUser) {\n    usersList.push(currentUser);\n}\n\n// Update/create variables\nexecution.setVariable(\"votes\", votes);\nexecution.setVariable(\"users\", usersList);"
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
-      "name": "End",
+      "name": "Rejected",
       "externalId": null,
       "type": "endEvent",
       "laneId": null,
-      "x": 1025,
-      "y": 331,
+      "x": 1034,
+      "y": 295,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 5,
-      "name": "New Node",
+      "name": "review",
       "externalId": null,
-      "type": "exclusiveGateway",
-      "laneId": null,
-      "x": 636,
-      "y": 330,
-      "roles": [],
-      "requiresClaim": false,
-      "claimMode": "fresh",
-      "inheritClaimFromNodeId": null,
-      "variables": [],
-      "condition": null
-    },
-    {
-      "id": 6,
-      "name": "Send to Vote",
       "type": "userTask",
       "laneId": null,
-      "x": 307,
-      "y": 118,
-      "roles": [],
+      "x": 327,
+      "y": 123,
+      "roles": [
+        "Manager"
+      ],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null
+      "condition": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
-      "name": "",
+      "name": "Open voting",
       "externalId": null,
       "sourceRef": 1,
-      "targetRef": 6,
-      "roles": [],
-      "variables": [],
-      "condition": null,
-      "isDefault": false
-    },
-    {
-      "id": 102,
-      "name": "vote",
-      "externalId": null,
-      "sourceRef": 2,
-      "targetRef": 3,
-      "roles": [],
-      "variables": [],
-      "condition": null,
-      "isDefault": false
-    },
-    {
-      "id": 104,
-      "name": "",
-      "externalId": null,
-      "sourceRef": 3,
       "targetRef": 5,
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
-      "id": 105,
-      "name": "",
-      "externalId": null,
-      "sourceRef": 5,
+      "id": 201,
+      "name": "Approve",
+      "externalId": "VOTE_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "vote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": "CountFlow(201) >= requiredApprovals",
+      "completionPriority": 10,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Reject",
+      "externalId": "VOTE_REJECT",
+      "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": true
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": 20,
+      "cancelRemainingInstances": false
     },
     {
-      "id": 106,
-      "name": "",
+      "id": 203,
+      "name": "Cancel vote",
+      "externalId": "VOTE_CANCEL",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": true
+    },
+    {
+      "id": 204,
+      "name": "send to vote",
       "externalId": null,
       "sourceRef": 5,
-      "targetRef": 2,
-      "roles": [],
-      "variables": [],
-      "condition": "votes < 4",
-      "isDefault": false
-    },
-    {
-      "id": 107,
-      "name": "Send  to Vote",
-      "sourceRef": 6,
       "targetRef": 2,
       "roles": [],
       "variables": [
@@ -193,7 +234,14 @@
         }
       ],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     }
-  ]
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
 }

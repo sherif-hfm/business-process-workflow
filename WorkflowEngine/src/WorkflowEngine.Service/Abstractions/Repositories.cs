@@ -81,6 +81,57 @@ public interface IWorkflowRuntimeRepository
 
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(long id, CancellationToken cancellationToken);
 
+    Task<MultiInstanceExecutionRecord> AddMultiInstanceAsync(
+        long instanceId,
+        CurrentNodeSnapshot node,
+        MultiInstanceModel configuration,
+        IReadOnlyList<JsonElement?> items,
+        IReadOnlyList<int> outcomeFlowIds,
+        CancellationToken cancellationToken);
+
+    Task<MultiInstanceExecutionRecord?> GetActiveMultiInstanceAsync(
+        long instanceId,
+        int nodeId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<MultiInstanceExecutionRecord?> GetMultiInstanceAsync(
+        long executionId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<UserTaskRecord?> GetUserTaskAsync(long taskId, bool forUpdate, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<UserTaskRecord>> ListUserTasksAsync(
+        long instanceId,
+        string? status,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<int, int>> ListMultiInstanceFlowCountsAsync(
+        long executionId,
+        CancellationToken cancellationToken);
+
+    Task CompleteMultiInstanceItemAsync(
+        long taskId,
+        int selectedFlowId,
+        string completedBy,
+        Dictionary<string, JsonElement> result,
+        CancellationToken cancellationToken);
+
+    Task ActivateNextMultiInstanceItemAsync(long executionId, CancellationToken cancellationToken);
+
+    Task CloseMultiInstanceAsync(
+        long executionId,
+        int winningFlowId,
+        string completionReason,
+        CancellationToken cancellationToken);
+
+    Task CancelActiveMultiInstanceAsync(long instanceId, CancellationToken cancellationToken);
+
+    Task UpdateUserTaskClaimAsync(long taskId, string? claimedBy, CancellationToken cancellationToken);
+
     Task UpdateInstanceAsync(
         long id,
         int currentStepId,
@@ -119,6 +170,20 @@ public interface IWorkflowRuntimeRepository
         string? performedBy,
         Dictionary<string, JsonElement>? payload,
         string? note,
+        CancellationToken cancellationToken);
+
+    Task AddMultiInstanceHistoryAsync(
+        long instanceId,
+        long tokenId,
+        long userTaskId,
+        long executionId,
+        int itemIndex,
+        int actionId,
+        int fromStepId,
+        int toStepId,
+        string? performedBy,
+        Dictionary<string, JsonElement>? payload,
+        string note,
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(

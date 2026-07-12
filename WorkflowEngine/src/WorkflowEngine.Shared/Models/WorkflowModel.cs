@@ -277,6 +277,13 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Condition { get; set; }
 
+    /// <summary>
+    /// Optional multi-instance loop configuration for a user task.
+    /// </summary>
+    [JsonPropertyName("multiInstance")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MultiInstanceModel? MultiInstance { get; set; }
+
     // errorBoundaryEvent only: the host activity (serviceTask/scriptTask) id this
     // boundary is attached to. The boundary renders on the host's border and its
     // single outgoing flow is the error path taken when the host fails at runtime.
@@ -568,10 +575,72 @@ public sealed class SequenceFlowModel
     public bool IsDefault { get; set; }
 
     /// <summary>
+    /// Whether this multi-instance user-task flow is exposed as an action that an
+    /// actor may select. Engine-only completion/default routes set this to false.
+    /// </summary>
+    [JsonPropertyName("isSelectable")]
+    public bool IsSelectable { get; set; } = true;
+
+    /// <summary>
     /// If true, an actor can trigger this flow without claiming the userTask first.
     /// </summary>
     [JsonPropertyName("canActWithoutClaim")]
     public bool CanActWithoutClaim { get; set; }
+
+    /// <summary>
+    /// Aggregate NCalc condition evaluated after a multi-instance item completes.
+    /// </summary>
+    [JsonPropertyName("completionCondition")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompletionCondition { get; set; }
+
+    /// <summary>
+    /// Lower values win when several multi-instance completion conditions match.
+    /// </summary>
+    [JsonPropertyName("completionPriority")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompletionPriority { get; set; }
+
+    /// <summary>
+    /// Whether selecting this flow immediately cancels the other multi-instance items.
+    /// </summary>
+    [JsonPropertyName("cancelRemainingInstances")]
+    public bool CancelRemainingInstances { get; set; }
+}
+
+/// <summary>
+/// Configures parallel or sequential repetitions of a user task.
+/// </summary>
+public sealed class MultiInstanceModel
+{
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = MultiInstanceModes.Parallel;
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = MultiInstanceSources.Collection;
+
+    [JsonPropertyName("collectionVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CollectionVariable { get; set; }
+
+    [JsonPropertyName("cardinalityExpression")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CardinalityExpression { get; set; }
+
+    [JsonPropertyName("resultVariable")]
+    public string ResultVariable { get; set; } = string.Empty;
+}
+
+public static class MultiInstanceModes
+{
+    public const string Parallel = "parallel";
+    public const string Sequential = "sequential";
+}
+
+public static class MultiInstanceSources
+{
+    public const string Collection = "collection";
+    public const string Cardinality = "cardinality";
 }
 
 /// <summary>
@@ -780,6 +849,7 @@ public static class WorkflowVariableTypes
     public const string Boolean = "boolean";
     public const string Date = "date";
     public const string DateTime = "datetime";
+    public const string Json = "json";
 }
 
 public sealed class WorkflowIdConverter : JsonConverter<string>

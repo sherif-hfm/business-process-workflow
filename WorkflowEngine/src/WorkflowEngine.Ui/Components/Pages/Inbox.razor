@@ -92,6 +92,14 @@ else
                         {
                             <div class="text-muted small">@item.CurrentNodeExternalId</div>
                         }
+                        @if (item.ItemIndex is not null)
+                        {
+                            <div class="text-muted small">Item #@item.ItemIndex · @(item.Assignee ?? "shared pool")</div>
+                        }
+                        @if (item.MultiInstance is not null)
+                        {
+                            <div class="text-muted small">@item.MultiInstance.Completed / @item.MultiInstance.Total completed</div>
+                        }
                     </td>
                     <td>@(item.NodeRoles.Count == 0 ? "(any)" : string.Join(", ", item.NodeRoles))</td>
                     <td>@(item.ClaimedBy ?? "-")</td>
@@ -110,7 +118,7 @@ else
                         }
                     </td>
                     <td class="text-end">
-                        <a class="btn btn-sm btn-outline-primary" href="@($"instances/{item.InstanceId}")">Open</a>
+                        <a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a>
                     </td>
                 </tr>
             }

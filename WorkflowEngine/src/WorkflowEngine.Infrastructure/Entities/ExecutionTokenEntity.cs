@@ -13,6 +13,7 @@ public sealed class ExecutionTokenEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<UserTaskEntity> UserTasks { get; set; } = [];
+    public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
 }
 
 public static class ExecutionTokenStatuses

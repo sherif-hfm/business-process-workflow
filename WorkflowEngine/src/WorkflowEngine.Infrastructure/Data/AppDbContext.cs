@@ -16,6 +16,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ExecutionTokenEntity> ExecutionTokens => Set<ExecutionTokenEntity>();
 
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
+    public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
+    public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
 
     public DbSet<WorkflowSettingEntity> WorkflowSettings => Set<WorkflowSettingEntity>();
 
@@ -83,12 +85,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ClaimedBy).HasMaxLength(300);
+            entity.Property(e => e.Assignee).HasMaxLength(300);
+            entity.Property(e => e.CompletedBy).HasMaxLength(300);
+            entity.Property(e => e.ItemValueJson).HasColumnType("jsonb");
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
+            entity.HasIndex(e => new { e.Assignee, e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.Status, e.ItemIndex });
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex }).IsUnique();
             entity.HasIndex(e => e.Roles).HasMethod("gin");
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.UserTasks)
@@ -98,6 +107,44 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.UserTasks)
                 .HasForeignKey(e => e.TokenId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.MultiInstanceExecution)
+                .WithMany(e => e.UserTasks)
+                .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MultiInstanceExecutionEntity>(entity =>
+        {
+            entity.ToTable("multi_instance_executions");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Mode).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ResultVariable).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CompletionReason).HasMaxLength(32);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.TokenId, e.NodeId, e.Status });
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.MultiInstanceExecutions)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Token)
+                .WithMany(e => e.MultiInstanceExecutions)
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MultiInstanceFlowCountEntity>(entity =>
+        {
+            entity.ToTable("multi_instance_flow_counts");
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ExecutionId, e.FlowId }).IsUnique();
+            entity.HasOne(e => e.Execution)
+                .WithMany(e => e.FlowCounts)
+                .HasForeignKey(e => e.ExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<InstanceVariableEntity>(entity =>

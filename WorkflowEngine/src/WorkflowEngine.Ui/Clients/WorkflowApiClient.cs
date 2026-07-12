@@ -216,6 +216,37 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }
 
+    public Task<UserTaskDto?> GetUserTaskAsync(long taskId, CancellationToken cancellationToken = default) =>
+        httpClient.GetFromJsonAsync<UserTaskDto>($"/api/user-tasks/{taskId}", cancellationToken);
+
+    public async Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskFlowsAsync(
+        long taskId, CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<IReadOnlyList<SequenceFlowModel>>(
+            $"/api/user-tasks/{taskId}/flows", cancellationToken) ?? [];
+
+    public async Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/user-tasks/{taskId}/claim", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskDto>(cancellationToken);
+    }
+
+    public async Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/user-tasks/{taskId}/unclaim", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskDto>(cancellationToken);
+    }
+
+    public async Task<UserTaskActionAckDto?> TakeUserTaskFlowAsync(
+        long taskId, int flowId, TakeFlowRequest request, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync(
+            $"/api/user-tasks/{taskId}/flows/{flowId}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskActionAckDto>(cancellationToken);
+    }
+
     public async Task CancelAsync(long id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsync($"/api/instances/{id}/cancel", null, cancellationToken);

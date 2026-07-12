@@ -201,6 +201,7 @@
   .node .gw-mark { fill: var(--amber); font-size: 22px; font-weight: 700; }
   .node .user-marker circle { fill: #bfdbfe; stroke: #bfdbfe; }
   .node .user-marker path { fill: none; stroke: #bfdbfe; stroke-width: 1.5; }
+  .node .mi-marker line { stroke: #bfdbfe; stroke-width: 1.6; }
 
   .lane rect.body {
     fill: rgba(59, 130, 246, .08);
@@ -468,7 +469,15 @@ const SCRIPT_FORMAT_OPTIONS = [
   { value: SCRIPT_FORMAT.NCALC, label: "NCalc assignments" },
   { value: SCRIPT_FORMAT.JAVASCRIPT, label: "JavaScript (execution API)" }
 ];
-const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime"];
+const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime", "json"];
+const MULTI_INSTANCE_MODE_OPTIONS = [
+  { value: "parallel", label: "Parallel" },
+  { value: "sequential", label: "Sequential" }
+];
+const MULTI_INSTANCE_SOURCE_OPTIONS = [
+  { value: "collection", label: "Username collection" },
+  { value: "cardinality", label: "Cardinality expression" }
+];
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 function defaultService() {
   return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
@@ -637,6 +646,7 @@ function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isMessageStartEventType(type) || isGatewayType(type) || isBoundaryEventType(type);
 }
 function applyTypeInvariants(node) {
+  if (!isUserTaskType(node.type)) delete node.multiInstance;
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -743,6 +753,17 @@ function applyTypeInvariants(node) {
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
     if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
     delete node.message;
+    if (node.multiInstance) {
+      node.multiInstance.mode = node.multiInstance.mode === "sequential" ? "sequential" : "parallel";
+      node.multiInstance.source = node.multiInstance.source === "cardinality" ? "cardinality" : "collection";
+      node.multiInstance.collectionVariable = node.multiInstance.source === "collection"
+        ? (node.multiInstance.collectionVariable || "") : null;
+      node.multiInstance.cardinalityExpression = node.multiInstance.source === "cardinality"
+        ? (node.multiInstance.cardinalityExpression || "1") : null;
+      node.multiInstance.resultVariable = node.multiInstance.resultVariable || "";
+      node.claimMode = CLAIM_MODE.FRESH;
+      if (node.multiInstance.source === "collection") node.requiresClaim = false;
+    }
   }
 
   if (isSingleOutgoingType(node.type)) {
@@ -757,6 +778,8 @@ function applyFlowInvariants(flow) {
   const source = getNode(flow.sourceRef);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   const gateway = source && isGatewayType(source.type);
+  if (typeof flow.isSelectable !== "boolean") flow.isSelectable = true;
+  if (!isUserTaskFlow || !source.multiInstance) flow.isSelectable = true;
   if (!isUserTaskFlow) {
     flow.roles = [];
   }
@@ -766,6 +789,21 @@ function applyFlowInvariants(flow) {
     flow.variables = [];
     flow.condition = null;
     flow.isDefault = false;
+    flow.completionCondition = null;
+    flow.completionPriority = null;
+    flow.cancelRemainingInstances = false;
+  } else if (source.multiInstance) {
+    if (flow.cancelRemainingInstances) {
+      flow.isSelectable = true;
+      flow.isDefault = false;
+      flow.completionCondition = null;
+      flow.completionPriority = null;
+    } else if (!flow.isSelectable) {
+      flow.roles = [];
+      flow.variables = [];
+      flow.condition = null;
+      flow.canActWithoutClaim = false;
+    }
   }
 }
 function appendUserTaskMarker(g) {
@@ -773,6 +811,14 @@ function appendUserTaskMarker(g) {
   icon.appendChild(el("circle", { cx: 5, cy: 4, r: 3 }));
   icon.appendChild(el("path", { d: "M1 14 Q5 10 9 14" }));
   g.appendChild(icon);
+}
+function appendMultiInstanceMarker(g, mode) {
+  const marker = el("g", { class: "mi-marker", transform: `translate(${NODE_W / 2 - 9},${NODE_H - 9})` });
+  for (let i = 0; i < 3; i++) {
+    if (mode === "sequential") marker.appendChild(el("line", { x1: 0, y1: i * 3, x2: 18, y2: i * 3 }));
+    else marker.appendChild(el("line", { x1: i * 6 + 2, y1: 0, x2: i * 6 + 2, y2: 8 }));
+  }
+  g.appendChild(marker);
 }
 function appendAutomaticMarker(g) {
   const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
@@ -1038,6 +1084,7 @@ function renderNodes() {
           g.appendChild(rolesText);
         }
         appendUserTaskMarker(g);
+        if (node.multiInstance) appendMultiInstanceMarker(g, node.multiInstance.mode);
         if (node.condition) {
           appendConditionMarker(g);
         }
@@ -1169,6 +1216,7 @@ function renderEdges() {
     // secondary line: roles/condition/default for user-task and gateway flows
     const cond = flow.isDefault ? "default" : (flow.condition || "");
     const roles = roleSummary(flow.roles);
+    const engineOnly = isUserTaskType(source.type) && flow.isSelectable === false;
     if (isGatewayType(source.type)) {
       if (cond) {
         const cText = el("text", { x: lx, y: ly + 9, class: "cond", "text-anchor": "middle" });
@@ -1177,6 +1225,12 @@ function renderEdges() {
       }
     } else if (isUserTaskType(source.type)) {
       let y = ly + 9;
+      if (engineOnly) {
+        const engineText = el("text", { x: lx, y, class: "roles", "text-anchor": "middle" });
+        engineText.textContent = "engine-only";
+        g.appendChild(engineText);
+        y += 13;
+      }
       if (roles) {
         const roleText = el("text", { x: lx, y, class: "roles", "text-anchor": "middle" });
         roleText.textContent = roles;
@@ -1369,7 +1423,7 @@ function renderNodeInspector() {
     rolesField(node, () => { renderNodes(); renderEdges(); });
     inspector.appendChild(
       variableCheckbox("Requires claim", node.requiresClaim, checked => {
-        node.requiresClaim = checked;
+        node.requiresClaim = node.multiInstance?.source === "collection" ? false : checked;
         renderInspector();
       })
     );
@@ -1398,6 +1452,54 @@ function renderNodeInspector() {
       node.condition = v.trim() ? v : null;
       renderNodes();
     });
+
+    inspector.appendChild(variableCheckbox("Multi-instance", !!node.multiInstance, checked => {
+      node.multiInstance = checked ? {
+        mode: "parallel", source: "collection", collectionVariable: "",
+        cardinalityExpression: null, resultVariable: ""
+      } : null;
+      applyTypeInvariants(node);
+      render();
+    }));
+    if (node.multiInstance) {
+      selectField("Execution mode", MULTI_INSTANCE_MODE_OPTIONS, node.multiInstance.mode, v => {
+        node.multiInstance.mode = v;
+        renderNodes();
+      });
+      selectField("Instance source", MULTI_INSTANCE_SOURCE_OPTIONS, node.multiInstance.source, v => {
+        node.multiInstance.source = v;
+        if (v === "collection") {
+          node.multiInstance.cardinalityExpression = null;
+          node.multiInstance.collectionVariable ||= "";
+          node.requiresClaim = false;
+        } else {
+          node.multiInstance.collectionVariable = null;
+          node.multiInstance.cardinalityExpression ||= "1";
+        }
+        node.claimMode = CLAIM_MODE.FRESH;
+        renderInspector();
+      });
+      if (node.multiInstance.source === "collection") {
+        const collections = (model.variables || [])
+          .filter(v => v.dataType === "string" && v.isArray)
+          .map(v => ({ value: v.name, label: v.name }));
+        selectField("Username collection", [{ value: "", label: "— select string[] —" }].concat(collections),
+          node.multiInstance.collectionVariable || "", v => { node.multiInstance.collectionVariable = v; });
+      } else {
+        field("Cardinality expression", "text", node.multiInstance.cardinalityExpression || "", v => {
+          node.multiInstance.cardinalityExpression = v;
+        });
+      }
+      const results = (model.variables || [])
+        .filter(v => v.dataType === "json" && !v.isArray)
+        .map(v => ({ value: v.name, label: v.name }));
+      selectField("Result JSON variable", [{ value: "", label: "— select json —" }].concat(results),
+        node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
+      const miHint = document.createElement("p");
+      miHint.className = "empty-note";
+      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining].";
+      inspector.appendChild(miHint);
+    }
   }
 
   if (isBoundaryEventType(node.type)) {
@@ -1464,7 +1566,7 @@ function renderNodeInspector() {
       const tgt = getNode(flow.targetRef);
       const extra = isGatewayType(node.type)
         ? (flow.isDefault ? " · default" : (flow.condition ? ` · [${flow.condition}]` : ""))
-        : "";
+        : (isUserTaskType(node.type) && flow.isSelectable === false ? " · engine-only" : "");
       const name = flowLabel(flow, node) || "(unnamed)";
       box.innerHTML = `<div class="badge">flow #${flow.id} · ${name} → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'missing'}${extra}</div>`;
       box.onclick = () => select('flow', flow.id);
@@ -2323,20 +2425,41 @@ function renderFlowInspector() {
     );
   } else {
     if (isUserTaskFlow) {
-      rolesField(flow, () => renderEdges());
-      const rolesHint = document.createElement("p");
-      rolesHint.className = "empty-note";
-      rolesHint.textContent = 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
-      inspector.appendChild(rolesHint);
-      field("Condition", "text", flow.condition ?? "", v => {
-        flow.condition = v.trim() ? v : null;
-        if (flow.condition && flow.isDefault) flow.isDefault = false;
-        renderEdges();
-      });
-      const condHint = document.createElement("p");
-      condHint.className = "empty-note";
-      condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action; check Default flow to always show it regardless of condition.';
-      inspector.appendChild(condHint);
+      if (source.multiInstance) {
+        inspector.appendChild(variableCheckbox("Available as user action", flow.isSelectable !== false, checked => {
+          flow.isSelectable = checked;
+          if (!checked) {
+            flow.roles = [];
+            flow.variables = [];
+            flow.condition = null;
+            flow.canActWithoutClaim = false;
+            flow.cancelRemainingInstances = false;
+          }
+          renderInspector();
+          renderEdges();
+        }));
+      }
+      if (flow.isSelectable !== false) {
+        rolesField(flow, () => renderEdges());
+        const rolesHint = document.createElement("p");
+        rolesHint.className = "empty-note";
+        rolesHint.textContent = 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
+        inspector.appendChild(rolesHint);
+        field("Condition", "text", flow.condition ?? "", v => {
+          flow.condition = v.trim() ? v : null;
+          if (flow.condition && flow.isDefault) flow.isDefault = false;
+          renderEdges();
+        });
+        const condHint = document.createElement("p");
+        condHint.className = "empty-note";
+        condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action; check Default flow to always show it regardless of condition.';
+        inspector.appendChild(condHint);
+      } else {
+        const engineHint = document.createElement("p");
+        engineHint.className = "empty-note";
+        engineHint.textContent = "Engine-only: hidden from user actions and selectable only by aggregate completion routing or the final default fallback.";
+        inspector.appendChild(engineHint);
+      }
       inspector.appendChild(
         variableCheckbox("Default flow", flow.isDefault, checked => {
           flow.isDefault = checked;
@@ -2349,7 +2472,32 @@ function renderFlowInspector() {
           renderEdges();
         })
       );
-      if (source && source.requiresClaim) {
+      if (source.multiInstance) {
+        inspector.appendChild(variableCheckbox("Interrupt and cancel remaining items", !!flow.cancelRemainingInstances, checked => {
+          flow.cancelRemainingInstances = checked;
+          if (checked) {
+            flow.isSelectable = true;
+            flow.isDefault = false;
+            flow.completionCondition = null;
+            flow.completionPriority = null;
+          }
+          renderInspector();
+          renderEdges();
+        }));
+        if (!flow.cancelRemainingInstances) {
+          field("Completion priority", "number", flow.completionPriority ?? "", v => {
+            flow.completionPriority = v ? Math.max(1, Math.round(+v)) : null;
+          });
+          field("Completion condition", "text", flow.completionCondition ?? "", v => {
+            flow.completionCondition = v.trim() ? v : null;
+          });
+          const completionHint = document.createElement("p");
+          completionHint.className = "empty-note";
+          completionHint.textContent = "Evaluated after each item completes. Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60. The default outcome may omit this rule.";
+          inspector.appendChild(completionHint);
+        }
+      }
+      if (source && source.requiresClaim && flow.isSelectable !== false) {
         inspector.appendChild(
           variableCheckbox("Can act without claim", flow.canActWithoutClaim, checked => {
             flow.canActWithoutClaim = checked;
@@ -2374,6 +2522,11 @@ function renderFlowInspector() {
     const p = document.createElement("p");
     p.className = "empty-note";
     p.textContent = "Variables are only captured on flows leaving a user task.";
+    inspector.appendChild(p);
+  } else if (flow.isSelectable === false) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "Engine-only flows do not capture user-submitted variables.";
     inspector.appendChild(p);
   } else {
     if (flow.variables.length === 0) {
@@ -2607,7 +2760,8 @@ function addVariable(owner) {
 }
 function defaultValueToText(value) {
   if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) return value.join(", ");
+  if (Array.isArray(value)) return value.some(v => typeof v === "object") ? JSON.stringify(value) : value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 function coerceDefaultScalar(text, dataType) {
@@ -2617,10 +2771,14 @@ function coerceDefaultScalar(text, dataType) {
   if (t.includes("${")) return t;
   if (dataType === "number") { const n = Number(t); return Number.isNaN(n) ? t : n; }
   if (dataType === "boolean") return /^(true|1|yes)$/i.test(t);
+  if (dataType === "json") {
+    try { return JSON.parse(t); } catch { return t; }
+  }
   return t;
 }
 function parseDefaultValue(text, variable) {
   if ((text ?? "").trim() === "") return null;
+  if (variable.dataType === "json") return coerceDefaultScalar(text, "json");
   if (variable.isArray) {
     const items = text.split(",").map(s => coerceDefaultScalar(s, variable.dataType)).filter(v => v !== null);
     return items.length ? items : null;
@@ -2739,7 +2897,8 @@ function assignNodeLane(nodeId) {
 /* ---------- Connect mode ---------- */
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
-                 roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false };
+                 roles: [], variables: [], condition: null, isDefault: false, isSelectable: true, canActWithoutClaim: false,
+                 completionCondition: null, completionPriority: null, cancelRemainingInstances: false };
   model.sequenceFlows.push(flow);
   return flow;
 }
@@ -2995,6 +3154,13 @@ function loadFromObject(obj) {
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
         condition: (typeof s.condition === "string" && s.condition.trim()) ? s.condition : null,
+        multiInstance: s.multiInstance ? {
+          mode: s.multiInstance.mode === "sequential" ? "sequential" : "parallel",
+          source: s.multiInstance.source === "cardinality" ? "cardinality" : "collection",
+          collectionVariable: s.multiInstance.collectionVariable ?? null,
+          cardinalityExpression: s.multiInstance.cardinalityExpression ?? null,
+          resultVariable: s.multiInstance.resultVariable ?? ""
+        } : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,
         scriptFormat: isScriptTaskType(s.type)
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
@@ -3015,7 +3181,11 @@ function loadFromObject(obj) {
         variables: (f.variables || []).map(normalizeVariable),
         condition: f.condition ?? null,
         isDefault: !!f.isDefault,
-        canActWithoutClaim: !!f.canActWithoutClaim
+        isSelectable: f.isSelectable !== false,
+        canActWithoutClaim: !!f.canActWithoutClaim,
+        completionCondition: (typeof f.completionCondition === "string" && f.completionCondition.trim()) ? f.completionCondition : null,
+        completionPriority: Number.isInteger(f.completionPriority) ? f.completionPriority : null,
+        cancelRemainingInstances: !!f.cancelRemainingInstances
       })),
       cancelRoles: normalizeRoles(obj.cancelRoles),
       unclaimRoles: normalizeRoles(obj.unclaimRoles)

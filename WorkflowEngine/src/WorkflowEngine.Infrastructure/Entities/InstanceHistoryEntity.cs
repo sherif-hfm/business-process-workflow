@@ -23,4 +23,8 @@ public sealed class InstanceHistoryEntity
     public string? Note { get; set; }
 
     public DateTimeOffset PerformedAt { get; set; } = DateTimeOffset.UtcNow;
+    public long? TokenId { get; set; }
+    public long? UserTaskId { get; set; }
+    public long? MultiInstanceExecutionId { get; set; }
+    public int? ItemIndex { get; set; }
 }

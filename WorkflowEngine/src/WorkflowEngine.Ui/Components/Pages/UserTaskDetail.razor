@@ -1,0 +1,133 @@
+@page "/user-tasks/{TaskId:long}"
+@rendermode InteractiveServer
+@using System.Globalization
+@using System.Text.Json
+@inject WorkflowApiClient Api
+@inject NavigationManager Navigation
+
+<PageTitle>User task #@TaskId</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger">@error</div> }
+@if (task is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <h1>@task.NodeName</h1>
+    <p class="text-muted">Task #@task.Id · Instance #@task.InstanceId</p>
+    <div class="card mb-3"><div class="card-body">
+        <p>Status: <strong>@task.Status</strong></p>
+        <p>Assignee: <strong>@(task.Assignee ?? "shared pool")</strong></p>
+        <p>Claimed by: <strong>@(task.ClaimedBy ?? "-")</strong></p>
+        @if (task.ItemIndex is not null) { <p>Item: <strong>#@task.ItemIndex</strong> @Format(task.ItemValue)</p> }
+        @if (task.MultiInstance is not null)
+        {
+            var p = task.MultiInstance;
+            <p>Progress: <strong>@p.Completed / @p.Total completed</strong>, @p.Active active, @p.Pending pending, @p.Cancelled cancelled</p>
+            @foreach (var count in p.FlowCounts)
+            {
+                <span class="badge text-bg-secondary me-1">Flow #@count.FlowId: @count.Count (@count.Percent.ToString("0.#")%)</span>
+            }
+        }
+        @if (task.Status == "active" && task.Assignee is null && task.RequiresClaim)
+        {
+            <div class="mt-3 d-flex gap-2">
+                <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim</button>
+                @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                {
+                    <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                }
+            </div>
+        }
+    </div></div>
+
+    <h2 class="h4">Actions</h2>
+    @if (flows.Count == 0) { <p>No actions are currently available.</p> }
+    @foreach (var flow in flows)
+    {
+        <div class="card mb-3"><div class="card-body">
+            <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
+            @if (flow.CancelRemainingInstances) { <span class="badge text-bg-danger">Interrupts remaining items</span> }
+            @foreach (var variable in flow.Variables)
+            {
+                <div class="mb-2">
+                    <label class="form-label">
+                        @variable.Name
+                        <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                        @(variable.Required ? "*" : "")
+                    </label>
+                    <input class="form-control" value="@GetInput(flow.Id, variable.Name)"
+                           @oninput="e => SetInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                </div>
+            }
+            <button class="btn btn-primary" @onclick="() => TakeAsync(flow)">Take action</button>
+        </div></div>
+    }
+}
+
+@code {
+    [Parameter] public long TaskId { get; set; }
+    private UserTaskDto? task;
+    private IReadOnlyList<SequenceFlowModel> flows = [];
+    private readonly Dictionary<string, string?> inputs = [];
+    private string? error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try { error = null; task = await Api.GetUserTaskAsync(TaskId); flows = await Api.GetUserTaskFlowsAsync(TaskId); }
+        catch (Exception ex) { error = ex.Message; }
+    }
+    private async Task ClaimAsync() { try { task = await Api.ClaimUserTaskAsync(TaskId); await LoadAsync(); } catch (Exception ex) { error = ex.Message; } }
+    private async Task UnclaimAsync() { try { task = await Api.UnclaimUserTaskAsync(TaskId); await LoadAsync(); } catch (Exception ex) { error = ex.Message; } }
+    private async Task TakeAsync(SequenceFlowModel flow)
+    {
+        try
+        {
+            var values = new Dictionary<string, JsonElement>();
+            foreach (var variable in flow.Variables)
+            {
+                var text = GetInput(flow.Id, variable.Name);
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                values[variable.Name] = ToJsonElement(variable, text);
+            }
+            var ack = await Api.TakeUserTaskFlowAsync(TaskId, flow.Id, new TakeFlowRequest(values));
+            if (ack is not null && ack.CurrentNodeId != task?.NodeId) Navigation.NavigateTo($"instances/{ack.InstanceId}");
+            else await LoadAsync();
+        }
+        catch (Exception ex) { error = ex.Message; }
+    }
+    private string? GetInput(int flowId, string name) => inputs.GetValueOrDefault($"{flowId}:{name}");
+    private void SetInput(int flowId, string name, string? value) => inputs[$"{flowId}:{name}"] = value;
+    private static string Format(JsonElement? value) => value is null ? "" : value.Value.ValueKind == JsonValueKind.String ? value.Value.GetString() ?? "" : value.Value.GetRawText();
+
+    private static JsonElement ToJsonElement(VariableModel variable, string raw)
+    {
+        if (variable.IsArray)
+        {
+            if (raw.TrimStart().StartsWith('['))
+            {
+                using var document = JsonDocument.Parse(raw);
+                if (document.RootElement.ValueKind != JsonValueKind.Array)
+                {
+                    throw new FormatException($"Variable '{variable.Name}' must be a JSON array.");
+                }
+
+                return document.RootElement.Clone();
+            }
+
+            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return JsonSerializer.SerializeToElement(values);
+        }
+
+        return variable.DataType switch
+        {
+            WorkflowVariableTypes.Number when decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var number) => JsonSerializer.SerializeToElement(number),
+            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
+            WorkflowVariableTypes.Json => JsonDocument.Parse(raw).RootElement.Clone(),
+            _ => JsonSerializer.SerializeToElement(raw)
+        };
+    }
+}
