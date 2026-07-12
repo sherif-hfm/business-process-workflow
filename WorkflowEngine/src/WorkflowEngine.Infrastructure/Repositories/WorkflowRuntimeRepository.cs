@@ -28,16 +28,15 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             UpdatedAt = now
         };
 
-        var token = NewToken(entity, node, now);
-        entity.Tokens.Add(token);
-        if (node.Type == BpmnFlowNodeTypes.UserTask)
-        {
-            entity.UserTasks.Add(NewUserTask(entity, token, node, now));
-        }
-
         dbContext.WorkflowInstances.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToRecord(entity, token, entity.UserTasks.SingleOrDefault());
+
+        // The start node is pass-through and the transaction is not externally
+        // visible yet. Keep its position in the returned record and create the
+        // persisted token at the first resolved node, avoiding an insert followed
+        // immediately by an update for every new instance.
+        var transientToken = NewToken(entity, node, now);
+        return ToRecord(entity, transientToken, null);
     }
 
     // EF1002: the SQL is assembled from static fragments plus @paramName placeholders
@@ -437,28 +436,41 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id)
+        var trackedEntity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
+        var entity = trackedEntity
             ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == id, cancellationToken);
         entity.Status = status;
         entity.UpdatedAt = now;
 
-        var token = dbContext.ExecutionTokens.Local
+        var trackedToken = dbContext.ExecutionTokens.Local
             .Where(t => t.InstanceId == id)
             .OrderByDescending(t => t.Id)
-            .FirstOrDefault()
-            ?? await dbContext.ExecutionTokens
+            .FirstOrDefault();
+        var token = trackedToken;
+        if (token is null)
+        {
+            token = await dbContext.ExecutionTokens
                 .Where(t => t.InstanceId == id)
                 .OrderByDescending(t => t.Id)
                 .FirstAsync(cancellationToken);
+        }
 
-        var task = dbContext.UserTasks.Local
+        var trackedTask = dbContext.UserTasks.Local
             .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
             .OrderByDescending(t => t.Id)
-            .FirstOrDefault()
-            ?? await dbContext.UserTasks
+            .FirstOrDefault();
+        // AddInstanceAsync and GetInstanceForUpdateAsync both preload the complete
+        // active execution state. When the instance is tracked, a missing local task
+        // therefore means there is no active user task; querying again would add one
+        // database round trip to every automatic pass-through hop.
+        var task = trackedTask;
+        if (trackedEntity is null && task is null)
+        {
+            task = await dbContext.UserTasks
                 .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
                 .OrderByDescending(t => t.Id)
                 .FirstOrDefaultAsync(cancellationToken);
+        }
 
         if (status == WorkflowInstanceStatuses.Running)
         {
@@ -487,24 +499,38 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var entity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id)
+        var trackedEntity = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == id);
+        var entity = trackedEntity
             ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == id, cancellationToken);
-        var token = dbContext.ExecutionTokens.Local
+        var trackedToken = dbContext.ExecutionTokens.Local
             .Where(t => t.InstanceId == id)
             .OrderByDescending(t => t.Id)
-            .FirstOrDefault()
-            ?? await dbContext.ExecutionTokens
+            .FirstOrDefault();
+        var token = trackedToken;
+        if (token is null && trackedEntity is not null)
+        {
+            token = NewToken(entity, node, now);
+            dbContext.ExecutionTokens.Add(token);
+        }
+        else if (token is null)
+        {
+            token = await dbContext.ExecutionTokens
                 .Where(t => t.InstanceId == id)
                 .OrderByDescending(t => t.Id)
                 .FirstAsync(cancellationToken);
-        var task = dbContext.UserTasks.Local
+        }
+        var trackedTask = dbContext.UserTasks.Local
             .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
             .OrderByDescending(t => t.Id)
-            .FirstOrDefault()
-            ?? await dbContext.UserTasks
+            .FirstOrDefault();
+        var task = trackedTask;
+        if (trackedEntity is null && task is null)
+        {
+            task = await dbContext.UserTasks
                 .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
                 .OrderByDescending(t => t.Id)
                 .FirstOrDefaultAsync(cancellationToken);
+        }
 
         CompleteTask(task, status == WorkflowInstanceStatuses.Cancelled, now);
         token.NodeId = node.Id;

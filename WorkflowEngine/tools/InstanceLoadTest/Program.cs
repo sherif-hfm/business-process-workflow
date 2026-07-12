@@ -162,6 +162,11 @@ static void PrintHelp()
         Each start uses a random 'amount' from 100 to 1000.
 
         Example:
+          # Start the API without per-instance Information logging:
+          dotnet run --no-launch-profile --project WorkflowEngine/src/WorkflowEngine.Api -- --environment LoadTest --urls http://localhost:5017
+
+          # Warm up, then run the measured workload:
+          dotnet run --project WorkflowEngine/tools/InstanceLoadTest -- --count 1000 --concurrency 48
           dotnet run --project WorkflowEngine/tools/InstanceLoadTest -- --count 200000 --concurrency 48
         """);
 }

@@ -94,7 +94,7 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
         }
 
-        logger.LogInformation("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
+        logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
 
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
             ?? throw new WorkflowDomainException("Workflow has no default start event.");
@@ -146,7 +146,7 @@ public sealed class WorkflowEngineService(
         await transaction.CommitAsync(cancellationToken);
 
         var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        logger.LogInformation("Successfully started workflow instance {InstanceId} resting on step {CurrentStepId} ({CurrentStepType})", instance.Id, instance.CurrentStepId, restingNode.Type);
+        logger.LogDebug("Successfully started workflow instance {InstanceId} resting on step {CurrentStepId} ({CurrentStepType})", instance.Id, instance.CurrentStepId, restingNode.Type);
 
         return (instance, workflow.Definition);
     }
@@ -1297,18 +1297,18 @@ public sealed class WorkflowEngineService(
         {
             if (instance.Status != WorkflowInstanceStatuses.Running)
             {
-                logger.LogInformation("Instance {InstanceId} pass-through ended with status {Status} at node #{NodeId}.", instance.Id, instance.Status, instance.CurrentStepId);
+                logger.LogDebug("Instance {InstanceId} pass-through ended with status {Status} at node #{NodeId}.", instance.Id, instance.Status, instance.CurrentStepId);
                 return instance;
             }
 
             var currentNode = GetFlowNode(definition, instance.CurrentStepId);
             if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
             {
-                logger.LogInformation("Instance {InstanceId} pass-through resting on node #{NodeId} ({NodeType}).", instance.Id, currentNode.Id, currentNode.Type);
+                logger.LogDebug("Instance {InstanceId} pass-through resting on node #{NodeId} ({NodeType}).", instance.Id, currentNode.Id, currentNode.Type);
                 return instance;
             }
 
-            logger.LogInformation("Instance {InstanceId} processing pass-through hop {Hop}: current node #{NodeId} ({NodeType})",
+            logger.LogDebug("Instance {InstanceId} processing pass-through hop {Hop}: current node #{NodeId} ({NodeType})",
                 instance.Id, hop, currentNode.Id, currentNode.Type);
 
             // Build the evaluation context from the in-memory overlay overlaid with
@@ -1402,7 +1402,7 @@ public sealed class WorkflowEngineService(
                 _ => "automatic"
             };
 
-            logger.LogInformation("Instance {InstanceId} pass-through node #{NodeId} ({NodeType}) advancing to #{NextNodeId} ({NextNodeType}) via flow #{FlowId}",
+            logger.LogDebug("Instance {InstanceId} pass-through node #{NodeId} ({NodeType}) advancing to #{NextNodeId} ({NextNodeType}) via flow #{FlowId}",
                 instance.Id, currentNode.Id, currentNode.Type, nextNode.Id, nextNode.Type, flow.Id);
 
             await runtime.AddHistoryAsync(
@@ -1471,12 +1471,12 @@ public sealed class WorkflowEngineService(
 
         if (string.IsNullOrWhiteSpace(claimant))
         {
-            logger.LogInformation("Instance {InstanceId}: claim mode '{ClaimMode}' found no prior actor to inherit; leaving unclaimed.", instance.Id, node.ClaimMode);
+            logger.LogDebug("Instance {InstanceId}: claim mode '{ClaimMode}' found no prior actor to inherit; leaving unclaimed.", instance.Id, node.ClaimMode);
             return instance;
         }
 
         await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, claimant, cancellationToken);
-        logger.LogInformation("Instance {InstanceId}: claim mode '{ClaimMode}' inherited claim to user '{Claimant}' for node #{NodeId}.", instance.Id, node.ClaimMode, claimant, node.Id);
+        logger.LogDebug("Instance {InstanceId}: claim mode '{ClaimMode}' inherited claim to user '{Claimant}' for node #{NodeId}.", instance.Id, node.ClaimMode, claimant, node.Id);
         return instance with { ClaimedBy = claimant, UpdatedAt = DateTimeOffset.UtcNow };
     }
 
@@ -1489,21 +1489,21 @@ public sealed class WorkflowEngineService(
 
         if (BpmnFlowNodeTypes.IsGateway(node.Type))
         {
-            logger.LogInformation("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
+            logger.LogDebug("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
             var match = outgoing.FirstOrDefault(f =>
                 !f.IsDefault
                 && !string.IsNullOrWhiteSpace(f.Condition)
                 && SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables));
             if (match is not null)
             {
-                logger.LogInformation("Exclusive gateway #{NodeId} evaluated flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.Id, match.Name, match.Condition);
+                logger.LogDebug("Exclusive gateway #{NodeId} evaluated flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.Id, match.Name, match.Condition);
                 return match;
             }
 
             var defaultFlow = outgoing.FirstOrDefault(f => f.IsDefault);
             if (defaultFlow is not null)
             {
-                logger.LogInformation("Exclusive gateway #{NodeId} condition did not match any flow; taking default flow {FlowId} ({FlowName})", node.Id, defaultFlow.Id, defaultFlow.Name);
+                logger.LogDebug("Exclusive gateway #{NodeId} condition did not match any flow; taking default flow {FlowId} ({FlowName})", node.Id, defaultFlow.Id, defaultFlow.Name);
                 return defaultFlow;
             }
 

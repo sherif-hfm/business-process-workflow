@@ -448,6 +448,18 @@ dotnet run --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj --launch
 dotnet run --project .\src\WorkflowEngine.Ui\WorkflowEngine.Ui.csproj --launch-profile http
 ```
 
+For instance throughput tests, start the API with the `LoadTest` environment so
+Serilog uses Warning level and console/file I/O does not dominate the result:
+
+```powershell
+dotnet run --no-launch-profile --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj -- --environment LoadTest --urls http://localhost:5017
+dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 1000 --concurrency 32
+dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 200000 --concurrency 32
+```
+
+Use the first run as warm-up; short cold runs include JIT, connection-pool, and
+database-cache startup costs and are not representative.
+
 The API listens on `http://localhost:5017` and the UI on
 `http://localhost:5152` by default. In development, the API applies EF
 migrations and seeds the root `workflow.json` as the first published definition
