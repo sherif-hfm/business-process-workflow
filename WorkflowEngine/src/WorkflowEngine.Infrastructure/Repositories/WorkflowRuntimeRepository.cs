@@ -181,19 +181,21 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
              WHERE w."Status" = @status
               AND ut."Status" = @activeTask
               AND (
+                    cardinality(ut."Roles") = 0
+                 OR EXISTS (
+                      SELECT 1 FROM unnest(ut."Roles") AS node_role
+                      WHERE lower(node_role) = ANY(@lowerRoles)
+                    )
+                  )
+              AND (
                     ut."Assignee" = @user
                  OR (ut."Assignee" IS NULL AND (
                       ut."ClaimedBy" = @user
                    OR (
-                      ( cardinality(ut."Roles") = 0
-                        OR EXISTS (
-                            SELECT 1 FROM unnest(ut."Roles") AS node_role
-                            WHERE lower(node_role) = ANY(@lowerRoles)
-                        ) )
-                      AND NOT (ut."RequiresClaim"
+                      NOT (ut."RequiresClaim"
                                AND ut."ClaimedBy" IS NOT NULL
                                AND ut."ClaimedBy" <> @user)
-                      )
+                     )
                     ))
                   )
             """);

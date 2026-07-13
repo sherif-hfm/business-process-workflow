@@ -62,8 +62,8 @@
       "externalId": null,
       "type": "userTask",
       "laneId": null,
-      "x": 615,
-      "y": 118,
+      "x": 695,
+      "y": 128,
       "roles": [
         "User",
         "Manager"
@@ -89,25 +89,8 @@
       "externalId": null,
       "type": "endEvent",
       "laneId": null,
-      "x": 1004,
-      "y": 106,
-      "roles": [],
-      "requiresClaim": false,
-      "claimMode": "fresh",
-      "inheritClaimFromNodeId": null,
-      "variables": [],
-      "condition": null,
-      "attachedToRef": null,
-      "errorVariable": null
-    },
-    {
-      "id": 4,
-      "name": "Rejected",
-      "externalId": null,
-      "type": "endEvent",
-      "laneId": null,
-      "x": 1034,
-      "y": 295,
+      "x": 1048,
+      "y": 139,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
@@ -157,7 +140,7 @@
     },
     {
       "id": 201,
-      "name": "Approve",
+      "name": "Vote",
       "externalId": "VOTE_APPROVE",
       "sourceRef": 2,
       "targetRef": 3,
@@ -174,7 +157,7 @@
         }
       ],
       "condition": null,
-      "isDefault": false,
+      "isDefault": true,
       "isSelectable": true,
       "canActWithoutClaim": false,
       "completionCondition": "CountFlow(201) >= requiredApprovals",
@@ -182,27 +165,11 @@
       "cancelRemainingInstances": false
     },
     {
-      "id": 202,
-      "name": "Reject",
-      "externalId": "VOTE_REJECT",
-      "sourceRef": 2,
-      "targetRef": 4,
-      "roles": [],
-      "variables": [],
-      "condition": null,
-      "isDefault": true,
-      "isSelectable": false,
-      "canActWithoutClaim": false,
-      "completionCondition": null,
-      "completionPriority": 20,
-      "cancelRemainingInstances": false
-    },
-    {
       "id": 203,
       "name": "Cancel vote",
       "externalId": "VOTE_CANCEL",
       "sourceRef": 2,
-      "targetRef": 4,
+      "targetRef": 5,
       "roles": [
         "Manager"
       ],

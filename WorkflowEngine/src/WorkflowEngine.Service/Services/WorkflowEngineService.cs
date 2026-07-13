@@ -521,6 +521,15 @@ public sealed class WorkflowEngineService(
                     continue;
                 }
 
+                // Node roles are an authorization requirement even for directly
+                // assigned or already-claimed tasks. Keep this defensive check in
+                // addition to the SQL predicate so alternate repository
+                // implementations cannot accidentally expose a task as view-only.
+                if (!RoleAllowed(node, normalizedRoles))
+                {
+                    continue;
+                }
+
                 // Fast path: an unconditioned userTask (or one in a definition without a
                 // condition) is always visible and needs no variable/context evaluation.
                 if (!string.IsNullOrWhiteSpace(node.Condition))
@@ -585,7 +594,12 @@ public sealed class WorkflowEngineService(
         }
         else
         {
-            visible = [.. candidates];
+            visible = candidates.Where(row =>
+            {
+                var definition = definitions[row.WorkflowDefinitionId];
+                var node = definition.Definition.FlowNodes.SingleOrDefault(n => n.Id == row.CurrentNodeId);
+                return node is not null && RoleAllowed(node, normalizedRoles);
+            }).ToList();
         }
 
         var totalCount = visible.Count;
