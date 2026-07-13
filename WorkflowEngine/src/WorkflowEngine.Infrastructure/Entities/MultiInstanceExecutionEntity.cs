@@ -10,6 +10,7 @@ public sealed class MultiInstanceExecutionEntity
     public int NodeId { get; set; }
     public string Mode { get; set; } = "parallel";
     public string Source { get; set; } = "collection";
+    public bool OnePerActor { get; set; }
     public string ResultVariable { get; set; } = string.Empty;
     public string Status { get; set; } = MultiInstanceExecutionStatuses.Active;
     public int TotalCount { get; set; }

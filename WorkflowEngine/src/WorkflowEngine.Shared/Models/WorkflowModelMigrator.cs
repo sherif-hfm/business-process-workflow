@@ -311,6 +311,7 @@ public static class WorkflowModelMigrator
                 if (node.MultiInstance.Source == MultiInstanceSources.Collection)
                 {
                     node.MultiInstance.CardinalityExpression = null;
+                    node.MultiInstance.OnePerActor = false;
                 }
                 else
                 {

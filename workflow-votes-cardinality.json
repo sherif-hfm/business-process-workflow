@@ -1,0 +1,200 @@
+{
+  "id": "workflow-votes-cardinality",
+  "name": "workflow-votes-cardinality",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 2,
+      "name": "requiredApprovals",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 3,
+      "validation": "requiredApprovals > 0"
+    },
+    {
+      "id": 3,
+      "name": "voteResults",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Vote",
+      "externalId": null,
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Cast Vote",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 763,
+      "y": 128,
+      "roles": [
+        "User",
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "cardinality",
+        "collectionVariable": null,
+        "cardinalityExpression": "voters",
+        "onePerActor": true,
+        "resultVariable": "voteResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "Approved",
+      "externalId": null,
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1097,
+      "y": 134,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 5,
+      "name": "review",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 327,
+      "y": 123,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open voting",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Vote",
+      "externalId": "VOTE_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "vote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ],
+      "condition": null,
+      "isDefault": true,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": "CountFlow(201) >= requiredApprovals",
+      "completionPriority": 10,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 203,
+      "name": "Cancel vote",
+      "externalId": "VOTE_CANCEL",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": true
+    },
+    {
+      "id": 204,
+      "name": "send to vote",
+      "externalId": null,
+      "sourceRef": 5,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "voters",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "voters > 0"
+        }
+      ],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
+}

@@ -101,6 +101,16 @@ public interface IWorkflowRuntimeRepository
 
     Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken);
 
+    Task<bool> HasCompletedMultiInstanceItemAsync(
+        long executionId,
+        string completedBy,
+        CancellationToken cancellationToken);
+
+    Task<long?> GetClaimedMultiInstanceItemIdAsync(
+        long executionId,
+        string claimedBy,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyDictionary<int, int>> ListMultiInstanceFlowCountsAsync(
         long executionId,
         CancellationToken cancellationToken);

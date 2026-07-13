@@ -763,6 +763,8 @@ function applyTypeInvariants(node) {
         ? (node.multiInstance.collectionVariable || "") : null;
       node.multiInstance.cardinalityExpression = node.multiInstance.source === "cardinality"
         ? (node.multiInstance.cardinalityExpression || "1") : null;
+      node.multiInstance.onePerActor = node.multiInstance.source === "cardinality"
+        ? !!node.multiInstance.onePerActor : false;
       node.multiInstance.resultVariable = node.multiInstance.resultVariable || "";
       node.claimMode = CLAIM_MODE.FRESH;
       if (node.multiInstance.source === "collection") node.requiresClaim = false;
@@ -1466,7 +1468,7 @@ function renderNodeInspector() {
     inspector.appendChild(variableCheckbox("Multi-instance", !!node.multiInstance, checked => {
       node.multiInstance = checked ? {
         mode: "parallel", source: "collection", collectionVariable: "",
-        cardinalityExpression: null, resultVariable: ""
+        cardinalityExpression: null, onePerActor: false, resultVariable: ""
       } : null;
       if (checked) node.assignee = null;
       applyTypeInvariants(node);
@@ -1482,6 +1484,7 @@ function renderNodeInspector() {
         if (v === "collection") {
           node.multiInstance.cardinalityExpression = null;
           node.multiInstance.collectionVariable ||= "";
+          node.multiInstance.onePerActor = false;
           node.requiresClaim = false;
         } else {
           node.multiInstance.collectionVariable = null;
@@ -1500,6 +1503,9 @@ function renderNodeInspector() {
         field("Cardinality expression", "text", node.multiInstance.cardinalityExpression || "", v => {
           node.multiInstance.cardinalityExpression = v;
         });
+        inspector.appendChild(variableCheckbox("One task per actor", !!node.multiInstance.onePerActor, checked => {
+          node.multiInstance.onePerActor = checked;
+        }));
       }
       const results = (model.variables || [])
         .filter(v => v.dataType === "json" && !v.isArray)
@@ -1508,7 +1514,7 @@ function renderNodeInspector() {
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
       miHint.className = "empty-note";
-      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining].";
+      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
       inspector.appendChild(miHint);
     }
   }
@@ -3170,6 +3176,7 @@ function loadFromObject(obj) {
           source: s.multiInstance.source === "cardinality" ? "cardinality" : "collection",
           collectionVariable: s.multiInstance.collectionVariable ?? null,
           cardinalityExpression: s.multiInstance.cardinalityExpression ?? null,
+          onePerActor: s.multiInstance.source === "cardinality" && !!s.multiInstance.onePerActor,
           resultVariable: s.multiInstance.resultVariable ?? ""
         } : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,

@@ -43,6 +43,7 @@ public sealed record MultiInstanceExecutionRecord(
     int NodeId,
     string Mode,
     string Source,
+    bool OnePerActor,
     string ResultVariable,
     string Status,
     int TotalCount,

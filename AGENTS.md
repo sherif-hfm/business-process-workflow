@@ -112,7 +112,11 @@ Storage follows the hybrid design:
   parallel or sequential work items while retaining one parent execution token.
   `collection` mode snapshots a declared `string[]` and directly assigns each
   username; `cardinality` mode evaluates an NCalc count and uses the normal
-  role/claim pool. Fan-out is bounded by `Workflow.MultiInstance.MaxInstances`
+  role/claim pool. An opt-in `onePerActor=true` cardinality execution presents one
+  representative inbox item per actor and permits that username to complete at
+  most one child item in the execution (case-insensitive); concurrent actors may
+  see the same representative, so the first completion wins and a stale action
+  returns 409 before the actor refreshes to another item. Fan-out is bounded by `Workflow.MultiInstance.MaxInstances`
   (default 1000). Each item records its selected flow and local submitted values.
   An outcome flow with `isSelectable=false` is engine-only: it remains in the
   diagram and may win aggregate/default routing, but is omitted from available

@@ -110,10 +110,33 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
         var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters);
+        var eligibleCte = $"""
+            WITH eligible AS (
+                SELECT ut."Id",
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CASE
+                               WHEN COALESCE(mie."OnePerActor", FALSE) THEN mie."Id"
+                               ELSE -ut."Id"
+                           END
+                           ORDER BY
+                               CASE
+                                   WHEN COALESCE(mie."OnePerActor", FALSE)
+                                        AND lower(ut."ClaimedBy") = lower(@user) THEN 0
+                                   ELSE 1
+                               END,
+                               ut."UpdatedAt" DESC,
+                               ut."Id" DESC
+                       ) AS inbox_rank
+                FROM user_tasks ut
+                JOIN workflow_instances w ON ut."InstanceId" = w."Id"
+                LEFT JOIN multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
+                {where}
+            )
+            """;
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w JOIN user_tasks ut ON ut.\"InstanceId\" = w.\"Id\"{where}",
+                $"{eligibleCte} SELECT COUNT(*) AS \"Value\" FROM eligible WHERE inbox_rank = 1",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
@@ -125,7 +148,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         };
         var tasks = await dbContext.UserTasks
             .FromSqlRaw(
-                $"SELECT ut.* FROM user_tasks ut JOIN workflow_instances w ON ut.\"InstanceId\" = w.\"Id\"{where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
+                $"{eligibleCte} SELECT ut.* FROM eligible e JOIN user_tasks ut ON ut.\"Id\" = e.\"Id\" WHERE e.inbox_rank = 1 ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -167,13 +190,24 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
               AND (
                     lower(ut."Assignee") = lower(@user)
                  OR (ut."Assignee" IS NULL AND (
-                      ut."ClaimedBy" = @user
+                      lower(ut."ClaimedBy") = lower(@user)
                    OR (
                       NOT (ut."RequiresClaim"
                                AND ut."ClaimedBy" IS NOT NULL
-                               AND ut."ClaimedBy" <> @user)
+                               AND lower(ut."ClaimedBy") <> lower(@user))
                      )
                     ))
+                  )
+              AND (
+                    NOT COALESCE(mie."OnePerActor", FALSE)
+                 OR NOT EXISTS (
+                      SELECT 1
+                      FROM user_tasks completed
+                      WHERE completed."MultiInstanceExecutionId" = mie."Id"
+                        AND completed."Status" = @completedTask
+                        AND completed."CompletedBy" IS NOT NULL
+                        AND lower(completed."CompletedBy") = lower(@user)
+                    )
                   )
             """);
 
@@ -181,6 +215,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             ("status", WorkflowInstanceStatuses.Running),
             ("activeTask", UserTaskStatuses.Active),
+            ("completedTask", UserTaskStatuses.Completed),
             ("user", user),
             ("lowerRoles", lowerRoles)
         };
@@ -470,6 +505,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeId = node.Id,
             Mode = configuration.Mode,
             Source = configuration.Source,
+            OnePerActor = configuration.Source == MultiInstanceSources.Cardinality
+                          && configuration.OnePerActor,
             ResultVariable = configuration.ResultVariable,
             Status = MultiInstanceExecutionStatuses.Active,
             TotalCount = items.Count,
@@ -626,6 +663,36 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .Where(t => t.MultiInstanceExecutionId == executionId)
             .OrderBy(t => t.ItemIndex)
             .ToListAsync(cancellationToken)).Select(ToRecord).ToList();
+
+    public Task<bool> HasCompletedMultiInstanceItemAsync(
+        long executionId,
+        string completedBy,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUser = completedBy.ToLowerInvariant();
+        return dbContext.UserTasks.AsNoTracking().AnyAsync(
+            task => task.MultiInstanceExecutionId == executionId
+                    && task.Status == UserTaskStatuses.Completed
+                    && task.CompletedBy != null
+                    && task.CompletedBy.ToLower() == normalizedUser,
+            cancellationToken);
+    }
+
+    public Task<long?> GetClaimedMultiInstanceItemIdAsync(
+        long executionId,
+        string claimedBy,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUser = claimedBy.ToLowerInvariant();
+        return dbContext.UserTasks.AsNoTracking()
+            .Where(task => task.MultiInstanceExecutionId == executionId
+                           && task.Status == UserTaskStatuses.Active
+                           && task.ClaimedBy != null
+                           && task.ClaimedBy.ToLower() == normalizedUser)
+            .OrderBy(task => task.ItemIndex)
+            .Select(task => (long?)task.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyDictionary<int, int>> ListMultiInstanceFlowCountsAsync(
         long executionId,
@@ -976,7 +1043,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
     private static MultiInstanceExecutionRecord ToRecord(MultiInstanceExecutionEntity entity) =>
         new(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.Mode, entity.Source,
-            entity.ResultVariable, entity.Status, entity.TotalCount, entity.CompletedCount,
+            entity.OnePerActor, entity.ResultVariable, entity.Status, entity.TotalCount, entity.CompletedCount,
             entity.CancelledCount, entity.WinningFlowId, entity.CompletionReason, entity.CreatedAt,
             entity.UpdatedAt, entity.CompletedAt);
 

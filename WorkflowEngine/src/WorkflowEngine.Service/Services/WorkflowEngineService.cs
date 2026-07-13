@@ -503,7 +503,7 @@ public sealed class WorkflowEngineService(
         Dictionary<long, bool>? hasBypassClaimByTask = null,
         MultiInstanceProgressDto? multiInstance = null)
     {
-        var claimedByMe = row.ClaimedBy == normalizedUser;
+        var claimedByMe = string.Equals(row.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
         var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
         var roleMatch = row.CurrentNodeRoles.Count == 0
             || row.CurrentNodeRoles.Any(normalizedRoles.Contains);
@@ -607,7 +607,7 @@ public sealed class WorkflowEngineService(
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var evalCtx = WithContext(stored, actor, instance, workflow.Definition, node);
         var normalizedUser = NormalizeUser(actor.User);
-        var claimedByMe = task.ClaimedBy == normalizedUser;
+        var claimedByMe = string.Equals(task.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
 
         return OutgoingFlows(workflow.Definition, node.Id)
             .Where(f => f.IsSelectable
@@ -781,6 +781,16 @@ public sealed class WorkflowEngineService(
         {
             var execution = await runtime.GetMultiInstanceAsync(executionId, false, cancellationToken);
             if (execution is null || execution.Status != MultiInstanceRecordStatuses.Active) return [];
+            if (execution.OnePerActor)
+            {
+                var user = NormalizeUser(actor.User);
+                if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
+                    return [];
+                var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+                    execution.Id, user, cancellationToken);
+                if (claimedTaskId is not null && claimedTaskId != task.Id)
+                    return [];
+            }
             AddMultiInstanceContext(context, task, execution);
         }
 
@@ -788,7 +798,9 @@ public sealed class WorkflowEngineService(
         return OutgoingFlows(workflow.Definition, node.Id)
             .Where(f => f.IsSelectable
                         && RoleAllowed(f.Roles, roles)
-                        && (!task.RequiresClaim || task.ClaimedBy == NormalizeUser(actor.User) || f.CanActWithoutClaim)
+                        && (!task.RequiresClaim
+                            || string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase)
+                            || f.CanActWithoutClaim)
                         && (f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, context)))
             .ToList();
@@ -799,7 +811,18 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        var initialTask = await runtime.GetUserTaskAsync(taskId, false, cancellationToken);
+        if (initialTask is null) return null;
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        MultiInstanceExecutionRecord? execution = null;
+        if (initialTask.MultiInstanceExecutionId is long executionId)
+        {
+            execution = await runtime.GetMultiInstanceAsync(executionId, true, cancellationToken);
+            if (execution is null || execution.Status != MultiInstanceRecordStatuses.Active)
+                throw new WorkflowConflictException("The multi-instance execution has already closed.");
+        }
+
         var task = await runtime.GetUserTaskAsync(taskId, true, cancellationToken);
         if (task is null) return null;
         if (task.Assignee is not null)
@@ -812,7 +835,17 @@ public sealed class WorkflowEngineService(
         var node = GetFlowNode(workflow.Definition, task.NodeId);
         EnsureRoleAllowed(node, actor);
         var user = NormalizeUser(actor.User);
-        if (!string.IsNullOrWhiteSpace(task.ClaimedBy) && task.ClaimedBy != user)
+        if (execution is { OnePerActor: true })
+        {
+            if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
+                throw new WorkflowConflictException("The actor has already completed an item in this multi-instance execution.");
+            var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+                execution.Id, user, cancellationToken);
+            if (claimedTaskId is not null && claimedTaskId != task.Id)
+                throw new WorkflowConflictException("The actor has already claimed another item in this multi-instance execution.");
+        }
+        if (!string.IsNullOrWhiteSpace(task.ClaimedBy)
+            && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase))
             throw new WorkflowConflictException($"The user task is already claimed by '{task.ClaimedBy}'.");
         await runtime.UpdateUserTaskClaimAsync(taskId, user, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -836,7 +869,9 @@ public sealed class WorkflowEngineService(
         var user = NormalizeUser(actor.User);
         var roles = NormalizeRoles(actor.Roles);
         var mayOverride = workflow.Definition.UnclaimRoles.Any(roles.Contains);
-        if (!string.IsNullOrWhiteSpace(task.ClaimedBy) && task.ClaimedBy != user && !mayOverride)
+        if (!string.IsNullOrWhiteSpace(task.ClaimedBy)
+            && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase)
+            && !mayOverride)
             throw new WorkflowDomainException("Only the claimant or a configured unclaim role can unclaim this user task.");
         await runtime.UpdateUserTaskClaimAsync(taskId, null, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1007,6 +1042,17 @@ public sealed class WorkflowEngineService(
         if (task is null || task.Status != UserTaskRecordStatuses.Active)
             throw new WorkflowConflictException("The user task is no longer active.");
 
+        var user = NormalizeUser(actor.User);
+        if (execution.OnePerActor)
+        {
+            if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
+                throw new WorkflowConflictException("The actor has already completed an item in this multi-instance execution.");
+            var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+                execution.Id, user, cancellationToken);
+            if (claimedTaskId is not null && claimedTaskId != task.Id)
+                throw new WorkflowConflictException("The actor has already claimed another item in this multi-instance execution.");
+        }
+
         var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken)
             ?? throw new WorkflowDomainException("Workflow instance was not found.");
         if (instance.Status != WorkflowInstanceStatuses.Running)
@@ -1021,7 +1067,8 @@ public sealed class WorkflowEngineService(
         var actorRoles = NormalizeRoles(actor.Roles);
         if (!RoleAllowed(flow.Roles, actorRoles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this action.");
-        if (task.RequiresClaim && !flow.CanActWithoutClaim && task.ClaimedBy != NormalizeUser(actor.User))
+        if (task.RequiresClaim && !flow.CanActWithoutClaim
+            && !string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase))
             throw new WorkflowDomainException("The user task must be claimed by the actor before taking this action.");
 
         ValidateVariableValues(flow.Variables, variableValues);
@@ -1034,7 +1081,6 @@ public sealed class WorkflowEngineService(
             && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context))
             throw new WorkflowDomainException("The selected action condition is not satisfied.");
 
-        var user = NormalizeUser(actor.User);
         await runtime.CompleteMultiInstanceItemAsync(task.Id, flow.Id, user, values, cancellationToken);
         var updatedCompleted = execution.CompletedCount + 1;
         var counts = (await runtime.ListMultiInstanceFlowCountsAsync(execution.Id, cancellationToken))
@@ -2956,7 +3002,7 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The current flow node must be claimed before taking a sequence flow.");
         }
 
-        if (task.ClaimedBy != NormalizeUser(performedBy))
+        if (!string.Equals(task.ClaimedBy, NormalizeUser(performedBy), StringComparison.OrdinalIgnoreCase))
         {
             throw new WorkflowDomainException($"Only '{task.ClaimedBy}' can act on this flow node.");
         }

@@ -118,6 +118,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Mode).HasMaxLength(32).IsRequired();
             entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.OnePerActor).HasDefaultValue(false);
             entity.Property(e => e.ResultVariable).HasMaxLength(300).IsRequired();
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CompletionReason).HasMaxLength(32);

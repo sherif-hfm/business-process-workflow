@@ -627,6 +627,13 @@ public sealed class MultiInstanceModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CardinalityExpression { get; set; }
 
+    /// <summary>
+    /// When true for a cardinality source, each authenticated actor may complete
+    /// at most one item in this multi-instance execution.
+    /// </summary>
+    [JsonPropertyName("onePerActor")]
+    public bool OnePerActor { get; set; }
+
     [JsonPropertyName("resultVariable")]
     public string ResultVariable { get; set; } = string.Empty;
 }

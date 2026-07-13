@@ -21,7 +21,16 @@ Validate(model);
 
 Assert(JsonSerializer.Deserialize<SequenceFlowModel>("{}")!.IsSelectable,
     "Missing isSelectable must default to true.");
+Assert(!JsonSerializer.Deserialize<MultiInstanceModel>("{}")!.OnePerActor,
+    "Missing onePerActor must default to false.");
+Assert(JsonSerializer.Deserialize<MultiInstanceModel>("{\"onePerActor\":true}")!.OnePerActor,
+    "onePerActor=true must round-trip through the shared workflow model.");
 var voteNode = model.FlowNodes.Single(n => n.Id == 2);
+if (string.Equals(model.Name, "workflow-votes-cardinality", StringComparison.OrdinalIgnoreCase))
+{
+    Assert(voteNode.MultiInstance is { Source: MultiInstanceSources.Cardinality, OnePerActor: true },
+        "The cardinality vote sample must enable onePerActor.");
+}
 var voteFlows = model.SequenceFlows.Where(f => f.SourceRef == voteNode.Id).ToList();
 Assert(voteFlows.Single(f => f.Id == 201).IsSelectable, "Approve must remain selectable.");
 Assert(voteFlows.Where(f => f.IsSelectable && !f.CancelRemainingInstances).Select(f => f.Id).SequenceEqual([201]),
