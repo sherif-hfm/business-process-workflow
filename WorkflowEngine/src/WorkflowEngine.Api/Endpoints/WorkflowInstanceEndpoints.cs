@@ -199,10 +199,9 @@ public static class WorkflowInstanceEndpoints
     /// whose node roles (if any) the caller holds, minus tasks already claimed by someone
     /// else. Tasks the caller has claimed are included and flagged with
     /// <c>ClaimedByMe = true</c>. Each <see cref="InboxItemDto"/> carries precomputed
-    /// <c>CanClaim</c>/<c>CanAct</c> flags based on the caller's roles. When a reached
-    /// <c>userTask</c> has a <c>condition</c> visibility gate, the inbox switches to
-    /// exact-count post-filtering (the fast SQL-only path is used otherwise). A 400 is
-    /// returned for a malformed <c>var</c> entry.
+    /// <c>CanClaim</c>/<c>CanAct</c> flags based on the caller's roles. Directly assigned
+    /// tasks are matched to the authenticated username case-insensitively. Counting and
+    /// paging are performed in SQL. A 400 is returned for a malformed <c>var</c> entry.
     /// </remarks>
     public static async Task<IResult> GetInbox(
         long? instanceId,
@@ -250,11 +249,11 @@ public static class WorkflowInstanceEndpoints
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// Returns the <see cref="SequenceFlowModel"/> list the current actor may take, after
-    /// the engine applies node roles, sequence-flow roles, claim ownership, the task's
-    /// visibility <c>condition</c>, and (for <c>exclusiveGateway</c> / <c>userTask</c>
-    /// flows) the flow <c>condition</c>/<c>isDefault</c> rules. Returns an empty array (not
+    /// the engine applies direct assignment, node roles, sequence-flow roles, claim
+    /// ownership, and (for <c>exclusiveGateway</c> / <c>userTask</c> flows) the flow
+    /// <c>condition</c>/<c>isDefault</c> rules. Returns an empty array (not
     /// 404) when the instance does not exist, is not running, is not resting on a
-    /// <c>userTask</c>, the actor is not authorized, or the visibility gate is false.
+    /// <c>userTask</c>, or the actor is not assigned/authorized.
     /// </remarks>
     public static async Task<IResult> GetAvailableFlows(
         long id,
@@ -292,7 +291,7 @@ public static class WorkflowInstanceEndpoints
     /// node's roles (if any are set); the task must not already be claimed by someone
     /// else. The claim is released when a flow is taken. Returns the updated
     /// <see cref="InstanceDetailDto"/>. A 400 is returned for a non-claimable node, a role
-    /// mismatch, a false visibility gate, or an already-claimed task; 404 when the instance
+    /// mismatch, a directly assigned task, or an already-claimed task; 404 when the instance
     /// does not exist.
     /// </remarks>
     public static async Task<IResult> ClaimInstance(

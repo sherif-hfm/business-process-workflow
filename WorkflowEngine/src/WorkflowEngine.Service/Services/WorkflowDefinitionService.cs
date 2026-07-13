@@ -271,6 +271,13 @@ public sealed class WorkflowDefinitionService(
                 ValidateMessageStart(node);
             }
 
+            if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
+                && !string.IsNullOrWhiteSpace(node.AssigneeExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} has an assignee expression but is not a user task.");
+            }
+
             if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
             {
                 throw new WorkflowDomainException($"User task #{node.Id} must have at least one outgoing sequence flow.");
@@ -282,6 +289,11 @@ public sealed class WorkflowDefinitionService(
 
                 if (node.MultiInstance is not null)
                 {
+                    if (!string.IsNullOrWhiteSpace(node.AssigneeExpression))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Multi-instance user task #{node.Id} cannot define an assignee expression.");
+                    }
                     ValidateMultiInstance(node, outgoing, definition);
                 }
                 else if (outgoing.Any(f => f.CancelRemainingInstances
@@ -299,11 +311,11 @@ public sealed class WorkflowDefinitionService(
                         $"User task #{node.Id} has {userTaskDefaultCount} default flows; at most one allowed.");
                 }
 
-                if (!string.IsNullOrWhiteSpace(node.Condition)
-                    && !SequenceFlowConditionEvaluator.IsValid(node.Condition))
+                if (!string.IsNullOrWhiteSpace(node.AssigneeExpression)
+                    && !SequenceFlowConditionEvaluator.IsValid(node.AssigneeExpression))
                 {
                     throw new WorkflowDomainException(
-                        $"User task #{node.Id} has an invalid condition expression: '{node.Condition}'.");
+                        $"User task #{node.Id} has an invalid assignee expression: '{node.AssigneeExpression}'.");
                 }
 
                 foreach (var flow in outgoing.Where(f => !string.IsNullOrWhiteSpace(f.Condition)))

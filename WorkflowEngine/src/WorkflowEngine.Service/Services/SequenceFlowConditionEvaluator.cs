@@ -141,8 +141,12 @@ public static class SequenceFlowConditionEvaluator
     /// runtime failure throws a <see cref="WorkflowDomainException"/> naming the
     /// expression so a broken assignment is visible and rolls back the transition
     /// instead of silently writing null. An optional "${ ... }" wrapper is stripped.
+    /// Set preserveComplexTypes when callers must distinguish objects from strings.
     /// </summary>
-    public static object? EvaluateValue(string? expression, IReadOnlyDictionary<string, JsonElement> variables)
+    public static object? EvaluateValue(
+        string? expression,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        bool preserveComplexTypes = false)
     {
         var text = Normalize(expression);
         if (text is null)
@@ -152,7 +156,7 @@ public static class SequenceFlowConditionEvaluator
 
         try
         {
-            var ncalc = CreateExpression(text, variables);
+            var ncalc = CreateExpression(text, variables, preserveComplexTypes: preserveComplexTypes);
             return ncalc.Evaluate();
         }
         catch (NCalcException ex)
@@ -183,12 +187,13 @@ public static class SequenceFlowConditionEvaluator
         string expression,
         IReadOnlyDictionary<string, JsonElement>? variables,
         IReadOnlyDictionary<int, int>? flowCounts = null,
-        int totalCount = 0)
+        int totalCount = 0,
+        bool preserveComplexTypes = false)
     {
         var ncalc = new Expression(expression, Options);
         if (variables is not null)
         {
-            ncalc.Parameters = BuildParameters(variables);
+            ncalc.Parameters = BuildParameters(variables, preserveComplexTypes);
         }
 
         ncalc.EvaluateFunction += (name, args) =>
@@ -371,25 +376,28 @@ public static class SequenceFlowConditionEvaluator
     }
 
     private static Dictionary<string, object?> BuildParameters(
-        IReadOnlyDictionary<string, JsonElement> variables)
+        IReadOnlyDictionary<string, JsonElement> variables,
+        bool preserveComplexTypes)
     {
         var parameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in variables)
         {
-            parameters[pair.Key] = ConvertValue(pair.Value);
+            parameters[pair.Key] = ConvertValue(pair.Value, preserveComplexTypes);
         }
 
         return parameters;
     }
 
-    private static object? ConvertValue(JsonElement element) => element.ValueKind switch
+    private static object? ConvertValue(JsonElement element, bool preserveComplexTypes) => element.ValueKind switch
     {
         JsonValueKind.String => element.GetString(),
         JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null or JsonValueKind.Undefined => null,
-        JsonValueKind.Array => element.EnumerateArray().Select(ConvertValue).ToList<object?>(),
+        JsonValueKind.Array => element.EnumerateArray()
+            .Select(item => ConvertValue(item, preserveComplexTypes)).ToList<object?>(),
+        JsonValueKind.Object when preserveComplexTypes => element.Clone(),
         _ => element.GetRawText()
     };
 

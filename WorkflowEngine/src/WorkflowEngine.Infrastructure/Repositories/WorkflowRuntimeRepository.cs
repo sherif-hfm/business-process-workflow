@@ -134,29 +134,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
 
-    public async Task<IReadOnlyList<InstanceListItem>> ListInboxCandidatesAsync(
-        string user,
-        IReadOnlyCollection<string> roles,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        int? nodeId,
-        string? nodeExternalId,
-        IReadOnlyList<VariableFilter> variableFilters,
-        CancellationToken cancellationToken)
-    {
-        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters);
-
-        var tasks = await dbContext.UserTasks
-            .FromSqlRaw(
-                $"SELECT ut.* FROM user_tasks ut JOIN workflow_instances w ON ut.\"InstanceId\" = w.\"Id\"{where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC",
-                BuildParameters(args))
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-
-        return await ToInboxListItemsAsync(tasks, cancellationToken);
-    }
-
     private static (StringBuilder Where, List<(string Name, object Value)> Args) BuildInboxWhere(
         string user,
         IReadOnlyCollection<string> roles,
@@ -188,7 +165,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     )
                   )
               AND (
-                    ut."Assignee" = @user
+                    lower(ut."Assignee") = lower(@user)
                  OR (ut."Assignee" IS NULL AND (
                       ut."ClaimedBy" = @user
                    OR (
@@ -580,6 +557,38 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entity is null ? null : ToRecord(entity);
     }
 
+    public async Task<UserTaskRecord?> GetActiveUserTaskAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken)
+    {
+        var local = dbContext.UserTasks.Local
+            .Where(t => t.InstanceId == instanceId && t.Status == UserTaskStatuses.Active)
+            .OrderByDescending(t => t.Id)
+            .FirstOrDefault();
+        if (local is not null)
+        {
+            return ToRecord(local);
+        }
+
+        UserTaskEntity? entity;
+        if (forUpdate)
+        {
+            entity = await dbContext.UserTasks
+                .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+        else
+        {
+            entity = await dbContext.UserTasks.AsNoTracking()
+                .Where(t => t.InstanceId == instanceId && t.Status == UserTaskStatuses.Active)
+                .OrderByDescending(t => t.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        return entity is null ? null : ToRecord(entity);
+    }
+
     public async Task<MultiInstanceExecutionRecord?> GetMultiInstanceAsync(
         long executionId,
         bool forUpdate,
@@ -868,23 +877,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
-    public async Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesForInstancesAsync(
-        IReadOnlyCollection<long> instanceIds,
-        CancellationToken cancellationToken)
-    {
-        if (instanceIds.Count == 0)
-        {
-            return [];
-        }
-
-        var entities = await dbContext.InstanceVariables.AsNoTracking()
-            .Where(v => instanceIds.Contains(v.InstanceId))
-            .OrderBy(v => v.InstanceId)
-            .ThenBy(v => v.Id)
-            .ToListAsync(cancellationToken);
-        return entities.Select(ToRecord).ToList();
-    }
-
     public Task AddHistoryAsync(
         long instanceId,
         int? actionId,
@@ -1026,9 +1018,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeName = node.Name,
             NodeExternalId = node.ExternalId,
             Roles = node.Roles.ToList(),
-            RequiresClaim = node.RequiresClaim,
+            RequiresClaim = node.Assignee is null && node.RequiresClaim,
             Status = UserTaskStatuses.Active,
             ClaimedBy = claimedBy,
+            Assignee = node.Assignee,
             CreatedAt = now,
             UpdatedAt = now
         };

@@ -64,19 +64,6 @@ public interface IWorkflowRuntimeRepository
         int pageSize,
         CancellationToken cancellationToken);
 
-    // Returns the full actor-filtered active user-task set without paging, so a
-    // caller can evaluate node-level visibility conditions and re-page.
-    Task<IReadOnlyList<InstanceListItem>> ListInboxCandidatesAsync(
-        string user,
-        IReadOnlyCollection<string> roles,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        int? nodeId,
-        string? nodeExternalId,
-        IReadOnlyList<VariableFilter> variableFilters,
-        CancellationToken cancellationToken);
-
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(long id, CancellationToken cancellationToken);
@@ -101,6 +88,11 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken);
 
     Task<UserTaskRecord?> GetUserTaskAsync(long taskId, bool forUpdate, CancellationToken cancellationToken);
+
+    Task<UserTaskRecord?> GetActiveUserTaskAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
 
     Task<IReadOnlyList<UserTaskRecord>> ListUserTasksAsync(
         long instanceId,
@@ -156,10 +148,6 @@ public interface IWorkflowRuntimeRepository
 
     Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesAsync(
         long instanceId,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesForInstancesAsync(
-        IReadOnlyCollection<long> instanceIds,
         CancellationToken cancellationToken);
 
     Task AddHistoryAsync(

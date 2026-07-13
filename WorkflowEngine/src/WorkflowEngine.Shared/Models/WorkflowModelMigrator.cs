@@ -251,7 +251,6 @@ public static class WorkflowModelMigrator
             node.Service = null;
             node.Assignments = [];
             node.Script = null;
-            node.Condition = null;
             node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
@@ -267,7 +266,6 @@ public static class WorkflowModelMigrator
             node.Service = null;
             node.Assignments = [];
             node.Script = null;
-            node.Condition = null;
             node.Message ??= new MessageCatchModel();
         }
         else if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -285,7 +283,6 @@ public static class WorkflowModelMigrator
             node.Service = null;
             node.Assignments = [];
             node.Script = null;
-            node.Condition = null;
             node.Message ??= new MessageCatchModel();
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))

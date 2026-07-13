@@ -267,15 +267,15 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Script { get; set; }
 
-    // userTask only: optional NCalc visibility gate. When present and false, the
-    // task is hidden from the inbox and no outgoing flows can be shown or taken.
-    // It does not affect routing; the instance still rests on the node.
+    // Normal userTask only: optional NCalc expression evaluated once when the
+    // work item is created. A successful string result is snapshotted as the
+    // runtime assignee; an unresolved/invalid result leaves the task unassigned.
     /// <summary>
-    /// Optional NCalc visibility gate expression.
+    /// Optional NCalc expression that resolves the direct task assignee.
     /// </summary>
-    [JsonPropertyName("condition")]
+    [JsonPropertyName("assignee")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Condition { get; set; }
+    public string? AssigneeExpression { get; set; }
 
     /// <summary>
     /// Optional multi-instance loop configuration for a user task.

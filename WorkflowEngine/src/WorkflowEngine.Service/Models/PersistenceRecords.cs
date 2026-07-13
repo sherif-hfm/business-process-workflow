@@ -33,6 +33,7 @@ public sealed record CurrentNodeSnapshot(
     string Type,
     IReadOnlyList<string> Roles,
     bool RequiresClaim,
+    string? Assignee,
     bool IsMultiInstance = false);
 
 public sealed record MultiInstanceExecutionRecord(

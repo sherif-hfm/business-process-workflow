@@ -1,0 +1,128 @@
+{
+  "id": "assignee1",
+  "name": "assignee_workflow",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "assign task",
+      "type": "userTask",
+      "laneId": null,
+      "x": 327,
+      "y": 116,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 3,
+      "name": "perform task",
+      "type": "userTask",
+      "laneId": null,
+      "x": 663,
+      "y": 116,
+      "roles": [
+        "User"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": "assign_user"
+    },
+    {
+      "id": 4,
+      "name": "New Node",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1082,
+      "y": 122,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 102,
+      "name": "assign ",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "assign_user",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 103,
+      "name": "perform ",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
+}

@@ -309,7 +309,7 @@ public sealed record PagedResult<T>(
 /// <param name="MultiInstanceExecutionId">The owning multi-instance execution, when applicable.</param>
 /// <param name="ItemIndex">The zero-based multi-instance item index.</param>
 /// <param name="ItemValue">The snapshotted collection item.</param>
-/// <param name="Assignee">The direct username assignment for collection mode.</param>
+/// <param name="Assignee">The snapshotted direct username assignment, when present.</param>
 /// <param name="MultiInstance">Aggregate progress for the owning multi-instance execution.</param>
 /// <param name="WorkflowId">The database ID of the workflow version.</param>
 /// <param name="WorkflowName">The name of the workflow.</param>

@@ -197,7 +197,8 @@ Storage follows the hybrid design:
   `EndsWith(s, suffix)`, `Lower(s)`, `Upper(s)`, `Trim(s)`, and
   `IsMatch(s, pattern)` (regex match, case-insensitive, bounded execution time as
   a ReDoS guard). Substring/regex matching is case-insensitive. These helpers work
-  anywhere NCalc runs (gateway conditions and variable `validation` rules). A
+  anywhere NCalc runs (gateway/flow conditions, assignee expressions, and
+  variable `validation` rules). A
   helper called with too few arguments (or a mistyped name) is treated as unknown;
   since author-time `IsValid` only parse-checks grammar, such typos are not flagged
   and the expression simply evaluates to `false` at runtime.
@@ -338,12 +339,17 @@ Storage follows the hybrid design:
   stacks on top of the task's own node roles and claim ownership. `userTask`
   flows can also carry a `condition` (NCalc) and an `isDefault` flag: the engine
   filters visible actions in `GetAvailableFlowsAsync` and re-checks the
-  condition before executing `TakeFlowAsync`. In addition, a `userTask` node
-  may itself carry a `condition` (NCalc) that acts as a **visibility gate**:
-  when the condition is
-  false, the instance is hidden from the actor's inbox, no flows are returned by
-  `GetAvailableFlowsAsync`, and `ClaimAsync`/`TakeFlowAsync` reject. The instance
-  still rests on the node; the condition does not change routing.
+  condition before executing `TakeFlowAsync`.
+- **Direct user-task assignment.** A normal (non-multi-instance) `userTask` may
+  carry an `assignee` NCalc expression. The expression is evaluated once when
+  the work item is created against the latest instance variables plus the normal
+  `sys.*`/configuration context; a valid non-empty string (maximum 300 characters)
+  is snapshotted to `user_tasks.Assignee`. Assigned tasks require no claim, but
+  node and flow roles still apply. Missing/unresolvable/non-string results log a
+  warning and create a shared-pool task using the node's `requiresClaim` setting.
+  Assignment matching is case-insensitive and is enforced by inbox, flow, claim,
+  and task action endpoints. Existing collection multi-instance assignment is
+  unchanged; assignee expressions are rejected on every multi-instance task.
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
@@ -382,11 +388,9 @@ what the cross-version `workflowKey` instance search matches.
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
   offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
   repository can later switch to keyset paging without an API change.
-  **Inbox visibility conditions.** When any `userTask` node reached by the inbox
-  candidate set carries a `condition`, the inbox switches to exact-count post-filtering:
-  it fetches the full actor-filtered candidate set, evaluates the NCalc condition
-  against each instance's variables, and re-pages the surviving rows. The fast
-  SQL-only path is preserved when no relevant `userTask` has a `condition`.
+  Inbox role/assignment/claim filtering, counting, ordering, and paging all run
+  in PostgreSQL. The service loads definitions only for the returned page to
+  calculate outgoing-flow `CanAct`/`CanClaim` flags.
 - **Variable search.** Both list endpoints accept repeated `var=name:value`
   query params (split on the first `:`, so values may contain `:`). Each pair is
   an exact, case-insensitive match on an instance variable's scalar value; when
@@ -532,7 +536,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
-  "condition": null,           // userTask only: NCalc visibility gate; null = always visible
+  "assignee": null,            // normal userTask only: optional NCalc username expression
   "variables": [ /* Variable[] */ ], // startEvent / messageStartEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
   "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
@@ -1032,11 +1036,12 @@ when extending the model so new features stay close to BPMN terminology.
   `isSelectable=false`; the editor marks these edges `engine-only`, the API never
   exposes or accepts them as user actions, and only completion/default routing may
   choose them.
-- **User-task node condition**: a `userTask` may itself carry a `condition` (NCalc)
-  that acts as a visibility gate. When false, the task is hidden from the inbox,
-  `GetAvailableFlowsAsync` returns no flows, and `ClaimAsync`/`TakeFlowAsync` reject.
-  The instance still rests on the node; routing is unchanged. The editor shows a
-  `COND` marker on the node and a `Condition` field in the inspector.
+- **User-task assignee**: a normal `userTask` may carry an `assignee` NCalc
+  expression such as `approverUser`, `'alice'`, or
+  `if(amount > 1000, managerUser, supervisorUser)`. It is evaluated once on task
+  entry and the result is snapshotted on the work item. The editor shows an
+  `ASGN` marker and an `Assignee expression` field. Legacy user-task node
+  `condition` properties are ignored; sequence-flow conditions remain supported.
 
 ---
 

@@ -94,7 +94,15 @@ else
                         }
                         @if (item.ItemIndex is not null)
                         {
-                            <div class="text-muted small">Item #@item.ItemIndex · @(item.Assignee ?? "shared pool")</div>
+                            <div class="text-muted small">Item #@item.ItemIndex</div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.Assignee))
+                        {
+                            <div class="text-muted small">Assigned to @item.Assignee</div>
+                        }
+                        else if (item.ItemIndex is not null)
+                        {
+                            <div class="text-muted small">Shared pool</div>
                         }
                         @if (item.MultiInstance is not null)
                         {

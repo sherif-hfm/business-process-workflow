@@ -95,7 +95,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
-            entity.HasIndex(e => new { e.Assignee, e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.Status, e.ItemIndex });
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex }).IsUnique();
             entity.HasIndex(e => e.Roles).HasMethod("gin");
