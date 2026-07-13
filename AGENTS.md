@@ -125,6 +125,11 @@ Storage follows the hybrid design:
   the parent token once. If all items finish without a match, the required default
   outcome wins. Task-specific operations use `/api/user-tasks/{taskId}`; legacy
   instance-addressed actions return 409 when multiple active tasks are ambiguous.
+  An authorized actor can also discover and take parent-level interrupt flows through
+  `/api/multi-instance-executions/{executionId}/flows`; these actions require both
+  the node and flow roles but deliberately do not require an active assigned child
+  item or claim. The execution row is locked so concurrent interrupts advance the
+  parent exactly once, while later attempts return 409.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
@@ -391,6 +396,11 @@ what the cross-version `workflowKey` instance search matches.
   Inbox role/assignment/claim filtering, counting, ordering, and paging all run
   in PostgreSQL. The service loads definitions only for the returned page to
   calculate outgoing-flow `CanAct`/`CanClaim` flags.
+- `MultiInstanceExecutionEndpoints` (`/api/multi-instance-executions`):
+  `GET /{executionId}/flows` returns the current actor's selectable parent-level
+  interrupt flows for an active execution; `POST /{executionId}/flows/{flowId}`
+  validates roles/condition/variables, atomically cancels unfinished child items,
+  and advances the parent token through the interrupting flow.
 - **Variable search.** Both list endpoints accept repeated `var=name:value`
   query params (split on the first `:`, so values may contain `:`). Each pair is
   an exact, case-insensitive match on an instance variable's scalar value; when
@@ -456,7 +466,8 @@ what the cross-version `workflowKey` instance search matches.
   workflow id, workflow key, node id, node external id, and comma-separated
   `name:value` variable filter boxes.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
-  sequence flows, view variables and history.
+  sequence flows, take authorized parent-level multi-instance interrupt actions,
+  and view variables and history.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
 

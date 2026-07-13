@@ -158,6 +158,18 @@ public interface IWorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<SequenceFlowModel>> GetMultiInstanceInterruptFlowsAsync(
+        long executionId,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
+    Task<InstanceDetailDto?> TakeMultiInstanceInterruptFlowAsync(
+        long executionId,
+        int flowId,
+        ActorContext actor,
+        Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken);
+
     Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
         int flowId,

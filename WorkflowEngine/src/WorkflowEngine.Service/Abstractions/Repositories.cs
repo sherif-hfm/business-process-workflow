@@ -163,9 +163,9 @@ public interface IWorkflowRuntimeRepository
     Task AddMultiInstanceHistoryAsync(
         long instanceId,
         long tokenId,
-        long userTaskId,
+        long? userTaskId,
         long executionId,
-        int itemIndex,
+        int? itemIndex,
         int actionId,
         int fromStepId,
         int toStepId,

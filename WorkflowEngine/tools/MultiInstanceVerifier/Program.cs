@@ -24,9 +24,13 @@ Assert(JsonSerializer.Deserialize<SequenceFlowModel>("{}")!.IsSelectable,
 var voteNode = model.FlowNodes.Single(n => n.Id == 2);
 var voteFlows = model.SequenceFlows.Where(f => f.SourceRef == voteNode.Id).ToList();
 Assert(voteFlows.Single(f => f.Id == 201).IsSelectable, "Approve must remain selectable.");
-Assert(!voteFlows.Single(f => f.Id == 202).IsSelectable, "Reject must be an engine-only default.");
 Assert(voteFlows.Where(f => f.IsSelectable && !f.CancelRemainingInstances).Select(f => f.Id).SequenceEqual([201]),
     "Only selectable outcomes may receive selection counters.");
+var interrupt = voteFlows.Single(f => f.Id == 203);
+Assert(interrupt.IsSelectable && interrupt.CancelRemainingInstances,
+    "The manager cancel flow must remain a selectable interrupt action.");
+Assert(interrupt.Roles.Contains("Manager", StringComparer.OrdinalIgnoreCase),
+    "The manager cancel flow must remain role-restricted.");
 
 var variables = new Dictionary<string, JsonElement>
 {
@@ -44,7 +48,7 @@ Assert(!SequenceFlowConditionEvaluator.EvaluateCompletion(
 VerifyMode(MultiInstanceModes.Parallel);
 VerifyMode(MultiInstanceModes.Sequential);
 
-var hiddenWinner = Clone(model);
+var hiddenWinner = WithEngineOnlyDefault(model);
 hiddenWinner.SequenceFlows.Single(f => f.Id == 202).CompletionCondition = "CountFlow(201) == 1";
 Validate(hiddenWinner);
 var earlyCounts = new Dictionary<int, int> { [201] = 1 };
@@ -65,7 +69,7 @@ var hiddenInterrupt = Clone(model);
 hiddenInterrupt.SequenceFlows.Single(f => f.Id == 203).IsSelectable = false;
 ExpectValidationFailure(hiddenInterrupt, "Hidden interrupt must be rejected.");
 
-var hiddenWithRoles = Clone(model);
+var hiddenWithRoles = WithEngineOnlyDefault(model);
 hiddenWithRoles.SequenceFlows.Single(f => f.Id == 202).Roles = ["Manager"];
 ExpectValidationFailure(hiddenWithRoles, "Engine-only actor settings must be rejected.");
 
@@ -73,11 +77,11 @@ var noSelectableOutcome = Clone(model);
 noSelectableOutcome.SequenceFlows.Single(f => f.Id == 201).IsSelectable = false;
 ExpectValidationFailure(noSelectableOutcome, "At least one selectable outcome is required.");
 
-var referencesHidden = Clone(model);
+var referencesHidden = WithEngineOnlyDefault(model);
 referencesHidden.SequenceFlows.Single(f => f.Id == 202).CompletionCondition = "CountFlow(202) >= 1";
 ExpectValidationFailure(referencesHidden, "Completion helpers must not reference engine-only outcomes.");
 
-var normalTaskHidden = Clone(model);
+var normalTaskHidden = WithEngineOnlyDefault(model);
 normalTaskHidden.FlowNodes.Single(n => n.Id == 2).MultiInstance = null;
 ExpectValidationFailure(normalTaskHidden, "Engine-only routes must be limited to multi-instance user tasks.");
 
@@ -85,7 +89,7 @@ Console.WriteLine("Multi-instance selectable/engine-only routing verification pa
 
 void VerifyMode(string mode)
 {
-    var candidate = Clone(model);
+    var candidate = WithEngineOnlyDefault(model);
     candidate.FlowNodes.Single(n => n.Id == 2).MultiInstance!.Mode = mode;
     Validate(candidate);
 
@@ -142,6 +146,23 @@ void ExpectValidationFailure(WorkflowModel candidate, string message)
 static WorkflowModel Clone(WorkflowModel source) =>
     JsonSerializer.Deserialize<WorkflowModel>(JsonSerializer.Serialize(source))
     ?? throw new InvalidOperationException("Workflow clone failed.");
+
+static WorkflowModel WithEngineOnlyDefault(WorkflowModel source)
+{
+    var candidate = Clone(source);
+    candidate.SequenceFlows.Single(f => f.Id == 201).IsDefault = false;
+    candidate.SequenceFlows.Add(new SequenceFlowModel
+    {
+        Id = 202,
+        Name = "Engine-only fallback",
+        SourceRef = 2,
+        TargetRef = 3,
+        IsSelectable = false,
+        IsDefault = true,
+        CompletionPriority = 20
+    });
+    return candidate;
+}
 
 static void Assert(bool condition, string? message = null)
 {

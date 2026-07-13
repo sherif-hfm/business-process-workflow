@@ -5,6 +5,7 @@
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
 @inject TokenState Token
+@inject IJSRuntime JS
 
 <PageTitle>Instance Detail</PageTitle>
 
@@ -72,6 +73,48 @@ else
     {
         <div class="alert alert-info">Open a specific work item from the Inbox to claim or take an action.</div>
     }
+    @if (interruptFlows.Count > 0)
+    {
+        <section class="mb-4 border border-danger rounded p-3">
+            <h2 class="h4 text-danger">Interrupt actions</h2>
+            <p class="text-muted">These actions apply to the whole multi-instance execution and cancel unfinished work items.</p>
+            <div class="row">
+                @foreach (var flow in interruptFlows)
+                {
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100 border-danger">
+                            <div class="card-body">
+                                <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
+                                <p class="text-muted">Interrupts this execution and moves to node #@flow.TargetRef</p>
+                                @foreach (var variable in flow.Variables)
+                                {
+                                    <div class="mb-2">
+                                        <label class="form-label">
+                                            @variable.Name
+                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                                            @if (variable.Required)
+                                            {
+                                                <span class="text-danger">*</span>
+                                            }
+                                        </label>
+                                        <input class="form-control"
+                                               value="@GetFlowInput(flow.Id, variable.Name)"
+                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                    </div>
+                                }
+
+                                <button class="btn btn-danger"
+                                        disabled="@interruptSubmitting"
+                                        @onclick="() => TakeInterruptFlowAsync(flow)">
+                                    @(interruptSubmitting ? "Submitting..." : "Interrupt and cancel remaining items")
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </section>
+    }
     <section class="mb-4">
         <h2 class="h4">Available actions</h2>
         @if (currentNode?.RequiresClaim == true && instance.Status == "running")
@@ -93,7 +136,7 @@ else
         }
         @if (instance.MultiInstance is not null)
         {
-            <p>Actions are task-specific for multi-instance work.</p>
+            <p>Personal work-item actions are available from the Inbox.</p>
         }
         else if (availableFlows.Count == 0)
         {
@@ -210,8 +253,10 @@ else
 
     private InstanceDetailDto? instance;
     private IReadOnlyList<SequenceFlowModel> availableFlows = [];
+    private IReadOnlyList<SequenceFlowModel> interruptFlows = [];
     private readonly Dictionary<string, string?> flowInputs = [];
     private string? error;
+    private bool interruptSubmitting;
 
     private string ActingUser => NormalizeUser(Token.CurrentUser);
 
@@ -314,7 +359,7 @@ else
         {
             error = null;
             instance = await Api.GetInstanceAsync(InstanceId);
-            availableFlows = instance is null || instance.MultiInstance is not null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+            await LoadAvailableActionsAsync();
         }
         catch (Exception ex)
         {
@@ -349,6 +394,62 @@ else
         });
     }
 
+    private async Task TakeInterruptFlowAsync(SequenceFlowModel flow)
+    {
+        var executionId = instance?.MultiInstance?.ExecutionId;
+        if (executionId is null || interruptSubmitting)
+        {
+            return;
+        }
+
+        var flowName = string.IsNullOrWhiteSpace(flow.Name) ? $"flow #{flow.Id}" : flow.Name;
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Take '{flowName}' and cancel every unfinished work item?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        interruptSubmitting = true;
+        try
+        {
+            error = null;
+            var variables = BuildPayload(flow);
+            instance = await Api.TakeMultiInstanceInterruptFlowAsync(
+                executionId.Value,
+                flow.Id,
+                new TakeFlowRequest(variables));
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            interruptSubmitting = false;
+            try
+            {
+                instance = await Api.GetInstanceAsync(InstanceId);
+                await LoadAvailableActionsAsync();
+            }
+            catch (Exception ex)
+            {
+                error ??= ex.Message;
+            }
+        }
+    }
+
+    private async Task LoadAvailableActionsAsync()
+    {
+        availableFlows = instance is null || instance.MultiInstance is not null
+            ? []
+            : await Api.GetAvailableFlowsAsync(InstanceId);
+        interruptFlows = instance?.MultiInstance is { Status: "active" } progress
+            ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId)
+            : [];
+    }
+
     private async Task RefreshFrom(Func<Task> action)
     {
         try
@@ -356,7 +457,7 @@ else
             error = null;
             await action();
             instance ??= await Api.GetInstanceAsync(InstanceId);
-            availableFlows = instance is null || instance.MultiInstance is not null ? [] : await Api.GetAvailableFlowsAsync(InstanceId);
+            await LoadAvailableActionsAsync();
         }
         catch (Exception ex)
         {

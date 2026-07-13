@@ -84,6 +84,7 @@ try
                     - 401 Unauthorized for a client id/secret mismatch on the message endpoints
                     - 403 Forbidden for a missing required role on the workflow-definition endpoints
                     - 404 Not Found when a referenced instance or definition id does not exist
+                    - 409 Conflict when a task or multi-instance execution was concurrently completed
                     """,
             };
 
@@ -98,6 +99,11 @@ try
                 {
                     Name = "Workflow Instances",
                     Description = "Start, list, inspect, claim, advance, cancel, and message workflow instances."
+                },
+                new()
+                {
+                    Name = "Multi-Instance Executions",
+                    Description = "Discover and take authorized parent-level interrupt actions for active multi-instance user tasks."
                 }
             };
 
@@ -219,6 +225,7 @@ try
     app.MapWorkflowDefinitionEndpoints();
     app.MapWorkflowInstanceEndpoints();
     app.MapUserTaskEndpoints();
+    app.MapMultiInstanceExecutionEndpoints();
 
     app.Run();
 }

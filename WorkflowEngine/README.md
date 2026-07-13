@@ -15,7 +15,7 @@
 - Workflow definitions are versioned JSONB snapshots in `workflow_definitions`.
 - Runtime state is normalized in `workflow_instances`, `instance_variables`, and `instance_history`.
 - Runtime transitions lock the instance row with `SELECT ... FOR UPDATE`.
-- Roles are stored in the definition JSON but not enforced.
+- Node and sequence-flow roles are enforced from the authenticated actor's JWT.
 
 ## Run Locally
 
@@ -55,10 +55,19 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `GET /api/instances?status=running`
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/{id}`
+- `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`
 - `POST /api/instances/{id}/unclaim`
-- `POST /api/instances/{id}/actions/{actionId}`
+- `POST /api/instances/{id}/flows/{flowId}`
 - `POST /api/instances/{id}/cancel`
+- `GET /api/multi-instance-executions/{executionId}/flows`
+- `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
+
+The multi-instance execution endpoints expose only selectable interrupting flows
+(`cancelRemainingInstances=true`) authorized by both the current node and flow
+roles. They let an authorized actor interrupt the parent execution even without
+an active child work item; unfinished child items are cancelled and the workflow
+continues through the selected flow.
 
 ### Variable search
 

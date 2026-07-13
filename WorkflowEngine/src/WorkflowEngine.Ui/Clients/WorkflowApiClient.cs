@@ -247,6 +247,24 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<UserTaskActionAckDto>(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<SequenceFlowModel>> GetMultiInstanceInterruptFlowsAsync(
+        long executionId,
+        CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<IReadOnlyList<SequenceFlowModel>>(
+            $"/api/multi-instance-executions/{executionId}/flows", cancellationToken) ?? [];
+
+    public async Task<InstanceDetailDto?> TakeMultiInstanceInterruptFlowAsync(
+        long executionId,
+        int flowId,
+        TakeFlowRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync(
+            $"/api/multi-instance-executions/{executionId}/flows/{flowId}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
+    }
+
     public async Task CancelAsync(long id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsync($"/api/instances/{id}/cancel", null, cancellationToken);
