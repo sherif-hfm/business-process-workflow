@@ -6,17 +6,21 @@
 <title>Business Process Workflow Editor</title>
 <style>
   :root {
-    --bg: #0f172a;
-    --panel: #1e293b;
-    --panel-2: #273449;
-    --border: #334155;
-    --text: #e2e8f0;
-    --muted: #94a3b8;
+    --bg: #09111f;
+    --canvas: #0b1425;
+    --panel: #111d30;
+    --panel-2: #18273d;
+    --panel-3: #20314a;
+    --border: #30445f;
+    --border-strong: #48617f;
+    --text: #f1f5f9;
+    --muted: #a9b7ca;
     --accent: #3b82f6;
-    --accent-2: #2563eb;
+    --accent-2: #60a5fa;
     --green: #22c55e;
     --red: #ef4444;
     --amber: #f59e0b;
+    --shadow: 0 16px 36px rgba(2, 8, 23, .28);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -33,16 +37,40 @@
   header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
+    gap: 12px;
+    min-height: 60px;
+    padding: 10px 16px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
+    box-shadow: 0 8px 20px rgba(2, 8, 23, .16);
+    z-index: 20;
   }
+  .toolbar-identity, .toolbar-group { display: flex; align-items: center; gap: 8px; }
+  .toolbar-identity { min-width: 310px; flex: 1 1 360px; }
+  .toolbar-group {
+    padding: 4px;
+    border: 1px solid rgba(72, 97, 127, .55);
+    border-radius: 10px;
+    background: rgba(9, 17, 31, .35);
+  }
+  .app-mark {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    color: #bfdbfe;
+    background: linear-gradient(145deg, rgba(59,130,246,.32), rgba(37,99,235,.12));
+    border: 1px solid rgba(96,165,250,.48);
+    border-radius: 10px;
+  }
+  .app-mark svg { width: 20px; height: 20px; }
   header h1 {
-    font-size: 15px;
-    margin: 0 12px 0 0;
-    font-weight: 600;
+    font-size: 14px;
+    margin: 0 4px 0 0;
+    font-weight: 700;
+    letter-spacing: .01em;
     white-space: nowrap;
   }
   .wf-name {
@@ -50,59 +78,92 @@
     border: 1px solid var(--border);
     color: var(--text);
     padding: 6px 10px;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 13px;
-    min-width: 220px;
+    min-width: 180px;
+    flex: 1 1 220px;
+    height: 36px;
   }
   button {
     background: var(--panel-2);
     color: var(--text);
     border: 1px solid var(--border);
-    padding: 7px 12px;
-    border-radius: 6px;
+    min-height: 34px;
+    padding: 7px 11px;
+    border-radius: 8px;
     cursor: pointer;
     font-size: 13px;
-    transition: background .15s, border-color .15s;
+    font-weight: 600;
+    transition: background .15s, border-color .15s, color .15s, transform .15s;
   }
-  button:hover { background: #324158; }
-  button.primary { background: var(--accent); border-color: var(--accent-2); color: #fff; }
-  button.primary:hover { background: var(--accent-2); }
+  button:hover { background: var(--panel-3); border-color: var(--border-strong); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  button.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  button.primary:hover { background: #1d4ed8; border-color: #60a5fa; }
   button.danger { color: #fff; background: var(--red); border-color: #dc2626; }
   button.active { background: var(--green); border-color: #16a34a; color: #fff; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .resizer:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 2px;
+  }
+  .button-icon { width: 15px; height: 15px; margin-right: 5px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .spacer { flex: 1; }
 
   main { flex: 1; display: flex; min-height: 0; }
 
-  .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
-  svg { width: 100%; height: 100%; display: block; background:
-    radial-gradient(circle, #1b2740 1px, transparent 1px) 0 0 / 24px 24px,
-    var(--bg); cursor: default; }
+  .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
+  #svg { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: default; touch-action: none; }
+  #svg.canvas-panning, body.is-space-panning #svg { cursor: grabbing; }
 
   .hint {
     position: absolute;
     top: 10px; left: 10px;
-    background: rgba(30,41,59,.9);
+    background: rgba(17,29,48,.92);
     border: 1px solid var(--border);
     padding: 8px 12px;
     border-radius: 8px;
     font-size: 12px;
     color: var(--muted);
-    max-width: 320px;
+    max-width: min(420px, calc(100% - 150px));
     pointer-events: none;
+    box-shadow: 0 8px 24px rgba(2,8,23,.22);
+    backdrop-filter: blur(8px);
   }
   .hint b { color: var(--text); }
+  .canvas-controls {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px;
+    background: rgba(17,29,48,.94);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .canvas-controls button { min-width: 34px; min-height: 32px; padding: 5px 9px; }
+  .canvas-controls .zoom-readout { min-width: 62px; color: #bfdbfe; font-variant-numeric: tabular-nums; }
+  .canvas-controls .fit-view { min-width: 48px; }
 
   /* Sidebar */
   aside {
-    width: 280px;
+    width: 340px;
+    min-width: 280px;
+    max-width: 55vw;
     background: var(--panel);
-    padding: 14px;
+    padding: 16px;
     overflow-y: auto;
+    border-left: 1px solid rgba(72, 97, 127, .2);
+    scrollbar-color: var(--border-strong) transparent;
   }
   .resizer {
-    width: 4px;
-    margin-left: -2px;
-    margin-right: -2px;
+    width: 7px;
+    margin-left: -3px;
+    margin-right: -3px;
     background: transparent;
     cursor: col-resize;
     position: relative;
@@ -125,18 +186,42 @@
     width: 3px;
     left: 0px;
   }
-  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
-  .field { margin-bottom: 12px; }
+  aside > h2:first-child {
+    position: sticky;
+    top: -16px;
+    z-index: 5;
+    margin: -16px -16px 14px;
+    padding: 16px;
+    color: var(--text);
+    background: rgba(17,29,48,.96);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 8px 16px rgba(2,8,23,.14);
+    backdrop-filter: blur(8px);
+  }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  aside h3 { font-size: 12px; color: var(--text); margin: 18px 0 9px; }
+  .field { margin-bottom: 13px; }
   .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  .field input, .field select {
+  .field input, .field select, .field textarea {
     width: 100%;
     background: var(--panel-2);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 7px 9px;
-    border-radius: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
     font-size: 13px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
   }
+  .field input:hover, .field select:hover, .field textarea:hover { border-color: var(--border-strong); }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.14); outline: none; }
+  .inspector-card {
+    padding: 11px;
+    background: rgba(24,39,61,.82);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .inspector-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+  .inspector-card.clickable:hover { background: var(--panel-2); border-color: var(--accent); }
   .empty-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
   .row { display: flex; gap: 8px; }
   .row > * { flex: 1; }
@@ -169,17 +254,17 @@
     cursor: grab;
   }
   .node rect {
-    rx: 10; ry: 10;
+    rx: 12; ry: 12;
     stroke-width: 2;
   }
   .node circle.body { stroke-width: 2; }
   .node polygon.body { stroke-width: 2; cursor: grab; }
   .node.startEvent circle.body { fill: #14532d; stroke: var(--green); }
   .node.endEvent circle.body   { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
-  .node.userTask rect { fill: #1e3a5f; stroke: var(--accent); }
-  .node.task rect     { fill: #1e293b; stroke: #64748b; }
-  .node.serviceTask rect { fill: #164e4a; stroke: #2dd4bf; }
-  .node.scriptTask rect { fill: #1e1b4b; stroke: #a78bfa; }
+  .node.userTask rect { fill: #17385f; stroke: #60a5fa; }
+  .node.task rect     { fill: #1b2b42; stroke: #8aa0ba; }
+  .node.serviceTask rect { fill: #104c49; stroke: #2dd4bf; }
+  .node.scriptTask rect { fill: #28205d; stroke: #a78bfa; }
   .node.exclusiveGateway polygon.body { fill: #422006; stroke: var(--amber); }
   .node.errorEndEvent circle.body { fill: #450a0a; stroke: var(--red); stroke-width: 5; }
   .node.errorBoundaryEvent circle.body { fill: #1f0a0a; stroke: var(--red); stroke-width: 3; }
@@ -187,21 +272,55 @@
   .node.intermediateMessageCatchEvent circle.body { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 2; }
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
   .node.messageStartEvent circle.body { fill: #14532d; stroke: #38bdf8; stroke-width: 2; }
-  .node .err-mark { fill: var(--red); font-size: 13px; font-weight: 700; text-anchor: middle; }
-  .node .msg-glyph rect { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
-  .node .msg-glyph path { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
+  .node { transition: filter .15s; }
+  .node:hover { filter: drop-shadow(0 6px 10px rgba(2,8,23,.38)); }
+  .node.selected { filter: drop-shadow(0 0 8px rgba(255,255,255,.24)); }
   .node.selected rect,
   .node.selected circle.body,
   .node.selected polygon.body { stroke: #fff; stroke-width: 3; }
   .node.selected.errorBoundaryEvent circle.body { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
-  .node .nid { fill: #cbd5e1; font-size: 11px; }
-  .node .roles { fill: var(--muted); font-size: 10px; }
+  .node .nid { fill: #d6e0ed; font-size: 10.5px; }
+  .node .roles { fill: #b7c5d7; font-size: 10px; }
+  .node .node-title { font-size: 13.5px; font-weight: 650; }
   .node .event-name { font-size: 12px; }
-  .node .gw-mark { fill: var(--amber); font-size: 22px; font-weight: 700; }
-  .node .user-marker circle { fill: #bfdbfe; stroke: #bfdbfe; }
-  .node .user-marker path { fill: none; stroke: #bfdbfe; stroke-width: 1.5; }
+  .node .node-icon { color: #dbeafe; pointer-events: none; }
+  .node .node-separator { stroke: rgba(203, 213, 225, .18); stroke-width: 1; pointer-events: none; }
+  .node.startEvent .node-icon { color: #86efac; }
+  .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon { color: #7dd3fc; }
+  .node.endEvent .node-icon, .node.errorEndEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: #fca5a5; }
+  .node.exclusiveGateway .node-icon { color: #fbbf24; }
+  .node.task .node-icon { color: #d6e0ed; }
+  .node.serviceTask .node-icon { color: #99f6e4; }
+  .node.scriptTask .node-icon { color: #ddd6fe; }
+  .node .status-icon { color: #bfdbfe; pointer-events: none; }
   .node .mi-marker line { stroke: #bfdbfe; stroke-width: 1.6; }
+  .node .connect-handle { opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; }
+  .node:hover .connect-handle,
+  .node.selected .connect-handle,
+  .node.connect-source .connect-handle { opacity: 1; pointer-events: all; }
+  .node .connect-handle .handle-hit { fill: transparent; stroke: none; cursor: crosshair; }
+  .node .connect-handle .handle-dot {
+    fill: #0b1728;
+    stroke: #60a5fa;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    cursor: crosshair;
+  }
+  .node .connect-handle:hover .handle-dot { fill: #2563eb; stroke: #dbeafe; }
+  .node.connect-source rect,
+  .node.connect-source circle.body,
+  .node.connect-source polygon.body { stroke: #60a5fa; stroke-width: 3; }
+  .node.connect-target-available rect,
+  .node.connect-target-available circle.body,
+  .node.connect-target-available polygon.body { stroke: #34d399; stroke-width: 3; }
+  .node.connect-target-hover { filter: drop-shadow(0 0 10px rgba(52,211,153,.72)); }
+  .node.connect-target-hover rect,
+  .node.connect-target-hover circle.body,
+  .node.connect-target-hover polygon.body { stroke: #a7f3d0; stroke-width: 4; }
+  .node.connect-target-invalid rect,
+  .node.connect-target-invalid circle.body,
+  .node.connect-target-invalid polygon.body { stroke: #f87171; stroke-width: 3; }
 
   .lane rect.body {
     fill: rgba(59, 130, 246, .08);
@@ -220,16 +339,33 @@
     cursor: nwse-resize;
   }
 
-  .edge path { fill: none; stroke: #64748b; stroke-width: 2; cursor: pointer; }
-  .edge.auto path { stroke-dasharray: 6 4; }
-  .edge.selected path { stroke: var(--amber); stroke-width: 3; }
-  .edge.error path { stroke: var(--red); stroke-dasharray: 5 4; }
-  .edge.error text { fill: var(--red); }
-  .edge.error .lblbg { fill: var(--bg); opacity: .85; }
-  .edge text { fill: #cbd5e1; font-size: 11px; cursor: pointer; }
-  .edge .roles { fill: var(--muted); font-size: 10px; }
-  .edge .cond { fill: var(--amber); font-size: 10px; }
-  .edge .lblbg { fill: var(--bg); opacity: .85; }
+  .edge .edge-line { fill: none; stroke: #93a8c2; stroke-width: 2.2; pointer-events: none; transition: stroke .15s, stroke-width .15s; }
+  .edge .edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; pointer-events: stroke; }
+  .edge.auto .edge-line { stroke-dasharray: 7 5; }
+  .edge:hover .edge-line, .edge.hovered .edge-line { stroke: var(--accent-2); stroke-width: 3; }
+  .edge.selected .edge-line { stroke: var(--amber); stroke-width: 3.2; }
+  .edge.error .edge-line { stroke: #f87171; stroke-dasharray: 6 5; }
+  .edge-label { cursor: pointer; }
+  .edge-label .label-bg { fill: rgba(9,17,31,.96); stroke: #3d526d; stroke-width: 1; }
+  .edge:hover .edge-label .label-bg, .edge.hovered .edge-label .label-bg { stroke: var(--accent-2); }
+  .edge.selected .edge-label .label-bg { stroke: var(--amber); }
+  .edge.error .edge-label .label-bg { stroke: #f87171; }
+  .edge-label .label-main { fill: #f1f5f9; font-size: 11px; font-weight: 650; }
+  .edge-label .label-meta { fill: #afbdd0; font-size: 9.5px; }
+  .edge-label .condition-indicator path { fill: rgba(245,158,11,.2); stroke: #fbbf24; stroke-width: 1.2; }
+  .edge-label .condition-indicator circle { fill: #fbbf24; }
+  .edge.error .edge-label .label-meta { fill: #fca5a5; }
+  #connectionPreview { pointer-events: none; }
+  #connectionPreview .preview-line {
+    fill: none;
+    stroke: #60a5fa;
+    stroke-width: 2.5;
+    stroke-dasharray: 7 5;
+    vector-effect: non-scaling-stroke;
+  }
+  #connectionPreview.invalid .preview-line { stroke: #f87171; }
+  #connectionPreview .preview-end { fill: #60a5fa; stroke: #dbeafe; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  #connectionPreview.invalid .preview-end { fill: #f87171; }
 
   /* JS Editor Modal Overlay */
   .modal-overlay {
@@ -357,43 +493,104 @@
     line-height: 1.5;
   }
   .validation-list li { margin-bottom: 8px; color: #fecaca; }
+  .js-editor-layout { display: flex; flex-direction: row; gap: 20px; }
+  .js-code-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .js-variables-panel { width: 280px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-height: 0; }
+  .js-variables-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding-right: 4px; }
+  .validation-modal-container { max-width: 720px; max-height: 75vh; }
+
+  @media (max-width: 1050px) {
+    header { gap: 8px; }
+    .toolbar-identity { flex-basis: 100%; }
+    .toolbar-group { flex: 1 1 auto; }
+    aside { width: 310px; }
+  }
+  @media (max-width: 820px) {
+    .js-editor-layout { flex-direction: column; overflow-y: auto; }
+    .js-code-column { min-height: 320px; }
+    .js-variables-panel { width: 100%; max-height: 280px; }
+    .modal-container { width: 94vw; height: 92vh; }
+    .button-label { display: none; }
+    .button-icon { margin-right: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Workflow Editor</h1>
-  <input id="wfName" class="wf-name" placeholder="Workflow name" />
-  <button id="addStepBtn" class="primary">+ Add Node</button>
-  <button id="addPhaseBtn">+ Add Lane</button>
-  <button id="connectBtn">Connect Flow</button>
+<header class="app-toolbar">
+  <div class="toolbar-identity">
+    <div class="app-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.5"/><rect x="16.5" y="4" width="5" height="5" rx="1"/><rect x="16.5" y="15" width="5" height="5" rx="1"/><path d="M7.5 12h4.5c2.5 0 2-5.5 4.5-5.5M12 12c2.5 0 2 5.5 4.5 5.5"/></svg>
+    </div>
+    <h1>Workflow Editor</h1>
+    <input id="wfName" class="wf-name" placeholder="Workflow name" aria-label="Workflow name" />
+  </div>
+  <div class="toolbar-group" aria-label="Authoring actions">
+    <button id="addStepBtn" class="primary" title="Add a workflow node"><svg class="button-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="button-label">Add Node</span></button>
+    <button id="addPhaseBtn" title="Add a swimlane"><svg class="button-icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg><span class="button-label">Add Lane</span></button>
+    <button id="connectBtn" title="Connect two nodes with a sequence flow"><svg class="button-icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg><span class="button-label">Connect Flow</span></button>
+  </div>
   <div class="spacer"></div>
-  <button id="newBtn">New</button>
-  <button id="loadBtn">Load JSON</button>
-  <button id="saveBtn">Save JSON</button>
+  <div class="toolbar-group" aria-label="File actions">
+    <button id="newBtn" title="Create a new workflow"><svg class="button-icon" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg><span class="button-label">New</span></button>
+    <button id="loadBtn" title="Load workflow JSON"><svg class="button-icon" viewBox="0 0 24 24"><path d="M4 19h16V8h-8l-2-3H4z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg><span class="button-label">Load JSON</span></button>
+    <button id="saveBtn" title="Save workflow JSON"><svg class="button-icon" viewBox="0 0 24 24"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg><span class="button-label">Save JSON</span></button>
+  </div>
   <input id="fileInput" type="file" accept="application/json,.json" hidden />
 </header>
 
 <main>
   <div class="canvas-wrap">
-    <svg id="svg">
+    <svg id="svg" role="application" aria-label="Workflow diagram canvas">
       <defs>
+        <pattern id="gridPattern" width="24" height="24" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="1" fill="#263b59" />
+        </pattern>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
                 markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0,0 L10,5 L0,10 z" fill="#64748b" />
+          <path d="M0,0 L10,5 L0,10 z" fill="#93a8c2" />
         </marker>
         <marker id="arrowSel" viewBox="0 0 10 10" refX="9" refY="5"
                 markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
         </marker>
+        <marker id="arrowPreview" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa" />
+        </marker>
+        <marker id="arrowError" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#f87171" />
+        </marker>
+        <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 20c.8-4 3-6 7-6s6.2 2 7 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+        <symbol id="icon-task" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8 12 2.2 2.2L16 8.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-service" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+        <symbol id="icon-script" viewBox="0 0 24 24"><path d="m9 7-5 5 5 5M15 7l5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-start" viewBox="0 0 24 24"><path d="m9 7 8 5-8 5z" fill="currentColor"/></symbol>
+        <symbol id="icon-end" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
+        <symbol id="icon-gateway" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+        <symbol id="icon-message" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-error" viewBox="0 0 24 24"><path d="M12 5v9M12 18v.1" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
+        <symbol id="icon-assignee" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.3 2.4-5 5.5-5 1.4 0 2.6.3 3.5 1M15 16l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       </defs>
+      <rect id="gridSurface" x="-100000" y="-100000" width="200000" height="200000" fill="url(#gridPattern)"></rect>
       <g id="lanes"></g>
       <g id="edges"></g>
+      <g id="connectionPreview"></g>
       <g id="nodes"></g>
     </svg>
     <div class="hint" id="hint"></div>
+    <div class="canvas-controls" aria-label="Canvas zoom controls">
+      <button id="zoomOutBtn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+      <button id="zoomResetBtn" type="button" class="zoom-readout" title="Reset zoom to 100%">100%</button>
+      <button id="zoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+      <button id="fitViewBtn" type="button" class="fit-view" title="Fit the workflow to the canvas">Fit</button>
+    </div>
   </div>
 
-  <div class="resizer" id="sidebar-resizer"></div>
+  <div class="resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabindex="0"></div>
 
   <aside id="inspector"></aside>
 </main>
@@ -405,14 +602,14 @@
       <h3 id="js-editor-title">Edit JavaScript Code</h3>
       <button type="button" class="close-btn" onclick="closeJsEditor()">&times;</button>
     </div>
-    <div class="modal-body" style="display: flex; flex-direction: row; gap: 20px;">
+    <div class="modal-body js-editor-layout">
       <!-- Code Editor Column -->
-      <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+      <div class="js-code-column">
         <textarea id="js-editor-textarea" class="modal-textarea" spellcheck="false" placeholder="// Write your JavaScript code here..."></textarea>
       </div>
       <!-- Variables Panel Column -->
-      <div style="width: 280px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-height: 0;">
-        <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding-right: 4px;">
+      <div class="js-variables-panel">
+        <div class="js-variables-scroll">
           <!-- User Variables Section -->
           <div>
             <h4 style="margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em;">Available Variables</h4>
@@ -436,7 +633,7 @@
 
 <!-- Save Validation Modal Overlay -->
 <div id="validation-modal" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="validation-title">
-  <div class="modal-container" style="max-width: 720px; max-height: 75vh;">
+  <div class="modal-container validation-modal-container">
     <div class="modal-header">
       <h3 id="validation-title">Workflow cannot be saved</h3>
       <button id="validation-close" type="button" class="close-btn" onclick="closeValidationErrors()">&times;</button>
@@ -452,11 +649,12 @@
 </div>
 
 <script>
-const NODE_W = 170, NODE_H = 64;
-const EVENT_D = 56;
-const GATEWAY_D = 72;
+const NODE_W = 190, NODE_H = 88;
+const EVENT_D = 64;
+const GATEWAY_D = 76;
 const BOUNDARY_D = 28;
 const MIN_LANE_W = 220, MIN_LANE_H = 150;
+const ZOOM_MIN = 0.35, ZOOM_MAX = 2.5;
 const NODE_TYPE = {
   START_EVENT: "startEvent",
   END_EVENT: "endEvent",
@@ -580,18 +778,31 @@ let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
 let connectMode = false;
 let connectSource = null;     // node id when picking target
+let connectionDrag = null;    // {pointerId, sourceId, side, start, current, hoverTargetId, invalidTargetId, moved}
 let drag = null;              // {id, dx, dy}
 let laneDrag = null;          // {id, dx, dy, nodeOffsets}
 let laneResize = null;        // {id, dx, dy}
 
 const svg = document.getElementById('svg');
+const canvasWrap = document.querySelector('.canvas-wrap');
+const gridSurface = document.getElementById('gridSurface');
 const lanesG = document.getElementById('lanes');
 const nodesG = document.getElementById('nodes');
 const edgesG = document.getElementById('edges');
+const connectionPreviewG = document.getElementById('connectionPreview');
 const inspector = document.getElementById('inspector');
 const hintEl = document.getElementById('hint');
 const wfNameInput = document.getElementById('wfName');
 const resizer = document.getElementById('sidebar-resizer');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomResetBtn = document.getElementById('zoomResetBtn');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const fitViewBtn = document.getElementById('fitViewBtn');
+
+let viewState = { x: 0, y: 0, zoom: 1 };
+let canvasPan = null;
+let spacePressed = false;
+let suppressCanvasClick = false;
 
 function newModel() {
   return {
@@ -926,46 +1137,121 @@ function applyFlowInvariants(flow) {
     flow.cancelRemainingInstances = false;
   }
 }
-function appendUserTaskMarker(g) {
-  const icon = el("g", { class: "user-marker", transform: "translate(8,8)" });
-  icon.appendChild(el("circle", { cx: 5, cy: 4, r: 3 }));
-  icon.appendChild(el("path", { d: "M1 14 Q5 10 9 14" }));
-  g.appendChild(icon);
+const NODE_ICON_SYMBOL = {
+  [NODE_TYPE.START_EVENT]: "icon-start",
+  [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
+  [NODE_TYPE.END_EVENT]: "icon-end",
+  [NODE_TYPE.ERROR_END_EVENT]: "icon-error",
+  [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error",
+  [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
+  [NODE_TYPE.USER_TASK]: "icon-user",
+  [NODE_TYPE.TASK]: "icon-task",
+  [NODE_TYPE.SERVICE_TASK]: "icon-service",
+  [NODE_TYPE.SCRIPT_TASK]: "icon-script",
+  [NODE_TYPE.EXCLUSIVE_GATEWAY]: "icon-gateway"
+};
+
+function appendSvgTitle(parent, text) {
+  const title = el("title", {});
+  title.textContent = text;
+  parent.appendChild(title);
 }
+
+function truncateText(value, maxLength) {
+  const text = String(value ?? "").trim();
+  return text.length > maxLength ? text.slice(0, Math.max(1, maxLength - 1)).trimEnd() + "…" : text;
+}
+
+function wrapTextLines(value, maxChars, maxLines = 2) {
+  const text = String(value ?? "").trim() || "Unnamed";
+  const words = text.split(/\s+/);
+  const lines = [];
+  let current = "";
+  let truncated = false;
+
+  for (const originalWord of words) {
+    let word = originalWord;
+    while (word.length > maxChars) {
+      if (current) { lines.push(current); current = ""; }
+      lines.push(word.slice(0, maxChars));
+      word = word.slice(maxChars);
+    }
+    if (!word) continue;
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxChars) current = candidate;
+    else { if (current) lines.push(current); current = word; }
+  }
+  if (current) lines.push(current);
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    truncated = true;
+  }
+  if (truncated) {
+    const last = lines[maxLines - 1];
+    lines[maxLines - 1] = last.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
+  }
+  return lines;
+}
+
+function appendTextLines(parent, lines, attrs, lineHeight = 16) {
+  const text = el("text", attrs);
+  lines.forEach((line, index) => {
+    const span = el("tspan", { x: attrs.x, dy: index === 0 ? 0 : lineHeight });
+    span.textContent = line;
+    text.appendChild(span);
+  });
+  parent.appendChild(text);
+  return text;
+}
+
+function appendNodeIcon(g, nodeType, x, y, size, className = "node-icon") {
+  const symbol = NODE_ICON_SYMBOL[nodeType] || "icon-task";
+  const icon = el("use", { href: `#${symbol}`, x, y, width: size, height: size, class: className });
+  g.appendChild(icon);
+  return icon;
+}
+
 function appendMultiInstanceMarker(g, mode) {
-  const marker = el("g", { class: "mi-marker", transform: `translate(${NODE_W / 2 - 9},${NODE_H - 9})` });
+  const marker = el("g", { class: "mi-marker", transform: `translate(${NODE_W - 49},${NODE_H - 13})` });
   for (let i = 0; i < 3; i++) {
     if (mode === "sequential") marker.appendChild(el("line", { x1: 0, y1: i * 3, x2: 18, y2: i * 3 }));
     else marker.appendChild(el("line", { x1: i * 6 + 2, y1: 0, x2: i * 6 + 2, y2: 8 }));
   }
+  appendSvgTitle(marker, mode === "sequential" ? "Sequential multi-instance" : "Parallel multi-instance");
   g.appendChild(marker);
 }
-function appendAutomaticMarker(g) {
-  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
-  t.textContent = "AUTO";
-  g.appendChild(t);
-}
-function appendServiceMarker(g) {
-  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
-  t.textContent = "SVC";
-  g.appendChild(t);
-}
-function appendScriptMarker(g) {
-  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
-  t.textContent = "SCRIPT";
-  g.appendChild(t);
-}
 function appendAssigneeMarker(g) {
-  const t = el("text", { x: NODE_W - 8, y: 14, class: "nid", "text-anchor": "end" });
-  t.textContent = "ASGN";
-  g.appendChild(t);
+  const marker = el("g", { class: "status-icon" });
+  const icon = el("use", { href: "#icon-assignee", x: NODE_W - 24, y: NODE_H - 22, width: 15, height: 15 });
+  marker.appendChild(icon);
+  appendSvgTitle(marker, "Direct assignee expression configured");
+  g.appendChild(marker);
 }
-// Envelope glyph drawn inside a message catch event's double-ring circle.
-function appendMessageGlyph(g, r) {
-  const glyph = el("g", { class: "msg-glyph", transform: `translate(${r - 8},${r - 5})` });
-  glyph.appendChild(el("rect", { x: 0, y: 0, width: 16, height: 10, rx: 1, ry: 1 }));
-  glyph.appendChild(el("path", { d: "M0 0 L8 6 L16 0" }));
-  g.appendChild(glyph);
+
+function connectionHandlePoints(node) {
+  const size = nodeSize(node);
+  return [
+    { side: "top", x: size.w / 2, y: 0 },
+    { side: "right", x: size.w, y: size.h / 2 },
+    { side: "bottom", x: size.w / 2, y: size.h },
+    { side: "left", x: 0, y: size.h / 2 }
+  ];
+}
+
+function appendConnectionHandles(g, node) {
+  if (connectionSourceProblem(node)) return;
+  for (const point of connectionHandlePoints(node)) {
+    const handle = el("g", {
+      class: `connect-handle connect-handle-${point.side}`,
+      transform: `translate(${point.x},${point.y})`,
+      "data-side": point.side
+    });
+    appendSvgTitle(handle, `Connect from ${point.side}`);
+    handle.appendChild(el("circle", { class: "handle-hit", cx: 0, cy: 0, r: 14 }));
+    handle.appendChild(el("circle", { class: "handle-dot", cx: 0, cy: 0, r: 5 }));
+    handle.addEventListener("pointerdown", event => onConnectionHandlePointerDown(event, node, point.side));
+    g.appendChild(handle);
+  }
 }
 
 /* ---------- Sample seed ---------- */
@@ -1074,10 +1360,12 @@ function segmentsIntersect(p1, p2, q1, q2) {
   return (lambda >= 0 && lambda <= 1) && (gamma >= 0 && gamma <= 1);
 }
 
-function lineIntersectsNode(p1, p2, node) {
+function lineIntersectsNode(p1, p2, node, padding = 14) {
   if (isBoundaryEventType(node.type)) return false; // attached to host; not a routing obstacle
   const size = nodeSize(node);
-  const x = node.x, y = node.y, w = size.w, h = size.h;
+  const pos = nodePosition(node);
+  const x = pos.x - padding, y = pos.y - padding;
+  const w = size.w + padding * 2, h = size.h + padding * 2;
   const tl = { x, y };
   const tr = { x: x + w, y };
   const bl = { x, y: y + h };
@@ -1086,6 +1374,13 @@ function lineIntersectsNode(p1, p2, node) {
          segmentsIntersect(p1, p2, tr, br) ||
          segmentsIntersect(p1, p2, bl, br) ||
          segmentsIntersect(p1, p2, tl, bl);
+}
+
+function pullPointToward(point, toward, distance) {
+  const dx = toward.x - point.x;
+  const dy = toward.y - point.y;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  return { x: point.x + dx / len * distance, y: point.y + dy / len * distance };
 }
 
 
@@ -1125,100 +1420,77 @@ function renderLanes() {
 function renderNodes() {
   nodesG.innerHTML = "";
   for (const node of model.flowNodes) {
-    // A boundary event is anchored to its host's border; compute its render
-    // position from the host each redraw so it always moves with the host.
-    let renderX = node.x, renderY = node.y;
-    let host = null;
-    if (isBoundaryEventType(node.type)) {
-      host = getNode(node.attachedToRef);
-      if (host) {
-        const hs = nodeSize(host);
-        renderX = host.x + hs.w - BOUNDARY_D / 2;
-        renderY = host.y + hs.h - BOUNDARY_D / 2;
-      }
-    }
-    const g = el("g", { class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''}`,
-                        transform: `translate(${renderX},${renderY})`, "data-id": node.id });
+    const pos = nodePosition(node);
+    const g = el("g", {
+      class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''}`,
+      transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
+    });
     const marker = model.initialEventId === node.id ? " · START" : "";
+    const roles = roleSummary(node.roles, 20);
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}`);
+
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
-      const mark = el("text", { x: r, y: r + 4, class: "err-mark" });
-      mark.textContent = "!";
-      g.appendChild(mark);
+      appendNodeIcon(g, node.type, r - 7, r - 7, 14);
     } else if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       if (isMessageCatchEventType(node.type)) {
-        // Intermediate catch: thin double-ring + envelope glyph (no thick ring).
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
-        appendMessageGlyph(g, r);
-      } else if (isMessageStartEventType(node.type)) {
-        // Message start: thin single-ring (start style) + envelope glyph.
-        appendMessageGlyph(g, r);
-      } else if (isErrorEndEventType(node.type)) {
-        const mark = el("text", { x: r, y: r + 6, class: "err-mark", "font-size": "22" });
-        mark.textContent = "!";
-        g.appendChild(mark);
       }
-      const idText = el("text", { x: r, y: EVENT_D + 12, class: "nid", "text-anchor": "middle" });
+      appendNodeIcon(g, node.type, r - 11, r - 11, 22);
+      const idText = el("text", { x: r, y: EVENT_D + 15, class: "nid", "text-anchor": "middle" });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
-      const nameText = el("text", { x: r, y: EVENT_D + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
-      nameText.textContent = node.name;
-      g.appendChild(nameText);
-      if (isStartEventType(node.type)) {
-        const roles = roleSummary(node.roles);
-        if (roles) {
-          const rolesText = el("text", { x: r, y: EVENT_D + 40, class: "roles", "text-anchor": "middle" });
-          rolesText.textContent = roles;
-          g.appendChild(rolesText);
-        }
+      const nameLines = wrapTextLines(node.name, 18, 2);
+      appendTextLines(g, nameLines, {
+        x: r, y: EVENT_D + 32, class: "event-name", "text-anchor": "middle", "font-weight": "600"
+      }, 14);
+      if (isStartEventType(node.type) && roles) {
+        const rolesY = EVENT_D + 32 + (nameLines.length - 1) * 14 + 14;
+        const rolesText = el("text", { x: r, y: rolesY, class: "roles", "text-anchor": "middle" });
+        rolesText.textContent = roles;
+        g.appendChild(rolesText);
       }
     } else if (isGatewayType(node.type)) {
       const d = GATEWAY_D, h = d / 2;
       g.appendChild(el("polygon", { class: "body", points: `${h},0 ${d},${h} ${h},${d} 0,${h}` }));
-      const mark = el("text", { x: h, y: h + 8, class: "gw-mark", "text-anchor": "middle" });
-      mark.textContent = "\u00D7";
-      g.appendChild(mark);
-      const idText = el("text", { x: h, y: d + 12, class: "nid", "text-anchor": "middle" });
+      appendNodeIcon(g, node.type, h - 12, h - 12, 24);
+      const idText = el("text", { x: h, y: d + 15, class: "nid", "text-anchor": "middle" });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}`;
       g.appendChild(idText);
-      const nameText = el("text", { x: h, y: d + 28, class: "event-name", "text-anchor": "middle", "font-weight": "600" });
-      nameText.textContent = node.name;
-      g.appendChild(nameText);
+      appendTextLines(g, wrapTextLines(node.name, 18, 2), {
+        x: h, y: d + 32, class: "event-name", "text-anchor": "middle", "font-weight": "600"
+      }, 14);
     } else {
-      g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 10, ry: 10 }));
-      const idText = el("text", { x: 10, y: 18, class: "nid" });
+      g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 12, ry: 12 }));
+      g.appendChild(el("line", { x1: 10, y1: 30, x2: NODE_W - 10, y2: 30, class: "node-separator" }));
+      g.appendChild(el("line", { x1: 10, y1: 68, x2: NODE_W - 10, y2: 68, class: "node-separator" }));
+      appendNodeIcon(g, node.type, 11, 8, 16);
+      const idText = el("text", { x: 34, y: 20, class: "nid" });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
-      const nameText = el("text", { x: NODE_W / 2, y: 42, "text-anchor": "middle", "font-weight": "600" });
-      nameText.textContent = node.name;
-      g.appendChild(nameText);
+      const nameLines = wrapTextLines(node.name, 24, 2);
+      appendTextLines(g, nameLines, {
+        x: NODE_W / 2, y: nameLines.length === 1 ? 53 : 44,
+        class: "node-title", "text-anchor": "middle"
+      }, 16);
       if (isUserTaskType(node.type)) {
-        const roles = roleSummary(node.roles);
         if (roles) {
-          const rolesText = el("text", { x: NODE_W / 2, y: 58, class: "roles", "text-anchor": "middle" });
+          const rolesText = el("text", { x: 12, y: 81, class: "roles" });
           rolesText.textContent = roles;
           g.appendChild(rolesText);
         }
-        appendUserTaskMarker(g);
         if (node.multiInstance) appendMultiInstanceMarker(g, node.multiInstance.mode);
-        if (node.assignee) {
-          appendAssigneeMarker(g);
-        }
+        if (node.assignee) appendAssigneeMarker(g);
       }
-      if (isAutomaticType(node.type)) appendAutomaticMarker(g);
-      if (isServiceTaskType(node.type)) appendServiceMarker(g);
-      if (isScriptTaskType(node.type)) appendScriptMarker(g);
     }
 
+    appendConnectionHandles(g, node);
+
     if (isBoundaryEventType(node.type)) {
-      // Boundary events are selectable but not independently draggable; they
-      // move with their host. In connect mode they behave like any node: they
-      // can be picked as a source (to draw the error flow) but are blocked as a
-      // target inside handleConnectClick.
       g.addEventListener("pointerdown", (e) => {
         if (connectMode) { e.stopPropagation(); handleConnectClick(node); return; }
         e.stopPropagation();
@@ -1229,154 +1501,449 @@ function renderNodes() {
     }
     nodesG.appendChild(g);
   }
+  updateConnectionVisualState();
+}
+
+function flowLabelInfo(flow, source) {
+  const fallback = flowLabel(flow, source);
+  const main = fallback || `Flow #${flow.id}`;
+  const mainLines = wrapTextLines(main, 30, 2);
+  const metadata = [];
+  const roles = normalizeRoles(flow.roles);
+  if (isUserTaskType(source.type) && flow.isSelectable === false) metadata.push("engine-only");
+  if (flow.cancelRemainingInstances) metadata.push("interrupt");
+  if (roles.length) metadata.push(roles.join(", "));
+  if (flow.isDefault) metadata.push("default");
+  const hasCondition = typeof flow.condition === "string" && flow.condition.trim() !== "";
+  const metaFull = metadata.join(" · ");
+  const metaDisplay = truncateText(metaFull, 46);
+  const maxLineLength = Math.max(...mainLines.map(line => line.length), metaDisplay.length + (hasCondition ? 3 : 0), 9);
+  const width = Math.min(230, Math.max(74, maxLineLength * 6.2 + 20));
+  const hasFooter = !!metaDisplay || hasCondition;
+  const metaTextWidth = Math.min(width - 20, metaDisplay.length * 5.2);
+  const footerWidth = metaTextWidth + (hasCondition ? 8 : 0) + (hasCondition && metaDisplay ? 6 : 0);
+  const height = 12 + mainLines.length * 13 + (hasFooter ? 14 : 0);
+  const tooltipMeta = [...metadata, ...(hasCondition ? ["condition configured"] : [])].join(" · ");
+  return {
+    mainLines, metaDisplay, hasCondition, hasFooter, metaTextWidth, footerWidth, width, height,
+    title: `Flow #${flow.id}: ${main}${tooltipMeta ? ` · ${tooltipMeta}` : ""}`
+  };
+}
+
+function appendFlowLabel(g, info, x, y) {
+  const labelG = el("g", { class: "edge-label", transform: `translate(${x},${y})` });
+  appendSvgTitle(labelG, info.title);
+  labelG.appendChild(el("rect", {
+    class: "label-bg", x: -info.width / 2, y: -info.height / 2,
+    width: info.width, height: info.height, rx: 7, ry: 7
+  }));
+  const top = -info.height / 2;
+  appendTextLines(labelG, info.mainLines, {
+    x: 0, y: top + 15, class: "label-main", "text-anchor": "middle"
+  }, 13);
+  if (info.hasFooter) {
+    const metaY = top + 15 + (info.mainLines.length - 1) * 13 + 14;
+    let footerX = -info.footerWidth / 2;
+    if (info.hasCondition) {
+      const icon = el("g", {
+        class: "condition-indicator",
+        transform: `translate(${footerX + 4},${metaY - 3})`
+      });
+      appendSvgTitle(icon, "Condition configured");
+      icon.appendChild(el("path", { d: "M 0 -4 L 4 0 L 0 4 L -4 0 Z" }));
+      icon.appendChild(el("circle", { cx: 0, cy: 0, r: 1.1 }));
+      labelG.appendChild(icon);
+      footerX += 8 + (info.metaDisplay ? 6 : 0);
+    }
+    if (info.metaDisplay) {
+      const meta = el("text", { x: footerX, y: metaY, class: "label-meta", "text-anchor": "start" });
+      meta.textContent = info.metaDisplay;
+      labelG.appendChild(meta);
+    }
+  }
+  g.appendChild(labelG);
+}
+
+function edgeLinePoint(start, end, t) {
+  return { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+}
+
+function edgeQuadraticPoint(start, control, end, t) {
+  const inverseT = 1 - t;
+  return {
+    x: inverseT * inverseT * start.x + 2 * inverseT * t * control.x + t * t * end.x,
+    y: inverseT * inverseT * start.y + 2 * inverseT * t * control.y + t * t * end.y
+  };
+}
+
+function edgeCubicPoint(start, control1, control2, end, t) {
+  const inverseT = 1 - t;
+  return {
+    x: inverseT ** 3 * start.x + 3 * inverseT * inverseT * t * control1.x + 3 * inverseT * t * t * control2.x + t ** 3 * end.x,
+    y: inverseT ** 3 * start.y + 3 * inverseT * inverseT * t * control1.y + 3 * inverseT * t * t * control2.y + t ** 3 * end.y
+  };
+}
+
+function edgeLabelBounds(point, info) {
+  return {
+    left: point.x - info.width / 2,
+    right: point.x + info.width / 2,
+    top: point.y - info.height / 2,
+    bottom: point.y + info.height / 2
+  };
+}
+
+function edgeNodeBounds(node, padding = 0) {
+  const pos = nodePosition(node);
+  const size = nodeSize(node);
+  let left = pos.x, right = pos.x + size.w;
+  let top = pos.y, bottom = pos.y + size.h;
+  // Events and gateways have their readable id/name/roles below the BPMN shape.
+  if (!isBoundaryEventType(node.type) && (isEventType(node.type) || isGatewayType(node.type))) {
+    const visualWidth = Math.max(size.w, 150);
+    const midX = pos.x + size.w / 2;
+    left = midX - visualWidth / 2;
+    right = midX + visualWidth / 2;
+    bottom += isStartEventType(node.type) ? 74 : 62;
+  }
+  return {
+    left: left - padding, right: right + padding,
+    top: top - padding, bottom: bottom + padding
+  };
+}
+
+function edgeRectsOverlap(first, second, gap = 0) {
+  return first.left < second.right + gap && first.right + gap > second.left &&
+         first.top < second.bottom + gap && first.bottom + gap > second.top;
+}
+
+function edgeRectOverlapArea(first, second, gap = 0) {
+  const overlapX = Math.min(first.right + gap / 2, second.right + gap / 2) -
+                   Math.max(first.left - gap / 2, second.left - gap / 2);
+  const overlapY = Math.min(first.bottom + gap / 2, second.bottom + gap / 2) -
+                   Math.max(first.top - gap / 2, second.top - gap / 2);
+  return overlapX > 0 && overlapY > 0 ? overlapX * overlapY : 0;
+}
+
+function buildEdgeGeometry(flow, group, selfGroup) {
+  const source = getNode(flow.sourceRef);
+  const target = getNode(flow.targetRef);
+  if (!source || !target) return null;
+
+  if (source.id === target.id) {
+    const info = flowLabelInfo(flow, source);
+    const pos = nodePosition(source);
+    const size = nodeSize(source);
+    const loopIndex = selfGroup ? selfGroup.flows.findIndex(item => item.id === flow.id) : 0;
+    const loopCount = selfGroup?.flows.length || 1;
+    const maxHeight = selfGroup?.maxLabelHeight || info.height;
+    const stackOffset = (loopIndex - (loopCount - 1) / 2) * (maxHeight + 12);
+    const right = pos.x + size.w;
+    const start = { x: right, y: pos.y + size.h * .38 };
+    const end = { x: right, y: pos.y + size.h * .72 };
+    const labelReach = Math.max(78, info.width / 2 + 20) + Math.abs(stackOffset) * .14;
+    const controlReach = labelReach + 20;
+    const control1 = { x: right + controlReach, y: start.y - 54 + stackOffset };
+    const control2 = { x: right + controlReach, y: end.y + 54 + stackOffset };
+    const targetPoint = pullPointToward(end, control2, 5);
+    return {
+      d: `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${targetPoint.x} ${targetPoint.y}`,
+      pointAt: t => edgeCubicPoint(start, control1, control2, targetPoint, t),
+      labelPoint: { x: right + labelReach, y: pos.y + size.h / 2 + stackOffset }
+    };
+  }
+
+  const canonicalSource = getNode(group.a);
+  const canonicalTarget = getNode(group.b);
+  const canonicalStartCenter = center(canonicalSource);
+  const canonicalEndCenter = center(canonicalTarget);
+  const dx = canonicalEndCenter.x - canonicalStartCenter.x;
+  const dy = canonicalEndCenter.y - canonicalStartCenter.y;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  const normal = length > 1e-6 ? { x: -dy / length, y: dx / length } : { x: 0, y: 1 };
+  const midpoint = {
+    x: (canonicalStartCenter.x + canonicalEndCenter.x) / 2,
+    y: (canonicalStartCenter.y + canonicalEndCenter.y) / 2
+  };
+  const index = group.flows.findIndex(item => item.id === flow.id);
+  const laneIndex = index - (group.flows.length - 1) / 2;
+  const physicalOffset = laneIndex * group.laneSpacing + (group.detourOffset || 0);
+
+  if (Math.abs(physicalOffset) < 1e-6) {
+    const sourceCenter = center(source);
+    const targetCenter = center(target);
+    const start = borderPoint(source, targetCenter.x, targetCenter.y);
+    const end = borderPoint(target, sourceCenter.x, sourceCenter.y);
+    const targetPoint = pullPointToward(end, start, 5);
+    return {
+      d: `M ${start.x} ${start.y} L ${targetPoint.x} ${targetPoint.y}`,
+      pointAt: t => edgeLinePoint(start, targetPoint, t)
+    };
+  }
+
+  const control = {
+    x: midpoint.x + physicalOffset * 2 * normal.x,
+    y: midpoint.y + physicalOffset * 2 * normal.y
+  };
+  const start = borderPoint(source, control.x, control.y);
+  const end = borderPoint(target, control.x, control.y);
+  const targetPoint = pullPointToward(end, control, 5);
+  return {
+    d: `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${targetPoint.x} ${targetPoint.y}`,
+    pointAt: t => edgeQuadraticPoint(start, control, targetPoint, t)
+  };
+}
+
+function edgePointInsideBox(point, box) {
+  return point.x >= box.left && point.x <= box.right &&
+         point.y >= box.top && point.y <= box.bottom;
+}
+
+function edgeCurveHitsBox(geometry, box) {
+  const topLeft = { x: box.left, y: box.top };
+  const topRight = { x: box.right, y: box.top };
+  const bottomLeft = { x: box.left, y: box.bottom };
+  const bottomRight = { x: box.right, y: box.bottom };
+  let previous = geometry.pointAt(0);
+  if (edgePointInsideBox(previous, box)) return true;
+  // A sampled polyline keeps obstacle checks dependency-free while remaining
+  // precise enough for the editor's quadratic routes and smallest BPMN shape.
+  for (let index = 1; index <= 80; index++) {
+    const current = geometry.pointAt(index / 80);
+    if (edgePointInsideBox(current, box) ||
+        segmentsIntersect(previous, current, topLeft, topRight) ||
+        segmentsIntersect(previous, current, topRight, bottomRight) ||
+        segmentsIntersect(previous, current, bottomRight, bottomLeft) ||
+        segmentsIntersect(previous, current, bottomLeft, topLeft)) {
+      return true;
+    }
+    previous = current;
+  }
+  return false;
+}
+
+function routePairGeometries(group) {
+  const obstacles = model.flowNodes
+    .filter(node => node.id !== group.a && node.id !== group.b && !isBoundaryEventType(node.type))
+    .map(node => edgeNodeBounds(node, 14));
+  const buildAt = detourOffset => {
+    group.detourOffset = detourOffset;
+    return new Map(group.flows.map(flow => [flow.id, buildEdgeGeometry(flow, group, null)]));
+  };
+  const collisionCount = geometries => {
+    let collisions = 0;
+    for (const geometry of geometries.values()) {
+      for (const obstacle of obstacles) {
+        if (edgeCurveHitsBox(geometry, obstacle)) collisions++;
+      }
+    }
+    return collisions;
+  };
+
+  const direct = buildAt(0);
+  if (!obstacles.length || collisionCount(direct) === 0) return direct;
+
+  const canonicalStart = center(getNode(group.a));
+  const canonicalEnd = center(getNode(group.b));
+  const dx = canonicalEnd.x - canonicalStart.x;
+  const dy = canonicalEnd.y - canonicalStart.y;
+  const preferredSign = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? -1 : 1) : (dy >= 0 ? -1 : 1);
+  const centerDistance = Math.sqrt(dx * dx + dy * dy);
+  const maxDetour = Math.min(800, Math.max(360, centerDistance * .9));
+  let bestFallback = { geometries: direct, detourOffset: 0, collisions: collisionCount(direct) };
+
+  for (let distance = 48; distance <= maxDetour + .001; distance += 8) {
+    for (const sign of [preferredSign, -preferredSign]) {
+      const detourOffset = sign * distance;
+      const geometries = buildAt(detourOffset);
+      const collisions = collisionCount(geometries);
+      if (collisions === 0) return geometries;
+      if (collisions < bestFallback.collisions) {
+        bestFallback = { geometries, detourOffset, collisions };
+      }
+    }
+  }
+  group.detourOffset = bestFallback.detourOffset;
+  return bestFallback.geometries;
+}
+
+function buildPairLabelLayout(group, geometries, tStep, tDirection, centerOffset) {
+  const placements = new Map();
+  for (let index = 0; index < group.flows.length; index++) {
+    const flow = group.flows[index];
+    const laneIndex = index - (group.flows.length - 1) / 2;
+    const canonicalT = .5 + centerOffset + laneIndex * tStep * tDirection;
+    if (canonicalT < .16 || canonicalT > .84) return null;
+    const actualT = flow.sourceRef === group.a ? canonicalT : 1 - canonicalT;
+    const geometry = geometries.get(flow.id);
+    const point = geometry.pointAt(actualT);
+    const info = group.labelInfos.get(flow.id);
+    placements.set(flow.id, { point, box: edgeLabelBounds(point, info) });
+  }
+  return placements;
+}
+
+function scorePairLabelLayout(placements, nodeBoxes, reservedBoxes) {
+  const items = [...placements.values()];
+  let collisions = 0;
+  let overlapArea = 0;
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      if (edgeRectsOverlap(items[i].box, items[j].box, 10)) {
+        collisions++;
+        overlapArea += edgeRectOverlapArea(items[i].box, items[j].box, 10);
+      }
+    }
+    for (const nodeBox of nodeBoxes) {
+      if (edgeRectsOverlap(items[i].box, nodeBox, 6)) {
+        collisions++;
+        overlapArea += edgeRectOverlapArea(items[i].box, nodeBox, 6);
+      }
+    }
+    for (const reserved of reservedBoxes) {
+      if (edgeRectsOverlap(items[i].box, reserved, 10)) {
+        collisions++;
+        overlapArea += edgeRectOverlapArea(items[i].box, reserved, 10);
+      }
+    }
+  }
+  return { valid: collisions === 0, penalty: collisions * 1000000 + overlapArea };
 }
 
 function renderEdges() {
   edgesG.innerHTML = "";
+  const pathLayer = el("g", { class: "edge-path-layer" });
+  const labelLayer = el("g", { class: "edge-label-layer" });
+  edgesG.appendChild(pathLayer);
+  edgesG.appendChild(labelLayer);
+
+  const pairGroups = new Map();
+  const selfGroups = new Map();
   for (const flow of model.sequenceFlows) {
     const source = getNode(flow.sourceRef);
     const target = getNode(flow.targetRef);
     if (!source || !target) continue;
+    if (flow.sourceRef === flow.targetRef) {
+      if (!selfGroups.has(flow.sourceRef)) selfGroups.set(flow.sourceRef, { flows: [] });
+      selfGroups.get(flow.sourceRef).flows.push(flow);
+      continue;
+    }
+    const a = Math.min(flow.sourceRef, flow.targetRef);
+    const b = Math.max(flow.sourceRef, flow.targetRef);
+    const key = `${a}:${b}`;
+    if (!pairGroups.has(key)) pairGroups.set(key, { a, b, flows: [] });
+    pairGroups.get(key).flows.push(flow);
+  }
+  selfGroups.forEach(group => {
+    group.flows.sort((left, right) => left.id - right.id);
+    group.maxLabelHeight = Math.max(...group.flows.map(flow =>
+      flowLabelInfo(flow, getNode(flow.sourceRef)).height));
+  });
+
+  const geometries = new Map();
+  const labelPlacements = new Map();
+  const reservedBoxes = [];
+  const nodeBoxes = model.flowNodes.map(node => edgeNodeBounds(node));
+  const orderedGroups = [...pairGroups.values()].sort((left, right) => left.a - right.a || left.b - right.b);
+
+  for (const group of orderedGroups) {
+    group.flows.sort((left, right) => left.id - right.id);
+    group.labelInfos = new Map(group.flows.map(flow =>
+      [flow.id, flowLabelInfo(flow, getNode(flow.sourceRef))]));
+    const maxHeight = Math.max(...[...group.labelInfos.values()].map(info => info.height));
+    const baseSpacing = Math.min(64, Math.max(46, maxHeight + 10));
+    const laneCandidates = group.flows.length > 1 ? [] : [0];
+    if (group.flows.length > 1) {
+      for (let spacing = baseSpacing; spacing < 72; spacing += 6) laneCandidates.push(spacing);
+      if (laneCandidates[laneCandidates.length - 1] !== 72) laneCandidates.push(72);
+    }
+    const maxIndexDistance = (group.flows.length - 1) / 2;
+    const maxTStep = maxIndexDistance > 0 ? Math.min(.30, .30 / maxIndexDistance) : 0;
+    const centerOffsets = [0, -.04, .04, -.08, .08, -.12, .12];
+    let chosen = null;
+    let bestFallback = null;
+
+    for (const laneSpacing of laneCandidates) {
+      group.laneSpacing = laneSpacing;
+      const candidateGeometries = routePairGeometries(group);
+      for (let tStep = 0; tStep <= maxTStep + .001; tStep += .005) {
+        const directions = tStep < .001 ? [1] : [1, -1];
+        for (const centerOffset of centerOffsets) {
+          for (const tDirection of directions) {
+            const placements = buildPairLabelLayout(group, candidateGeometries, tStep, tDirection, centerOffset);
+            if (!placements) continue;
+            const score = scorePairLabelLayout(placements, nodeBoxes, reservedBoxes);
+            const candidate = { laneSpacing, geometries: candidateGeometries, placements, score };
+            if (!bestFallback || score.penalty < bestFallback.score.penalty) bestFallback = candidate;
+            if (score.valid) { chosen = candidate; break; }
+          }
+          if (chosen) break;
+        }
+        if (chosen) break;
+      }
+      if (chosen) break;
+    }
+
+    // Even an impossibly short edge stays compact: choose the least-overlapping
+    // exact layout found above instead of converting badge width into giant arcs.
+    chosen ||= bestFallback;
+    group.laneSpacing = chosen?.laneSpacing || 0;
+    if (chosen) {
+      chosen.geometries.forEach((geometry, flowId) => geometries.set(flowId, geometry));
+      chosen.placements.forEach((placement, flowId) => {
+        labelPlacements.set(flowId, placement.point);
+        reservedBoxes.push(placement.box);
+      });
+    }
+  }
+
+  for (const group of selfGroups.values()) {
+    for (const flow of group.flows) {
+      const geometry = buildEdgeGeometry(flow, null, group);
+      geometries.set(flow.id, geometry);
+      labelPlacements.set(flow.id, geometry.labelPoint);
+    }
+  }
+
+  for (const flow of model.sequenceFlows) {
+    const source = getNode(flow.sourceRef);
+    const target = getNode(flow.targetRef);
+    const geometry = geometries.get(flow.id);
+    if (!source || !target || !geometry) continue;
 
     const dashed = isPassThroughType(source.type);
     const isError = isBoundaryEventType(source.type);
-    const g = el("g", { class: `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${isSel('flow', flow.id) ? 'selected' : ''}`,
-                        "data-flow": flow.id });
-    let d, lx, ly;
-    const size = nodeSize(source);
-    if (source.id === target.id) {
-      const x = source.x + size.w, y = source.y + size.h / 2;
-      d = `M ${x} ${y} C ${x + 70} ${y - 50}, ${x + 70} ${y + 50}, ${x} ${y + 6}`;
-      lx = x + 60; ly = y;
-    } else {
-      const p1_c = center(source);
-      const p2_c = center(target);
+    const selectedFlow = isSel('flow', flow.id);
+    const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""}`;
+    const pathGroup = el("g", { class: edgeClass, "data-flow": flow.id });
+    const labelGroup = el("g", { class: edgeClass, "data-flow": flow.id });
+    const markerId = selectedFlow ? "arrowSel" : (isError ? "arrowError" : "arrow");
+    pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-hit" }));
+    pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-line", "marker-end": `url(#${markerId})` }));
 
-      // Check if blocked by any intermediate node
-      let isBlocked = false;
-      for (const node of model.flowNodes) {
-        if (node.id === source.id || node.id === target.id) continue;
-        if (lineIntersectsNode(p1_c, p2_c, node)) {
-          isBlocked = true;
-          break;
-        }
-      }
-
-      // Group flows between these two nodes
-      const A = Math.min(source.id, target.id);
-      const B = Math.max(source.id, target.id);
-      const group = model.sequenceFlows.filter(f =>
-        (f.sourceRef === A && f.targetRef === B) || (f.sourceRef === B && f.targetRef === A)
-      ).sort((f1, f2) => f1.id - f2.id);
-
-      const K = group.length;
-      const idx = group.findIndex(f => f.id === flow.id);
-
-      let h = 0;
-      if (K > 1) {
-        const canonicalOffset = (idx - (K - 1) / 2) * 30;
-        const dirSign = (flow.sourceRef === A) ? 1 : -1;
-        h = canonicalOffset * dirSign;
-      }
-
-      if (isBlocked) {
-        const dx = p2_c.x - p1_c.x;
-        const dy = p2_c.y - p1_c.y;
-        let blockOffset = 0;
-        if (Math.abs(dx) >= Math.abs(dy)) {
-          const hSign = dx > 0 ? -1 : 1;
-          blockOffset = hSign * 110;
-        } else {
-          const hSign = dy > 0 ? -1 : 1;
-          blockOffset = hSign * 220;
-        }
-        h += blockOffset;
-      }
-
-      if (h === 0) {
-        const p1 = borderPoint(source, p2_c.x, p2_c.y);
-        const p2 = borderPoint(target, p1_c.x, p1_c.y);
-        d = `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-        lx = (p1.x + p2.x) / 2; ly = (p1.y + p2.y) / 2;
-      } else {
-        // Calculate control point Pc
-        const dx = p2_c.x - p1_c.x;
-        const dy = p2_c.y - p1_c.y;
-        const len = Math.sqrt(dx * dx + dy * dy) || 1e-9;
-        const ux = dx / len;
-        const uy = dy / len;
-        const nx = -uy;
-        const ny = ux;
-        const mx = (p1_c.x + p2_c.x) / 2;
-        const my = (p1_c.y + p2_c.y) / 2;
-        const pc = { x: mx + h * nx, y: my + h * ny };
-
-        const p1 = borderPoint(source, pc.x, pc.y);
-        const p2 = borderPoint(target, pc.x, pc.y);
-
-        d = `M ${p1.x} ${p1.y} Q ${pc.x} ${pc.y} ${p2.x} ${p2.y}`;
-        // Midpoint of quadratic Bezier is at t = 0.5
-        lx = 0.25 * p1.x + 0.5 * pc.x + 0.25 * p2.x;
-        ly = 0.25 * p1.y + 0.5 * pc.y + 0.25 * p2.y;
-      }
-    }
-    const sel = isSel('flow', flow.id);
-    g.appendChild(el("path", { d, "marker-end": `url(#${sel ? 'arrowSel' : 'arrow'})` }));
-
-    const label = flowLabel(flow, source);
-    if (label) {
-      const bg = el("rect", { class: "lblbg", x: lx - label.length * 3.6 - 4, y: ly - 16,
-                              width: label.length * 7.2 + 8, height: 16, rx: 4 });
-      g.appendChild(bg);
-      const t = el("text", { x: lx, y: ly - 4, "text-anchor": "middle" });
-      t.textContent = label;
-      g.appendChild(t);
-    }
-
-    // secondary line: roles/condition/default for user-task and gateway flows
-    const cond = flow.isDefault ? "default" : (flow.condition || "");
-    const roles = roleSummary(flow.roles);
-    const engineOnly = isUserTaskType(source.type) && flow.isSelectable === false;
-    if (isGatewayType(source.type)) {
-      if (cond) {
-        const cText = el("text", { x: lx, y: ly + 9, class: "cond", "text-anchor": "middle" });
-        cText.textContent = cond.length > 24 ? cond.slice(0, 21) + "..." : cond;
-        g.appendChild(cText);
-      }
-    } else if (isUserTaskType(source.type)) {
-      let y = ly + 9;
-      if (engineOnly) {
-        const engineText = el("text", { x: lx, y, class: "roles", "text-anchor": "middle" });
-        engineText.textContent = "engine-only";
-        g.appendChild(engineText);
-        y += 13;
-      }
-      if (roles) {
-        const roleText = el("text", { x: lx, y, class: "roles", "text-anchor": "middle" });
-        roleText.textContent = roles;
-        g.appendChild(roleText);
-        y += 13;
-      }
-      if (cond) {
-        const cText = el("text", { x: lx, y, class: "cond", "text-anchor": "middle" });
-        cText.textContent = cond.length > 24 ? cond.slice(0, 21) + "..." : cond;
-        g.appendChild(cText);
-      }
-    } else {
-      if (roles) {
-        const roleText = el("text", { x: lx, y: ly + 9, class: "roles", "text-anchor": "middle" });
-        roleText.textContent = roles;
-        g.appendChild(roleText);
-      }
-    }
-
-    g.addEventListener("click", (e) => { e.stopPropagation(); select('flow', flow.id); });
-    edgesG.appendChild(g);
+    const labelInfo = flowLabelInfo(flow, source);
+    const labelPoint = labelPlacements.get(flow.id) || geometry.labelPoint || geometry.pointAt(.5);
+    appendFlowLabel(labelGroup, labelInfo, labelPoint.x, labelPoint.y);
+    const selectFlow = (event) => { event.stopPropagation(); select("flow", flow.id); };
+    pathGroup.addEventListener("click", selectFlow);
+    labelGroup.addEventListener("click", selectFlow);
+    const setHover = hovered => {
+      pathGroup.classList.toggle("hovered", hovered);
+      labelGroup.classList.toggle("hovered", hovered);
+    };
+    pathGroup.addEventListener("mouseenter", () => setHover(true));
+    pathGroup.addEventListener("mouseleave", () => setHover(false));
+    labelGroup.addEventListener("mouseenter", () => setHover(true));
+    labelGroup.addEventListener("mouseleave", () => setHover(false));
+    pathLayer.appendChild(pathGroup);
+    labelLayer.appendChild(labelGroup);
   }
 }
 
 function flowLabel(flow, source) {
   if (flow.name && flow.name.trim()) return flow.name.trim();
+  source = source || getNode(flow.sourceRef);
+  if (!source) return "";
   if (isBoundaryEventType(source.type)) return "error";
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
@@ -1387,7 +1954,7 @@ function flowLabel(flow, source) {
 function renderHint() {
   if (connectMode) {
     if (connectSource == null) {
-      hintEl.innerHTML = "<b>Connect mode:</b> click the <b>source</b> node.";
+      hintEl.innerHTML = "<b>Connect mode:</b> click the <b>source</b> node, or drag one of its connection handles.";
     } else {
       const source = getNode(connectSource);
       const extra = source && isSingleOutgoingType(source.type)
@@ -1396,7 +1963,7 @@ function renderHint() {
       hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
     }
   } else {
-    hintEl.innerHTML = "Drag nodes to move. Drag lanes to move grouped nodes. Click a node, lane, or flow arrow to edit it.";
+    hintEl.innerHTML = "Drag a node's blue handle to connect it. Drag nodes or lanes to move, drag empty canvas to pan, and use the wheel to zoom.";
   }
 }
 
@@ -1696,13 +2263,12 @@ function renderNodeInspector() {
     if (flows.length === 0) {
       const p = document.createElement("p");
       p.className = "empty-note";
-      p.textContent = "No outgoing sequence flows. Use Connect Flow or the button below.";
+      p.textContent = "No outgoing sequence flows. Drag a blue node handle to connect, or use the button below.";
       inspector.appendChild(p);
     }
     flows.forEach(flow => {
       const box = document.createElement("div");
-      box.className = "field";
-      box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border);cursor:pointer";
+      box.className = "field inspector-card clickable";
       const tgt = getNode(flow.targetRef);
       const extra = isGatewayType(node.type)
         ? (flow.isDefault ? " · default" : (flow.condition ? ` · [${flow.condition}]` : ""))
@@ -1798,8 +2364,7 @@ function renderServiceSection(node) {
 
   service.headers.forEach((header, index) => {
     const box = document.createElement("div");
-    box.className = "field";
-    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+    box.className = "field inspector-card";
 
     const nameField = document.createElement("div");
     nameField.className = "field";
@@ -1871,8 +2436,7 @@ function renderServiceSection(node) {
 
   service.outputMappings.forEach((mapping, index) => {
     const box = document.createElement("div");
-    box.className = "field";
-    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+    box.className = "field inspector-card";
 
     const varField = document.createElement("div");
     varField.className = "field";
@@ -1954,8 +2518,7 @@ function renderMessageSection(node) {
 
   message.outputMappings.forEach((mapping, index) => {
     const box = document.createElement("div");
-    box.className = "field";
-    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+    box.className = "field inspector-card";
 
     const varField = document.createElement("div");
     varField.className = "field";
@@ -2053,8 +2616,7 @@ function renderErrorBoundarySection(hostNode) {
   const existing = findErrorBoundary(hostNode.id);
   if (existing) {
     const box = document.createElement("div");
-    box.className = "field";
-    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border);cursor:pointer";
+    box.className = "field inspector-card clickable";
     const out = outgoingFlows(existing.id);
     const tgt = out.length ? getNode(out[0].targetRef) : null;
     box.innerHTML = `<div class="badge">boundary #${existing.id} · error → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'no flow yet'}</div>`;
@@ -2125,8 +2687,7 @@ function renderAssignmentsSection(node) {
 
   node.assignments.forEach((assignment, index) => {
     const box = document.createElement("div");
-    box.className = "field";
-    box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+    box.className = "field inspector-card";
 
     const varField = document.createElement("div");
     varField.className = "field";
@@ -2736,8 +3297,7 @@ function selectField(label, options, value, onChange) {
 }
 function variableRow(owner, variable, hideRequired) {
   const box = document.createElement("div");
-  box.className = "field";
-  box.style.cssText = "background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)";
+  box.className = "field inspector-card";
 
   if (hideRequired) {
     variable.required = false;
@@ -2939,6 +3499,106 @@ function parseDefaultValue(text, variable) {
   return coerceDefaultScalar(text, variable.dataType);
 }
 
+/* ---------- Canvas viewport ---------- */
+function clampZoom(value) {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+}
+
+function canvasDimensions() {
+  const rect = canvasWrap.getBoundingClientRect();
+  return { rect, width: Math.max(1, rect.width), height: Math.max(1, rect.height) };
+}
+
+function applyViewBox() {
+  const { width, height } = canvasDimensions();
+  const viewWidth = width / viewState.zoom;
+  const viewHeight = height / viewState.zoom;
+  svg.setAttribute("viewBox", `${viewState.x} ${viewState.y} ${viewWidth} ${viewHeight}`);
+  zoomResetBtn.textContent = `${Math.round(viewState.zoom * 100)}%`;
+  zoomOutBtn.disabled = viewState.zoom <= ZOOM_MIN + .001;
+  zoomInBtn.disabled = viewState.zoom >= ZOOM_MAX - .001;
+}
+
+function zoomTo(nextZoom, clientX, clientY) {
+  const { rect, width, height } = canvasDimensions();
+  const relX = ((clientX ?? rect.left + width / 2) - rect.left) / width;
+  const relY = ((clientY ?? rect.top + height / 2) - rect.top) / height;
+  const worldX = viewState.x + relX * width / viewState.zoom;
+  const worldY = viewState.y + relY * height / viewState.zoom;
+  viewState.zoom = clampZoom(nextZoom);
+  viewState.x = worldX - relX * width / viewState.zoom;
+  viewState.y = worldY - relY * height / viewState.zoom;
+  applyViewBox();
+}
+
+function resetViewport() {
+  viewState = { x: 0, y: 0, zoom: 1 };
+  applyViewBox();
+}
+
+function fitView() {
+  const layers = [lanesG, edgesG, nodesG].filter(layer => layer.childElementCount > 0);
+  if (!layers.length) { resetViewport(); return; }
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const layer of layers) {
+    try {
+      const bounds = layer.getBBox();
+      if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) continue;
+      left = Math.min(left, bounds.x);
+      top = Math.min(top, bounds.y);
+      right = Math.max(right, bounds.x + bounds.width);
+      bottom = Math.max(bottom, bounds.y + bounds.height);
+    } catch (err) {}
+  }
+  if (!Number.isFinite(left)) { resetViewport(); return; }
+  const padding = 64;
+  const contentWidth = Math.max(1, right - left + padding * 2);
+  const contentHeight = Math.max(1, bottom - top + padding * 2);
+  const { width, height } = canvasDimensions();
+  viewState.zoom = clampZoom(Math.min(width / contentWidth, height / contentHeight));
+  viewState.x = (left + right) / 2 - width / viewState.zoom / 2;
+  viewState.y = (top + bottom) / 2 - height / viewState.zoom / 2;
+  applyViewBox();
+}
+
+function startCanvasPan(e, clearOnClick) {
+  if (canvasPan) return;
+  e.preventDefault();
+  canvasPan = {
+    pointerId: e.pointerId,
+    lastX: e.clientX,
+    lastY: e.clientY,
+    moved: false,
+    clearOnClick
+  };
+  svg.classList.add("canvas-panning");
+  svg.setPointerCapture(e.pointerId);
+}
+
+function moveCanvasPan(e) {
+  if (!canvasPan || canvasPan.pointerId !== e.pointerId) return false;
+  const dx = e.clientX - canvasPan.lastX;
+  const dy = e.clientY - canvasPan.lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 1) canvasPan.moved = true;
+  viewState.x -= dx / viewState.zoom;
+  viewState.y -= dy / viewState.zoom;
+  canvasPan.lastX = e.clientX;
+  canvasPan.lastY = e.clientY;
+  applyViewBox();
+  return true;
+}
+
+function finishCanvasPan(e) {
+  if (!canvasPan || (e.pointerId != null && canvasPan.pointerId !== e.pointerId)) return false;
+  const completedPan = canvasPan;
+  canvasPan = null;
+  svg.classList.remove("canvas-panning");
+  try { svg.releasePointerCapture(completedPan.pointerId); } catch (err) {}
+  if (completedPan.moved) suppressCanvasClick = true;
+  else if (completedPan.clearOnClick && !connectMode) clearSelection();
+  return true;
+}
+
 /* ---------- Selection ---------- */
 function isSel(kind, id) {
   if (!selected || selected.kind !== kind) return false;
@@ -2955,7 +3615,225 @@ function select(kind, id) {
 function clearSelection() { selected = null; render(); }
 
 /* ---------- Node interaction ---------- */
+function connectionSourceProblem(node) {
+  if (!node) return "The source node no longer exists.";
+  if (isEndEventType(node.type)) return "An end event cannot have an outgoing sequence flow.";
+  if (isSingleOutgoingType(node.type) && outgoingFlows(node.id).length >= 1) {
+    return "This node type can have exactly one outgoing flow.";
+  }
+  return "";
+}
+
+function connectionTargetProblem(node) {
+  if (!node) return "Drop the connection on a target node.";
+  if (isBoundaryEventType(node.type)) return "An error boundary event cannot have an incoming sequence flow.";
+  return "";
+}
+
+function connectionProblem(source, target) {
+  return connectionSourceProblem(source) || connectionTargetProblem(target);
+}
+
+function activeConnectionSource() {
+  if (connectionDrag) return getNode(connectionDrag.sourceId);
+  return connectMode && connectSource != null ? getNode(connectSource) : null;
+}
+
+function connectionPointForSide(node, side) {
+  const pos = nodePosition(node);
+  const size = nodeSize(node);
+  if (side === "top") return { x: pos.x + size.w / 2, y: pos.y };
+  if (side === "right") return { x: pos.x + size.w, y: pos.y + size.h / 2 };
+  if (side === "bottom") return { x: pos.x + size.w / 2, y: pos.y + size.h };
+  return { x: pos.x, y: pos.y + size.h / 2 };
+}
+
+function connectionSideVector(side) {
+  if (side === "top") return { x: 0, y: -1 };
+  if (side === "right") return { x: 1, y: 0 };
+  if (side === "bottom") return { x: 0, y: 1 };
+  return { x: -1, y: 0 };
+}
+
+function pointHitsNode(point, node) {
+  const pos = nodePosition(node);
+  const size = nodeSize(node);
+  const localX = point.x - pos.x;
+  const localY = point.y - pos.y;
+  const padding = 9;
+  if (isEventType(node.type) || isBoundaryEventType(node.type)) {
+    const radius = size.w / 2 + padding;
+    const dx = localX - size.w / 2;
+    const dy = localY - size.h / 2;
+    return dx * dx + dy * dy <= radius * radius;
+  }
+  if (isGatewayType(node.type)) {
+    return Math.abs(localX - size.w / 2) / (size.w / 2 + padding) +
+           Math.abs(localY - size.h / 2) / (size.h / 2 + padding) <= 1;
+  }
+  return localX >= -padding && localX <= size.w + padding &&
+         localY >= -padding && localY <= size.h + padding;
+}
+
+function nodeAtConnectionPoint(point) {
+  return [...model.flowNodes].reverse().find(node => pointHitsNode(point, node)) || null;
+}
+
+function updateConnectionVisualState() {
+  const source = activeConnectionSource();
+  const hoveredId = connectionDrag?.hoverTargetId ?? null;
+  const invalidId = connectionDrag?.invalidTargetId ?? null;
+  nodesG.classList.toggle("connection-active", !!source);
+  nodesG.querySelectorAll(".node").forEach(group => {
+    const id = group.getAttribute("data-id");
+    const node = model.flowNodes.find(item => String(item.id) === id);
+    const isSource = !!source && node?.id === source.id;
+    const available = !!source && !!node && node.id !== source.id && !connectionProblem(source, node);
+    group.classList.toggle("connect-source", isSource);
+    group.classList.toggle("connect-target-available", available);
+    group.classList.toggle("connect-target-hover", !!node && node.id === hoveredId);
+    group.classList.toggle("connect-target-invalid", !!node && node.id === invalidId);
+  });
+}
+
+function renderConnectionPreview() {
+  connectionPreviewG.innerHTML = "";
+  connectionPreviewG.classList.remove("invalid");
+  if (!connectionDrag?.moved) return;
+  const source = getNode(connectionDrag.sourceId);
+  if (!source) return;
+  const start = connectionPointForSide(source, connectionDrag.side);
+  const startDirection = connectionSideVector(connectionDrag.side);
+  const target = connectionDrag.hoverTargetId != null ? getNode(connectionDrag.hoverTargetId) : null;
+  let end = connectionDrag.current;
+  let control1 = { x: start.x + startDirection.x * 68, y: start.y + startDirection.y * 68 };
+  let control2;
+
+  if (target && target.id === source.id) {
+    const nextSide = { top: "right", right: "bottom", bottom: "left", left: "top" }[connectionDrag.side];
+    end = connectionPointForSide(source, nextSide);
+    const endDirection = connectionSideVector(nextSide);
+    control2 = { x: end.x + endDirection.x * 68, y: end.y + endDirection.y * 68 };
+    end = pullPointToward(end, control2, 5);
+  } else if (target) {
+    const targetCenter = center(target);
+    const border = borderPoint(target, start.x, start.y);
+    const outwardX = border.x - targetCenter.x;
+    const outwardY = border.y - targetCenter.y;
+    const outwardLength = Math.sqrt(outwardX * outwardX + outwardY * outwardY) || 1;
+    end = pullPointToward(border, start, 5);
+    control2 = {
+      x: end.x + outwardX / outwardLength * 54,
+      y: end.y + outwardY / outwardLength * 54
+    };
+  } else {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.sqrt(dx * dx + dy * dy) || 1;
+    control2 = { x: end.x - dx / length * 48, y: end.y - dy / length * 48 };
+  }
+
+  const invalid = connectionDrag.invalidTargetId != null;
+  connectionPreviewG.classList.toggle("invalid", invalid);
+  const path = `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${end.x} ${end.y}`;
+  connectionPreviewG.appendChild(el("path", {
+    d: path,
+    class: "preview-line",
+    "marker-end": `url(#${invalid ? "arrowError" : "arrowPreview"})`
+  }));
+  if (!target) connectionPreviewG.appendChild(el("circle", { class: "preview-end", cx: end.x, cy: end.y, r: 4 }));
+}
+
+function clearConnectionGesture() {
+  if (connectionDrag) {
+    try { svg.releasePointerCapture(connectionDrag.pointerId); } catch (err) {}
+  }
+  connectionDrag = null;
+  connectionPreviewG.innerHTML = "";
+  connectionPreviewG.classList.remove("invalid");
+  updateConnectionVisualState();
+}
+
+function onConnectionHandlePointerDown(event, node, side) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (connectMode && connectSource != null) {
+    handleConnectClick(node);
+    return;
+  }
+  const problem = connectionSourceProblem(node);
+  if (problem) {
+    setConnectMode(false);
+    hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
+    return;
+  }
+  if (connectMode) setConnectMode(false);
+  const start = connectionPointForSide(node, side);
+  connectionDrag = {
+    pointerId: event.pointerId,
+    sourceId: node.id,
+    side,
+    start,
+    current: start,
+    clientStartX: event.clientX,
+    clientStartY: event.clientY,
+    hoverTargetId: null,
+    invalidTargetId: null,
+    moved: false
+  };
+  svg.setPointerCapture(event.pointerId);
+  updateConnectionVisualState();
+  hintEl.innerHTML = "<b>Connect:</b> drag to a highlighted target, or release for click-to-target mode.";
+}
+
+function moveConnectionGesture(event) {
+  if (!connectionDrag || connectionDrag.pointerId !== event.pointerId) return false;
+  event.preventDefault();
+  connectionDrag.current = svgPoint(event);
+  if (Math.hypot(event.clientX - connectionDrag.clientStartX, event.clientY - connectionDrag.clientStartY) >= 4) {
+    connectionDrag.moved = true;
+  }
+  const candidate = connectionDrag.moved ? nodeAtConnectionPoint(connectionDrag.current) : null;
+  const source = getNode(connectionDrag.sourceId);
+  const problem = candidate ? connectionProblem(source, candidate) : "";
+  connectionDrag.hoverTargetId = candidate && !problem ? candidate.id : null;
+  connectionDrag.invalidTargetId = candidate && problem ? candidate.id : null;
+  updateConnectionVisualState();
+  renderConnectionPreview();
+  return true;
+}
+
+function finishConnectionGesture(event) {
+  if (!connectionDrag || connectionDrag.pointerId !== event.pointerId) return false;
+  const completed = connectionDrag;
+  let target = completed.hoverTargetId != null ? getNode(completed.hoverTargetId) : null;
+  if (completed.moved) {
+    const dropCandidate = nodeAtConnectionPoint(svgPoint(event));
+    const source = getNode(completed.sourceId);
+    const dropProblem = dropCandidate ? connectionProblem(source, dropCandidate) : "";
+    target = dropCandidate && !dropProblem ? dropCandidate : null;
+    completed.invalidTargetId = dropCandidate && dropProblem ? dropCandidate.id : null;
+  }
+  clearConnectionGesture();
+  if (!completed.moved) {
+    setConnectMode(true, completed.sourceId);
+    return true;
+  }
+  setConnectMode(false);
+  if (target) {
+    const flow = createFlow(completed.sourceId, target.id);
+    select("flow", flow.id);
+  } else {
+    hintEl.innerHTML = completed.invalidTargetId != null
+      ? "<b>Connect:</b> that node cannot accept this sequence flow."
+      : "<b>Connect:</b> connection cancelled; drop on a highlighted target node.";
+  }
+  return true;
+}
+
 function onNodePointerDown(e, node) {
+  if (e.button !== 0) return;
   if (connectMode) {
     e.stopPropagation();
     handleConnectClick(node);
@@ -2969,6 +3847,7 @@ function onNodePointerDown(e, node) {
 }
 
 function onLanePointerDown(e, lane) {
+  if (e.button !== 0) return;
   if (connectMode) return;
   e.stopPropagation();
   select('lane', lane.id);
@@ -2985,6 +3864,7 @@ function onLanePointerDown(e, lane) {
 }
 
 function onLaneResizePointerDown(e, lane) {
+  if (e.button !== 0) return;
   if (connectMode) return;
   e.stopPropagation();
   select('lane', lane.id);
@@ -2994,6 +3874,8 @@ function onLaneResizePointerDown(e, lane) {
 }
 
 svg.addEventListener("pointermove", (e) => {
+  if (moveConnectionGesture(e)) return;
+  if (moveCanvasPan(e)) return;
   const pt = svgPoint(e);
   if (drag) {
     const node = getNode(drag.id);
@@ -3023,18 +3905,57 @@ svg.addEventListener("pointermove", (e) => {
     renderLanes();
   }
 });
-svg.addEventListener("pointerup", () => {
+svg.addEventListener("pointerup", (e) => {
+  if (finishConnectionGesture(e)) return;
+  if (finishCanvasPan(e)) return;
   if (drag) assignNodeLane(drag.id);
   drag = null;
   laneDrag = null;
   laneResize = null;
   renderInspector();
 });
-svg.addEventListener("pointerdown", (e) => { if (e.target === svg && !connectMode) clearSelection(); });
+svg.addEventListener("pointercancel", (e) => {
+  if (connectionDrag && connectionDrag.pointerId === e.pointerId) {
+    clearConnectionGesture();
+    renderHint();
+    return;
+  }
+  if (finishCanvasPan(e)) return;
+  drag = null;
+  laneDrag = null;
+  laneResize = null;
+});
+svg.addEventListener("pointerdown", (e) => {
+  if ((spacePressed && e.button === 0) || e.button === 1) {
+    startCanvasPan(e, false);
+    e.stopPropagation();
+  }
+}, true);
+svg.addEventListener("pointerdown", (e) => {
+  if (e.button === 0 && (e.target === svg || e.target === gridSurface) && !connectMode) {
+    startCanvasPan(e, true);
+  }
+});
+svg.addEventListener("click", (e) => {
+  if (!suppressCanvasClick) return;
+  suppressCanvasClick = false;
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * .0015);
+  zoomTo(viewState.zoom * factor, e.clientX, e.clientY);
+}, { passive: false });
 
 function svgPoint(e) {
-  const r = svg.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
+  const point = svg.createSVGPoint();
+  point.x = e.clientX;
+  point.y = e.clientY;
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return { x: 0, y: 0 };
+  const transformed = point.matrixTransform(matrix.inverse());
+  return { x: transformed.x, y: transformed.y };
 }
 
 function assignNodeLane(nodeId) {
@@ -3057,34 +3978,37 @@ function createFlow(sourceId, targetId) {
 }
 function handleConnectClick(node) {
   if (connectSource == null) {
+    const problem = connectionSourceProblem(node);
+    if (problem) {
+      setConnectMode(false);
+      hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
+      return;
+    }
     connectSource = node.id;
+    updateConnectionVisualState();
     renderHint();
   } else {
     const source = getNode(connectSource);
-    // A boundary event is reached by the engine's error routing, not a normal
-    // sequence flow, so nothing can connect into it.
-    if (isBoundaryEventType(node.type)) {
-      hintEl.innerHTML = "<b>Connect mode:</b> an error boundary event cannot have an incoming sequence flow.";
-      connectSource = null;
-      setConnectMode(false);
-      return;
-    }
-    if (source && isSingleOutgoingType(source.type) && outgoingFlows(connectSource).length >= 1) {
-      hintEl.innerHTML = "<b>Connect mode:</b> this node type can have exactly one outgoing flow.";
-      connectSource = null;
-      setConnectMode(false);
-      return;
-    }
-    const flow = createFlow(connectSource, node.id);
-    connectSource = null;
+    const problem = connectionProblem(source, node);
+    const sourceId = connectSource;
     setConnectMode(false);
+    if (problem) {
+      hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
+      return;
+    }
+    const flow = createFlow(sourceId, node.id);
     select('flow', flow.id);
   }
 }
-function setConnectMode(on) {
+function setConnectMode(on, sourceId = null) {
   connectMode = on;
-  connectSource = null;
+  connectSource = on ? sourceId : null;
   document.getElementById("connectBtn").classList.toggle("active", on);
+  if (!on) {
+    connectionPreviewG.innerHTML = "";
+    connectionPreviewG.classList.remove("invalid");
+  }
+  updateConnectionVisualState();
   renderHint();
 }
 
@@ -3596,8 +4520,16 @@ document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConn
 document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
 document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
 document.getElementById("saveBtn").onclick = save;
+zoomOutBtn.onclick = () => zoomTo(viewState.zoom / 1.2);
+zoomResetBtn.onclick = () => zoomTo(1);
+zoomInBtn.onclick = () => zoomTo(viewState.zoom * 1.2);
+fitViewBtn.onclick = fitView;
 document.getElementById("newBtn").onclick = () => {
-  if (confirm("Start a new empty workflow? Unsaved changes will be lost.")) { model = newModel(); clearSelection(); }
+  if (confirm("Start a new empty workflow? Unsaved changes will be lost.")) {
+    model = newModel();
+    resetViewport();
+    clearSelection();
+  }
 };
 document.getElementById("loadBtn").onclick = () => document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange = (e) => {
@@ -3621,7 +4553,18 @@ window.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
             || t.tagName === "SELECT" || t.isContentEditable)) return;
-  if (e.key === "Escape") { if (connectMode) setConnectMode(false); else clearSelection(); }
+  if (e.code === "Space") {
+    spacePressed = true;
+    document.body.classList.add("is-space-panning");
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "Escape") {
+    if (connectionDrag) { clearConnectionGesture(); renderHint(); }
+    else if (connectMode) setConnectMode(false);
+    else clearSelection();
+    return;
+  }
   if (e.key === "Delete" && selected) {
     if (selected.kind === 'node') deleteNode(selected.nodeId);
     else if (selected.kind === 'lane') deleteLane(selected.laneId);
@@ -3631,6 +4574,16 @@ window.addEventListener("keydown", (e) => {
     }
   }
 });
+window.addEventListener("keyup", (e) => {
+  if (e.code !== "Space") return;
+  spacePressed = false;
+  document.body.classList.remove("is-space-panning");
+});
+window.addEventListener("blur", () => {
+  spacePressed = false;
+  document.body.classList.remove("is-space-panning");
+  if (connectionDrag) { clearConnectionGesture(); renderHint(); }
+});
 
 /* ---------- Sidebar Resizer ---------- */
 let isResizingSidebar = false;
@@ -3638,7 +4591,7 @@ let isResizingSidebar = false;
 // Restore sidebar width on load
 const savedSidebarWidth = localStorage.getItem("sidebarWidth");
 if (savedSidebarWidth) {
-  inspector.style.width = savedSidebarWidth + "px";
+  inspector.style.width = Math.max(280, Math.min(720, +savedSidebarWidth || 340)) + "px";
 }
 
 resizer.addEventListener("pointerdown", (e) => {
@@ -3653,7 +4606,7 @@ resizer.addEventListener("pointerdown", (e) => {
 resizer.addEventListener("pointermove", (e) => {
   if (!isResizingSidebar) return;
   const newWidth = window.innerWidth - e.clientX;
-  const clampedWidth = Math.max(200, Math.min(800, newWidth)); // min 200px, max 800px
+  const clampedWidth = Math.max(280, Math.min(720, newWidth));
   inspector.style.width = clampedWidth + "px";
   localStorage.setItem("sidebarWidth", clampedWidth);
 });
@@ -3671,8 +4624,24 @@ const stopResizing = (e) => {
 
 resizer.addEventListener("pointerup", stopResizing);
 resizer.addEventListener("pointercancel", stopResizing);
+resizer.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  const currentWidth = inspector.getBoundingClientRect().width;
+  const delta = e.key === "ArrowLeft" ? 16 : -16;
+  const clampedWidth = Math.max(280, Math.min(720, currentWidth + delta));
+  inspector.style.width = clampedWidth + "px";
+  localStorage.setItem("sidebarWidth", clampedWidth);
+});
+
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => applyViewBox()).observe(canvasWrap);
+} else {
+  window.addEventListener("resize", applyViewBox);
+}
 
 /* ---------- Init ---------- */
+resetViewport();
 render();
 </script>
 </body>
