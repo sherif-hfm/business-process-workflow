@@ -634,6 +634,13 @@ public sealed class MultiInstanceModel
     [JsonPropertyName("onePerActor")]
     public bool OnePerActor { get; set; }
 
+    /// <summary>
+    /// Controls whether aggregate completion conditions are evaluated after each
+    /// completed item or only after every item has completed.
+    /// </summary>
+    [JsonPropertyName("completionEvaluation")]
+    public string CompletionEvaluation { get; set; } = MultiInstanceCompletionEvaluations.AfterEach;
+
     [JsonPropertyName("resultVariable")]
     public string ResultVariable { get; set; } = string.Empty;
 }
@@ -648,6 +655,12 @@ public static class MultiInstanceSources
 {
     public const string Collection = "collection";
     public const string Cardinality = "cardinality";
+}
+
+public static class MultiInstanceCompletionEvaluations
+{
+    public const string AfterEach = "afterEach";
+    public const string AfterAll = "afterAll";
 }
 
 /// <summary>

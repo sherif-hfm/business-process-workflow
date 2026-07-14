@@ -25,6 +25,12 @@ Assert(!JsonSerializer.Deserialize<MultiInstanceModel>("{}")!.OnePerActor,
     "Missing onePerActor must default to false.");
 Assert(JsonSerializer.Deserialize<MultiInstanceModel>("{\"onePerActor\":true}")!.OnePerActor,
     "onePerActor=true must round-trip through the shared workflow model.");
+Assert(JsonSerializer.Deserialize<MultiInstanceModel>("{}")!.CompletionEvaluation
+       == MultiInstanceCompletionEvaluations.AfterEach,
+    "Missing completionEvaluation must default to afterEach.");
+Assert(JsonSerializer.Deserialize<MultiInstanceModel>("{\"completionEvaluation\":\"afterAll\"}")!
+       .CompletionEvaluation == MultiInstanceCompletionEvaluations.AfterAll,
+    "completionEvaluation=afterAll must round-trip through the shared workflow model.");
 var voteNode = model.FlowNodes.Single(n => n.Id == 2);
 if (string.Equals(model.Name, "workflow-votes-cardinality", StringComparison.OrdinalIgnoreCase))
 {
@@ -93,6 +99,16 @@ ExpectValidationFailure(referencesHidden, "Completion helpers must not reference
 var normalTaskHidden = WithEngineOnlyDefault(model);
 normalTaskHidden.FlowNodes.Single(n => n.Id == 2).MultiInstance = null;
 ExpectValidationFailure(normalTaskHidden, "Engine-only routes must be limited to multi-instance user tasks.");
+
+var afterAll = Clone(model);
+afterAll.FlowNodes.Single(n => n.Id == 2).MultiInstance!.CompletionEvaluation =
+    MultiInstanceCompletionEvaluations.AfterAll;
+Validate(afterAll);
+
+var invalidCompletionEvaluation = Clone(model);
+invalidCompletionEvaluation.FlowNodes.Single(n => n.Id == 2).MultiInstance!.CompletionEvaluation = "sometimes";
+ExpectValidationFailure(invalidCompletionEvaluation,
+    "Unsupported multi-instance completion evaluation timing must be rejected.");
 
 Console.WriteLine("Multi-instance selectable/engine-only routing verification passed.");
 

@@ -1097,13 +1097,20 @@ public sealed class WorkflowEngineService(
         }
         else
         {
-            winning = OutgoingFlows(workflow.Definition, node.Id)
-                .Where(f => !f.CancelRemainingInstances && !string.IsNullOrWhiteSpace(f.CompletionCondition))
-                .OrderBy(f => f.CompletionPriority)
-                .FirstOrDefault(f => SequenceFlowConditionEvaluator.EvaluateCompletion(
-                    f.CompletionCondition, context, counts, execution.TotalCount));
+            var allItemsCompleted = updatedCompleted == execution.TotalCount;
+            var evaluateCompletionConditions =
+                node.MultiInstance!.CompletionEvaluation == MultiInstanceCompletionEvaluations.AfterEach
+                || allItemsCompleted;
+            if (evaluateCompletionConditions)
+            {
+                winning = OutgoingFlows(workflow.Definition, node.Id)
+                    .Where(f => !f.CancelRemainingInstances && !string.IsNullOrWhiteSpace(f.CompletionCondition))
+                    .OrderBy(f => f.CompletionPriority)
+                    .FirstOrDefault(f => SequenceFlowConditionEvaluator.EvaluateCompletion(
+                        f.CompletionCondition, context, counts, execution.TotalCount));
+            }
             if (winning is not null) reason = "condition";
-            else if (updatedCompleted == execution.TotalCount)
+            else if (allItemsCompleted)
             {
                 winning = OutgoingFlows(workflow.Definition, node.Id)
                     .Single(f => !f.CancelRemainingInstances && f.IsDefault);

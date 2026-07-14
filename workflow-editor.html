@@ -478,6 +478,10 @@ const MULTI_INSTANCE_SOURCE_OPTIONS = [
   { value: "collection", label: "Username collection" },
   { value: "cardinality", label: "Cardinality expression" }
 ];
+const MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS = [
+  { value: "afterEach", label: "After each completed item" },
+  { value: "afterAll", label: "After all items complete" }
+];
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 function defaultService() {
   return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
@@ -765,6 +769,8 @@ function applyTypeInvariants(node) {
         ? (node.multiInstance.cardinalityExpression || "1") : null;
       node.multiInstance.onePerActor = node.multiInstance.source === "cardinality"
         ? !!node.multiInstance.onePerActor : false;
+      node.multiInstance.completionEvaluation = node.multiInstance.completionEvaluation === "afterAll"
+        ? "afterAll" : "afterEach";
       node.multiInstance.resultVariable = node.multiInstance.resultVariable || "";
       node.claimMode = CLAIM_MODE.FRESH;
       if (node.multiInstance.source === "collection") node.requiresClaim = false;
@@ -1468,7 +1474,8 @@ function renderNodeInspector() {
     inspector.appendChild(variableCheckbox("Multi-instance", !!node.multiInstance, checked => {
       node.multiInstance = checked ? {
         mode: "parallel", source: "collection", collectionVariable: "",
-        cardinalityExpression: null, onePerActor: false, resultVariable: ""
+        cardinalityExpression: null, onePerActor: false,
+        completionEvaluation: "afterEach", resultVariable: ""
       } : null;
       if (checked) node.assignee = null;
       applyTypeInvariants(node);
@@ -1479,6 +1486,11 @@ function renderNodeInspector() {
         node.multiInstance.mode = v;
         renderNodes();
       });
+      selectField("Completion evaluation", MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS,
+        node.multiInstance.completionEvaluation, v => {
+          node.multiInstance.completionEvaluation = v;
+          renderInspector();
+        });
       selectField("Instance source", MULTI_INSTANCE_SOURCE_OPTIONS, node.multiInstance.source, v => {
         node.multiInstance.source = v;
         if (v === "collection") {
@@ -1514,7 +1526,7 @@ function renderNodeInspector() {
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
       miHint.className = "empty-note";
-      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
+      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
       inspector.appendChild(miHint);
     }
   }
@@ -2510,7 +2522,10 @@ function renderFlowInspector() {
           });
           const completionHint = document.createElement("p");
           completionHint.className = "empty-note";
-          completionHint.textContent = "Evaluated after each item completes. Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60. The default outcome may omit this rule.";
+          const timing = source.multiInstance.completionEvaluation === "afterAll"
+            ? "Evaluated only after all items complete."
+            : "Evaluated after each item completes.";
+          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60. The default outcome may omit this rule.`;
           inspector.appendChild(completionHint);
         }
       }
@@ -3177,6 +3192,7 @@ function loadFromObject(obj) {
           collectionVariable: s.multiInstance.collectionVariable ?? null,
           cardinalityExpression: s.multiInstance.cardinalityExpression ?? null,
           onePerActor: s.multiInstance.source === "cardinality" && !!s.multiInstance.onePerActor,
+          completionEvaluation: s.multiInstance.completionEvaluation === "afterAll" ? "afterAll" : "afterEach",
           resultVariable: s.multiInstance.resultVariable ?? ""
         } : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,

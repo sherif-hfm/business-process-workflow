@@ -124,7 +124,11 @@ Storage follows the hybrid design:
   only on multi-instance user tasks; older definitions default to selectable.
   Outcome-flow `completionCondition` expressions use `CountFlow(flowId)`,
   `PercentFlow(flowId)`, and `mi.total/completed/remaining`; the lowest
-  `completionPriority` wins. A winning quorum or an interrupting flow atomically
+  `completionPriority` wins. `multiInstance.completionEvaluation` controls when
+  these aggregate conditions run: `afterEach` (the default for missing/older
+  definitions) evaluates after every completed item and permits an early quorum,
+  while `afterAll` evaluates only after every item completes. Interrupting flows
+  remain immediate in both modes. A winning condition or interrupt atomically
   cancels unfinished items, writes the ordered JSON result collection, and advances
   the parent token once. If all items finish without a match, the required default
   outcome wins. Task-specific operations use `/api/user-tasks/{taskId}`; legacy

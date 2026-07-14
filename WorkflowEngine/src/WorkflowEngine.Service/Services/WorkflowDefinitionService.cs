@@ -603,6 +603,12 @@ public sealed class WorkflowDefinitionService(
         {
             throw new WorkflowDomainException($"User task #{node.Id} has unsupported multi-instance source '{multi.Source}'.");
         }
+        if (multi.CompletionEvaluation is not (MultiInstanceCompletionEvaluations.AfterEach
+                                                or MultiInstanceCompletionEvaluations.AfterAll))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has unsupported multi-instance completionEvaluation '{multi.CompletionEvaluation}'.");
+        }
 
         var result = definition.Variables.SingleOrDefault(v =>
             string.Equals(v.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
