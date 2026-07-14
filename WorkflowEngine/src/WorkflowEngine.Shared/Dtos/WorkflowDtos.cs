@@ -78,7 +78,6 @@ public sealed record StartInstanceRequest(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status (e.g., "running", "completed", "faulted").</param>
-/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was started.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
@@ -88,7 +87,6 @@ public sealed record StartInstanceResultDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
-    string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
@@ -114,6 +112,15 @@ public sealed record MultiInstanceProgressDto(
     int? WinningFlowId,
     string? CompletionReason,
     IReadOnlyList<MultiInstanceFlowCountDto> FlowCounts);
+
+public sealed record UserTaskWorkSummaryDto(
+    bool IsMultiInstance,
+    int ActiveCount,
+    int PendingCount,
+    int ClaimedCount,
+    int AssignedCount,
+    string? SoleClaimedBy,
+    string? SoleAssignee);
 
 public sealed record UserTaskDto(
     long Id,
@@ -158,10 +165,10 @@ public sealed record UserTaskActionAckDto(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status of the instance.</param>
-/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was created.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
+/// <param name="UserTasks">Aggregate state for the current open user-task work, when present.</param>
 public sealed record InstanceSummaryDto(
     long Id,
     long WorkflowId,
@@ -171,10 +178,10 @@ public sealed record InstanceSummaryDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
-    string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    UserTaskWorkSummaryDto? UserTasks);
 
 /// <summary>
 /// Represents full details of a workflow instance, including variable values and history.
@@ -185,13 +192,13 @@ public sealed record InstanceSummaryDto(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status of the instance.</param>
-/// <param name="ClaimedBy">The username of the actor who has claimed the current userTask.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was created.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 /// <param name="Variables">The complete list of instance variables and their values.</param>
 /// <param name="History">The complete execution history of sequence flow hops and resting states.</param>
 /// <param name="MultiInstance">Progress for the active multi-instance user task, when present.</param>
+/// <param name="UserTasks">Aggregate state for the current open user-task work, when present.</param>
 public sealed record InstanceDetailDto(
     long Id,
     WorkflowDetailDto Workflow,
@@ -199,13 +206,13 @@ public sealed record InstanceDetailDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
-    string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<InstanceVariableDto> Variables,
     IReadOnlyList<InstanceHistoryDto> History,
-    MultiInstanceProgressDto? MultiInstance);
+    MultiInstanceProgressDto? MultiInstance,
+    UserTaskWorkSummaryDto? UserTasks);
 
 /// <summary>
 /// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.

@@ -136,6 +136,8 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException("Workflow must contain at least one flow node.");
         }
 
+        ValidateUniqueIdentifiers(definition);
+
         // initialEventId is optional: a workflow whose only entry is a
         // messageStartEvent (system-started) has no user-facing default start.
         // When set it must reference an existing node that is a user startEvent
@@ -754,6 +756,17 @@ public sealed class WorkflowDefinitionService(
         string owner,
         bool requireDefault)
     {
+        var materialized = variables.ToList();
+        var duplicateName = materialized
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .GroupBy(variable => variable.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateName is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Variable name '{duplicateName}' is duplicated on {owner}; variable names are case-insensitive.");
+        }
+
         var allowedTypes = new HashSet<string>
         {
             WorkflowVariableTypes.String,
@@ -764,7 +777,7 @@ public sealed class WorkflowDefinitionService(
             WorkflowVariableTypes.Json
         };
 
-        foreach (var variable in variables)
+        foreach (var variable in materialized)
         {
             if (string.IsNullOrWhiteSpace(variable.Name))
             {
@@ -799,6 +812,25 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException(
                     $"Variable '{variable.Name}' on {owner} has an invalid validation expression: '{variable.Validation}'.");
             }
+        }
+    }
+
+    private static void ValidateUniqueIdentifiers(WorkflowModel definition)
+    {
+        var duplicateNodeId = definition.FlowNodes
+            .GroupBy(node => node.Id)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateNodeId is not null)
+        {
+            throw new WorkflowDomainException($"Flow node id #{duplicateNodeId} is duplicated.");
+        }
+
+        var duplicateFlowId = definition.SequenceFlows
+            .GroupBy(flow => flow.Id)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateFlowId is not null)
+        {
+            throw new WorkflowDomainException($"Sequence flow id #{duplicateFlowId} is duplicated.");
         }
     }
 

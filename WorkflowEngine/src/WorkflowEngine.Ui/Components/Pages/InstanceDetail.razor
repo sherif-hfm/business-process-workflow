@@ -35,7 +35,10 @@ else
                 <p class="text-muted">External ID: <strong>@instance.CurrentNodeExternalId</strong></p>
             }
             <p>Status: <strong>@instance.Status</strong></p>
-            <p>Claimed by: <strong>@(instance.ClaimedBy ?? "-")</strong></p>
+            @if (instance.UserTasks is not null)
+            {
+                <p>Task state: <strong>@FormatTaskState(instance.UserTasks)</strong></p>
+            }
             <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
             @if (instance.MultiInstance is not null)
             {
@@ -162,7 +165,7 @@ else
         <h2 class="h4">Available actions</h2>
         @if (currentNode?.RequiresClaim == true && instance.Status == "running")
         {
-            if (string.IsNullOrWhiteSpace(instance.ClaimedBy))
+            if (string.IsNullOrWhiteSpace(CurrentClaimedBy))
             {
                 if (availableFlows.Any(f => !f.CanActWithoutClaim))
                 {
@@ -173,7 +176,7 @@ else
             {
                 if (availableFlows.Any(f => !f.CanActWithoutClaim))
                 {
-                    <div class="alert alert-info">This task is claimed by <strong>@instance.ClaimedBy</strong>. Only they can take standard actions.</div>
+                    <div class="alert alert-info">This task is claimed by <strong>@CurrentClaimedBy</strong>. Only they can take standard actions.</div>
                 }
             }
         }
@@ -306,6 +309,11 @@ else
 
     private string ActingUser => NormalizeUser(Token.CurrentUser);
 
+    // Instance DTOs intentionally do not own a claim. For the legacy
+    // instance-addressed controls, the grouped work summary identifies the
+    // claimant only when the current active task is unambiguous.
+    private string? CurrentClaimedBy => instance?.UserTasks?.SoleClaimedBy;
+
     private FlowNodeModel? CurrentNode =>
         instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
 
@@ -340,8 +348,8 @@ else
                 return true;
             }
 
-            return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
-                && instance.ClaimedBy == ActingUser;
+            return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
+                && CurrentClaimedBy == ActingUser;
         }
     }
 
@@ -363,8 +371,8 @@ else
             return true;
         }
 
-        return !string.IsNullOrWhiteSpace(instance.ClaimedBy)
-            && instance.ClaimedBy == ActingUser;
+        return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
+            && CurrentClaimedBy == ActingUser;
     }
 
     private bool CanUnclaim
@@ -372,10 +380,10 @@ else
         get
         {
             if (instance is null) return false;
-            if (string.IsNullOrWhiteSpace(instance.ClaimedBy)) return false;
+            if (string.IsNullOrWhiteSpace(CurrentClaimedBy)) return false;
 
             var normalizedUser = ActingUser;
-            if (string.Equals(instance.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(CurrentClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -412,6 +420,31 @@ else
     {
         await LoadAsync();
         pollTask = PollAsync(pollCancellation.Token);
+    }
+
+    private static string FormatTaskState(UserTaskWorkSummaryDto tasks)
+    {
+        if (tasks.ActiveCount == 1 && tasks.PendingCount == 0)
+        {
+            if (!string.IsNullOrWhiteSpace(tasks.SoleAssignee))
+            {
+                return $"Assigned to {tasks.SoleAssignee}";
+            }
+            if (!string.IsNullOrWhiteSpace(tasks.SoleClaimedBy))
+            {
+                return $"Claimed by {tasks.SoleClaimedBy}";
+            }
+            if (!tasks.IsMultiInstance)
+            {
+                return "Unclaimed";
+            }
+        }
+
+        var parts = new List<string> { $"{tasks.ActiveCount} active" };
+        if (tasks.PendingCount > 0) parts.Add($"{tasks.PendingCount} pending");
+        if (tasks.ClaimedCount > 0) parts.Add($"{tasks.ClaimedCount} claimed");
+        if (tasks.AssignedCount > 0) parts.Add($"{tasks.AssignedCount} assigned");
+        return string.Join(", ", parts);
     }
 
     private async Task LoadAsync()

@@ -663,6 +663,11 @@ public static class MultiInstanceCompletionEvaluations
     public const string AfterAll = "afterAll";
 }
 
+public static class UserTaskConstraints
+{
+    public const int MaxActorNameLength = 300;
+}
+
 /// <summary>
 /// Represents a variable declaration model within a scope.
 /// </summary>

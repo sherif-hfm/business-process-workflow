@@ -350,6 +350,13 @@
     background: rgba(59, 130, 246, 0.25);
     border-color: rgba(59, 130, 246, 0.7);
   }
+  .validation-list {
+    margin: 0;
+    padding-left: 22px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  .validation-list li { margin-bottom: 8px; color: #fecaca; }
 </style>
 </head>
 <body>
@@ -427,6 +434,23 @@
   </div>
 </div>
 
+<!-- Save Validation Modal Overlay -->
+<div id="validation-modal" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="validation-title">
+  <div class="modal-container" style="max-width: 720px; max-height: 75vh;">
+    <div class="modal-header">
+      <h3 id="validation-title">Workflow cannot be saved</h3>
+      <button id="validation-close" type="button" class="close-btn" onclick="closeValidationErrors()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="empty-note" style="margin-top: 0;">Fix the following definition errors and save again.</p>
+      <ol id="validation-errors" class="validation-list"></ol>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="primary" onclick="closeValidationErrors()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const NODE_W = 170, NODE_H = 64;
 const EVENT_D = 56;
@@ -482,6 +506,28 @@ const MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS = [
   { value: "afterEach", label: "After each completed item" },
   { value: "afterAll", label: "After all items complete" }
 ];
+function canonicalizeKnownValue(value, supported, fallback) {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") return value;
+  const canonical = supported.find(candidate =>
+    candidate.toLowerCase() === value.toLowerCase());
+  return canonical ?? value;
+}
+function normalizeMultiInstanceForLoad(source) {
+  const mode = canonicalizeKnownValue(source.mode, ["parallel", "sequential"], "parallel");
+  const instanceSource = canonicalizeKnownValue(source.source, ["collection", "cardinality"], "collection");
+  const completionEvaluation = canonicalizeKnownValue(
+    source.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+  return {
+    mode,
+    source: instanceSource,
+    collectionVariable: source.collectionVariable ?? null,
+    cardinalityExpression: source.cardinalityExpression ?? null,
+    onePerActor: !!source.onePerActor,
+    completionEvaluation,
+    resultVariable: source.resultVariable ?? ""
+  };
+}
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 function defaultService() {
   return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
@@ -761,16 +807,21 @@ function applyTypeInvariants(node) {
     delete node.message;
     if (node.multiInstance) {
       node.assignee = null;
-      node.multiInstance.mode = node.multiInstance.mode === "sequential" ? "sequential" : "parallel";
-      node.multiInstance.source = node.multiInstance.source === "cardinality" ? "cardinality" : "collection";
-      node.multiInstance.collectionVariable = node.multiInstance.source === "collection"
-        ? (node.multiInstance.collectionVariable || "") : null;
-      node.multiInstance.cardinalityExpression = node.multiInstance.source === "cardinality"
-        ? (node.multiInstance.cardinalityExpression || "1") : null;
-      node.multiInstance.onePerActor = node.multiInstance.source === "cardinality"
-        ? !!node.multiInstance.onePerActor : false;
-      node.multiInstance.completionEvaluation = node.multiInstance.completionEvaluation === "afterAll"
-        ? "afterAll" : "afterEach";
+      node.multiInstance.mode = canonicalizeKnownValue(
+        node.multiInstance.mode, ["parallel", "sequential"], "parallel");
+      node.multiInstance.source = canonicalizeKnownValue(
+        node.multiInstance.source, ["collection", "cardinality"], "collection");
+      node.multiInstance.completionEvaluation = canonicalizeKnownValue(
+        node.multiInstance.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+      if (node.multiInstance.source === "collection") {
+        node.multiInstance.collectionVariable ||= "";
+        node.multiInstance.cardinalityExpression = null;
+        node.multiInstance.onePerActor = false;
+      } else if (node.multiInstance.source === "cardinality") {
+        node.multiInstance.collectionVariable = null;
+        node.multiInstance.cardinalityExpression ||= "1";
+        node.multiInstance.onePerActor = !!node.multiInstance.onePerActor;
+      }
       node.multiInstance.resultVariable = node.multiInstance.resultVariable || "";
       node.claimMode = CLAIM_MODE.FRESH;
       if (node.multiInstance.source === "collection") node.requiresClaim = false;
@@ -824,16 +875,6 @@ function migrateLegacyUserTaskDefaultFlows() {
       outgoing.push(fallback);
     }
 
-    for (const fallback of outgoing.filter(flow => flow.isDefault)) {
-      fallback.isSelectable = false;
-      fallback.roles = [];
-      fallback.variables = [];
-      fallback.condition = null;
-      fallback.canActWithoutClaim = false;
-      fallback.completionCondition = null;
-      fallback.completionPriority = null;
-      fallback.cancelRemainingInstances = false;
-    }
   }
 }
 function applyFlowInvariants(flow) {
@@ -1590,7 +1631,7 @@ function renderNodeInspector() {
         }));
       }
       const results = (model.variables || [])
-        .filter(v => v.dataType === "json" && !v.isArray)
+        .filter(v => v.dataType === "json" && !v.isArray && Array.isArray(v.defaultValue))
         .map(v => ({ value: v.name, label: v.name }));
       selectField("Result JSON variable", [{ value: "", label: "— select json —" }].concat(results),
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
@@ -3098,9 +3139,248 @@ function defaultFileName() {
   return (model.name || "workflow").replace(/\s+/g, "_").toLowerCase() + ".json";
 }
 
+// BEGIN WORKFLOW SAVE VALIDATOR
+function validateModelForSave(candidate) {
+  const errors = [];
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  const processVariables = Array.isArray(candidate && candidate.variables) ? candidate.variables : [];
+  const hasText = value => typeof value === "string" && value.trim().length > 0;
+  const countItems = value => Array.isArray(value) ? value.length : 0;
+  const nodeLabel = node => "User task #" + String(node && node.id) +
+    (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
+  const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
+
+  function validateUniqueIds(items, kind) {
+    const seen = new Set();
+    for (const item of items) {
+      if (!Number.isInteger(item && item.id)) {
+        errors.push(kind + " has a missing or non-integer id.");
+        continue;
+      }
+      if (seen.has(item.id)) errors.push(kind + " id #" + item.id + " is duplicated.");
+      seen.add(item.id);
+    }
+  }
+
+  function validateVariableNames(variables, owner) {
+    const seen = new Map();
+    for (const variable of Array.isArray(variables) ? variables : []) {
+      if (!hasText(variable && variable.name)) {
+        errors.push("Variable name is required on " + owner + ".");
+        continue;
+      }
+      const name = variable.name.trim();
+      const key = name.toLowerCase();
+      if (seen.has(key)) {
+        errors.push("Variable name '" + name + "' is duplicated on " + owner +
+          "; names are case-insensitive.");
+      } else {
+        seen.set(key, name);
+      }
+    }
+  }
+
+  validateUniqueIds(nodes, "Flow node");
+  validateUniqueIds(flows, "Sequence flow");
+  validateVariableNames(processVariables, "process variables");
+  for (const node of nodes) validateVariableNames(node && node.variables, "flow node #" + String(node && node.id));
+  for (const flow of flows) validateVariableNames(flow && flow.variables, "sequence flow #" + String(flow && flow.id));
+
+  const processByName = new Map();
+  for (const variable of processVariables) {
+    if (hasText(variable && variable.name)) {
+      const key = variable.name.trim().toLowerCase();
+      if (!processByName.has(key)) processByName.set(key, variable);
+    }
+  }
+
+  for (const node of nodes) {
+    const multi = node && node.multiInstance;
+    if (!multi) continue;
+    const label = nodeLabel(node);
+
+    if (node.type !== "userTask") {
+      errors.push(label + " has multiInstance configuration but is not a userTask.");
+      continue;
+    }
+    if (!["parallel", "sequential"].includes(multi.mode)) {
+      errors.push(label + " has unsupported multi-instance mode '" + String(multi.mode) + "'.");
+    }
+    if (!["collection", "cardinality"].includes(multi.source)) {
+      errors.push(label + " has unsupported multi-instance source '" + String(multi.source) + "'.");
+    }
+    if (!["afterEach", "afterAll"].includes(multi.completionEvaluation)) {
+      errors.push(label + " has unsupported completionEvaluation '" +
+        String(multi.completionEvaluation) + "'.");
+    }
+    if (hasText(node.assignee)) {
+      errors.push(label + " cannot define an assignee expression while multi-instance is enabled.");
+    }
+
+    const resultName = hasText(multi.resultVariable) ? multi.resultVariable.trim() : "";
+    const result = resultName ? processByName.get(resultName.toLowerCase()) : null;
+    if (!result || result.dataType !== "json" || result.isArray ||
+        !Array.isArray(result.defaultValue)) {
+      errors.push(label +
+        " resultVariable must reference a scalar JSON process variable whose defaultValue is a JSON array.");
+    }
+
+    if (multi.source === "collection") {
+      const collectionName = hasText(multi.collectionVariable)
+        ? multi.collectionVariable.trim() : "";
+      const collection = collectionName
+        ? processByName.get(collectionName.toLowerCase()) : null;
+      if (!collection || collection.dataType !== "string" || !collection.isArray) {
+        errors.push(label + " collectionVariable must reference a declared string[] process variable.");
+      }
+      if (collectionName && resultName &&
+          collectionName.toLowerCase() === resultName.toLowerCase()) {
+        errors.push(label + " collectionVariable and resultVariable must be different.");
+      }
+      if (hasText(multi.cardinalityExpression)) {
+        errors.push(label + " collection source cannot define cardinalityExpression.");
+      }
+      if (multi.onePerActor) {
+        errors.push(label + " collection source cannot enable onePerActor.");
+      }
+      if (node.requiresClaim || node.claimMode !== "fresh") {
+        errors.push(label + " collection source must use requiresClaim=false and claimMode='fresh'.");
+      }
+      if (collection && Array.isArray(collection.defaultValue)) {
+        collection.defaultValue.forEach((username, index) => {
+          if (typeof username !== "string" || username.trim().length === 0) {
+            errors.push(label + " collection default item " + (index + 1) +
+              " must be a non-empty username.");
+          } else if (username.trim().length > 300) {
+            errors.push(label + " collection default item " + (index + 1) +
+              " exceeds the 300-character username limit.");
+          }
+        });
+      }
+    } else if (multi.source === "cardinality") {
+      if (hasText(multi.collectionVariable)) {
+        errors.push(label + " cardinality source cannot define collectionVariable.");
+      }
+      if (!hasText(multi.cardinalityExpression)) {
+        errors.push(label + " cardinality source requires cardinalityExpression.");
+      }
+      if (node.claimMode !== "fresh") {
+        errors.push(label + " cardinality source must use claimMode='fresh'.");
+      }
+    }
+
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    const outcomes = outgoing.filter(flow => !flow.cancelRemainingInstances);
+    const interrupts = outgoing.filter(flow => !!flow.cancelRemainingInstances);
+    const defaults = outcomes.filter(flow => !!flow.isDefault);
+    const conditioned = outcomes.filter(flow => !flow.isDefault);
+    const selectableOutcomeIds = new Set(
+      outcomes.filter(flow => flow.isSelectable !== false).map(flow => flow.id));
+
+    if (outcomes.length === 0 || defaults.length !== 1) {
+      errors.push(label + " requires outcome flows and exactly one default outcome.");
+    }
+    if (!conditioned.some(flow => flow.isSelectable !== false)) {
+      errors.push(label + " requires at least one selectable non-default outcome.");
+    }
+
+    if (defaults.length === 1) {
+      const fallback = defaults[0];
+      if (fallback.isSelectable !== false ||
+          countItems(fallback.roles) > 0 ||
+          countItems(fallback.variables) > 0 ||
+          hasText(fallback.condition) ||
+          !!fallback.canActWithoutClaim ||
+          hasText(fallback.completionCondition) ||
+          fallback.completionPriority != null ||
+          !!fallback.cancelRemainingInstances) {
+        errors.push(flowLabel(fallback) +
+          " must be a pure engine-only default with no actor or completion settings.");
+      }
+    }
+
+    const priorities = new Set();
+    for (const flow of conditioned) {
+      if (!Number.isInteger(flow.completionPriority) || flow.completionPriority <= 0) {
+        errors.push(flowLabel(flow) + " requires a positive integer completionPriority.");
+      } else if (priorities.has(flow.completionPriority)) {
+        errors.push(label + " has duplicate completionPriority " + flow.completionPriority + ".");
+      } else {
+        priorities.add(flow.completionPriority);
+      }
+      if (!hasText(flow.completionCondition)) {
+        errors.push(flowLabel(flow) + " requires completionCondition.");
+      } else {
+        const helperPattern = /\b(?:CountFlow|PercentFlow)\s*\(\s*([^)]+)\s*\)/gi;
+        let match;
+        while ((match = helperPattern.exec(flow.completionCondition)) !== null) {
+          const referencedId = Number(match[1].trim());
+          if (!Number.isInteger(referencedId) || !selectableOutcomeIds.has(referencedId)) {
+            errors.push(flowLabel(flow) +
+              " completionCondition references a non-selectable outcome flow.");
+          }
+        }
+      }
+      if (flow.isSelectable === false &&
+          (countItems(flow.roles) > 0 ||
+           countItems(flow.variables) > 0 ||
+           hasText(flow.condition) ||
+           !!flow.canActWithoutClaim)) {
+        errors.push(flowLabel(flow) +
+          " is engine-only and cannot define roles, action variables, condition, or canActWithoutClaim.");
+      }
+    }
+
+    for (const flow of interrupts) {
+      if (flow.isSelectable === false ||
+          !!flow.isDefault ||
+          hasText(flow.completionCondition) ||
+          flow.completionPriority != null) {
+        errors.push(flowLabel(flow) +
+          " interrupt must be selectable, non-default, and have no completion rules.");
+      }
+    }
+  }
+
+  return errors;
+}
+// END WORKFLOW SAVE VALIDATOR
+
+function showValidationErrors(errors) {
+  const list = document.getElementById("validation-errors");
+  list.replaceChildren();
+  for (const error of errors) {
+    const item = document.createElement("li");
+    item.textContent = error;
+    list.appendChild(item);
+  }
+  document.getElementById("validation-modal").style.display = "flex";
+  document.getElementById("validation-close").focus();
+}
+
+function closeValidationErrors() {
+  document.getElementById("validation-modal").style.display = "none";
+}
+
 async function save() {
-  model.flowNodes.forEach(applyTypeInvariants);
-  model.sequenceFlows.forEach(applyFlowInvariants);
+  // Saving only canonicalizes recognized enum casing. Do not run the broader UI
+  // invariant helpers here: imported invalid source/flow settings must survive
+  // long enough for validateModelForSave to report them.
+  model.flowNodes.forEach(node => {
+    if (!node.multiInstance) return;
+    node.multiInstance.mode = canonicalizeKnownValue(
+      node.multiInstance.mode, ["parallel", "sequential"], "parallel");
+    node.multiInstance.source = canonicalizeKnownValue(
+      node.multiInstance.source, ["collection", "cardinality"], "collection");
+    node.multiInstance.completionEvaluation = canonicalizeKnownValue(
+      node.multiInstance.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+  });
+  const validationErrors = validateModelForSave(model);
+  if (validationErrors.length > 0) {
+    showValidationErrors(validationErrors);
+    return;
+  }
   const data = JSON.stringify(model, null, 2);
 
   if (window.showSaveFilePicker) {
@@ -3266,15 +3546,7 @@ function loadFromObject(obj) {
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
         assignee: (typeof s.assignee === "string" && s.assignee.trim()) ? s.assignee : null,
-        multiInstance: s.multiInstance ? {
-          mode: s.multiInstance.mode === "sequential" ? "sequential" : "parallel",
-          source: s.multiInstance.source === "cardinality" ? "cardinality" : "collection",
-          collectionVariable: s.multiInstance.collectionVariable ?? null,
-          cardinalityExpression: s.multiInstance.cardinalityExpression ?? null,
-          onePerActor: s.multiInstance.source === "cardinality" && !!s.multiInstance.onePerActor,
-          completionEvaluation: s.multiInstance.completionEvaluation === "afterAll" ? "afterAll" : "afterEach",
-          resultVariable: s.multiInstance.resultVariable ?? ""
-        } : null,
+        multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,
         scriptFormat: isScriptTaskType(s.type)
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
@@ -3308,9 +3580,7 @@ function loadFromObject(obj) {
     // Legacy phases/steps/actions document.
     model = migrateLegacyToNew(obj);
   }
-  model.flowNodes.forEach(applyTypeInvariants);
   migrateLegacyUserTaskDefaultFlows();
-  model.sequenceFlows.forEach(applyFlowInvariants);
   clearSelection();
 }
 
@@ -3344,6 +3614,10 @@ document.getElementById("fileInput").onchange = (e) => {
 wfNameInput.oninput = () => { model.name = wfNameInput.value; };
 
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.getElementById("validation-modal").style.display !== "none") {
+    closeValidationErrors();
+    return;
+  }
   const t = e.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
             || t.tagName === "SELECT" || t.isContentEditable)) return;

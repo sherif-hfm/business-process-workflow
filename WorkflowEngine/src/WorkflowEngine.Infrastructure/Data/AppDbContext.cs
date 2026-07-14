@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using WorkflowEngine.Infrastructure.Entities;
+using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Infrastructure.Data;
 
@@ -84,9 +85,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
-            entity.Property(e => e.ClaimedBy).HasMaxLength(300);
-            entity.Property(e => e.Assignee).HasMaxLength(300);
-            entity.Property(e => e.CompletedBy).HasMaxLength(300);
+            entity.Property(e => e.ClaimedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.Assignee).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ItemValueJson).HasColumnType("jsonb");
             entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");

@@ -66,7 +66,10 @@ public interface IWorkflowRuntimeRepository
 
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
-    Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(long id, CancellationToken cancellationToken);
+    Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
+        long id,
+        bool lockActiveUserTask,
+        CancellationToken cancellationToken);
 
     Task<MultiInstanceExecutionRecord> AddMultiInstanceAsync(
         long instanceId,
@@ -101,6 +104,14 @@ public interface IWorkflowRuntimeRepository
 
     Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<long, UserTaskWorkSummaryRecord>> GetUserTaskWorkSummariesAsync(
+        IReadOnlyCollection<long> instanceIds,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<long, MultiInstanceProgressRecord>> GetMultiInstanceProgressAsync(
+        IReadOnlyCollection<long> executionIds,
+        CancellationToken cancellationToken);
+
     Task<bool> HasCompletedMultiInstanceItemAsync(
         long executionId,
         string completedBy,
@@ -132,7 +143,11 @@ public interface IWorkflowRuntimeRepository
 
     Task CancelActiveMultiInstanceAsync(long instanceId, CancellationToken cancellationToken);
 
+    Task CancelOpenUserTasksAsync(long instanceId, CancellationToken cancellationToken);
+
     Task UpdateUserTaskClaimAsync(long taskId, string? claimedBy, CancellationToken cancellationToken);
+
+    Task<DateTimeOffset> TouchInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task UpdateInstanceAsync(
         long id,

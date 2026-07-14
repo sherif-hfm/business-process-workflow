@@ -108,6 +108,11 @@ Storage follows the hybrid design:
   backfills one token and (where applicable) one active user task for existing
   instances before dropping the old `CurrentStepId`, `CurrentNode*`,
   `CurrentRequiresClaim`, and `ClaimedBy` instance columns.
+  Summary/detail DTOs expose a grouped `UserTasks` work summary (`IsMultiInstance`,
+  active/pending/claimed/assigned counts, and sole claimant/assignee). Top-level
+  instance DTOs do not expose `ClaimedBy`; claim ownership belongs to task DTOs.
+  Progress and work-summary projections use bounded grouped queries rather than
+  loading every child item.
 - **Multi-instance user tasks.** A `userTask.multiInstance` configuration creates
   parallel or sequential work items while retaining one parent execution token.
   `collection` mode snapshots a declared `string[]` and directly assigns each
@@ -143,8 +148,19 @@ Storage follows the hybrid design:
   the node and flow roles but deliberately do not require an active assigned child
   item or claim. The execution row is locked so concurrent interrupts advance the
   parent exactly once, while later attempts return 409.
+- Multi-instance definition enum values (`mode`, `source`, and
+  `completionEvaluation`) canonicalize recognized casing but reject null,
+  unknown, or misspelled values. Definition validation rejects duplicate node/
+  flow ids and case-insensitive duplicate variable names before any singular
+  lookup. Cardinality is range/integrality checked before casting, and collection
+  enumeration stops immediately above `Workflow.MultiInstance.MaxInstances`;
+  collection usernames share the 300-character assignee limit.
 - Instance transitions run in a database transaction and lock the instance row
-  with `SELECT ... FOR UPDATE`; there is no in-memory run engine state.
+  with `SELECT ... FOR UPDATE`; there is no in-memory run engine state. Mutations
+  use a consistent instance -> multi-instance execution -> user-task lock order.
+  Instance cancellation locks the instance before discovering/cancelling active
+  executions and open tasks, and child activity touches the parent `UpdatedAt` in
+  the same transaction.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
   `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
   `exclusiveGateway`, and `errorBoundaryEvent` nodes are resolved in the same

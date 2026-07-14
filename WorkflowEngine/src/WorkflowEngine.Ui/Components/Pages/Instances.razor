@@ -66,7 +66,7 @@ else
                 <th>Workflow</th>
                 <th>Current step</th>
                 <th>Status</th>
-                <th>Claimed by</th>
+                <th>Task state</th>
                 <th></th>
             </tr>
         </thead>
@@ -84,7 +84,7 @@ else
                         }
                     </td>
                     <td>@instance.Status</td>
-                    <td>@(instance.ClaimedBy ?? "-")</td>
+                    <td>@FormatTaskState(instance.UserTasks)</td>
                     <td class="text-end">
                         <a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a>
                     </td>
@@ -123,6 +123,36 @@ else
         : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
 
     private bool HasNextPage => result is not null && page < TotalPages;
+
+    private static string FormatTaskState(UserTaskWorkSummaryDto? tasks)
+    {
+        if (tasks is null)
+        {
+            return "-";
+        }
+
+        if (tasks.ActiveCount == 1 && tasks.PendingCount == 0)
+        {
+            if (!string.IsNullOrWhiteSpace(tasks.SoleAssignee))
+            {
+                return $"Assigned to {tasks.SoleAssignee}";
+            }
+            if (!string.IsNullOrWhiteSpace(tasks.SoleClaimedBy))
+            {
+                return $"Claimed by {tasks.SoleClaimedBy}";
+            }
+            if (!tasks.IsMultiInstance)
+            {
+                return "Unclaimed";
+            }
+        }
+
+        var parts = new List<string> { $"{tasks.ActiveCount} active" };
+        if (tasks.PendingCount > 0) parts.Add($"{tasks.PendingCount} pending");
+        if (tasks.ClaimedCount > 0) parts.Add($"{tasks.ClaimedCount} claimed");
+        if (tasks.AssignedCount > 0) parts.Add($"{tasks.AssignedCount} assigned");
+        return string.Join(", ", parts);
+    }
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 

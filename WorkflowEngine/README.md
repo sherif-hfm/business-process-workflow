@@ -9,12 +9,22 @@
 - `src/WorkflowEngine.Infrastructure` - EF Core, PostgreSQL, migrations, repositories.
 - `src/WorkflowEngine.Shared` - DTOs and C# workflow definition model.
 - `src/WorkflowEngine.Ui` - Blazor Server UI that calls the API.
+- `tests/WorkflowEngine.Tests` - xUnit definition/editor tests plus an in-process
+  API host backed by an isolated PostgreSQL Testcontainer.
+- `tools/*` - the existing definition verifier, live API regression runner, and
+  instance load runner.
 
 ## Storage
 
 - Workflow definitions are versioned JSONB snapshots in `workflow_definitions`.
-- Runtime state is normalized in `workflow_instances`, `instance_variables`, and `instance_history`.
-- Runtime transitions lock the instance row with `SELECT ... FOR UPDATE`.
+- Runtime state is normalized in `workflow_instances`, `execution_tokens`,
+  `user_tasks`, `multi_instance_executions`, `multi_instance_flow_counts`,
+  `instance_variables`, and `instance_history`.
+- Runtime mutations use one lock order: instance, multi-instance execution, then
+  user tasks. Stale competing actions return 409 instead of advancing twice.
+- Instance summary/detail projections include grouped active, pending, claimed,
+  and assigned task counts. Claim ownership is exposed only by task DTOs; instance
+  DTOs do not project a task claimant.
 - Node and sequence-flow roles are enforced from the authenticated actor's JWT.
 
 ## Run Locally
@@ -68,6 +78,25 @@ The multi-instance execution endpoints expose only selectable interrupting flows
 roles. They let an authorized actor interrupt the parent execution even without
 an active child work item; unfinished child items are cancelled and the workflow
 continues through the selected flow.
+
+Known multi-instance `mode`, `source`, and `completionEvaluation` casing is
+canonicalized when definitions are loaded. Unknown or explicitly null values,
+duplicate node/flow ids, and case-variant duplicate variable names are rejected.
+Cardinality and collection fan-out are bounded before allocation by
+`Workflow.MultiInstance.MaxInstances`.
+
+## Verification
+
+Docker is required for the isolated PostgreSQL tests:
+
+```powershell
+dotnet test .\tests\WorkflowEngine.Tests\WorkflowEngine.Tests.csproj
+dotnet run --project .\tools\MultiInstanceVerifier\MultiInstanceVerifier.csproj
+dotnet run --project .\tools\MultiInstanceApiTests\MultiInstanceApiTests.csproj -- --manage-api
+```
+
+The live API runner writes Markdown and JSON evidence under the repository-level
+`TestResults` directory and includes restart recovery plus a 1,000-item load case.
 
 ### Variable search
 

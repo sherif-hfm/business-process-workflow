@@ -77,6 +77,23 @@ public sealed record UserTaskRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
 
+public sealed record UserTaskWorkSummaryRecord(
+    long InstanceId,
+    bool IsMultiInstance,
+    int ActiveCount,
+    int PendingCount,
+    int ClaimedCount,
+    int AssignedCount,
+    string? SoleClaimedBy,
+    string? SoleAssignee);
+
+public sealed record MultiInstanceProgressRecord(
+    MultiInstanceExecutionRecord Execution,
+    int ActiveCount,
+    int PendingCount,
+    int CancelledCount,
+    IReadOnlyDictionary<int, int> FlowCounts);
+
 // Compatibility projection for the existing instance-oriented API. TokenId and
 // UserTaskId keep the persistence boundary ready for task/token-addressed APIs.
 public sealed record InstanceListItem(
@@ -101,7 +118,8 @@ public sealed record InstanceListItem(
     string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    UserTaskWorkSummaryRecord? UserTasks);
 
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);

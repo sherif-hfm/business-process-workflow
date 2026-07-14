@@ -6,4 +6,12 @@
     <Project Path="src/WorkflowEngine.Shared/WorkflowEngine.Shared.csproj" />
     <Project Path="src/WorkflowEngine.Ui/WorkflowEngine.Ui.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WorkflowEngine.Tests/WorkflowEngine.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/InstanceLoadTest/InstanceLoadTest.csproj" />
+    <Project Path="tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj" />
+    <Project Path="tools/MultiInstanceVerifier/MultiInstanceVerifier.csproj" />
+  </Folder>
 </Solution>

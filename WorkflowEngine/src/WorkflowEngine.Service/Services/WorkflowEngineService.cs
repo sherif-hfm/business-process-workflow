@@ -22,7 +22,6 @@ public sealed class WorkflowEngineService(
     ILogger<WorkflowEngineService> logger)
     : IWorkflowEngineService
 {
-    private const int MaxAssigneeLength = 300;
     private Dictionary<string, JsonElement>? _settingsCache;
 
     private async Task LoadSettingsAsync(CancellationToken cancellationToken)
@@ -63,7 +62,6 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
-            instance.ClaimedBy,
             instance.StartedBy,
             instance.CreatedAt,
             instance.UpdatedAt);
@@ -481,12 +479,11 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        var progressByExecution = new Dictionary<long, MultiInstanceProgressDto?>();
-        foreach (var executionId in paged.Items.Where(r => r.MultiInstanceExecutionId is not null)
-                     .Select(r => r.MultiInstanceExecutionId!.Value).Distinct())
-        {
-            progressByExecution[executionId] = await BuildProgressAsync(executionId, cancellationToken);
-        }
+        var executionIds = paged.Items.Where(row => row.MultiInstanceExecutionId is not null)
+            .Select(row => row.MultiInstanceExecutionId!.Value)
+            .Distinct()
+            .ToList();
+        var progressByExecution = await BuildProgressAsync(executionIds, cancellationToken);
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null)).ToList();
@@ -638,7 +635,7 @@ public sealed class WorkflowEngineService(
             }
         }
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
         if (instance is null)
         {
             logger.LogInformation("Claim instance {InstanceId}: instance not found.", id);
@@ -702,7 +699,7 @@ public sealed class WorkflowEngineService(
             }
         }
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
         if (instance is null)
         {
             logger.LogInformation("Unclaim instance {InstanceId}: instance not found.", id);
@@ -815,22 +812,31 @@ public sealed class WorkflowEngineService(
         if (initialTask is null) return null;
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(initialTask.InstanceId, false, cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+            throw new WorkflowConflictException("The workflow instance is no longer running.");
         MultiInstanceExecutionRecord? execution = null;
         if (initialTask.MultiInstanceExecutionId is long executionId)
         {
             execution = await runtime.GetMultiInstanceAsync(executionId, true, cancellationToken);
-            if (execution is null || execution.Status != MultiInstanceRecordStatuses.Active)
+            if (execution is null || execution.InstanceId != instance.Id
+                                  || execution.Status != MultiInstanceRecordStatuses.Active)
                 throw new WorkflowConflictException("The multi-instance execution has already closed.");
+            if (instance.ActiveTokenId != execution.TokenId || instance.CurrentStepId != execution.NodeId)
+                throw new WorkflowConflictException("The multi-instance execution is no longer the current workflow step.");
         }
 
         var task = await runtime.GetUserTaskAsync(taskId, true, cancellationToken);
-        if (task is null) return null;
+        if (task is null || task.InstanceId != instance.Id
+                         || task.MultiInstanceExecutionId != initialTask.MultiInstanceExecutionId
+                         || task.TokenId != instance.ActiveTokenId
+                         || task.NodeId != instance.CurrentStepId)
+            throw new WorkflowConflictException("The user task is no longer current.");
         if (task.Assignee is not null)
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
         if (task.Status != UserTaskRecordStatuses.Active || !task.RequiresClaim)
             throw new WorkflowDomainException("The user task cannot be claimed.");
-        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken)
-            ?? throw new WorkflowDomainException("Workflow instance was not found.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, task.NodeId);
         EnsureRoleAllowed(node, actor);
@@ -848,6 +854,7 @@ public sealed class WorkflowEngineService(
             && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase))
             throw new WorkflowConflictException($"The user task is already claimed by '{task.ClaimedBy}'.");
         await runtime.UpdateUserTaskClaimAsync(taskId, user, cancellationToken);
+        await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return await GetUserTaskAsync(taskId, actor, cancellationToken);
@@ -858,13 +865,33 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        var initialTask = await runtime.GetUserTaskAsync(taskId, false, cancellationToken);
+        if (initialTask is null) return null;
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(initialTask.InstanceId, false, cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+            throw new WorkflowConflictException("The workflow instance is no longer running.");
+        MultiInstanceExecutionRecord? execution = null;
+        if (initialTask.MultiInstanceExecutionId is long executionId)
+        {
+            execution = await runtime.GetMultiInstanceAsync(executionId, true, cancellationToken);
+            if (execution is null || execution.InstanceId != instance.Id
+                                  || execution.Status != MultiInstanceRecordStatuses.Active)
+                throw new WorkflowConflictException("The multi-instance execution has already closed.");
+            if (instance.ActiveTokenId != execution.TokenId || instance.CurrentStepId != execution.NodeId)
+                throw new WorkflowConflictException("The multi-instance execution is no longer the current workflow step.");
+        }
         var task = await runtime.GetUserTaskAsync(taskId, true, cancellationToken);
-        if (task is null) return null;
+        if (task is null || task.InstanceId != instance.Id
+                         || task.MultiInstanceExecutionId != initialTask.MultiInstanceExecutionId
+                         || task.TokenId != instance.ActiveTokenId
+                         || task.NodeId != instance.CurrentStepId
+                         || task.Status != UserTaskRecordStatuses.Active)
+            throw new WorkflowConflictException("The user task is no longer current.");
         if (task.Assignee is not null)
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
-        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken)
-            ?? throw new WorkflowDomainException("Workflow instance was not found.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var user = NormalizeUser(actor.User);
         var roles = NormalizeRoles(actor.Roles);
@@ -874,6 +901,7 @@ public sealed class WorkflowEngineService(
             && !mayOverride)
             throw new WorkflowDomainException("Only the claimant or a configured unclaim role can unclaim this user task.");
         await runtime.UpdateUserTaskClaimAsync(taskId, null, cancellationToken);
+        await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return await GetUserTaskAsync(taskId, actor, cancellationToken);
@@ -901,19 +929,18 @@ public sealed class WorkflowEngineService(
                 visible.Add(task);
         }
         var pageRecords = visible.Skip((page - 1) * pageSize).Take(pageSize).ToList();
-        var progressCache = new Dictionary<long, MultiInstanceProgressDto?>();
+        var executionIds = pageRecords
+            .Where(task => task.MultiInstanceExecutionId is not null)
+            .Select(task => task.MultiInstanceExecutionId!.Value)
+            .Distinct()
+            .ToList();
+        var progressCache = await BuildProgressAsync(executionIds, cancellationToken);
         var items = new List<UserTaskDto>(pageRecords.Count);
         foreach (var task in pageRecords)
         {
-            MultiInstanceProgressDto? progress = null;
-            if (task.MultiInstanceExecutionId is long executionId)
-            {
-                if (!progressCache.TryGetValue(executionId, out progress))
-                {
-                    progress = await BuildProgressAsync(executionId, cancellationToken);
-                    progressCache[executionId] = progress;
-                }
-            }
+            var progress = task.MultiInstanceExecutionId is long executionId
+                ? progressCache.GetValueOrDefault(executionId)
+                : null;
             items.Add(ToUserTaskDto(task, progress));
         }
         return new PagedResult<UserTaskDto>(items, page, pageSize, visible.Count);
@@ -961,14 +988,17 @@ public sealed class WorkflowEngineService(
         CancellationToken cancellationToken)
     {
         await LoadSettingsAsync(cancellationToken);
+        var initialExecution = await runtime.GetMultiInstanceAsync(executionId, false, cancellationToken);
+        if (initialExecution is null) return null;
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(initialExecution.InstanceId, false, cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
         var execution = await runtime.GetMultiInstanceAsync(executionId, true, cancellationToken);
-        if (execution is null) return null;
-        if (execution.Status != MultiInstanceRecordStatuses.Active)
+        if (execution is null || execution.InstanceId != instance.Id
+                              || execution.Status != MultiInstanceRecordStatuses.Active)
             throw new WorkflowConflictException("The multi-instance execution has already closed.");
 
-        var instance = await runtime.GetInstanceAsync(execution.InstanceId, cancellationToken)
-            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
         if (instance.Status != WorkflowInstanceStatuses.Running
             || instance.ActiveTokenId != execution.TokenId
             || instance.CurrentStepId != execution.NodeId)
@@ -998,6 +1028,11 @@ public sealed class WorkflowEngineService(
         if (!string.IsNullOrWhiteSpace(flow.Condition)
             && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context))
             throw new WorkflowDomainException("The selected interrupt action condition is not satisfied.");
+
+        foreach (var pair in values)
+        {
+            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, actor.User, pair.Value, cancellationToken);
+        }
 
         await CloseAndAdvanceMultiInstanceAsync(
             execution,
@@ -1035,11 +1070,22 @@ public sealed class WorkflowEngineService(
         }
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(initialTask.InstanceId, false, cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+            throw new WorkflowConflictException("The workflow instance is no longer running.");
         var execution = await runtime.GetMultiInstanceAsync(initialTask.MultiInstanceExecutionId.Value, true, cancellationToken);
-        if (execution is null || execution.Status != MultiInstanceRecordStatuses.Active)
+        if (execution is null || execution.InstanceId != instance.Id
+                              || execution.Status != MultiInstanceRecordStatuses.Active)
             throw new WorkflowConflictException("The multi-instance execution has already closed.");
+        if (instance.ActiveTokenId != execution.TokenId || instance.CurrentStepId != execution.NodeId)
+            throw new WorkflowConflictException("The multi-instance execution is no longer the current workflow step.");
         var task = await runtime.GetUserTaskAsync(taskId, true, cancellationToken);
-        if (task is null || task.Status != UserTaskRecordStatuses.Active)
+        if (task is null || task.InstanceId != instance.Id
+                         || task.MultiInstanceExecutionId != execution.Id
+                         || task.TokenId != instance.ActiveTokenId
+                         || task.NodeId != instance.CurrentStepId
+                         || task.Status != UserTaskRecordStatuses.Active)
             throw new WorkflowConflictException("The user task is no longer active.");
 
         var user = NormalizeUser(actor.User);
@@ -1053,10 +1099,6 @@ public sealed class WorkflowEngineService(
                 throw new WorkflowConflictException("The actor has already claimed another item in this multi-instance execution.");
         }
 
-        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken)
-            ?? throw new WorkflowDomainException("Workflow instance was not found.");
-        if (instance.Status != WorkflowInstanceStatuses.Running)
-            throw new WorkflowConflictException("The workflow instance is no longer running.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, task.NodeId);
         var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
@@ -1126,11 +1168,12 @@ public sealed class WorkflowEngineService(
             await runtime.AddMultiInstanceHistoryAsync(instance.Id, task.TokenId, task.Id, execution.Id,
                 task.ItemIndex ?? 0, flow.Id, node.Id, node.Id, user,
                 CloneDictionary(variableValues), "multiInstanceItem", cancellationToken);
+            var activityAt = await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             var progress = await BuildProgressAsync(execution.Id, cancellationToken);
             return new UserTaskActionAckDto(task.Id, instance.Id, UserTaskRecordStatuses.Completed,
-                instance.Status, flow.Id, node.Id, node.Name, node.ExternalId, progress, DateTimeOffset.UtcNow);
+                instance.Status, flow.Id, node.Id, node.Name, node.ExternalId, progress, activityAt);
         }
 
         var lockedInstance = await CloseAndAdvanceMultiInstanceAsync(
@@ -1189,13 +1232,11 @@ public sealed class WorkflowEngineService(
             reason == "interrupt" ? "multiInstanceInterrupt" : "multiInstanceComplete",
             cancellationToken);
 
-        var lockedInstance = await runtime.GetInstanceForUpdateAsync(instance.Id, cancellationToken)
-            ?? throw new WorkflowDomainException("Workflow instance was not found while closing multi-instance work.");
         var nextNode = GetFlowNode(workflow.Definition, winning.TargetRef);
         var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? WorkflowInstanceStatuses.Faulted
             : BpmnFlowNodeTypes.IsEnd(nextNode.Type) ? WorkflowInstanceStatuses.Completed
             : WorkflowInstanceStatuses.Running;
-        lockedInstance = lockedInstance with
+        var lockedInstance = instance with
         {
             CurrentStepId = nextNode.Id,
             Status = nextStatus,
@@ -1240,7 +1281,7 @@ public sealed class WorkflowEngineService(
         }
         var performedBy = actor.User;
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
         if (instance is null)
         {
             logger.LogInformation("Take flow {FlowId} on instance {InstanceId}: instance not found.", flowId, id);
@@ -1274,6 +1315,12 @@ public sealed class WorkflowEngineService(
         {
             throw new WorkflowConflictException("The active user task could not be resolved.");
         }
+        if (task.InstanceId != instance.Id
+            || task.TokenId != instance.ActiveTokenId
+            || task.NodeId != node.Id
+            || task.MultiInstanceExecutionId is not null
+            || task.Status != UserTaskRecordStatuses.Active)
+            throw new WorkflowConflictException("The active user task is no longer current.");
         EnsureUserTaskActor(task, node, actor, requireActive: true);
 
         logger.LogInformation("Taking sequence flow {FlowId} ({FlowName}) on instance {InstanceId} from node {SourceNodeId} ({SourceNodeType}) to {TargetNodeId} by user '{User}'",
@@ -1375,7 +1422,7 @@ public sealed class WorkflowEngineService(
         var performedBy = actor.User;
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken);
         if (instance is null)
         {
             logger.LogInformation("Deliver message to instance {InstanceId}: instance not found.", id);
@@ -1743,11 +1790,12 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        await runtime.CancelActiveMultiInstanceAsync(id, cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, cancellationToken)
+        var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken)
             ?? throw new WorkflowConflictException("The workflow instance disappeared while it was being cancelled.");
         if (instance.Status != WorkflowInstanceStatuses.Running)
             throw new WorkflowConflictException("Only a running workflow instance can be cancelled.");
+        await runtime.CancelActiveMultiInstanceAsync(id, cancellationToken);
+        await runtime.CancelOpenUserTasksAsync(id, cancellationToken);
         await runtime.UpdateInstanceAsync(
             instance.Id,
             instance.CurrentStepId,
@@ -1960,12 +2008,23 @@ public sealed class WorkflowEngineService(
             }
             foreach (var item in collection.EnumerateArray())
             {
+                if (items.Count == maxInstances)
+                {
+                    throw new WorkflowDomainException(
+                        $"Multi-instance item count must be between 1 and {maxInstances}; the collection exceeds the configured maximum.");
+                }
                 if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
                 {
                     throw new WorkflowDomainException(
                         $"Multi-instance collection '{multi.CollectionVariable}' contains an empty or non-string username.");
                 }
-                items.Add(JsonSerializer.SerializeToElement(item.GetString()!.Trim()));
+                var username = item.GetString()!.Trim();
+                if (username.Length > UserTaskConstraints.MaxActorNameLength)
+                {
+                    throw new WorkflowDomainException(
+                        $"Multi-instance collection '{multi.CollectionVariable}' contains a username longer than {UserTaskConstraints.MaxActorNameLength} characters.");
+                }
+                items.Add(JsonSerializer.SerializeToElement(username));
             }
         }
         else
@@ -1973,11 +2032,19 @@ public sealed class WorkflowEngineService(
             var raw = SequenceFlowConditionEvaluator.EvaluateValue(multi.CardinalityExpression, context);
             if (!decimal.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Number,
                     CultureInfo.InvariantCulture, out var number)
-                || number != decimal.Truncate(number) || number > int.MaxValue)
+                || number != decimal.Truncate(number))
             {
                 throw new WorkflowDomainException("Multi-instance cardinality must evaluate to an integer.");
             }
-            for (var index = 0; index < (int)number; index++) items.Add(null);
+
+            if (number < 1 || number > maxInstances)
+            {
+                throw new WorkflowDomainException(
+                    $"Multi-instance item count must be between 1 and {maxInstances}; actual count was {number}.");
+            }
+
+            var count = decimal.ToInt32(number);
+            items = Enumerable.Repeat<JsonElement?>(null, count).ToList();
         }
 
         if (items.Count == 0 || items.Count > maxInstances)
@@ -2713,6 +2780,10 @@ public sealed class WorkflowEngineService(
         var multiProgress = multiExecution is null
             ? null
             : await BuildProgressAsync(multiExecution.Id, cancellationToken);
+        var workSummaries = await runtime.GetUserTaskWorkSummariesAsync([id], cancellationToken);
+        var userTasks = workSummaries.TryGetValue(id, out var workSummary)
+            ? ToUserTaskWorkSummary(workSummary)
+            : null;
 
         return new InstanceDetailDto(
             instance.Id,
@@ -2721,7 +2792,6 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
-            instance.ClaimedBy,
             instance.StartedBy,
             instance.CreatedAt,
             instance.UpdatedAt,
@@ -2745,7 +2815,8 @@ public sealed class WorkflowEngineService(
                 h.Payload,
                 h.Note,
                 h.PerformedAt)).ToList(),
-            multiProgress);
+            multiProgress,
+            userTasks);
     }
 
     private async Task<WorkflowDefinitionRecord> GetPublishedWorkflowAsync(
@@ -2813,10 +2884,10 @@ public sealed class WorkflowEngineService(
             row.CurrentNodeName,
             row.CurrentNodeExternalId,
             row.Status,
-            row.ClaimedBy,
             row.StartedBy,
             row.CreatedAt,
-            row.UpdatedAt);
+            row.UpdatedAt,
+            row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks));
 
     private async Task<UserTaskDto?> BuildUserTaskDtoAsync(UserTaskRecord task, CancellationToken cancellationToken)
     {
@@ -2834,21 +2905,49 @@ public sealed class WorkflowEngineService(
 
     private async Task<MultiInstanceProgressDto?> BuildProgressAsync(long executionId, CancellationToken cancellationToken)
     {
-        var execution = await runtime.GetMultiInstanceAsync(executionId, false, cancellationToken);
-        if (execution is null) return null;
-        var tasks = await runtime.ListExecutionTasksAsync(executionId, cancellationToken);
-        var counts = await runtime.ListMultiInstanceFlowCountsAsync(executionId, cancellationToken);
-        return new MultiInstanceProgressDto(execution.Id, execution.Mode, execution.Status,
-            execution.TotalCount, execution.CompletedCount,
-            tasks.Count(t => t.Status == UserTaskRecordStatuses.Active),
-            tasks.Count(t => t.Status == UserTaskRecordStatuses.Pending),
-            tasks.Count(t => t.Status == UserTaskRecordStatuses.Cancelled),
-            execution.WinningFlowId, execution.CompletionReason,
-            counts.OrderBy(p => p.Key)
-                .Select(p => new MultiInstanceFlowCountDto(p.Key, p.Value,
-                    execution.TotalCount == 0 ? 0d : p.Value * 100d / execution.TotalCount))
+        var progress = await BuildProgressAsync([executionId], cancellationToken);
+        return progress.GetValueOrDefault(executionId);
+    }
+
+    private async Task<IReadOnlyDictionary<long, MultiInstanceProgressDto>> BuildProgressAsync(
+        IReadOnlyCollection<long> executionIds,
+        CancellationToken cancellationToken)
+    {
+        var records = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
+        return records.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
+    }
+
+    private static MultiInstanceProgressDto ToProgress(MultiInstanceProgressRecord record)
+    {
+        var execution = record.Execution;
+        return new MultiInstanceProgressDto(
+            execution.Id,
+            execution.Mode,
+            execution.Status,
+            execution.TotalCount,
+            execution.CompletedCount,
+            record.ActiveCount,
+            record.PendingCount,
+            record.CancelledCount,
+            execution.WinningFlowId,
+            execution.CompletionReason,
+            record.FlowCounts.OrderBy(pair => pair.Key)
+                .Select(pair => new MultiInstanceFlowCountDto(
+                    pair.Key,
+                    pair.Value,
+                    execution.TotalCount == 0 ? 0d : pair.Value * 100d / execution.TotalCount))
                 .ToList());
     }
+
+    private static UserTaskWorkSummaryDto ToUserTaskWorkSummary(UserTaskWorkSummaryRecord summary) =>
+        new(
+            summary.IsMultiInstance,
+            summary.ActiveCount,
+            summary.PendingCount,
+            summary.ClaimedCount,
+            summary.AssignedCount,
+            summary.SoleClaimedBy,
+            summary.SoleAssignee);
 
     private async Task<JsonElement> BuildMultiInstanceResultAsync(long executionId, CancellationToken cancellationToken)
     {
@@ -2927,7 +3026,7 @@ public sealed class WorkflowEngineService(
                 if (raw is string value)
                 {
                     var trimmed = value.Trim();
-                    if (trimmed.Length is > 0 and <= MaxAssigneeLength)
+                    if (trimmed.Length is > 0 and <= UserTaskConstraints.MaxActorNameLength)
                     {
                         assignee = trimmed;
                     }
@@ -2937,7 +3036,7 @@ public sealed class WorkflowEngineService(
                 {
                     logger.LogWarning(
                         "User task #{NodeId} assignee expression '{Expression}' did not resolve to a non-empty string of at most {MaxLength} characters for instance {InstanceId}; creating a shared-pool task.",
-                        node.Id, node.AssigneeExpression, MaxAssigneeLength, instanceId);
+                        node.Id, node.AssigneeExpression, UserTaskConstraints.MaxActorNameLength, instanceId);
                 }
             }
             catch (WorkflowDomainException ex)

@@ -30,7 +30,10 @@ public static class WorkflowModelMigrator
         // null when the workflow is message-started only.
         if (model.InitialEventId is not null)
         {
-            var initialNode = model.FlowNodes.SingleOrDefault(n => n.Id == model.InitialEventId);
+            // Definitions are structurally validated after normalization. Use a
+            // tolerant lookup here so duplicate ids produce a domain validation
+            // error instead of an InvalidOperationException during migration.
+            var initialNode = model.FlowNodes.FirstOrDefault(n => n.Id == model.InitialEventId);
             if (initialNode is null || !BpmnFlowNodeTypes.IsStart(initialNode.Type))
             {
                 model.InitialEventId = model.FlowNodes
@@ -385,12 +388,18 @@ public static class WorkflowModelMigrator
 
             if (node.MultiInstance is not null)
             {
-                node.MultiInstance.Mode = node.MultiInstance.Mode == MultiInstanceModes.Sequential
-                    ? MultiInstanceModes.Sequential
-                    : MultiInstanceModes.Parallel;
-                node.MultiInstance.Source = node.MultiInstance.Source == MultiInstanceSources.Cardinality
-                    ? MultiInstanceSources.Cardinality
-                    : MultiInstanceSources.Collection;
+                node.MultiInstance.Mode = CanonicalizeKnown(
+                    node.MultiInstance.Mode,
+                    MultiInstanceModes.Parallel,
+                    MultiInstanceModes.Sequential);
+                node.MultiInstance.Source = CanonicalizeKnown(
+                    node.MultiInstance.Source,
+                    MultiInstanceSources.Collection,
+                    MultiInstanceSources.Cardinality);
+                node.MultiInstance.CompletionEvaluation = CanonicalizeKnown(
+                    node.MultiInstance.CompletionEvaluation,
+                    MultiInstanceCompletionEvaluations.AfterEach,
+                    MultiInstanceCompletionEvaluations.AfterAll);
                 if (node.MultiInstance.Source == MultiInstanceSources.Collection)
                 {
                     node.MultiInstance.CardinalityExpression = null;
@@ -402,5 +411,12 @@ public static class WorkflowModelMigrator
                 }
             }
         }
+    }
+
+    private static string CanonicalizeKnown(string value, params string[] supported)
+    {
+        var canonical = supported.FirstOrDefault(candidate =>
+            string.Equals(candidate, value, StringComparison.OrdinalIgnoreCase));
+        return canonical ?? value;
     }
 }
