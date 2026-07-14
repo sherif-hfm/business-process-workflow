@@ -158,11 +158,27 @@
         }
       ],
       "condition": null,
-      "isDefault": true,
+      "isDefault": false,
       "isSelectable": true,
       "canActWithoutClaim": false,
       "completionCondition": "CountFlow(201) >= requiredApprovals",
       "completionPriority": 10,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 205,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
       "cancelRemainingInstances": false
     },
     {

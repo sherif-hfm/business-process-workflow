@@ -610,10 +610,10 @@ public sealed class WorkflowEngineService(
         var claimedByMe = string.Equals(task.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
 
         return OutgoingFlows(workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable
+            .Where(f => f.IsSelectable && !f.IsDefault
                         && RoleAllowed(f.Roles, actorRoles)
                         && (!task.RequiresClaim || claimedByMe || f.CanActWithoutClaim)
-                        && (f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
+                        && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx)))
             .ToList();
     }
@@ -796,12 +796,12 @@ public sealed class WorkflowEngineService(
 
         var roles = NormalizeRoles(actor.Roles);
         return OutgoingFlows(workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable
+            .Where(f => f.IsSelectable && !f.IsDefault
                         && RoleAllowed(f.Roles, roles)
                         && (!task.RequiresClaim
                             || string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase)
                             || f.CanActWithoutClaim)
-                        && (f.IsDefault || string.IsNullOrWhiteSpace(f.Condition)
+                        && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, context)))
             .ToList();
     }
@@ -945,7 +945,7 @@ public sealed class WorkflowEngineService(
         var context = WithContext(stored, actor, instance, workflow.Definition, node);
         AddMultiInstanceExecutionContext(context, execution);
         return OutgoingFlows(workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable
+            .Where(f => f.IsSelectable && !f.IsDefault
                         && f.CancelRemainingInstances
                         && RoleAllowed(f.Roles, roles)
                         && (string.IsNullOrWhiteSpace(f.Condition)
@@ -981,7 +981,7 @@ public sealed class WorkflowEngineService(
 
         var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this multi-instance execution.");
-        if (!flow.IsSelectable || !flow.CancelRemainingInstances)
+        if (!flow.IsSelectable || flow.IsDefault || !flow.CancelRemainingInstances)
             throw new WorkflowDomainException("Only selectable interrupting flows can be taken at the multi-instance execution level.");
 
         EnsureRoleAllowed(node, actor);
@@ -1061,8 +1061,8 @@ public sealed class WorkflowEngineService(
         var node = GetFlowNode(workflow.Definition, task.NodeId);
         var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this user task.");
-        if (!flow.IsSelectable)
-            throw new WorkflowDomainException("The requested flow is an engine-only route and cannot be selected by a user.");
+        if (!flow.IsSelectable || flow.IsDefault)
+            throw new WorkflowDomainException("The requested flow is an engine-only/default route and cannot be selected by a user.");
         EnsureUserTaskActor(task, node, actor, requireActive: true);
         var actorRoles = NormalizeRoles(actor.Roles);
         if (!RoleAllowed(flow.Roles, actorRoles))
@@ -1077,7 +1077,7 @@ public sealed class WorkflowEngineService(
         AddMultiInstanceContext(context, task, execution);
         var values = ResolveAndValidateVariables(flow.Variables, variableValues, context);
         foreach (var pair in values) context[pair.Key] = pair.Value;
-        if (!flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition)
+        if (!string.IsNullOrWhiteSpace(flow.Condition)
             && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context))
             throw new WorkflowDomainException("The selected action condition is not satisfied.");
 
@@ -1104,7 +1104,8 @@ public sealed class WorkflowEngineService(
             if (evaluateCompletionConditions)
             {
                 winning = OutgoingFlows(workflow.Definition, node.Id)
-                    .Where(f => !f.CancelRemainingInstances && !string.IsNullOrWhiteSpace(f.CompletionCondition))
+                    .Where(f => !f.IsDefault && !f.CancelRemainingInstances
+                                && !string.IsNullOrWhiteSpace(f.CompletionCondition))
                     .OrderBy(f => f.CompletionPriority)
                     .FirstOrDefault(f => SequenceFlowConditionEvaluator.EvaluateCompletion(
                         f.CompletionCondition, context, counts, execution.TotalCount));
@@ -1261,9 +1262,9 @@ public sealed class WorkflowEngineService(
                 flowId, id, node.Id, node.Type);
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
-        if (!flow.IsSelectable)
+        if (!flow.IsSelectable || flow.IsDefault)
         {
-            throw new WorkflowDomainException("The requested sequence flow is an engine-only route and cannot be selected by a user.");
+            throw new WorkflowDomainException("The requested sequence flow is an engine-only/default route and cannot be selected by a user.");
         }
 
         var task = instance.ActiveUserTaskId is long taskId
@@ -1301,7 +1302,7 @@ public sealed class WorkflowEngineService(
             flowContext[pair.Key] = pair.Value;
         }
 
-        if (!flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition)
+        if (!string.IsNullOrWhiteSpace(flow.Condition)
             && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, flowContext))
         {
             logger.LogWarning("Take flow {FlowId} ({FlowName}) rejected on instance {InstanceId}: flow condition '{Condition}' evaluated to false.",
@@ -1988,7 +1989,8 @@ public sealed class WorkflowEngineService(
         var emptyResult = JsonSerializer.SerializeToElement(Array.Empty<object>());
         await runtime.AddVariableAsync(instance.Id, multi.ResultVariable, node.Id, actor.User, emptyResult, cancellationToken);
         var outcomeIds = OutgoingFlows(definition, node.Id)
-            .Where(f => f.IsSelectable && !f.CancelRemainingInstances).Select(f => f.Id).ToList();
+            .Where(f => f.IsSelectable && !f.IsDefault && !f.CancelRemainingInstances)
+            .Select(f => f.Id).ToList();
         await runtime.AddMultiInstanceAsync(instance.Id, ToSnapshot(node), multi, items, outcomeIds, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
@@ -2974,14 +2976,16 @@ public sealed class WorkflowEngineService(
     // The inbox uses this to refine CanAct/CanClaim for the current SQL page.
     private static bool HasRoleRestrictedFlows(FlowNodeModel node, WorkflowModel definition) =>
         BpmnFlowNodeTypes.IsUserTask(node.Type)
-        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && f.Roles is { Count: > 0 });
+        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
+                                                       && f.Roles is { Count: > 0 });
 
     // True when the actor can take at least one outgoing flow of a userTask: a
     // flow whose roles the actor holds (empty/null roles = open to anyone). The
     // node's own roles and the claim are checked elsewhere; this only reflects
     // flow-level role gating.
     private static bool CanTakeAnyFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
-        OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && RoleAllowed(f.Roles, actorRoles));
+        OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
+                                                    && RoleAllowed(f.Roles, actorRoles));
 
     private static IReadOnlyList<SequenceFlowModel> IncomingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.TargetRef == nodeId).ToList();
@@ -3017,7 +3021,9 @@ public sealed class WorkflowEngineService(
 
     private static bool CanTakeAnyBypassClaimFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
         BpmnFlowNodeTypes.IsUserTask(node.Type)
-        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && f.CanActWithoutClaim && RoleAllowed(f.Roles, actorRoles));
+        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
+                                                       && f.CanActWithoutClaim
+                                                       && RoleAllowed(f.Roles, actorRoles));
 
     private static string NormalizeUser(string? user) =>
         string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();

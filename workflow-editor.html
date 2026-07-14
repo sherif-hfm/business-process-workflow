@@ -785,6 +785,57 @@ function applyTypeInvariants(node) {
     }
   }
 }
+function nextCompletionPriority(flows) {
+  return flows.reduce((max, flow) => Number.isInteger(flow.completionPriority) && flow.completionPriority > 0
+    ? Math.max(max, flow.completionPriority) : max, 0) + 1;
+}
+function migrateLegacyUserTaskDefaultFlows() {
+  let flowIdSeed = model.sequenceFlows.reduce((max, flow) => Math.max(max, flow.id), 0) + 1;
+  for (const node of model.flowNodes.filter(node => isUserTaskType(node.type))) {
+    const outgoing = outgoingFlows(node.id);
+    if (!node.multiInstance) {
+      for (const flow of outgoing.filter(flow => flow.isDefault)) {
+        flow.isDefault = false;
+        flow.isSelectable = true;
+        flow.condition = null;
+      }
+      continue;
+    }
+
+    for (const legacyDefault of outgoing.filter(flow => flow.isDefault && flow.isSelectable !== false)) {
+      legacyDefault.isDefault = false;
+      legacyDefault.condition = null;
+      legacyDefault.cancelRemainingInstances = false;
+      legacyDefault.completionCondition ||= "1 == 0";
+      const priorityConflict = !Number.isInteger(legacyDefault.completionPriority)
+        || legacyDefault.completionPriority <= 0
+        || outgoing.some(flow => flow !== legacyDefault
+          && flow.completionPriority === legacyDefault.completionPriority);
+      if (priorityConflict) legacyDefault.completionPriority = nextCompletionPriority(outgoing);
+
+      const fallback = {
+        id: flowIdSeed++, name: "", externalId: null,
+        sourceRef: legacyDefault.sourceRef, targetRef: legacyDefault.targetRef,
+        roles: [], variables: [], condition: null,
+        isDefault: true, isSelectable: false, canActWithoutClaim: false,
+        completionCondition: null, completionPriority: null, cancelRemainingInstances: false
+      };
+      model.sequenceFlows.push(fallback);
+      outgoing.push(fallback);
+    }
+
+    for (const fallback of outgoing.filter(flow => flow.isDefault)) {
+      fallback.isSelectable = false;
+      fallback.roles = [];
+      fallback.variables = [];
+      fallback.condition = null;
+      fallback.canActWithoutClaim = false;
+      fallback.completionCondition = null;
+      fallback.completionPriority = null;
+      fallback.cancelRemainingInstances = false;
+    }
+  }
+}
 function applyFlowInvariants(flow) {
   const source = getNode(flow.sourceRef);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
@@ -804,7 +855,16 @@ function applyFlowInvariants(flow) {
     flow.completionPriority = null;
     flow.cancelRemainingInstances = false;
   } else if (source.multiInstance) {
-    if (flow.cancelRemainingInstances) {
+    if (flow.isDefault) {
+      flow.isSelectable = false;
+      flow.roles = [];
+      flow.variables = [];
+      flow.condition = null;
+      flow.canActWithoutClaim = false;
+      flow.completionCondition = null;
+      flow.completionPriority = null;
+      flow.cancelRemainingInstances = false;
+    } else if (flow.cancelRemainingInstances) {
       flow.isSelectable = true;
       flow.isDefault = false;
       flow.completionCondition = null;
@@ -815,6 +875,14 @@ function applyFlowInvariants(flow) {
       flow.condition = null;
       flow.canActWithoutClaim = false;
     }
+  } else {
+    const wasDefault = flow.isDefault;
+    flow.isDefault = false;
+    flow.isSelectable = true;
+    if (wasDefault) flow.condition = null;
+    flow.completionCondition = null;
+    flow.completionPriority = null;
+    flow.cancelRemainingInstances = false;
   }
 }
 function appendUserTaskMarker(g) {
@@ -1400,6 +1468,7 @@ function renderNodeInspector() {
     selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
       node.type = v;
       applyTypeInvariants(node);
+      outgoingFlows(node.id).forEach(applyFlowInvariants);
       // If a node stops being a service/script task, any attached error
       // boundary event is orphaned (its attachedToRef no longer points at a
       // valid host). Cascade-delete it (and its error flow) to keep the model
@@ -1479,6 +1548,7 @@ function renderNodeInspector() {
       } : null;
       if (checked) node.assignee = null;
       applyTypeInvariants(node);
+      outgoingFlows(node.id).forEach(applyFlowInvariants);
       render();
     }));
     if (node.multiInstance) {
@@ -1526,7 +1596,7 @@ function renderNodeInspector() {
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
       miHint.className = "empty-note";
-      miHint.textContent = "Outcome flows require a unique priority and one default. Completion conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
+      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
       inspector.appendChild(miHint);
     }
   }
@@ -2455,6 +2525,26 @@ function renderFlowInspector() {
   } else {
     if (isUserTaskFlow) {
       if (source.multiInstance) {
+        inspector.appendChild(variableCheckbox("Default fallback", !!flow.isDefault, checked => {
+          flow.isDefault = checked;
+          if (checked) {
+            flow.isSelectable = false;
+            flow.roles = [];
+            flow.variables = [];
+            flow.condition = null;
+            flow.canActWithoutClaim = false;
+            flow.cancelRemainingInstances = false;
+            flow.completionCondition = null;
+            flow.completionPriority = null;
+            // only one default per multi-instance user task
+            outgoingFlows(flow.sourceRef).forEach(f => { if (f.id !== flow.id) f.isDefault = false; });
+          }
+          applyFlowInvariants(flow);
+          renderInspector();
+          renderEdges();
+        }));
+      }
+      if (source.multiInstance && !flow.isDefault) {
         inspector.appendChild(variableCheckbox("Available as user action", flow.isSelectable !== false, checked => {
           flow.isSelectable = checked;
           if (!checked) {
@@ -2468,7 +2558,7 @@ function renderFlowInspector() {
           renderEdges();
         }));
       }
-      if (flow.isSelectable !== false) {
+      if (flow.isSelectable !== false && !flow.isDefault) {
         rolesField(flow, () => renderEdges());
         const rolesHint = document.createElement("p");
         rolesHint.className = "empty-note";
@@ -2481,27 +2571,17 @@ function renderFlowInspector() {
         });
         const condHint = document.createElement("p");
         condHint.className = "empty-note";
-        condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action; check Default flow to always show it regardless of condition.';
+        condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action.';
         inspector.appendChild(condHint);
       } else {
         const engineHint = document.createElement("p");
         engineHint.className = "empty-note";
-        engineHint.textContent = "Engine-only: hidden from user actions and selectable only by aggregate completion routing or the final default fallback.";
+        engineHint.textContent = flow.isDefault
+          ? "Engine-only default: taken only after all items complete and no completion condition wins."
+          : "Engine-only: hidden from user actions and selectable only by aggregate completion routing.";
         inspector.appendChild(engineHint);
       }
-      inspector.appendChild(
-        variableCheckbox("Default flow", flow.isDefault, checked => {
-          flow.isDefault = checked;
-          if (checked) {
-            flow.condition = null;
-            // only one default per user task
-            outgoingFlows(flow.sourceRef).forEach(f => { if (f.id !== flow.id) f.isDefault = false; });
-          }
-          renderInspector();
-          renderEdges();
-        })
-      );
-      if (source.multiInstance) {
+      if (source.multiInstance && !flow.isDefault) {
         inspector.appendChild(variableCheckbox("Interrupt and cancel remaining items", !!flow.cancelRemainingInstances, checked => {
           flow.cancelRemainingInstances = checked;
           if (checked) {
@@ -2525,7 +2605,7 @@ function renderFlowInspector() {
           const timing = source.multiInstance.completionEvaluation === "afterAll"
             ? "Evaluated only after all items complete."
             : "Evaluated after each item completes.";
-          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60. The default outcome may omit this rule.`;
+          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60.`;
           inspector.appendChild(completionHint);
         }
       }
@@ -3229,6 +3309,7 @@ function loadFromObject(obj) {
     model = migrateLegacyToNew(obj);
   }
   model.flowNodes.forEach(applyTypeInvariants);
+  migrateLegacyUserTaskDefaultFlows();
   model.sequenceFlows.forEach(applyFlowInvariants);
   clearSelection();
 }

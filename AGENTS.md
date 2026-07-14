@@ -119,16 +119,21 @@ Storage follows the hybrid design:
   returns 409 before the actor refreshes to another item. Fan-out is bounded by `Workflow.MultiInstance.MaxInstances`
   (default 1000). Each item records its selected flow and local submitted values.
   An outcome flow with `isSelectable=false` is engine-only: it remains in the
-  diagram and may win aggregate/default routing, but is omitted from available
-  actions and rejected by user action endpoints. Engine-only flows are supported
-  only on multi-instance user tasks; older definitions default to selectable.
+  diagram and may win aggregate routing, but is omitted from available actions
+  and rejected by user action endpoints. Engine-only flows are supported only on
+  multi-instance user tasks. Every multi-instance task has exactly one pure
+  engine-only default fallback (`isDefault=true`, `isSelectable=false`) with no
+  condition or priority; normal user tasks do not support default flows. Older
+  selectable multi-instance defaults are normalized into the original selectable
+  outcome plus a synthesized hidden fallback to the same target.
   Outcome-flow `completionCondition` expressions use `CountFlow(flowId)`,
   `PercentFlow(flowId)`, and `mi.total/completed/remaining`; the lowest
   `completionPriority` wins. `multiInstance.completionEvaluation` controls when
   these aggregate conditions run: `afterEach` (the default for missing/older
   definitions) evaluates after every completed item and permits an early quorum,
   while `afterAll` evaluates only after every item completes. Interrupting flows
-  remain immediate in both modes. A winning condition or interrupt atomically
+  remain immediate in both modes. Only non-default outcomes participate in
+  condition/priority evaluation. A winning condition or interrupt atomically
   cancels unfinished items, writes the ordered JSON result collection, and advances
   the parent token once. If all items finish without a match, the required default
   outcome wins. Task-specific operations use `/api/user-tasks/{taskId}`; legacy

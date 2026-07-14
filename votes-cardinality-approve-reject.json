@@ -227,7 +227,7 @@
       "cancelRemainingInstances": false
     },
     {
-      "id": 206,
+      "id": 207,
       "name": "",
       "externalId": null,
       "sourceRef": 2,
@@ -236,10 +236,10 @@
       "variables": [],
       "condition": null,
       "isDefault": true,
-      "isSelectable": true,
+      "isSelectable": false,
       "canActWithoutClaim": false,
       "completionCondition": null,
-      "completionPriority": 30,
+      "completionPriority": null,
       "cancelRemainingInstances": false
     }
   ],

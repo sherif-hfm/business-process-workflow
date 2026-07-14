@@ -296,19 +296,21 @@ public sealed class WorkflowDefinitionService(
                     }
                     ValidateMultiInstance(node, outgoing, definition);
                 }
-                else if (outgoing.Any(f => f.CancelRemainingInstances
-                                           || f.CompletionPriority is not null
-                                           || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+                else
                 {
-                    throw new WorkflowDomainException(
-                        $"User task #{node.Id} has multi-instance flow settings but no multiInstance configuration.");
-                }
+                    if (outgoing.Any(f => f.CancelRemainingInstances
+                                          || f.CompletionPriority is not null
+                                          || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+                    {
+                        throw new WorkflowDomainException(
+                            $"User task #{node.Id} has multi-instance flow settings but no multiInstance configuration.");
+                    }
 
-                var userTaskDefaultCount = outgoing.Count(f => f.IsDefault);
-                if (userTaskDefaultCount > 1)
-                {
-                    throw new WorkflowDomainException(
-                        $"User task #{node.Id} has {userTaskDefaultCount} default flows; at most one allowed.");
+                    if (outgoing.Any(f => f.IsDefault))
+                    {
+                        throw new WorkflowDomainException(
+                            $"User task #{node.Id} cannot define a default flow unless it is multi-instance.");
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(node.AssigneeExpression)
@@ -663,7 +665,20 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException(
                 $"Multi-instance user task #{node.Id} requires at least one outcome flow and exactly one default outcome flow.");
         }
-        if (!outcomes.Any(f => f.IsSelectable))
+        var defaultOutcome = outcomes.Single(f => f.IsDefault);
+        var conditionedOutcomes = outcomes.Where(f => !f.IsDefault).ToList();
+        if (defaultOutcome.IsSelectable)
+        {
+            throw new WorkflowDomainException(
+                $"The default flow from multi-instance user task #{node.Id} must be engine-only.");
+        }
+        if (!string.IsNullOrWhiteSpace(defaultOutcome.CompletionCondition)
+            || defaultOutcome.CompletionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"The default flow from multi-instance user task #{node.Id} cannot define a completion condition or priority.");
+        }
+        if (!conditionedOutcomes.Any(f => f.IsSelectable))
         {
             throw new WorkflowDomainException(
                 $"Multi-instance user task #{node.Id} requires at least one selectable outcome flow.");
@@ -686,20 +701,21 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException(
                 $"Interrupting flows from multi-instance user task #{node.Id} cannot be default or define completion rules.");
         }
-        if (outcomes.Any(f => f.CompletionPriority is null or <= 0)
-            || outcomes.Select(f => f.CompletionPriority!.Value).Distinct().Count() != outcomes.Count)
+        if (conditionedOutcomes.Any(f => f.CompletionPriority is null or <= 0)
+            || conditionedOutcomes.Select(f => f.CompletionPriority!.Value).Distinct().Count()
+            != conditionedOutcomes.Count)
         {
             throw new WorkflowDomainException(
-                $"Outcome flows from multi-instance user task #{node.Id} require unique positive completionPriority values.");
+                $"Non-default outcome flows from multi-instance user task #{node.Id} require unique positive completionPriority values.");
         }
-        if (outcomes.Any(f => !f.IsDefault && string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        if (conditionedOutcomes.Any(f => string.IsNullOrWhiteSpace(f.CompletionCondition)))
         {
             throw new WorkflowDomainException(
                 $"Every non-default outcome flow from multi-instance user task #{node.Id} requires completionCondition.");
         }
 
         var selectableOutcomeIds = outcomes.Where(f => f.IsSelectable).Select(f => f.Id).ToHashSet();
-        foreach (var flow in outcomes.Where(f => !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        foreach (var flow in conditionedOutcomes)
         {
             if (!SequenceFlowConditionEvaluator.IsValid(flow.CompletionCondition))
             {

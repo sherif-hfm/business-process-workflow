@@ -22,6 +22,8 @@ public static class WorkflowModelMigrator
             ApplyNodeInvariants(node);
         }
 
+        NormalizeUserTaskDefaultFlows(model);
+
         // After a type change (e.g. startEvent -> messageStartEvent) the
         // initialEventId may still reference a node that is no longer a valid
         // user start event. Fall back to the first remaining startEvent, or
@@ -136,6 +138,87 @@ public static class WorkflowModelMigrator
         seed = candidate + 1;
         return candidate;
     }
+
+    /// <summary>
+    /// Canonicalizes user-task defaults while preserving the behavior of older
+    /// multi-instance definitions whose selectable vote/action was also marked
+    /// as the aggregate default.
+    /// </summary>
+    private static void NormalizeUserTaskDefaultFlows(WorkflowModel model)
+    {
+        var flowIdSeed = model.SequenceFlows.Count == 0
+            ? 1
+            : model.SequenceFlows.Max(flow => flow.Id) + 1;
+
+        foreach (var node in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsUserTask(node.Type)))
+        {
+            var outgoing = model.SequenceFlows.Where(flow => flow.SourceRef == node.Id).ToList();
+            if (node.MultiInstance is null)
+            {
+                foreach (var flow in outgoing.Where(flow => flow.IsDefault))
+                {
+                    // A normal user task never routes automatically. Its legacy
+                    // default was effectively an always-available user action.
+                    flow.IsDefault = false;
+                    flow.IsSelectable = true;
+                    flow.Condition = null;
+                }
+                continue;
+            }
+
+            foreach (var legacyDefault in outgoing.Where(flow => flow.IsDefault && flow.IsSelectable).ToList())
+            {
+                // Preserve the original flow id and actor-facing metadata so
+                // in-flight outcome counters and integrations remain stable.
+                legacyDefault.IsDefault = false;
+                legacyDefault.Condition = null;
+                legacyDefault.CancelRemainingInstances = false;
+                if (string.IsNullOrWhiteSpace(legacyDefault.CompletionCondition))
+                {
+                    legacyDefault.CompletionCondition = "1 == 0";
+                }
+
+                var conflictingPriority = legacyDefault.CompletionPriority is null or <= 0
+                    || outgoing.Any(flow => flow.Id != legacyDefault.Id
+                                            && flow.CompletionPriority == legacyDefault.CompletionPriority);
+                if (conflictingPriority)
+                {
+                    legacyDefault.CompletionPriority = NextCompletionPriority(outgoing);
+                }
+
+                var fallback = new SequenceFlowModel
+                {
+                    Id = NextFlowId(ref flowIdSeed, model.SequenceFlows),
+                    Name = string.Empty,
+                    ExternalId = null,
+                    SourceRef = legacyDefault.SourceRef,
+                    TargetRef = legacyDefault.TargetRef,
+                    IsDefault = true,
+                    IsSelectable = false
+                };
+                model.SequenceFlows.Add(fallback);
+                outgoing.Add(fallback);
+            }
+
+            foreach (var fallback in outgoing.Where(flow => flow.IsDefault))
+            {
+                fallback.IsSelectable = false;
+                fallback.Roles = [];
+                fallback.Variables = [];
+                fallback.Condition = null;
+                fallback.CanActWithoutClaim = false;
+                fallback.CompletionCondition = null;
+                fallback.CompletionPriority = null;
+                fallback.CancelRemainingInstances = false;
+            }
+        }
+    }
+
+    private static int NextCompletionPriority(IEnumerable<SequenceFlowModel> flows) =>
+        flows.Where(flow => flow.CompletionPriority is > 0)
+            .Select(flow => flow.CompletionPriority!.Value)
+            .DefaultIfEmpty(0)
+            .Max() + 1;
 
     private static string MapLegacyType(LegacyStepModel step) => step.Type switch
     {
