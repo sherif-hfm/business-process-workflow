@@ -1,6 +1,7 @@
+- start event Idempotency 
+- check conflict claim and Assignee 
+- in instance list api add Node ID  and External ID to return 
 
-
-- parallel multi instance and sequence multi instance for user task
 - add Parallel Gateways
 - async flow asyncAfter/asyncBefore
 - Timers events
@@ -12,8 +13,8 @@
 - flow /api/instances/{id}/flows/{flowId} endpoint return a lot of data may need enhancement
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
-
-
+--------------------------- done ---------------------------
+- parallel multi instance and sequence multi instance for user task (done)
 - manage versions of workflow and change default version and published versions (done)
 - enable docmentation in swagger (done)
 - protect workflow endpoints (done)
