@@ -71,6 +71,7 @@ public interface IWorkflowEngineService
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -85,15 +86,15 @@ public interface IWorkflowEngineService
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
         CancellationToken cancellationToken);
 
     /// <summary>
     /// Starts a new instance by delivering a message to a <c>messageStartEvent</c>,
     /// authenticating the caller against the node's expected client id/secret +
     /// required custom header, declaring/resolving typed start variables through
-    /// <c>outputMappings</c>, and (when <c>idempotencyVariable</c> is
-    /// set) deduping a retried webhook by searching for an existing instance of
-    /// the workflowKey already carrying that key value. Returns a slim ack (no
+    /// <c>outputMappings</c>, and reserving any configured node-level idempotency
+    /// key in the workflow family's dedicated claim table. Returns a slim ack (no
     /// definition/variables/history). Throws <c>WorkflowUnauthorizedException</c>
     /// (401) on a client id/secret mismatch and <c>WorkflowDomainException</c>
     /// (400) for a header problem, a required-mapping failure, no default
@@ -212,7 +213,7 @@ public interface IWorkflowEngineService
 public sealed record IncomingMessage(
     string? ClientId,
     string? ClientSecret,
-    IReadOnlyDictionary<string, string?> Headers,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> Headers,
     JsonElement? Payload,
     ActorContext Actor);
 

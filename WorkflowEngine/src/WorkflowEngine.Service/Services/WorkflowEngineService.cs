@@ -41,9 +41,11 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
         CancellationToken cancellationToken)
     {
-        var (instance, definition) = await StartInstanceCoreAsync(workflowId, workflowKey, actor, startEventId, variableValues, cancellationToken);
+        var (instance, definition) = await StartInstanceCoreAsync(
+            workflowId, workflowKey, actor, startEventId, variableValues, requestHeaders, cancellationToken);
         return (await BuildDetailAsync(instance.Id, cancellationToken))!;
     }
 
@@ -53,9 +55,11 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
         CancellationToken cancellationToken)
     {
-        var (instance, definition) = await StartInstanceCoreAsync(workflowId, workflowKey, actor, startEventId, variableValues, cancellationToken);
+        var (instance, definition) = await StartInstanceCoreAsync(
+            workflowId, workflowKey, actor, startEventId, variableValues, requestHeaders, cancellationToken);
         var node = GetFlowNode(definition, instance.CurrentStepId);
         return new StartInstanceResultDto(
             instance.Id,
@@ -76,6 +80,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
         CancellationToken cancellationToken)
     {
         await LoadSettingsAsync(cancellationToken);
@@ -113,11 +118,34 @@ public sealed class WorkflowEngineService(
 
         EnsureRoleAllowed(startEvent, actor);
 
+        var idempotency = ResolveIdempotencyInput(startEvent, requestHeaders);
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        if (idempotency is not null)
+        {
+            var reservation = await runtime.ReserveIdempotencyKeyAsync(
+                workflow.WorkflowKey,
+                idempotency.Key,
+                cancellationToken);
+            if (!reservation.Reserved)
+            {
+                throw new IdempotencyKeyConflictException(reservation.ExistingInstanceId
+                    ?? throw new InvalidOperationException("A conflicting idempotency claim has no instance."));
+            }
+        }
+
+        if (idempotency is not null
+            && variableValues?.Keys.Any(name =>
+                string.Equals(name, idempotency.Variable, StringComparison.OrdinalIgnoreCase)) == true)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{startEvent.Id} idempotency variable '{idempotency.Variable}' must be supplied only through header '{idempotency.HeaderName}'.");
+        }
+
         var normalizedStart = NormalizeBusinessKeyInput(startEvent, variableValues);
         variableValues = normalizedStart.Values;
         ValidateVariableValues(startEvent.Variables, variableValues);
 
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         if (normalizedStart.BusinessKey is not null)
         {
             var reservation = await runtime.ReserveBusinessKeyAsync(
@@ -135,11 +163,17 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.AddInstanceAsync(
             workflow.Id,
             workflow.WorkflowKey,
+            idempotency?.Key,
             normalizedStart.BusinessKey,
             normalizedStart.Uniqueness,
             ToSnapshot(startEvent),
             startedBy,
             cancellationToken);
+        if (idempotency is not null)
+        {
+            await runtime.BindIdempotencyKeyAsync(
+                workflow.WorkflowKey, idempotency.Key, instance.Id, cancellationToken);
+        }
         if (normalizedStart.BusinessKey is not null)
         {
             await runtime.BindBusinessKeyAsync(
@@ -151,6 +185,17 @@ public sealed class WorkflowEngineService(
         var startContext = WithContext(
             new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
             actor, instance, workflow.Definition, startEvent);
+        if (idempotency is not null)
+        {
+            startContext[idempotency.Variable] = idempotency.Value;
+            await runtime.AddVariableAsync(
+                instance.Id,
+                idempotency.Variable,
+                null,
+                startedBy,
+                idempotency.Value,
+                cancellationToken);
+        }
         var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
         foreach (var pair in startValues)
         {
@@ -256,8 +301,9 @@ public sealed class WorkflowEngineService(
         // Validate the required custom header (a domain error, 400, since the
         // caller has authenticated via the client id/secret): present, equal to the
         // resolved expected value, and (when set) satisfying the NCalc headerValidation.
-        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
-            || incomingHeaderValue is null)
+        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValues)
+            || incomingHeaderValues.Count == 0
+            || incomingHeaderValues[0] is not { } incomingHeaderValue)
         {
             logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: required header '{HeaderName}' is missing.", workflowKey, expectedHeaderName);
             throw new WorkflowDomainException($"Required header '{expectedHeaderName}' is missing.");
@@ -286,52 +332,37 @@ public sealed class WorkflowEngineService(
             }
         }
 
+        var idempotency = ResolveIdempotencyInput(startEvent, message.Headers);
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        if (idempotency is not null)
+        {
+            var reservation = await runtime.ReserveIdempotencyKeyAsync(
+                workflow.WorkflowKey,
+                idempotency.Key,
+                cancellationToken);
+            if (!reservation.Reserved)
+            {
+                logger.LogInformation("Message start request for workflowKey {WorkflowKey} conflicted with an existing idempotency key. Existing instance: {InstanceId}",
+                    workflowKey, reservation.ExistingInstanceId);
+                throw new IdempotencyKeyConflictException(reservation.ExistingInstanceId
+                    ?? throw new InvalidOperationException("A conflicting idempotency claim has no instance."));
+            }
+        }
+
         // Extract supplied payload values. Message-start required/default semantics
         // are resolved from the typed mappings after the optional idempotency header
         // is added to the validation context.
         var suppliedValues = ExtractMessageStartOutputs(startEvent, messageConfig, message.Payload);
 
-        // Idempotency: when idempotencyVariable is set, the value for that variable
-        // is supplied via the request headers ('Idempotency-Key' or 'X-Idempotency-Key').
-        // Serialize concurrent retries with an advisory lock, then search for an
-        // existing instance of this workflowKey already carrying that key value;
-        // if found, report a conflict with that instance id (no new instance).
-        var idempotencyVariable = messageConfig.IdempotencyVariable;
-        string? idempotencyKeyValue = null;
-        if (!string.IsNullOrWhiteSpace(idempotencyVariable))
-        {
-            if (message.Headers.TryGetValue("Idempotency-Key", out var headerVal) && !string.IsNullOrWhiteSpace(headerVal))
-            {
-                idempotencyKeyValue = headerVal;
-            }
-            else if (message.Headers.TryGetValue("X-Idempotency-Key", out headerVal) && !string.IsNullOrWhiteSpace(headerVal))
-            {
-                idempotencyKeyValue = headerVal;
-            }
-
-            if (string.IsNullOrWhiteSpace(idempotencyKeyValue))
-            {
-                logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: idempotency variable '{Variable}' was not provided via headers.", workflowKey, idempotencyVariable);
-                throw new WorkflowDomainException(
-                    $"Message start event #{startEvent.Id} idempotency variable '{idempotencyVariable}' was not provided via 'Idempotency-Key' or 'X-Idempotency-Key' headers.");
-            }
-
-            // The transport key is an implicit required string start variable.
-            suppliedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
-        }
-
         var mappingVariables = messageConfig.OutputMappings.Select(ToMessageStartVariable).ToList();
         var resolutionContext = new Dictionary<string, JsonElement>(authContext, StringComparer.OrdinalIgnoreCase);
-        if (idempotencyKeyValue is not null)
+        if (idempotency is not null)
         {
-            resolutionContext[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
+            resolutionContext[idempotency.Variable] = idempotency.Value;
         }
 
         var resolvedValues = ResolveVariables(mappingVariables, suppliedValues, resolutionContext);
-        if (idempotencyKeyValue is not null)
-        {
-            resolvedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
-        }
         ValidateVariableValues(mappingVariables, resolvedValues);
         ValidateMessageStartTypes(startEvent, mappingVariables, resolvedValues);
 
@@ -340,26 +371,11 @@ public sealed class WorkflowEngineService(
         var normalizedStart = NormalizeBusinessKeyInput(startEvent, resolvedValues);
         var mappedValues = normalizedStart.Values
             ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-        ValidateResolvedVariableRules(mappingVariables, mappedValues, resolutionContext);
-
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        if (idempotencyKeyValue is not null)
+        if (idempotency is not null)
         {
-            // pg_advisory_xact_lock(key, hashtext(value)) serializes retries for the
-            // same (workflowKey, idempotency key) within the transaction; the lock
-            // is released on commit/rollback. The hash is computed by Postgres'
-            // hashtext() so the lock key is stable across API replicas. Collisions
-            // only cause extra serialization, never a false dedupe.
-            await runtime.AcquireStartLockAsync(workflowKey, idempotencyKeyValue, cancellationToken);
-
-            var existing = await FindByIdempotencyKeyAsync(workflowKey, idempotencyVariable!, idempotencyKeyValue, cancellationToken);
-            if (existing is not null)
-            {
-                logger.LogInformation("Message start request for workflowKey {WorkflowKey} conflicted with an existing idempotency key. Existing instance: {InstanceId}",
-                    workflowKey, existing.Id);
-                throw new IdempotencyKeyConflictException(existing.Id);
-            }
+            mappedValues[idempotency.Variable] = idempotency.Value;
         }
+        ValidateResolvedVariableRules(mappingVariables, mappedValues, resolutionContext);
 
         if (normalizedStart.BusinessKey is not null)
         {
@@ -381,11 +397,17 @@ public sealed class WorkflowEngineService(
         var instance = await runtime.AddInstanceAsync(
             workflow.Id,
             workflow.WorkflowKey,
+            idempotency?.Key,
             normalizedStart.BusinessKey,
             normalizedStart.Uniqueness,
             ToSnapshot(startEvent),
             performedBy,
             cancellationToken);
+        if (idempotency is not null)
+        {
+            await runtime.BindIdempotencyKeyAsync(
+                workflow.WorkflowKey, idempotency.Key, instance.Id, cancellationToken);
+        }
         if (normalizedStart.BusinessKey is not null)
         {
             await runtime.BindBusinessKeyAsync(
@@ -427,41 +449,6 @@ public sealed class WorkflowEngineService(
             instance.Id, instance.Status, instance.CurrentStepId);
 
         return await BuildStartAckAsync(instance.Id, cancellationToken);
-    }
-
-    // Searches for an existing instance of the given workflowKey carrying the
-    // idempotency key value in the named variable. Returns null when none exists. The
-    // search reuses the variable-search path and spans any status (a completed/
-    // faulted instance with the key still counts as "already started").
-    private async Task<InstanceListItem?> FindByIdempotencyKeyAsync(
-        string workflowKey,
-        string idempotencyVariable,
-        string idempotencyKeyValue,
-        CancellationToken cancellationToken)
-    {
-        var filters = new List<VariableFilter>
-        {
-            new(idempotencyVariable, idempotencyKeyValue)
-        };
-        var paged = await runtime.ListInstancesAsync(
-            status: null,
-            instanceId: null,
-            workflowId: null,
-            workflowKey: workflowKey,
-            businessKey: null,
-            nodeId: null,
-            nodeExternalId: null,
-            variableFilters: filters,
-            page: 1,
-            pageSize: 1,
-            cancellationToken);
-
-        if (paged.TotalCount == 0)
-        {
-            return null;
-        }
-
-        return paged.Items[0];
     }
 
     // Builds the slim start ack: only the resting node identity + status, no
@@ -1566,8 +1553,9 @@ public sealed class WorkflowEngineService(
         // Header failures are domain errors (400), not auth failures (401): the
         // caller has already authenticated via the client id/secret, so a header
         // problem is a bad request rather than an identity failure.
-        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValue)
-            || incomingHeaderValue is null)
+        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValues)
+            || incomingHeaderValues.Count == 0
+            || incomingHeaderValues[0] is not { } incomingHeaderValue)
         {
             logger.LogWarning("Deliver message to instance {InstanceId} rejected: required header '{HeaderName}' is missing.", id, expectedHeaderName);
             throw new WorkflowDomainException(
@@ -3514,6 +3502,95 @@ public sealed class WorkflowEngineService(
 
         return values.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
     }
+
+    private static IdempotencyStartInput? ResolveIdempotencyInput(
+        FlowNodeModel entry,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers)
+    {
+        var configuration = entry.Idempotency;
+        if (configuration is null)
+        {
+            return null;
+        }
+
+        var headerName = configuration.HeaderName.Trim();
+        var variable = configuration.Variable.Trim();
+        string value;
+
+        if (string.Equals(headerName, IdempotencyHeaders.Standard, StringComparison.OrdinalIgnoreCase))
+        {
+            var hasStandard = headers.TryGetValue(IdempotencyHeaders.Standard, out var standardValues);
+            var hasAlias = headers.TryGetValue(IdempotencyHeaders.LegacyAlias, out var aliasValues);
+            if (!hasStandard && !hasAlias)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} requires header '{IdempotencyHeaders.Standard}'.");
+            }
+
+            var standardValue = hasStandard
+                ? ReadSingleIdempotencyHeader(entry.Id, IdempotencyHeaders.Standard, standardValues!)
+                : null;
+            var aliasValue = hasAlias
+                ? ReadSingleIdempotencyHeader(entry.Id, IdempotencyHeaders.LegacyAlias, aliasValues!)
+                : null;
+            if (standardValue is not null && aliasValue is not null
+                && !string.Equals(standardValue, aliasValue, StringComparison.Ordinal))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} received conflicting idempotency header values.");
+            }
+
+            value = standardValue ?? aliasValue!;
+        }
+        else
+        {
+            if (!headers.TryGetValue(headerName, out var configuredValues))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} requires header '{headerName}'.");
+            }
+
+            value = ReadSingleIdempotencyHeader(entry.Id, headerName, configuredValues);
+        }
+
+        if (value.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException("Idempotency key must not exceed 300 characters.");
+        }
+
+        return new IdempotencyStartInput(
+            headerName,
+            variable,
+            value,
+            JsonSerializer.SerializeToElement(value));
+    }
+
+    private static string ReadSingleIdempotencyHeader(
+        int entryId,
+        string headerName,
+        IReadOnlyList<string> values)
+    {
+        if (values.Count != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{entryId} header '{headerName}' must contain exactly one value.");
+        }
+
+        var value = values[0].Trim();
+        if (value.Length == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{entryId} header '{headerName}' must not be blank.");
+        }
+
+        return value;
+    }
+
+    private sealed record IdempotencyStartInput(
+        string HeaderName,
+        string Variable,
+        string Key,
+        JsonElement Value);
 
     private sealed record BusinessKeyStartInput(
         Dictionary<string, JsonElement>? Values,

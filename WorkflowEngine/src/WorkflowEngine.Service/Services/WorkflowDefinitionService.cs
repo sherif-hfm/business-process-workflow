@@ -164,6 +164,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         ValidateBusinessKeys(definition);
+        ValidateIdempotency(definition);
 
         ValidateProcessVariables(definition.Variables);
 
@@ -478,8 +479,8 @@ public sealed class WorkflowDefinitionService(
     }
 
     // A messageStartEvent's typed output mappings are its start-variable
-    // declarations. idempotencyVariable is a separate implicit required string
-    // variable populated only from the idempotency request header.
+    // declarations. Node-level idempotency is a separate implicit required string
+    // variable populated only from the configured request header.
     private static void ValidateMessageStart(FlowNodeModel node)
     {
         ValidateMessageConfig(node, "Message start event");
@@ -519,29 +520,8 @@ public sealed class WorkflowDefinitionService(
 
         if (!string.IsNullOrWhiteSpace(message.IdempotencyVariable))
         {
-            var idempotencyVariable = message.IdempotencyVariable!;
-            ValidateVariables(
-                [new VariableModel
-                {
-                    Name = idempotencyVariable,
-                    DataType = WorkflowVariableTypes.String,
-                    Required = true
-                }],
-                $"message start event #{node.Id} idempotency variable");
-
-            if (message.OutputMappings.Any(mapping =>
-                    string.Equals(mapping.Variable, idempotencyVariable, StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' cannot also be an output mapping variable.");
-            }
-
-            if (node.BusinessKey is not null
-                && string.Equals(node.BusinessKey.Variable, idempotencyVariable, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} must use different variables for idempotencyVariable and businessKey.");
-            }
+            throw new WorkflowDomainException(
+                $"Message start event #{node.Id} cannot configure both legacy message.idempotencyVariable and node idempotency.");
         }
     }
 
@@ -934,6 +914,88 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' must be a required scalar string with no defaultValue.");
+            }
+        }
+    }
+
+    private static void ValidateIdempotency(WorkflowModel definition)
+    {
+        var reservedHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Authorization",
+            "Proxy-Authorization",
+            "Cookie",
+            "Host",
+            "Content-Length",
+            "Content-Type",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Connection",
+            "Keep-Alive",
+            "TE",
+            "Trailer",
+            "Upgrade",
+            "Expect",
+            "X-Client-Id",
+            "X-Client-Secret"
+        };
+
+        foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
+        {
+            var idempotency = entry.Idempotency;
+            if (idempotency is null)
+            {
+                continue;
+            }
+
+            var headerName = idempotency.HeaderName?.Trim() ?? string.Empty;
+            if (headerName.Length == 0
+                || headerName.Length > 300
+                || !Regex.IsMatch(headerName, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName must be a valid HTTP field name of at most 300 characters.");
+            }
+
+            if (reservedHeaders.Contains(headerName))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName '{headerName}' is reserved.");
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                && string.Equals(entry.Message?.HeaderName?.Trim(), headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName must differ from the message correlation header.");
+            }
+
+            var variableName = idempotency.Variable?.Trim() ?? string.Empty;
+            ValidateVariables(
+                [new VariableModel
+                {
+                    Name = variableName,
+                    DataType = WorkflowVariableTypes.String,
+                    Required = true
+                }],
+                $"entry event #{entry.Id} idempotency variable");
+
+            var collidesWithEntryVariable = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                ? entry.Message?.OutputMappings.Any(mapping =>
+                    string.Equals(mapping.Variable, variableName, StringComparison.OrdinalIgnoreCase)) == true
+                : entry.Variables.Any(variable =>
+                    string.Equals(variable.Name, variableName, StringComparison.OrdinalIgnoreCase));
+            if (collidesWithEntryVariable)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency variable '{variableName}' cannot also be an entry variable or output mapping.");
+            }
+
+            if (entry.BusinessKey is not null
+                && string.Equals(entry.BusinessKey.Variable, variableName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} must use different variables for idempotency and businessKey.");
             }
         }
     }

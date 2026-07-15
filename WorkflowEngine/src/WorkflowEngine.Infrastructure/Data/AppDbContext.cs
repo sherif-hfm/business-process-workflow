@@ -14,6 +14,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<WorkflowBusinessKeyClaimEntity> WorkflowBusinessKeyClaims => Set<WorkflowBusinessKeyClaimEntity>();
 
+    public DbSet<WorkflowIdempotencyClaimEntity> WorkflowIdempotencyClaims => Set<WorkflowIdempotencyClaimEntity>();
+
     public DbSet<InstanceVariableEntity> InstanceVariables => Set<InstanceVariableEntity>();
 
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
@@ -52,6 +54,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(300).UseCollation("C");
             entity.Property(e => e.BusinessKey).HasMaxLength(300).UseCollation("C");
             entity.Property(e => e.BusinessKeyUniqueness).HasMaxLength(32);
             entity.Property(e => e.StartedBy).HasMaxLength(300);
@@ -59,6 +62,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             // Supports the paged instance list ordered by UpdatedAt.
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.WorkflowKey, e.IdempotencyKey });
             entity.HasIndex(e => new { e.WorkflowKey, e.BusinessKey, e.Status });
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
@@ -68,6 +72,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => new { e.WorkflowKey, e.BusinessKey })
                 .HasPrincipalKey(e => new { e.WorkflowKey, e.BusinessKey })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<WorkflowIdempotencyClaimEntity>()
+                .WithMany()
+                .HasForeignKey(e => new { e.WorkflowKey, e.IdempotencyKey })
+                .HasPrincipalKey(e => new { e.WorkflowKey, e.IdempotencyKey })
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -149,6 +158,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne<WorkflowInstanceEntity>()
                 .WithMany()
                 .HasForeignKey(e => e.LastInstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowIdempotencyClaimEntity>(entity =>
+        {
+            entity.ToTable("workflow_idempotency_claims");
+            entity.HasKey(e => new { e.WorkflowKey, e.IdempotencyKey });
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300);
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(300).UseCollation("C");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.InstanceId).IsUnique();
+            entity.HasOne<WorkflowInstanceEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

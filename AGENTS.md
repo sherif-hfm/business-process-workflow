@@ -99,6 +99,13 @@ Storage follows the hybrid design:
   roles, claim requirements, claimant, and task lifecycle timestamps. The current
   engine preserves one active execution token per instance; a multi-instance user
   task can own many active or pending work items beneath that parent token.
+- `workflow_instances` snapshots the stable `WorkflowKey` and private nullable
+  `IdempotencyKey` for keyed starts. Permanent ownership lives in
+  `workflow_idempotency_claims`, keyed by `(WorkflowKey, IdempotencyKey)` with
+  deterministic `C` collation and a unique, restrictive link to its owning
+  instance. Business-key ownership remains separate in
+  `workflow_business_key_claims`; transport idempotency and domain identity are
+  deliberately independent contracts.
 - **Token/task projections.** Instance list node filters and current-node display
   are projected from the latest execution token. Inbox reads query active
   `user_tasks` directly and apply claim/role predicates there, ordered by task
@@ -336,7 +343,7 @@ Storage follows the hybrid design:
   declarations (there is no separate node `variables` section). The remaining
   config is shared with an intermediate catch:
   `clientId`/`clientSecret`/`headerName`/`headerValue`/`headerValidation`/
-  `outputMappings`, plus an optional `idempotencyVariable`). The caller addresses
+  `outputMappings`. The caller addresses
   the workflow by its stable cross-version `workflowKey` (the latest published
   version is resolved); an optional `?startEvent={externalId}` selects a specific
   message-start event when the workflow has more than one (400 if ambiguous and
@@ -350,20 +357,42 @@ Storage follows the hybrid design:
   values are strictly typed; a missing path uses its default before the final
   required check. It is pass-through: after
   creating the instance the engine auto-advances off it (history note
-  `messageStart`), like a `startEvent`. **Idempotency.** When `idempotencyVariable`
-  names an implicit required string variable populated from the idempotency
-  request header, the engine serializes
-  concurrent retries with a transaction-scoped `pg_advisory_xact_lock` keyed on
-  `(workflowKey, hashtext(keyValue))` and, before creating an instance, searches
-  for an existing instance of the workflowKey already carrying that key value
-  (via the variable-search path, any status); if found it returns 409 with
-  `code: "idempotency_conflict"`, that owner's `instanceId`, and a `Location`
-  header (no duplicate). The key must be passed via the `Idempotency-Key` or
-  `X-Idempotency-Key` request header (else 400).
+  `messageStart`), like a `startEvent`. Entry-level transport idempotency uses the
+  generic `flowNode.idempotency` contract described below; it is no longer part
+  of `message`.
   A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
   `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
   definition/variables/history, since the endpoint is `AllowAnonymous`). Its
   node type fits the 32-character execution-token `NodeType` column.
+- **Generic start idempotency.** A `startEvent` or `messageStartEvent` may
+  optionally configure
+  `idempotency: { headerName, variable }`. An unconfigured entry ignores
+  idempotency headers and retains unlimited-start behavior. A configured entry
+  requires exactly one value in its configured HTTP header; the value is
+  trimmed, must be nonblank, is limited to 300 Unicode scalar values, and is
+  compared exactly and case-sensitively without Unicode normalization. When
+  `headerName` is `Idempotency-Key`, `X-Idempotency-Key` is accepted as an alias;
+  if both appear their trimmed values must be equal. Custom names have no alias.
+  The key is permanently unique for the stable `WorkflowKey`, spanning all
+  versions, configured entries, and both start routes; another workflow family
+  may reuse it. `variable` is an implicit required scalar string populated only
+  from that header and persisted as an instance variable. It must not collide
+  case-insensitively with an entry variable/output mapping or the business-key
+  variable. Authentication, framing, message-client, and the configured message
+  correlation headers cannot be used as idempotency headers.
+
+  Reservation uses `workflow_idempotency_claims` with the composite primary key
+  `(WorkflowKey, IdempotencyKey)` and row locking inside the start transaction.
+  Idempotency is reserved before the business key. A committed owner returns
+  `409`, `Location: /api/instances/{id}`, and
+  `{ "code": "idempotency_conflict", "instanceId": id }` from either start
+  route. Completed, faulted, and cancelled owners remain permanent. Any later
+  validation, mapping, business-key, script/service, or routing failure rolls
+  back the new claim with the instance. External side effects made before a
+  later rollback still need their own downstream idempotency contract. Raw keys
+  are never returned or logged. Legacy `message.idempotencyVariable` definitions
+  normalize in memory to this node-level shape; the migration backfills valid
+  historical owners and fails rather than guessing malformed or colliding keys.
 - **Generic start business keys.** A `startEvent` or `messageStartEvent` may
   configure `businessKey: { variable, uniqueness }`, where `variable` is an
   exactly named required scalar `string` start variable with no default (a typed
@@ -377,7 +406,7 @@ Storage follows the hybrid design:
   409 (`business_key_conflict`, `existingInstanceId`, and `Location`). A
   message-start duplicate also returns 409, but its slim anonymous response uses
   `code: "business_key_conflict"`, `instanceId`, and `Location`. Message
-  idempotency may coexist only on a different variable: idempotency identifies a
+  Entry idempotency may coexist only on a different variable: idempotency identifies a
   transport retry, while the business key identifies the domain instance;
   idempotency is checked first and therefore determines the conflict when both
   keys already exist.
@@ -434,9 +463,12 @@ what the cross-version `workflowKey` instance search matches.
   `POST /{id}/publish`, `DELETE /{id}`,
   `POST /{workflowKey}/message-start` (start a new instance via a messageStartEvent;
   `AllowAnonymous` — auth is the node's client id/secret + required header, not
-  the user JWT; returns a slim `MessageStartAckDto`).
+  the user JWT; returns a slim `MessageStartAckDto`; a configured idempotency or
+  business-key duplicate returns `StartConflictDto` with 409 and `Location`).
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
-  `startEventId`), `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
+  `startEventId`; a configured idempotency value is accepted only through its
+  HTTP header and a duplicate returns `StartConflictDto` with 409/`Location`),
+  `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
   `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
@@ -717,14 +749,14 @@ Node kinds and their outgoing-flow rules:
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
   single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
   are typed start-variable declarations; there is no separate node `variables`
-  section. The config also supports an optional `idempotencyVariable` and exactly one
-  unconditional outgoing flow. System-only: it is not a `startEvent` (`IsStart` is
+  section. It has exactly one unconditional outgoing flow. System-only: it is not a `startEvent` (`IsStart` is
   false), so it cannot be started via `POST /api/instances` and does not appear in
   the Blazor start picker. The engine creates the instance and auto-advances off
   it (pass-through, history note `messageStart`). The caller authenticates against
   the templated client credentials + required header; mappings strictly type payload
-  values, apply ordered defaults, enforce required values, and run NCalc validation. An optional
-  `idempotencyVariable` dedupes retried webhooks (no duplicate instance).
+  values, apply ordered defaults, enforce required values, and run NCalc validation.
+  Like a normal start event it may independently enable node-level transport
+  `idempotency` and/or a domain `businessKey`.
 
 A workflow may define multiple `startEvent` and/or `messageStartEvent` nodes.
 `initialEventId` is the default **user** start event (optional — a workflow whose
@@ -880,7 +912,6 @@ variables + context, so a secret can be sourced from `${config.*}` /
   "headerName": "X-Webhook-Token",     // required custom header name; ${var} templatable
   "headerValue": "${config.webhookToken}", // required custom header value; ${var} templatable
   "headerValidation": "Len(header) >= 16", // optional NCalc; incoming value bound as `header`; must be truthy
-  "idempotencyVariable": "requestId",  // messageStartEvent only: implicit string variable from Idempotency-Key
   "outputMappings": [
     { "variable": "approved", "path": "decision.approved", "dataType": "boolean", "isArray": false, "required": true, "defaultValue": null, "validation": null },
     { "variable": "reference", "path": "ref", "dataType": "string", "isArray": false, "required": false, "defaultValue": "unknown", "validation": "Len(reference) > 0" }
@@ -910,10 +941,18 @@ older value unchanged. A blank path is valid only for a default-only mapping.
 Catch mapping resolution, validation, and persistence are atomic; message-start
 mapping resolution remains atomic with instance creation.
 
-`idempotencyVariable` is a `messageStartEvent`-only optional field (ignored by
-an intermediate catch). When set it declares an implicit required string
-variable populated from `Idempotency-Key` or `X-Idempotency-Key`; it may not
-collide with a payload mapping or business-key variable.
+Transport idempotency is configured on either entry node, outside `message`:
+
+```json
+"idempotency": {
+  "headerName": "Idempotency-Key",
+  "variable": "requestId"
+}
+```
+
+The legacy message-only `idempotencyVariable` property is accepted only for
+in-memory normalization of historical definitions and is never emitted by new
+saves.
 
 **Intermediate catch delivery** (`POST /api/instances/{id}/message`,
 `AllowAnonymous`): the engine resolves the templated
@@ -949,15 +988,12 @@ resolved against an instance-less context (`config.*`/`setting.*` +
 non-caller-influenced `sys.*`; no `sys.instanceId`/`sys.user`/`sys.roles` since
 there is no caller/instance yet). Typed `outputMappings` declare, resolve, validate,
 and persist the message-start variables directly.
-When `idempotencyVariable` is set, before creating an instance the engine acquires
-a transaction-scoped `pg_advisory_xact_lock(workflowKey, hashtext(keyValue))`,
-searches for an existing instance of the workflowKey already carrying that key
-value (via the variable-search path), and returns 409 with
-`code: "idempotency_conflict"`, its `instanceId`, and a `Location` header instead
-of creating a duplicate. A duplicate domain business key similarly returns 409
-with `code: "business_key_conflict"` and the owning `instanceId`. Idempotency is
-checked first. The transport key must be provided in the `Idempotency-Key` or
-`X-Idempotency-Key` request header (else 400).
+When the selected entry has node-level `idempotency`, the engine reserves the
+trimmed transport key in `workflow_idempotency_claims` before its business key.
+A permanent duplicate returns 409 with `code: "idempotency_conflict"`, its
+`instanceId`, and a `Location` header instead of creating another instance. A
+duplicate domain business key similarly returns 409 with
+`code: "business_key_conflict"` and the owning `instanceId`.
 A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
 `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
 definition/variables/history, since the endpoint is `AllowAnonymous`).
@@ -1007,7 +1043,7 @@ when extending the model so new features stay close to BPMN terminology.
 | This project | BPMN 2.0 concept | Notes / simplifications |
 | --- | --- | --- |
 | `flowNode` | Flow node | Umbrella term for events, tasks, and gateways. |
-| `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). `roles` are enforced at runtime against JWT role claims (empty = open to anyone). |
+| `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). `roles` are enforced at runtime against JWT role claims (empty = open to anyone). May enable the engine's node-level transport-idempotency and domain-business-key extensions. |
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
@@ -1017,7 +1053,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
-| `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables; `idempotencyVariable` is an optional implicit header-sourced string variable. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet); idempotency via an advisory-locked variable-search dedupe (no new table). |
+| `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
@@ -1042,8 +1078,8 @@ when extending the model so new features stay close to BPMN terminology.
   (none) start and end events plus `errorEndEvent` and `errorBoundaryEvent`
   (catch-all, no error codes), `intermediateMessageCatchEvent` (correlation
   by instance id only, no cross-instance signal/message matching, no timeout),
-  and `messageStartEvent` (instance-less system-only entry with advisory-locked
-  variable-search idempotency); no timer/signal events yet.
+  and `messageStartEvent` (instance-less system-only entry with optional
+  database-claimed workflow-family idempotency); no timer/signal events yet.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so

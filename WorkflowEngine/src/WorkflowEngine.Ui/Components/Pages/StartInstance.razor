@@ -72,6 +72,19 @@ else
             }
         }
 
+        @if (selectedNode?.Idempotency is not null)
+        {
+            <div class="mb-3">
+                <label class="form-label">
+                    Transport retry key
+                    <span class="text-muted">(@selectedNode.Idempotency.HeaderName)</span>
+                    <span class="text-danger">*</span>
+                </label>
+                <input class="form-control" @bind="idempotencyKey" />
+                <div class="form-text">A retry with the same key returns the existing instance as a 409 conflict.</div>
+            </div>
+        }
+
         <button class="btn btn-primary" @onclick="StartAsync">Start instance</button>
         <a class="btn btn-link" href="workflows">Back</a>
     }
@@ -84,6 +97,7 @@ else
     private WorkflowDetailDto? workflow;
     private readonly Dictionary<string, string?> inputs = [];
     private int? selectedStartEventId;
+    private string? idempotencyKey;
     private string? error;
 
     protected override async Task OnInitializedAsync()
@@ -130,7 +144,11 @@ else
             .ToList();
     }
 
-    private void OnStartEventChanged() => inputs.Clear();
+    private void OnStartEventChanged()
+    {
+        inputs.Clear();
+        idempotencyKey = null;
+    }
 
     private string? GetInput(string name) => inputs.TryGetValue(name, out var value) ? value : null;
 
@@ -152,7 +170,9 @@ else
                 workflow.Id,
                 null,
                 selectedStartEventId,
-                variables));
+                variables),
+                startEvent.Idempotency?.HeaderName,
+                idempotencyKey);
             if (instance is not null)
             {
                 Navigation.NavigateTo($"/instances/{instance.Id}");

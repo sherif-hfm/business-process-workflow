@@ -252,6 +252,13 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public BusinessKeyModel? BusinessKey { get; set; }
 
+    /// <summary>
+    /// Optional transport idempotency configuration for a start or message-start event.
+    /// </summary>
+    [JsonPropertyName("idempotency")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IdempotencyModel? Idempotency { get; set; }
+
     // scriptTask only: which authoring mode is active. "ncalc" (default) uses
     // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
     // JS body with a bound `execution` host object). Exactly one mode's data is
@@ -566,14 +573,8 @@ public sealed class MessageCatchModel
     [JsonPropertyName("outputMappings")]
     public List<MessageOutputMappingModel> OutputMappings { get; set; } = [];
 
-    // messageStartEvent only (ignored by an intermediateMessageCatchEvent): names an
-    // implicit required string start variable whose value is used as the idempotency
-    // key. It is populated from the idempotency header, not outputMappings. Before creating an
-    // instance the engine searches for an existing instance of this workflowKey
-    // already carrying that key value and, if found, returns a 409 conflict with
-    // that instance id instead of creating a duplicate. The
-    // search is guarded by a transaction-scoped advisory lock so concurrent retries
-    // serialize. null disables idempotency (a retry creates a duplicate).
+    // Legacy messageStartEvent-only shape. WorkflowModelMigrator moves this value
+    // into FlowNodeModel.Idempotency and clears it before canonical serialization.
     /// <summary>
     /// Optional start variable name used as an idempotency key (messageStartEvent only).
     /// </summary>
@@ -707,6 +708,24 @@ public sealed class BusinessKeyModel
 
     [JsonPropertyName("uniqueness")]
     public string Uniqueness { get; set; } = null!;
+}
+
+/// <summary>
+/// Configures the header-sourced transport retry key for an entry event.
+/// </summary>
+public sealed class IdempotencyModel
+{
+    [JsonPropertyName("headerName")]
+    public string HeaderName { get; set; } = IdempotencyHeaders.Standard;
+
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+}
+
+public static class IdempotencyHeaders
+{
+    public const string Standard = "Idempotency-Key";
+    public const string LegacyAlias = "X-Idempotency-Key";
 }
 
 public static class BusinessKeyUniqueness
@@ -913,8 +932,8 @@ public static class BpmnFlowNodeTypes
     public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
     // Entry event started by an external system via
     // POST /api/workflows/{workflowKey}/message-start. Typed outputMappings on its
-    // message config are the start-variable declarations; idempotencyVariable is
-    // an implicit header-sourced string variable. IsStart is intentionally
+    // message config are the start-variable declarations. Optional transport
+    // idempotency is the generic node-level Idempotency contract. IsStart is intentionally
     // false: the user POST /api/instances path rejects it, so a message-start
     // event is system-only. Pass-through: the engine auto-advances off it after
     // creating the instance (history note "messageStart").

@@ -8,6 +8,8 @@ public sealed class WorkflowInstanceEntity
 
     public string WorkflowKey { get; set; } = string.Empty;
 
+    public string? IdempotencyKey { get; set; }
+
     public string? BusinessKey { get; set; }
 
     public string? BusinessKeyUniqueness { get; set; }

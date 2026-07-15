@@ -175,13 +175,17 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             Variable = "violationId",
             Uniqueness = BusinessKeyUniqueness.Active
         };
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "requestId"
+        };
         start.Message = new MessageCatchModel
         {
             ClientId = "tests-client",
             ClientSecret = "tests-secret",
             HeaderName = "X-Correlation",
             HeaderValue = "accepted",
-            IdempotencyVariable = "requestId",
             OutputMappings =
             [
                 new MessageOutputMappingModel
@@ -207,11 +211,25 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             "idempotency_conflict",
             firstAck.InstanceId);
 
+        using var malformedRetry = await SendMessageStartPayloadAsync(
+            model.Id,
+            new { },
+            "REQUEST-1");
+        await AssertMessageStartConflictAsync(
+            malformedRetry,
+            "idempotency_conflict",
+            firstAck.InstanceId);
+
         using var domainDuplicate = await SendMessageStartAsync(model.Id, "REQUEST-2", "V-1");
         await AssertMessageStartConflictAsync(
             domainDuplicate,
             "business_key_conflict",
             firstAck.InstanceId);
+        await using (var conflictDb = fixture.CreateDbContext())
+        {
+            Assert.False(await conflictDb.WorkflowIdempotencyClaims.AnyAsync(claim =>
+                claim.WorkflowKey == model.Id && claim.IdempotencyKey == "REQUEST-2"));
+        }
 
         using var mismatchedRetry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-2");
         await AssertMessageStartConflictAsync(
@@ -231,6 +249,198 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             oldRetry,
             "idempotency_conflict",
             firstAck.InstanceId);
+
+        var messageRace = await Task.WhenAll(
+            SendMessageStartAsync(model.Id, "REQUEST-RACE", "V-RACE"),
+            SendMessageStartAsync(model.Id, "REQUEST-RACE", "V-RACE"));
+        try
+        {
+            Assert.Single(messageRace, response => response.StatusCode == HttpStatusCode.OK);
+            Assert.Single(messageRace, response => response.StatusCode == HttpStatusCode.Conflict);
+        }
+        finally
+        {
+            foreach (var response in messageRace) response.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task AuthenticatedStartIdempotencyIsPermanentTrimmedExactAndAliasAware()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "start-idempotency");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "requestId"
+        };
+        var workflow = await CreateWorkflowAsync(model);
+
+        using var first = await StartWithIdempotencyAsync(workflow, "  REQUEST-1  ");
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        var firstAck = await ReadAsync<StartInstanceResultDto>(first);
+        var firstDetail = await GetInstanceAsync(firstAck.Id);
+        Assert.Equal("REQUEST-1", firstDetail.Variables.Single(variable =>
+            variable.VariableName == "requestId").Value.GetString());
+
+        using var duplicate = await StartWithIdempotencyAsync(workflow, "REQUEST-1");
+        await AssertMessageStartConflictAsync(duplicate, "idempotency_conflict", firstAck.Id);
+
+        using var differentCase = await StartWithIdempotencyAsync(workflow, "request-1");
+        Assert.Equal(HttpStatusCode.Created, differentCase.StatusCode);
+
+        using var alias = await StartWithIdempotencyAsync(
+            workflow,
+            "ALIAS-1",
+            IdempotencyHeaders.LegacyAlias);
+        Assert.Equal(HttpStatusCode.Created, alias.StatusCode);
+
+        using var bothEqual = await StartWithIdempotencyHeadersAsync(
+            workflow,
+            (IdempotencyHeaders.Standard, new[] { "BOTH-1" }),
+            (IdempotencyHeaders.LegacyAlias, new[] { "BOTH-1" }));
+        Assert.Equal(HttpStatusCode.Created, bothEqual.StatusCode);
+
+        using var bothDifferent = await StartWithIdempotencyHeadersAsync(
+            workflow,
+            (IdempotencyHeaders.Standard, new[] { "ONE" }),
+            (IdempotencyHeaders.LegacyAlias, new[] { "TWO" }));
+        Assert.Equal(HttpStatusCode.BadRequest, bothDifferent.StatusCode);
+
+        using var repeated = await StartWithIdempotencyHeadersAsync(
+            workflow,
+            (IdempotencyHeaders.Standard, new[] { "A", "A" }));
+        Assert.Equal(HttpStatusCode.BadRequest, repeated.StatusCode);
+
+        using var missing = await StartWithIdempotencyHeadersAsync(workflow);
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        using var oversized = await StartWithIdempotencyAsync(workflow, new string('x', 301));
+        Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
+
+        var normalRace = await Task.WhenAll(
+            StartWithIdempotencyAsync(workflow, "NORMAL-RACE"),
+            StartWithIdempotencyAsync(workflow, "NORMAL-RACE"));
+        try
+        {
+            Assert.Single(normalRace, response => response.StatusCode == HttpStatusCode.Created);
+            Assert.Single(normalRace, response => response.StatusCode == HttpStatusCode.Conflict);
+        }
+        finally
+        {
+            foreach (var response in normalRace) response.Dispose();
+        }
+
+        using var cancelled = await SendAsync(HttpMethod.Post, $"/api/instances/{firstAck.Id}/cancel");
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+        using var afterCancellation = await StartWithIdempotencyAsync(workflow, "REQUEST-1");
+        await AssertMessageStartConflictAsync(afterCancellation, "idempotency_conflict", firstAck.Id);
+
+        var customModel = LoadUniqueModel("votes-users-list.json", "custom-idempotency-header");
+        customModel.FlowNodes.Single(node => node.Id == customModel.InitialEventId).Idempotency =
+            new IdempotencyModel { HeaderName = "X-Request-Id", Variable = "requestId" };
+        var customWorkflow = await CreateWorkflowAsync(customModel);
+        using var standardDoesNotAliasCustom = await StartWithIdempotencyAsync(customWorkflow, "CUSTOM-1");
+        Assert.Equal(HttpStatusCode.BadRequest, standardDoesNotAliasCustom.StatusCode);
+        using var custom = await StartWithIdempotencyAsync(customWorkflow, "CUSTOM-1", "X-Request-Id");
+        Assert.Equal(HttpStatusCode.Created, custom.StatusCode);
+
+        var unlimitedModel = LoadUniqueModel("votes-users-list.json", "unconfigured-idempotency");
+        var unlimitedWorkflow = await CreateWorkflowAsync(unlimitedModel);
+        using var ignored = await StartWithIdempotencyHeadersAsync(
+            unlimitedWorkflow,
+            (IdempotencyHeaders.Standard, new[] { "A", "B" }));
+        Assert.Equal(HttpStatusCode.Created, ignored.StatusCode);
+
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(5, await db.WorkflowIdempotencyClaims.CountAsync(claim =>
+            claim.WorkflowKey == model.Id));
+    }
+
+    [Fact]
+    public async Task IdempotencyScopeSpansStartRoutesAndVersionsButNotWorkflowFamilies()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "idempotency-scope");
+        var normalStart = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        normalStart.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "normalRequestId"
+        };
+        var target = model.SequenceFlows.Single(flow => flow.SourceRef == normalStart.Id).TargetRef;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 90,
+            Name = "Webhook start",
+            Type = BpmnFlowNodeTypes.MessageStartEvent,
+            Idempotency = new IdempotencyModel
+            {
+                HeaderName = IdempotencyHeaders.Standard,
+                Variable = "messageRequestId"
+            },
+            Message = new MessageCatchModel
+            {
+                ClientId = "tests-client",
+                ClientSecret = "tests-secret",
+                HeaderName = "X-Correlation",
+                HeaderValue = "accepted"
+            }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 990,
+            SourceRef = 90,
+            TargetRef = target
+        });
+        var workflow = await CreateWorkflowAsync(model);
+
+        using var normal = await StartWithIdempotencyAsync(workflow, "CROSS-ROUTE-1");
+        Assert.Equal(HttpStatusCode.Created, normal.StatusCode);
+        var normalAck = await ReadAsync<StartInstanceResultDto>(normal);
+
+        using var messageConflict = await SendMessageStartPayloadAsync(
+            model.Id,
+            new { },
+            "CROSS-ROUTE-1");
+        await AssertMessageStartConflictAsync(
+            messageConflict,
+            "idempotency_conflict",
+            normalAck.Id);
+
+        var updated = Clone(model);
+        updated.Name += " v2";
+        using var createVersion = await SendAsync(
+            HttpMethod.Put,
+            $"/api/workflows/{workflow}",
+            new UpdateWorkflowRequest(updated, true));
+        Assert.Equal(HttpStatusCode.OK, createVersion.StatusCode);
+        var version = await ReadAsync<WorkflowDetailDto>(createVersion);
+        using var versionConflict = await StartWithIdempotencyAsync(version.Id, "CROSS-ROUTE-1");
+        await AssertMessageStartConflictAsync(
+            versionConflict,
+            "idempotency_conflict",
+            normalAck.Id);
+
+        var otherFamily = Clone(model);
+        otherFamily.Id += "-other";
+        otherFamily.Name += " other";
+        var otherWorkflow = await CreateWorkflowAsync(otherFamily);
+        using var reusedElsewhere = await StartWithIdempotencyAsync(otherWorkflow, "CROSS-ROUTE-1");
+        Assert.Equal(HttpStatusCode.Created, reusedElsewhere.StatusCode);
+
+        var raceKey = "CROSS-RACE-" + Guid.NewGuid().ToString("N");
+        var race = await Task.WhenAll(
+            StartWithIdempotencyAsync(workflow, raceKey),
+            SendMessageStartPayloadAsync(model.Id, new { }, raceKey));
+        try
+        {
+            Assert.Single(race, response => response.StatusCode == HttpStatusCode.Conflict);
+            Assert.Single(race, response => response.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK);
+        }
+        finally
+        {
+            foreach (var response in race) response.Dispose();
+        }
     }
 
     [Fact]
@@ -245,6 +455,11 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         {
             Variable = "violationId",
             Uniqueness = BusinessKeyUniqueness.Active
+        };
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "requestId"
         };
         start.Message = new MessageCatchModel
         {
@@ -282,7 +497,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                 receivedAt = "2026-07-15T10:30:00+03:00",
                 metadata = new { source = "camera" }
             }
-        });
+        }, "TYPED-VALID");
         Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
         var ack = await ReadAsync<MessageStartAckDto>(valid);
         var detail = await GetInstanceAsync(ack.InstanceId);
@@ -305,7 +520,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                 businessDate = "2026-07-15",
                 receivedAt = "2026-07-15T10:30:00Z"
             }
-        });
+        }, "BAD-TYPE-IDEMPOTENCY");
         Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);
 
         using var invalidDate = await SendMessageStartPayloadAsync(model.Id, new
@@ -318,7 +533,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                 businessDate = "15/07/2026",
                 receivedAt = "2026-07-15T10:30:00Z"
             }
-        });
+        }, "BAD-DATE-IDEMPOTENCY");
         Assert.Equal(HttpStatusCode.BadRequest, invalidDate.StatusCode);
 
         using var failedValidation = await SendMessageStartPayloadAsync(model.Id, new
@@ -331,13 +546,15 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                 businessDate = "2026-07-15",
                 receivedAt = "2026-07-15T10:30:00Z"
             }
-        });
+        }, "BAD-VALIDATION-IDEMPOTENCY");
         Assert.Equal(HttpStatusCode.BadRequest, failedValidation.StatusCode);
 
         await using var db = fixture.CreateDbContext();
         Assert.Equal(1, await db.WorkflowInstances.CountAsync(instance => instance.WorkflowKey == model.Id));
         Assert.False(await db.WorkflowBusinessKeyClaims.AnyAsync(claim =>
             claim.WorkflowKey == model.Id && claim.BusinessKey.StartsWith("BAD-")));
+        Assert.False(await db.WorkflowIdempotencyClaims.AnyAsync(claim =>
+            claim.WorkflowKey == model.Id && claim.IdempotencyKey.StartsWith("BAD-")));
     }
 
     [Fact]
@@ -580,6 +797,12 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     public async Task FailedPassThroughRollsBackBusinessKeyReservation()
     {
         var model = CreateImmediateBusinessKeyModel("business-key-rollback", BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsStart(node.Type)).Idempotency =
+            new IdempotencyModel
+            {
+                HeaderName = IdempotencyHeaders.Standard,
+                Variable = "requestId"
+            };
         var end = model.FlowNodes.Single(node => node.Id == 2);
         end.Id = 3;
         model.SequenceFlows.Single().TargetRef = 2;
@@ -600,14 +823,25 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         });
         var workflow = await CreateWorkflowAsync(model);
 
-        using var failed = await StartWithBusinessKeyAsync(workflow, "ROLLBACK-1");
+        using var failed = await StartWithBusinessAndIdempotencyAsync(
+            workflow,
+            "ROLLBACK-1",
+            "TRANSPORT-ROLLBACK-1");
         Assert.Equal(HttpStatusCode.BadRequest, failed.StatusCode);
+
+        using var repeated = await StartWithBusinessAndIdempotencyAsync(
+            workflow,
+            "ROLLBACK-1",
+            "TRANSPORT-ROLLBACK-1");
+        Assert.Equal(HttpStatusCode.BadRequest, repeated.StatusCode);
 
         await using var db = fixture.CreateDbContext();
         Assert.False(await db.WorkflowBusinessKeyClaims.AnyAsync(claim =>
             claim.WorkflowKey == model.Id && claim.BusinessKey == "ROLLBACK-1"));
         Assert.False(await db.WorkflowInstances.AnyAsync(instance =>
             instance.WorkflowKey == model.Id && instance.BusinessKey == "ROLLBACK-1"));
+        Assert.False(await db.WorkflowIdempotencyClaims.AnyAsync(claim =>
+            claim.WorkflowKey == model.Id));
     }
 
     [Fact]
@@ -1088,6 +1322,53 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                     ["violationId"] = JsonSerializer.SerializeToElement(value)
                 }));
 
+    private async Task<HttpResponseMessage> StartWithBusinessAndIdempotencyAsync(
+        long workflowId,
+        string businessKey,
+        string idempotencyKey)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/instances")
+        {
+            Content = JsonContent.Create(
+                new StartInstanceRequest(
+                    workflowId,
+                    null,
+                    null,
+                    new Dictionary<string, JsonElement>
+                    {
+                        ["violationId"] = JsonSerializer.SerializeToElement(businessKey)
+                    }),
+                options: JsonOptions)
+        };
+        request.Headers.Add(IdempotencyHeaders.Standard, idempotencyKey);
+        ApiTestAuth.Authorize(request, "test-admin", AdminRoles);
+        return await fixture.Client.SendAsync(request);
+    }
+
+    private Task<HttpResponseMessage> StartWithIdempotencyAsync(
+        long workflowId,
+        string key,
+        string headerName = IdempotencyHeaders.Standard) =>
+        StartWithIdempotencyHeadersAsync(workflowId, (headerName, new[] { key }));
+
+    private async Task<HttpResponseMessage> StartWithIdempotencyHeadersAsync(
+        long workflowId,
+        params (string Name, string[] Values)[] headers)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/instances")
+        {
+            Content = JsonContent.Create(
+                new StartInstanceRequest(workflowId, null, null, null),
+                options: JsonOptions)
+        };
+        foreach (var (name, values) in headers)
+        {
+            request.Headers.TryAddWithoutValidation(name, values);
+        }
+        ApiTestAuth.Authorize(request, "test-admin", AdminRoles);
+        return await fixture.Client.SendAsync(request);
+    }
+
     private async Task<HttpResponseMessage> SendMessageStartAsync(
         string workflowKey,
         string idempotencyKey,
@@ -1501,7 +1782,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     {
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         Assert.Equal($"/api/instances/{expectedInstanceId}", response.Headers.Location?.OriginalString);
-        var conflict = await ReadAsync<MessageStartConflictDto>(response);
+        var conflict = await ReadAsync<StartConflictDto>(response);
         Assert.Equal(expectedCode, conflict.Code);
         Assert.Equal(expectedInstanceId, conflict.InstanceId);
     }

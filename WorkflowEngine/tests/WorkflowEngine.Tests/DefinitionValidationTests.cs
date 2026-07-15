@@ -283,8 +283,13 @@ public sealed class DefinitionValidationTests
         Assert.Equal(WorkflowVariableTypes.Json, raw.DataType);
         Assert.DoesNotContain(saved.Message.OutputMappings, mapping => mapping.Variable == "requestId");
         Assert.DoesNotContain(saved.Message.OutputMappings, mapping => mapping.Variable == "unused");
+        Assert.Null(saved.Message.IdempotencyVariable);
+        Assert.Equal(IdempotencyHeaders.Standard, saved.Idempotency!.HeaderName);
+        Assert.Equal("requestId", saved.Idempotency.Variable);
         using var canonicalJson = JsonDocument.Parse(JsonSerializer.Serialize(saved));
         Assert.False(canonicalJson.RootElement.TryGetProperty("variables", out _));
+        Assert.True(canonicalJson.RootElement.TryGetProperty("idempotency", out _));
+        Assert.False(canonicalJson.RootElement.GetProperty("message").TryGetProperty("idempotencyVariable", out _));
     }
 
     [Theory]
@@ -312,7 +317,14 @@ public sealed class DefinitionValidationTests
         if (invalid == "path") mapping.Path = string.Empty;
         if (invalid == "type") mapping.DataType = "integer";
         if (invalid == "validation") mapping.Validation = "(";
-        if (invalid == "idempotency") start.Message.IdempotencyVariable = "Value";
+        if (invalid == "idempotency")
+        {
+            start.Idempotency = new IdempotencyModel
+            {
+                HeaderName = IdempotencyHeaders.Standard,
+                Variable = "Value"
+            };
+        }
         if (invalid == "defaultType")
         {
             mapping.Path = string.Empty;
@@ -323,6 +335,80 @@ public sealed class DefinitionValidationTests
 
         await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             service.CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("blankHeader")]
+    [InlineData("invalidHeader")]
+    [InlineData("reservedHeader")]
+    [InlineData("correlationHeader")]
+    [InlineData("blankVariable")]
+    [InlineData("businessKey")]
+    public async Task CreateAsync_RejectsInvalidEntryIdempotencyConfiguration(string invalid)
+    {
+        var model = CreateMessageStartModel();
+        var start = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = "X-Request-Id",
+            Variable = "requestId"
+        };
+
+        if (invalid == "blankHeader") start.Idempotency.HeaderName = " ";
+        if (invalid == "invalidHeader") start.Idempotency.HeaderName = "Bad Header";
+        if (invalid == "reservedHeader") start.Idempotency.HeaderName = "Authorization";
+        if (invalid == "correlationHeader") start.Idempotency.HeaderName = "x-correlation";
+        if (invalid == "blankVariable") start.Idempotency.Variable = " ";
+        if (invalid == "businessKey")
+        {
+            start.Idempotency.Variable = "value";
+            start.BusinessKey = new BusinessKeyModel
+            {
+                Variable = "value",
+                Uniqueness = BusinessKeyUniqueness.All
+            };
+        }
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsCanonicalIdempotencyOnBothEntryTypes()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var normal = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        normal.Idempotency = new IdempotencyModel
+        {
+            HeaderName = "X-Request-Id",
+            Variable = "normalRequestId"
+        };
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 90,
+            Name = "Webhook start",
+            Type = BpmnFlowNodeTypes.MessageStartEvent,
+            Idempotency = new IdempotencyModel
+            {
+                HeaderName = IdempotencyHeaders.Standard,
+                Variable = "messageRequestId"
+            },
+            Message = new MessageCatchModel
+            {
+                ClientId = "client",
+                ClientSecret = "secret",
+                HeaderName = "X-Correlation",
+                HeaderValue = "accepted"
+            }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 90,
+            SourceRef = 90,
+            TargetRef = 2
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
     }
 
     [Fact]

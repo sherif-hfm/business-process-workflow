@@ -122,7 +122,7 @@ public static class WorkflowDefinitionEndpoints
             .AllowAnonymous()
             .Produces<MessageStartAckDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces<MessageStartConflictDto>(StatusCodes.Status409Conflict)
+            .Produces<StartConflictDto>(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
         return app;
@@ -328,16 +328,18 @@ public static class WorkflowDefinitionEndpoints
     /// <c>outputMappings</c> are both payload mappings and typed start-variable declarations.
     /// Values are strictly type-checked; a missing path may use its mapping default, required
     /// final values are enforced, and NCalc <c>validation</c> rules run against the complete
-    /// resolved value set. When <c>idempotencyVariable</c> is set, it declares a separate
-    /// implicit required string populated from <c>Idempotency-Key</c>; a retried webhook with
-    /// the same key returns 409 with <c>idempotency_conflict</c> and the existing instance id.
+    /// resolved value set. When the selected entry configures node-level
+    /// <c>idempotency</c>, it declares a separate implicit required string populated only
+    /// from its configured HTTP header. The trimmed value is permanently unique for the
+    /// stable workflow key across versions and both start routes; a retry returns 409 with
+    /// <c>idempotency_conflict</c>, the existing instance id, and a <c>Location</c> header.
     ///
     /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
     /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400
     /// is returned for a missing/mismatched header, a failed <c>headerValidation</c> rule, a
     /// required-mapping failure, no default version, or an ambiguous/absent start event. A
     /// duplicate idempotency key or business key returns a slim
-    /// <see cref="MessageStartConflictDto"/> with 409 and a <c>Location</c> header for the
+    /// <see cref="StartConflictDto"/> with 409 and a <c>Location</c> header for the
     /// existing instance.
     /// </remarks>
     public static async Task<IResult> StartWorkflowByMessage(
@@ -350,7 +352,10 @@ public static class WorkflowDefinitionEndpoints
         var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
         var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
         var headers = context.Request.Headers
-            .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(
+                h => h.Key,
+                h => (IReadOnlyList<string>)h.Value.Select(value => value ?? string.Empty).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
 
         Log.Information("Message-start request for workflowKey {WorkflowKey} from client '{ClientId}' (startEvent={StartEvent})",
             workflowKey, clientId, startEventExternalId ?? "(default)");
@@ -397,7 +402,7 @@ public static class WorkflowDefinitionEndpoints
         Log.Information("Message-start conflict {ConflictCode}. Existing instance: {InstanceId}.", code, instanceId);
         context.Response.Headers.Location = $"/api/instances/{instanceId}";
         return Results.Json(
-            new MessageStartConflictDto(code, instanceId),
+            new StartConflictDto(code, instanceId),
             statusCode: StatusCodes.Status409Conflict);
     }
 }

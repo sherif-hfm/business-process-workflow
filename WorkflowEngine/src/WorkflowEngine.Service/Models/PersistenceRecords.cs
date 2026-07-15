@@ -17,6 +17,7 @@ public sealed record WorkflowInstanceRecord(
     long Id,
     long WorkflowDefinitionId,
     string WorkflowKey,
+    string? IdempotencyKey,
     string? BusinessKey,
     string? BusinessKeyUniqueness,
     long ActiveTokenId,
@@ -127,6 +128,8 @@ public sealed record InstanceListItem(
     UserTaskWorkSummaryRecord? UserTasks);
 
 public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
+
+public sealed record IdempotencyReservationRecord(bool Reserved, long? ExistingInstanceId);
 
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);

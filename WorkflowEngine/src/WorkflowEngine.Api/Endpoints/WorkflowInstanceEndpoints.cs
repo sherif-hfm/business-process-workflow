@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
 using WorkflowEngine.Service.Abstractions;
+using WorkflowEngine.Service.Services;
 using WorkflowEngine.Shared.Dtos;
 using WorkflowEngine.Shared.Models;
 
@@ -28,7 +29,7 @@ public static class WorkflowInstanceEndpoints
         group.MapPost("/", StartInstance)
             .Produces<StartInstanceResultDto>(StatusCodes.Status201Created)
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status409Conflict)
+            .Produces<StartConflictDto>(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
         group.MapGet("/", ListInstances)
@@ -90,6 +91,7 @@ public static class WorkflowInstanceEndpoints
     /// <summary>
     /// Starts a new workflow instance based on a workflow definition ID or key.
     /// </summary>
+    /// <param name="context">HTTP context containing the configured idempotency header.</param>
     /// <param name="request">Parameters specifying the workflow to start and initial variables.</param>
     /// <param name="detail">Optional. If set to 'full', returns the detailed instance DTO instead of the slim version.</param>
     /// <param name="principal">The security principal containing the actor identity.</param>
@@ -102,6 +104,10 @@ public static class WorkflowInstanceEndpoints
     /// the workflow defines more than one. <c>Variables</c> supplies the start event's
     /// declared variables; required variables must be present and each is validated against
     /// its NCalc <c>validation</c> rule.
+    /// When the selected entry configures <c>idempotency</c>, its implicit string value must
+    /// be supplied only through the configured HTTP header. The trimmed value is permanently
+    /// unique for the stable workflow key across versions and start routes. A duplicate
+    /// returns 409 with <see cref="StartConflictDto"/> and a <c>Location</c> header.
     ///
     /// By default the response is the slim <see cref="StartInstanceResultDto"/> (instance id
     /// + resting node); pass <paramref name="detail"/>=<c>"full"</c> to get the full
@@ -110,11 +116,13 @@ public static class WorkflowInstanceEndpoints
     /// reflects any automatic nodes (task/serviceTask/scriptTask/exclusiveGateway) between
     /// the start event and the first userTask / message catch / end event.
     ///
-    /// A 400 is returned for an unpublished/missing workflow, a missing required variable, a
-    /// failed validation rule, or a start-event role mismatch (all domain errors). A 401 is
-    /// returned when no bearer JWT is supplied.
+    /// A 400 is returned for an unpublished/missing workflow, an invalid/missing/repeated
+    /// configured idempotency header, a missing required variable, a failed validation rule,
+    /// or a start-event role mismatch (all domain errors). A 401 is returned when no bearer
+    /// JWT is supplied.
     /// </remarks>
     public static async Task<IResult> StartInstance(
+        HttpContext context,
         StartInstanceRequest request,
         string? detail,
         ClaimsPrincipal principal,
@@ -122,26 +130,39 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         var actor = ToActor(principal);
-        if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
+        var headers = ToHeaderDictionary(context.Request.Headers);
+        try
         {
-            var instance = await service.StartInstanceAsync(
+            if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
+            {
+                var instance = await service.StartInstanceAsync(
+                    request.WorkflowId,
+                    request.WorkflowKey,
+                    actor,
+                    request.StartEventId,
+                    request.Variables,
+                    headers,
+                    cancellationToken);
+                return Results.Created($"/api/instances/{instance.Id}", instance);
+            }
+
+            var result = await service.StartInstanceSlimAsync(
                 request.WorkflowId,
                 request.WorkflowKey,
                 actor,
                 request.StartEventId,
                 request.Variables,
+                headers,
                 cancellationToken);
-            return Results.Created($"/api/instances/{instance.Id}", instance);
+            return Results.Created($"/api/instances/{result.Id}", result);
         }
-
-        var result = await service.StartInstanceSlimAsync(
-            request.WorkflowId,
-            request.WorkflowKey,
-            actor,
-            request.StartEventId,
-            request.Variables,
-            cancellationToken);
-        return Results.Created($"/api/instances/{result.Id}", result);
+        catch (IdempotencyKeyConflictException ex)
+        {
+            context.Response.Headers.Location = $"/api/instances/{ex.ExistingInstanceId}";
+            return Results.Json(
+                new StartConflictDto("idempotency_conflict", ex.ExistingInstanceId),
+                statusCode: StatusCodes.Status409Conflict);
+        }
     }
 
     /// <summary>
@@ -432,8 +453,7 @@ public static class WorkflowInstanceEndpoints
     {
         var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
         var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
-        var headers = context.Request.Headers
-            .ToDictionary(h => h.Key, h => (string?)h.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+        var headers = ToHeaderDictionary(context.Request.Headers);
 
         Log.Information("Message delivery request to instance {InstanceId} from client '{ClientId}'", id, clientId);
 
@@ -468,6 +488,13 @@ public static class WorkflowInstanceEndpoints
 
     private const int DefaultPageSize = 50;
     private const int MaxPageSize = 200;
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ToHeaderDictionary(
+        IHeaderDictionary headers) =>
+        headers.ToDictionary(
+            header => header.Key,
+            header => (IReadOnlyList<string>)header.Value.Select(value => value ?? string.Empty).ToArray(),
+            StringComparer.OrdinalIgnoreCase);
 
     private static (int Page, int PageSize) NormalizePaging(int? page, int? pageSize)
     {

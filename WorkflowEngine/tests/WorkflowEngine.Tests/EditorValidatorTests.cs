@@ -89,7 +89,6 @@ public sealed class EditorValidatorTests
             ClientSecret = "secret",
             HeaderName = "X-Correlation",
             HeaderValue = "accepted",
-            IdempotencyVariable = "requestId",
             OutputMappings =
             [
                 new MessageOutputMappingModel
@@ -111,6 +110,11 @@ public sealed class EditorValidatorTests
                 }
             ]
         };
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "requestId"
+        };
         start.BusinessKey = new BusinessKeyModel
         {
             Variable = "violationId",
@@ -119,6 +123,18 @@ public sealed class EditorValidatorTests
         model.InitialEventId = null;
 
         Assert.Empty(Validate(model));
+
+        start.Idempotency.HeaderName = "Authorization";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("is reserved", StringComparison.OrdinalIgnoreCase));
+        start.Idempotency.HeaderName = "X-Correlation";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("must differ from the message correlation header", StringComparison.OrdinalIgnoreCase));
+        start.Idempotency.HeaderName = IdempotencyHeaders.Standard;
+        start.Idempotency.Variable = "VIOLATIONID";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("cannot also be an entry variable or output mapping", StringComparison.OrdinalIgnoreCase));
+        start.Idempotency.Variable = "requestId";
 
         start.Message.OutputMappings[1].DefaultValue = null;
         var errors = Validate(model);

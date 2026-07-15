@@ -259,6 +259,7 @@ public static class WorkflowModelMigrator
         if (!BpmnFlowNodeTypes.IsEntry(node.Type))
         {
             node.BusinessKey = null;
+            node.Idempotency = null;
         }
         else if (node.BusinessKey is not null)
         {
@@ -266,6 +267,12 @@ public static class WorkflowModelMigrator
                 node.BusinessKey.Uniqueness,
                 BusinessKeyUniqueness.Active,
                 BusinessKeyUniqueness.All);
+        }
+
+        if (BpmnFlowNodeTypes.IsEntry(node.Type) && node.Idempotency is not null)
+        {
+            node.Idempotency.HeaderName = node.Idempotency.HeaderName?.Trim()!;
+            node.Idempotency.Variable = node.Idempotency.Variable?.Trim()!;
         }
 
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
@@ -438,22 +445,31 @@ public static class WorkflowModelMigrator
         var message = node.Message!;
         message.OutputMappings ??= [];
         var legacyVariables = node.Variables ?? [];
-        var hadLegacyVariables = legacyVariables.Count > 0;
 
-        if (hadLegacyVariables && !string.IsNullOrWhiteSpace(message.IdempotencyVariable))
+        var legacyIdempotencyVariable = message.IdempotencyVariable;
+        if (!string.IsNullOrWhiteSpace(legacyIdempotencyVariable))
         {
             var declaredIdempotency = legacyVariables.FirstOrDefault(variable =>
-                string.Equals(variable.Name, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+                string.Equals(variable.Name, legacyIdempotencyVariable, StringComparison.OrdinalIgnoreCase));
             if (declaredIdempotency is not null)
             {
-                message.IdempotencyVariable = declaredIdempotency.Name;
+                legacyIdempotencyVariable = declaredIdempotency.Name;
             }
 
-            // The header is the sole source for the implicit idempotency variable.
-            // Older definitions could also map it from the body because the header
-            // overwrote that value at runtime; remove that now-ambiguous mapping.
-            message.OutputMappings.RemoveAll(mapping =>
-                string.Equals(mapping.Variable, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+            if (node.Idempotency is null)
+            {
+                node.Idempotency = new IdempotencyModel
+                {
+                    HeaderName = IdempotencyHeaders.Standard,
+                    Variable = legacyIdempotencyVariable
+                };
+                message.IdempotencyVariable = null;
+
+                // Historical definitions could also map the header-owned variable
+                // from the body. Remove only during unambiguous legacy conversion.
+                message.OutputMappings.RemoveAll(mapping =>
+                    string.Equals(mapping.Variable, legacyIdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+            }
         }
 
         var represented = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -497,6 +513,7 @@ public static class WorkflowModelMigrator
         foreach (var variable in legacyVariables)
         {
             if (represented.Contains(variable.Name)
+                || string.Equals(variable.Name, node.Idempotency?.Variable, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(variable.Name, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase))
             {
                 continue;

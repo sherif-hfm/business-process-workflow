@@ -1,5 +1,4 @@
-- start event and message start event business keys unique constraints
-- start event Idempotency 
+
 - check conflict claim and Assignee 
 - in instance list api add Node ID  and External ID to return 
 
@@ -15,6 +14,8 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- start event and message start event business keys unique constraints (done)
+- start event Idempotency (done)
 - parallel multi instance and sequence multi instance for user task (done)
 - manage versions of workflow and change default version and published versions (done)
 - enable docmentation in swagger (done)

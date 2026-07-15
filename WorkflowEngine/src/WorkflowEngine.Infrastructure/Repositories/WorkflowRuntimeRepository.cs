@@ -15,6 +15,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
         string workflowKey,
+        string? idempotencyKey,
         string? businessKey,
         string? businessKeyUniqueness,
         CurrentNodeSnapshot node,
@@ -26,6 +27,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             WorkflowDefinitionId = workflowDefinitionId,
             WorkflowKey = workflowKey,
+            IdempotencyKey = idempotencyKey,
             BusinessKey = businessKey,
             BusinessKeyUniqueness = businessKeyUniqueness,
             Status = WorkflowInstanceStatuses.Running,
@@ -1167,17 +1169,43 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
-    public async Task AcquireStartLockAsync(string workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken)
+    public async Task<IdempotencyReservationRecord> ReserveIdempotencyKeyAsync(
+        string workflowKey,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
     {
-        // pg_advisory_xact_lock is held until the current transaction commits or
-        // rolls back, serializing concurrent message-start deliveries carrying the
-        // same (workflowKey, idempotency key) so the dedupe-by-variable check is
-        // race-free. The hash is computed by Postgres' hashtext(), which is cluster-
-        // stable, so lock keys are identical across API replicas (unlike .NET's
-        // per-process-randomized GetHashCode). Collisions merely cause harmless
-        // extra serialization.
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT pg_advisory_xact_lock(hashtext({workflowKey}), hashtext({idempotencyKeyValue}))", cancellationToken);
+        var inserted = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO workflow_idempotency_claims
+                ("WorkflowKey", "IdempotencyKey", "InstanceId", "CreatedAt")
+            VALUES ({workflowKey}, {idempotencyKey}, NULL, now())
+            ON CONFLICT ("WorkflowKey", "IdempotencyKey") DO NOTHING
+            """, cancellationToken);
+
+        var claim = await dbContext.WorkflowIdempotencyClaims
+            .FromSqlInterpolated($"SELECT * FROM workflow_idempotency_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"IdempotencyKey\" = {idempotencyKey} FOR UPDATE")
+            .SingleAsync(cancellationToken);
+        if (inserted == 0)
+        {
+            return new IdempotencyReservationRecord(
+                false,
+                claim.InstanceId ?? throw new InvalidOperationException("A committed idempotency claim has no instance."));
+        }
+
+        return new IdempotencyReservationRecord(true, null);
+    }
+
+    public async Task BindIdempotencyKeyAsync(
+        string workflowKey,
+        string idempotencyKey,
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var claim = dbContext.WorkflowIdempotencyClaims.Local.SingleOrDefault(candidate =>
+                        candidate.WorkflowKey == workflowKey && candidate.IdempotencyKey == idempotencyKey)
+                    ?? await dbContext.WorkflowIdempotencyClaims.SingleAsync(candidate =>
+                        candidate.WorkflowKey == workflowKey && candidate.IdempotencyKey == idempotencyKey,
+                        cancellationToken);
+        claim.InstanceId = instanceId;
     }
 
     public async Task<BusinessKeyReservationRecord> ReserveBusinessKeyAsync(
@@ -1250,6 +1278,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.Id,
             entity.WorkflowDefinitionId,
             entity.WorkflowKey,
+            entity.IdempotencyKey,
             entity.BusinessKey,
             entity.BusinessKeyUniqueness,
             token.Id,

@@ -196,9 +196,21 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
 
     public async Task<StartInstanceResultDto?> StartInstanceAsync(
         StartInstanceRequest request,
+        string? idempotencyHeaderName = null,
+        string? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync("/api/instances", request, cancellationToken);
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/api/instances")
+        {
+            Content = JsonContent.Create(request)
+        };
+        if (!string.IsNullOrWhiteSpace(idempotencyHeaderName)
+            && idempotencyKey is not null)
+        {
+            message.Headers.TryAddWithoutValidation(idempotencyHeaderName, idempotencyKey);
+        }
+
+        var response = await httpClient.SendAsync(message, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<StartInstanceResultDto>(cancellationToken);
     }

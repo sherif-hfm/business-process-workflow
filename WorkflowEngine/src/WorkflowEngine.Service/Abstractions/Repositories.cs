@@ -38,6 +38,7 @@ public interface IWorkflowRuntimeRepository
     Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
         string workflowKey,
+        string? idempotencyKey,
         string? businessKey,
         string? businessKeyUniqueness,
         CurrentNodeSnapshot node,
@@ -210,13 +211,16 @@ public interface IWorkflowRuntimeRepository
         long instanceId,
         CancellationToken cancellationToken);
 
-    // Acquires a transaction-scoped PostgreSQL advisory lock keyed on the
-    // workflow key + a deterministic hash of the idempotency key value, computed
-    // by Postgres' hashtext() so the lock key is stable across API replicas.
-    // Serializes concurrent message-start deliveries that carry the same
-    // idempotency key so the dedupe-by-variable check is race-free. The lock is
-    // released on commit/rollback.
-    Task AcquireStartLockAsync(string workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken);
+    Task<IdempotencyReservationRecord> ReserveIdempotencyKeyAsync(
+        string workflowKey,
+        string idempotencyKey,
+        CancellationToken cancellationToken);
+
+    Task BindIdempotencyKeyAsync(
+        string workflowKey,
+        string idempotencyKey,
+        long instanceId,
+        CancellationToken cancellationToken);
 
     Task<BusinessKeyReservationRecord> ReserveBusinessKeyAsync(
         string workflowKey,

@@ -782,12 +782,12 @@ function normalizeAssignments(assignments) {
     }));
 }
 function defaultMessage() {
-  return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [], idempotencyVariable: "" };
+  return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [] };
 }
 function normalizeMessage(message, typedStart = false, processVariables = []) {
   const base = defaultMessage();
   if (!message || typeof message !== "object") return base;
-  return {
+  const normalized = {
     clientId: typeof message.clientId === "string" ? message.clientId : "",
     clientSecret: typeof message.clientSecret === "string" ? message.clientSecret : "",
     headerName: typeof message.headerName === "string" ? message.headerName : "",
@@ -799,6 +799,8 @@ function normalizeMessage(message, typedStart = false, processVariables = []) {
       : [],
     idempotencyVariable: typeof message.idempotencyVariable === "string" ? message.idempotencyVariable : ""
   };
+  if (!typedStart || !normalized.idempotencyVariable) delete normalized.idempotencyVariable;
+  return normalized;
 }
 
 function hasConfiguredDefault(value) {
@@ -810,14 +812,20 @@ function normalizeLegacyMessageStartNode(node) {
   node.message = normalizeMessage(node.message, true);
   const message = node.message;
   const legacyVariables = Array.isArray(node.variables) ? node.variables : [];
-  const hadLegacyVariables = legacyVariables.length > 0;
 
-  if (hadLegacyVariables && message.idempotencyVariable) {
+  if (message.idempotencyVariable) {
     const declaredIdempotency = legacyVariables.find(variable =>
       String(variable.name || "").toLowerCase() === message.idempotencyVariable.toLowerCase());
     if (declaredIdempotency) message.idempotencyVariable = declaredIdempotency.name;
-    message.outputMappings = message.outputMappings.filter(mapping =>
-      String(mapping.variable || "").toLowerCase() !== message.idempotencyVariable.toLowerCase());
+    if (node.idempotency == null) {
+      node.idempotency = {
+        headerName: "Idempotency-Key",
+        variable: message.idempotencyVariable
+      };
+      message.outputMappings = message.outputMappings.filter(mapping =>
+        String(mapping.variable || "").toLowerCase() !== message.idempotencyVariable.toLowerCase());
+      delete message.idempotencyVariable;
+    }
   }
 
   const represented = new Set();
@@ -846,7 +854,9 @@ function normalizeLegacyMessageStartNode(node) {
 
   legacyVariables.forEach(variable => {
     const key = String(variable.name || "").toLowerCase();
-    if (represented.has(key) || key === String(message.idempotencyVariable || "").toLowerCase()) return;
+    if (represented.has(key) ||
+        key === String(node.idempotency && node.idempotency.variable || "").toLowerCase() ||
+        key === String(message.idempotencyVariable || "").toLowerCase()) return;
     if (!hasConfiguredDefault(variable.defaultValue) && !variable.required) return;
     message.outputMappings.push({
       variable: variable.name,
@@ -862,7 +872,7 @@ function normalizeLegacyMessageStartNode(node) {
 }
 
 function materializeMessageStartVariables(node) {
-  const variables = ((node.message && node.message.outputMappings) || []).map((mapping, index) => ({
+  return ((node.message && node.message.outputMappings) || []).map((mapping, index) => ({
     id: index + 1,
     name: mapping.variable,
     dataType: mapping.dataType || "json",
@@ -871,20 +881,6 @@ function materializeMessageStartVariables(node) {
     defaultValue: mapping.defaultValue ?? null,
     validation: mapping.validation ?? null
   }));
-  const idempotencyName = String(node.message && node.message.idempotencyVariable || "").trim();
-  if (idempotencyName && !variables.some(variable =>
-      variable.name.toLowerCase() === idempotencyName.toLowerCase())) {
-    variables.push({
-      id: variables.length + 1,
-      name: idempotencyName,
-      dataType: "string",
-      isArray: false,
-      required: true,
-      defaultValue: null,
-      validation: null
-    });
-  }
-  return variables;
 }
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
@@ -1021,6 +1017,7 @@ function isPassThroughType(type) {
 function applyTypeInvariants(node) {
   if (!isStartEventType(node.type) && !isMessageStartEventType(node.type)) {
     delete node.businessKey;
+    delete node.idempotency;
   } else if (node.businessKey && typeof node.businessKey === "object") {
     node.businessKey.uniqueness = canonicalizeKnownValue(
       node.businessKey.uniqueness, ["active", "all"], undefined);
@@ -1653,6 +1650,14 @@ function normalizeBusinessKeyForLoad(businessKey) {
     variable: businessKey.variable,
     uniqueness: canonicalizeKnownValue(
       businessKey.uniqueness, ["active", "all"], undefined)
+  };
+}
+
+function normalizeIdempotencyForLoad(idempotency) {
+  if (!idempotency || typeof idempotency !== "object") return idempotency;
+  return {
+    headerName: typeof idempotency.headerName === "string" ? idempotency.headerName.trim() : idempotency.headerName,
+    variable: typeof idempotency.variable === "string" ? idempotency.variable.trim() : idempotency.variable
   };
 }
 
@@ -2380,12 +2385,14 @@ function renderNodeInspector() {
 
   if (isMessageStartEventType(node.type)) {
     renderMessageSection(node);
+    renderIdempotencySection(node);
     renderBusinessKeySection(node);
   }
 
   if (isStartEventType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
     renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
+    renderIdempotencySection(node);
     renderBusinessKeySection(node);
   }
 
@@ -2765,20 +2772,6 @@ function renderMessageSection(node) {
   };
   inspector.appendChild(addMappingBtn);
 
-  // Idempotency is a message-start concern. It declares an implicit required
-  // string variable populated only from the Idempotency-Key header.
-  if (isStart) {
-    const idemTitle = document.createElement("h2");
-    idemTitle.textContent = "Idempotency (optional)";
-    idemTitle.style.marginTop = "16px";
-    inspector.appendChild(idemTitle);
-
-    const idemHint = document.createElement("p");
-    idemHint.className = "empty-note";
-    idemHint.textContent = "Transport retry identity only: this name becomes an implicit required string variable populated from the Idempotency-Key header. It must not duplicate an output mapping or the domain business key.";
-    inspector.appendChild(idemHint);
-    field("Idempotency variable", "text", message.idempotencyVariable, v => { message.idempotencyVariable = v; });
-  }
 }
 
 function renderScriptSection(node) {
@@ -3055,7 +3048,7 @@ function getAllAvailableVariables() {
             });
           }
         });
-        const idempotencyName = String(node.message.idempotencyVariable || "").trim();
+        const idempotencyName = String(node.idempotency && node.idempotency.variable || "").trim();
         if (idempotencyName && !varsMap.has(idempotencyName)) {
           varsMap.set(idempotencyName, {
             name: idempotencyName,
@@ -3764,6 +3757,35 @@ function renderBusinessKeySection(node) {
     node.businessKey.variable ?? "", value => { node.businessKey.variable = value; });
   selectField("Uniqueness", BUSINESS_KEY_UNIQUENESS_OPTIONS,
     node.businessKey.uniqueness, value => { node.businessKey.uniqueness = value; });
+}
+
+function renderIdempotencySection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Transport idempotency";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Prevents transport retries from creating another instance across this workflow family. The normalized header value is also persisted as an implicit string variable. This is separate from the domain business key.";
+  inspector.appendChild(hint);
+
+  inspector.appendChild(variableCheckbox("Enable idempotency", node.idempotency != null, checked => {
+    if (checked) {
+      node.idempotency ??= { headerName: "Idempotency-Key", variable: "" };
+    } else {
+      delete node.idempotency;
+    }
+    renderInspector();
+  }));
+
+  if (node.idempotency == null) return;
+  field("Header name", "text", node.idempotency.headerName ?? "", value => {
+    node.idempotency.headerName = value;
+  });
+  field("Implicit variable", "text", node.idempotency.variable ?? "", value => {
+    node.idempotency.variable = value;
+  });
 }
 
 /* ---------- Canvas viewport ---------- */
@@ -4481,18 +4503,52 @@ function validateModelForSave(candidate) {
     const seenMappings = validateTypedOutputMappings(label, mappings, "body", false);
 
     if (hasText(message.idempotencyVariable)) {
-      const idempotencyName = message.idempotencyVariable.trim();
-      if (/^(sys|config|setting|mi)\./i.test(idempotencyName)) {
-        errors.push(label + " idempotencyVariable '" + idempotencyName + "' uses a reserved context prefix.");
-      }
-      if (seenMappings.has(idempotencyName.toLowerCase())) {
-        errors.push(label + " idempotencyVariable '" + idempotencyName + "' cannot also be an output mapping variable.");
-      }
+      errors.push(label + " cannot configure both legacy message.idempotencyVariable and node idempotency.");
     }
   }
 
   const entries = nodes.filter(node => node &&
     (node.type === "startEvent" || node.type === "messageStartEvent"));
+  const reservedIdempotencyHeaders = new Set([
+    "authorization", "proxy-authorization", "cookie", "host", "content-length",
+    "content-type", "content-encoding", "transfer-encoding", "connection",
+    "keep-alive", "te", "trailer", "upgrade", "expect", "x-client-id", "x-client-secret"
+  ]);
+  const httpFieldName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  for (const node of entries.filter(entry => entry.idempotency != null)) {
+    const config = node.idempotency;
+    const label = "Entry event #" + String(node.id);
+    const headerName = typeof config.headerName === "string" ? config.headerName.trim() : "";
+    const variableName = typeof config.variable === "string" ? config.variable.trim() : "";
+    if (!headerName || headerName.length > 300 || !httpFieldName.test(headerName)) {
+      errors.push(label + " idempotency.headerName must be a valid HTTP field name of at most 300 characters.");
+    } else if (reservedIdempotencyHeaders.has(headerName.toLowerCase())) {
+      errors.push(label + " idempotency.headerName '" + headerName + "' is reserved.");
+    }
+    if (node.type === "messageStartEvent" && hasText(node.message && node.message.headerName) &&
+        node.message.headerName.trim().toLowerCase() === headerName.toLowerCase()) {
+      errors.push(label + " idempotency.headerName must differ from the message correlation header.");
+    }
+    if (!variableName) {
+      errors.push(label + " idempotency.variable is required.");
+    } else {
+      if (/^(sys|config|setting|mi)\./i.test(variableName)) {
+        errors.push(label + " idempotency variable '" + variableName + "' uses a reserved context prefix.");
+      }
+      const entryNames = node.type === "messageStartEvent"
+        ? new Set(((node.message && node.message.outputMappings) || [])
+            .map(mapping => String(mapping.variable || "").toLowerCase()))
+        : new Set((node.variables || []).map(variable => String(variable.name || "").toLowerCase()));
+      if (entryNames.has(variableName.toLowerCase())) {
+        errors.push(label + " idempotency variable '" + variableName +
+          "' cannot also be an entry variable or output mapping.");
+      }
+      if (node.businessKey && String(node.businessKey.variable || "").toLowerCase() === variableName.toLowerCase()) {
+        errors.push(label + " must use different variables for idempotency and businessKey.");
+      }
+    }
+  }
+
   const keyedEntries = entries.filter(node => node.businessKey != null);
   if (keyedEntries.length > 0 && keyedEntries.length !== entries.length) {
     errors.push("Every startEvent and messageStartEvent must configure businessKey once business keys are enabled.");
@@ -4516,9 +4572,9 @@ function validateModelForSave(candidate) {
         errors.push(label + " businessKey mapping '" + config.variable +
           "' must be an exactly named required scalar string with an explicit path and no defaultValue.");
       }
-      if (hasText(node.message && node.message.idempotencyVariable) &&
-          node.message.idempotencyVariable.toLowerCase() === config.variable.toLowerCase()) {
-        errors.push(label + " must use different variables for idempotencyVariable and businessKey.");
+      if (node.idempotency && hasText(node.idempotency.variable) &&
+          node.idempotency.variable.toLowerCase() === config.variable.toLowerCase()) {
+        errors.push(label + " must use different variables for idempotency and businessKey.");
       }
     } else {
       const variable = (Array.isArray(node.variables) ? node.variables : [])
@@ -4713,6 +4769,9 @@ async function save() {
     if (node.businessKey && typeof node.businessKey === "object") {
       node.businessKey.uniqueness = canonicalizeKnownValue(
         node.businessKey.uniqueness, ["active", "all"], undefined);
+    }
+    if (node.idempotency && typeof node.idempotency === "object") {
+      node.idempotency = normalizeIdempotencyForLoad(node.idempotency);
     }
     if (node.multiInstance) {
       node.multiInstance.mode = canonicalizeKnownValue(
@@ -4910,7 +4969,9 @@ function loadFromObject(obj) {
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
-          ? normalizeBusinessKeyForLoad(s.businessKey) : undefined
+          ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,
+        idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined
+          ? normalizeIdempotencyForLoad(s.idempotency) : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,
