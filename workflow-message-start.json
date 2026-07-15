@@ -1,5 +1,5 @@
 {
-  "id": 12,
+  "id": "message-start",
   "name": "Message Start Workflow",
   "initialEventId": 1,
   "variables": [],
@@ -7,7 +7,7 @@
   "flowNodes": [
     {
       "id": 1,
-      "name": "New Node",
+      "name": "Start",
       "externalId": null,
       "type": "messageStartEvent",
       "laneId": null,
@@ -17,7 +17,7 @@
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "condition": null,
+      "assignee": null,
       "assignments": [],
       "attachedToRef": null,
       "errorVariable": null,
@@ -27,8 +27,31 @@
         "headerName": "msg-id",
         "headerValue": "456",
         "headerValidation": "",
-        "outputMappings": [],
-        "idempotencyVariable": "idempotencyKey"
+        "outputMappings": [
+          {
+            "variable": "userName",
+            "path": "user-name",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          },
+          {
+            "variable": "requestRef",
+            "path": "request-ref",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          }
+        ],
+        "idempotencyVariable": "X-Idempotency-Key"
+      },
+      "businessKey": {
+        "variable": "requestRef",
+        "uniqueness": "active"
       }
     },
     {
@@ -37,31 +60,32 @@
       "externalId": null,
       "type": "userTask",
       "laneId": null,
-      "x": 358,
-      "y": 115,
+      "x": 435,
+      "y": 112,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null,
+      "assignee": null,
+      "multiInstance": null,
       "attachedToRef": null,
       "errorVariable": null
     },
     {
       "id": 3,
-      "name": "New Node",
+      "name": "End",
       "externalId": null,
       "type": "endEvent",
       "laneId": null,
-      "x": 657,
-      "y": 116,
+      "x": 903,
+      "y": 124,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null,
+      "assignee": null,
       "attachedToRef": null,
       "errorVariable": null
     }
@@ -76,7 +100,12 @@
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 102,
@@ -87,7 +116,12 @@
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": false
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     }
   ],
   "cancelRoles": [],

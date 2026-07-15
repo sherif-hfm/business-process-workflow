@@ -570,8 +570,8 @@ public sealed class MessageCatchModel
     // implicit required string start variable whose value is used as the idempotency
     // key. It is populated from the idempotency header, not outputMappings. Before creating an
     // instance the engine searches for an existing instance of this workflowKey
-    // already carrying that key value and, if found, returns that instance's ack
-    // instead of creating a duplicate (so a retried webhook is a no-op). The
+    // already carrying that key value and, if found, returns a 409 conflict with
+    // that instance id instead of creating a duplicate. The
     // search is guarded by a transaction-scoped advisory lock so concurrent retries
     // serialize. null disables idempotency (a retry creates a duplicate).
     /// <summary>

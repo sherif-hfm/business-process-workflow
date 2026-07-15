@@ -356,9 +356,10 @@ Storage follows the hybrid design:
   concurrent retries with a transaction-scoped `pg_advisory_xact_lock` keyed on
   `(workflowKey, hashtext(keyValue))` and, before creating an instance, searches
   for an existing instance of the workflowKey already carrying that key value
-  (via the variable-search path, any status); if found it returns that instance's
-  ack (no duplicate). The key must be passed via the `Idempotency-Key` or `X-Idempotency-Key`
-  request header (else 400).
+  (via the variable-search path, any status); if found it returns 409 with
+  `code: "idempotency_conflict"`, that owner's `instanceId`, and a `Location`
+  header (no duplicate). The key must be passed via the `Idempotency-Key` or
+  `X-Idempotency-Key` request header (else 400).
   A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
   `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
   definition/variables/history, since the endpoint is `AllowAnonymous`). Its
@@ -373,10 +374,13 @@ Storage follows the hybrid design:
   and case-sensitively. Claims are scoped by stable `WorkflowKey` across all
   definition versions. `active` releases when the instance becomes completed,
   faulted, or cancelled; `all` remains permanent. Normal duplicate starts return
-  409 (`business_key_conflict`, existing instance id, and `Location`), while a
-  message-start duplicate returns the existing slim acknowledgment. Message
+  409 (`business_key_conflict`, `existingInstanceId`, and `Location`). A
+  message-start duplicate also returns 409, but its slim anonymous response uses
+  `code: "business_key_conflict"`, `instanceId`, and `Location`. Message
   idempotency may coexist only on a different variable: idempotency identifies a
-  transport retry, while the business key identifies the domain instance.
+  transport retry, while the business key identifies the domain instance;
+  idempotency is checked first and therefore determines the conflict when both
+  keys already exist.
   Enablement is prospective and irreversible for a workflow key: existing
   instances stay unkeyed/non-blocking, and older unkeyed versions cannot start.
 - **Node roles are enforced** at runtime for `userTask` and user-initiated
@@ -948,9 +952,12 @@ and persist the message-start variables directly.
 When `idempotencyVariable` is set, before creating an instance the engine acquires
 a transaction-scoped `pg_advisory_xact_lock(workflowKey, hashtext(keyValue))`,
 searches for an existing instance of the workflowKey already carrying that key
-value (via the variable-search path), and returns that instance's ack instead of
-creating a duplicate. The key must be provided in the `Idempotency-Key` or `X-Idempotency-Key`
-request header (else 400).
+value (via the variable-search path), and returns 409 with
+`code: "idempotency_conflict"`, its `instanceId`, and a `Location` header instead
+of creating a duplicate. A duplicate domain business key similarly returns 409
+with `code: "business_key_conflict"` and the owning `instanceId`. Idempotency is
+checked first. The transport key must be provided in the `Idempotency-Key` or
+`X-Idempotency-Key` request header (else 400).
 A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
 `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
 definition/variables/history, since the endpoint is `AllowAnonymous`).

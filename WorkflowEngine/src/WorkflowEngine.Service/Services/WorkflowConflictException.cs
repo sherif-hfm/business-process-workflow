@@ -7,3 +7,9 @@ public sealed class BusinessKeyConflictException(long existingInstanceId)
 {
     public long ExistingInstanceId { get; } = existingInstanceId;
 }
+
+public sealed class IdempotencyKeyConflictException(long existingInstanceId)
+    : WorkflowConflictException("A workflow instance already owns this idempotency key.")
+{
+    public long ExistingInstanceId { get; } = existingInstanceId;
+}

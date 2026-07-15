@@ -163,7 +163,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task MessageStartChecksTransportIdempotencyBeforeBusinessKey()
+    public async Task MessageStartDuplicateKeysReturnConflictWithExistingInstanceId()
     {
         var model = LoadUniqueModel("votes-users-list.json", "business-key-message");
         var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
@@ -202,15 +202,22 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         var firstAck = await ReadAsync<MessageStartAckDto>(first);
 
         using var retry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-1");
-        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
-        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(retry)).InstanceId);
+        await AssertMessageStartConflictAsync(
+            retry,
+            "idempotency_conflict",
+            firstAck.InstanceId);
 
         using var domainDuplicate = await SendMessageStartAsync(model.Id, "REQUEST-2", "V-1");
-        Assert.Equal(HttpStatusCode.OK, domainDuplicate.StatusCode);
-        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(domainDuplicate)).InstanceId);
+        await AssertMessageStartConflictAsync(
+            domainDuplicate,
+            "business_key_conflict",
+            firstAck.InstanceId);
 
         using var mismatchedRetry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-2");
-        Assert.Equal(HttpStatusCode.Conflict, mismatchedRetry.StatusCode);
+        await AssertMessageStartConflictAsync(
+            mismatchedRetry,
+            "idempotency_conflict",
+            firstAck.InstanceId);
 
         using var cancelled = await SendAsync(HttpMethod.Post, $"/api/instances/{firstAck.InstanceId}/cancel");
         Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
@@ -220,8 +227,10 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         Assert.NotEqual(firstAck.InstanceId, reusedAck.InstanceId);
 
         using var oldRetry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-1");
-        Assert.Equal(HttpStatusCode.OK, oldRetry.StatusCode);
-        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(oldRetry)).InstanceId);
+        await AssertMessageStartConflictAsync(
+            oldRetry,
+            "idempotency_conflict",
+            firstAck.InstanceId);
     }
 
     [Fact]
@@ -1484,6 +1493,18 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response) =>
         await response.Content.ReadFromJsonAsync<T>(JsonOptions)
         ?? throw new InvalidOperationException("Response body was empty.");
+
+    private static async Task AssertMessageStartConflictAsync(
+        HttpResponseMessage response,
+        string expectedCode,
+        long expectedInstanceId)
+    {
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal($"/api/instances/{expectedInstanceId}", response.Headers.Location?.OriginalString);
+        var conflict = await ReadAsync<MessageStartConflictDto>(response);
+        Assert.Equal(expectedCode, conflict.Code);
+        Assert.Equal(expectedInstanceId, conflict.InstanceId);
+    }
 
     private static WorkflowModel LoadUniqueModel(string fileName, string label)
     {

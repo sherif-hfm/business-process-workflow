@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using WorkflowEngine.Service.Abstractions;
+using WorkflowEngine.Service.Services;
 using WorkflowEngine.Shared.Dtos;
 using WorkflowEngine.Shared.Models;
 
@@ -121,7 +122,7 @@ public static class WorkflowDefinitionEndpoints
             .AllowAnonymous()
             .Produces<MessageStartAckDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status409Conflict)
+            .Produces<MessageStartConflictDto>(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
         return app;
@@ -329,12 +330,15 @@ public static class WorkflowDefinitionEndpoints
     /// final values are enforced, and NCalc <c>validation</c> rules run against the complete
     /// resolved value set. When <c>idempotencyVariable</c> is set, it declares a separate
     /// implicit required string populated from <c>Idempotency-Key</c>; a retried webhook with
-    /// the same key returns the existing instance instead of creating a duplicate.
+    /// the same key returns 409 with <c>idempotency_conflict</c> and the existing instance id.
     ///
     /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
     /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400
     /// is returned for a missing/mismatched header, a failed <c>headerValidation</c> rule, a
-    /// required-mapping failure, no default version, or an ambiguous/absent start event.
+    /// required-mapping failure, no default version, or an ambiguous/absent start event. A
+    /// duplicate idempotency key or business key returns a slim
+    /// <see cref="MessageStartConflictDto"/> with 409 and a <c>Location</c> header for the
+    /// existing instance.
     /// </remarks>
     public static async Task<IResult> StartWorkflowByMessage(
         HttpContext context,
@@ -368,9 +372,32 @@ public static class WorkflowDefinitionEndpoints
 
         var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
         var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
-        var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
-        Log.Information("Message-start for workflowKey {WorkflowKey} acknowledged. Instance: {InstanceId}, Status: {Status}, resting on node {NodeId}.",
-            workflowKey, ack.InstanceId, ack.Status, ack.CurrentNodeId);
-        return Results.Ok(ack);
+        try
+        {
+            var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
+            Log.Information("Message-start for workflowKey {WorkflowKey} acknowledged. Instance: {InstanceId}, Status: {Status}, resting on node {NodeId}.",
+                workflowKey, ack.InstanceId, ack.Status, ack.CurrentNodeId);
+            return Results.Ok(ack);
+        }
+        catch (IdempotencyKeyConflictException ex)
+        {
+            return MessageStartConflict(context, "idempotency_conflict", ex.ExistingInstanceId);
+        }
+        catch (BusinessKeyConflictException ex)
+        {
+            return MessageStartConflict(context, "business_key_conflict", ex.ExistingInstanceId);
+        }
+    }
+
+    private static IResult MessageStartConflict(
+        HttpContext context,
+        string code,
+        long instanceId)
+    {
+        Log.Information("Message-start conflict {ConflictCode}. Existing instance: {InstanceId}.", code, instanceId);
+        context.Response.Headers.Location = $"/api/instances/{instanceId}";
+        return Results.Json(
+            new MessageStartConflictDto(code, instanceId),
+            statusCode: StatusCodes.Status409Conflict);
     }
 }

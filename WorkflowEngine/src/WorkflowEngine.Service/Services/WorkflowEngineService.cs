@@ -295,7 +295,7 @@ public sealed class WorkflowEngineService(
         // is supplied via the request headers ('Idempotency-Key' or 'X-Idempotency-Key').
         // Serialize concurrent retries with an advisory lock, then search for an
         // existing instance of this workflowKey already carrying that key value;
-        // if found, return its ack (no new instance).
+        // if found, report a conflict with that instance id (no new instance).
         var idempotencyVariable = messageConfig.IdempotencyVariable;
         string? idempotencyKeyValue = null;
         if (!string.IsNullOrWhiteSpace(idempotencyVariable))
@@ -355,16 +355,9 @@ public sealed class WorkflowEngineService(
             var existing = await FindByIdempotencyKeyAsync(workflowKey, idempotencyVariable!, idempotencyKeyValue, cancellationToken);
             if (existing is not null)
             {
-                if (existing.BusinessKey is not null
-                    && !string.Equals(existing.BusinessKey, normalizedStart.BusinessKey, StringComparison.Ordinal))
-                {
-                    throw new BusinessKeyConflictException(existing.Id);
-                }
-
-                logger.LogInformation("Message start request for workflowKey {WorkflowKey} was deduplicated. Existing instance: {InstanceId}",
+                logger.LogInformation("Message start request for workflowKey {WorkflowKey} conflicted with an existing idempotency key. Existing instance: {InstanceId}",
                     workflowKey, existing.Id);
-                await transaction.CommitAsync(cancellationToken);
-                return await BuildStartAckAsync(existing.Id, cancellationToken);
+                throw new IdempotencyKeyConflictException(existing.Id);
             }
         }
 
@@ -379,8 +372,7 @@ public sealed class WorkflowEngineService(
             {
                 var existingId = reservation.ExistingInstanceId
                     ?? throw new InvalidOperationException("A conflicting business-key claim has no instance.");
-                await transaction.CommitAsync(cancellationToken);
-                return await BuildStartAckAsync(existingId, cancellationToken);
+                throw new BusinessKeyConflictException(existingId);
             }
         }
 
@@ -438,8 +430,7 @@ public sealed class WorkflowEngineService(
     }
 
     // Searches for an existing instance of the given workflowKey carrying the
-    // idempotency key value in the named variable, returning a slim start ack for
-    // it (so a retried webhook is a no-op). Returns null when none exists. The
+    // idempotency key value in the named variable. Returns null when none exists. The
     // search reuses the variable-search path and spans any status (a completed/
     // faulted instance with the key still counts as "already started").
     private async Task<InstanceListItem?> FindByIdempotencyKeyAsync(

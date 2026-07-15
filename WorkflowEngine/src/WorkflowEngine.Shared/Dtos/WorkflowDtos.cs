@@ -261,6 +261,13 @@ public sealed record MessageStartAckDto(
     DateTimeOffset CreatedAt);
 
 /// <summary>
+/// Conflict returned when a message-start idempotency key or business key is already owned.
+/// </summary>
+/// <param name="Code">Machine-readable conflict code.</param>
+/// <param name="InstanceId">The existing workflow instance that owns the key.</param>
+public sealed record MessageStartConflictDto(string Code, long InstanceId);
+
+/// <summary>
 /// Represents a variable currently stored in a workflow instance.
 /// </summary>
 /// <param name="Id">The unique database ID of the variable record.</param>

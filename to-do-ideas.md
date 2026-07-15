@@ -1,4 +1,4 @@
-- new instance constraints
+- start event and message start event business keys unique constraints
 - start event Idempotency 
 - check conflict claim and Assignee 
 - in instance list api add Node ID  and External ID to return 
