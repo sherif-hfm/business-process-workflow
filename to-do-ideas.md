@@ -1,3 +1,4 @@
+- new instance constraints
 - start event Idempotency 
 - check conflict claim and Assignee 
 - in instance list api add Node ID  and External ID to return 
