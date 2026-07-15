@@ -78,6 +78,8 @@ public sealed record StartInstanceRequest(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status (e.g., "running", "completed", "faulted").</param>
+/// <param name="BusinessKey">The normalized domain business key, when configured.</param>
+/// <param name="BusinessKeyUniqueness">The snapshotted active/all uniqueness policy.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was started.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
@@ -87,6 +89,8 @@ public sealed record StartInstanceResultDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
@@ -165,6 +169,8 @@ public sealed record UserTaskActionAckDto(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status of the instance.</param>
+/// <param name="BusinessKey">The normalized domain business key, when configured.</param>
+/// <param name="BusinessKeyUniqueness">The snapshotted active/all uniqueness policy.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was created.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
@@ -178,6 +184,8 @@ public sealed record InstanceSummaryDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
@@ -192,6 +200,8 @@ public sealed record InstanceSummaryDto(
 /// <param name="CurrentNodeName">The name of the current resting flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The current execution status of the instance.</param>
+/// <param name="BusinessKey">The normalized domain business key, when configured.</param>
+/// <param name="BusinessKeyUniqueness">The snapshotted active/all uniqueness policy.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was created.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
@@ -206,6 +216,8 @@ public sealed record InstanceDetailDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
@@ -320,6 +332,8 @@ public sealed record PagedResult<T>(
 /// <param name="MultiInstance">Aggregate progress for the owning multi-instance execution.</param>
 /// <param name="WorkflowId">The database ID of the workflow version.</param>
 /// <param name="WorkflowName">The name of the workflow.</param>
+/// <param name="BusinessKey">The normalized domain business key, when configured.</param>
+/// <param name="BusinessKeyUniqueness">The snapshotted active/all uniqueness policy.</param>
 /// <param name="CurrentNodeId">The ID of the current userTask flow node.</param>
 /// <param name="CurrentNodeName">The name of the current userTask flow node.</param>
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current flow node.</param>
@@ -341,6 +355,8 @@ public sealed record InboxItemDto(
     MultiInstanceProgressDto? MultiInstance,
     long WorkflowId,
     string WorkflowName,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     int CurrentNodeId,
     string CurrentNodeName,
     string? CurrentNodeExternalId,

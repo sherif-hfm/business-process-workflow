@@ -10,6 +10,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<WorkflowInstanceEntity> WorkflowInstances => Set<WorkflowInstanceEntity>();
 
+    public DbSet<WorkflowBusinessKeyScopeEntity> WorkflowBusinessKeyScopes => Set<WorkflowBusinessKeyScopeEntity>();
+
+    public DbSet<WorkflowBusinessKeyClaimEntity> WorkflowBusinessKeyClaims => Set<WorkflowBusinessKeyClaimEntity>();
+
     public DbSet<InstanceVariableEntity> InstanceVariables => Set<InstanceVariableEntity>();
 
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
@@ -47,14 +51,23 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("workflow_instances");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.BusinessKey).HasMaxLength(300).UseCollation("C");
+            entity.Property(e => e.BusinessKeyUniqueness).HasMaxLength(32);
             entity.Property(e => e.StartedBy).HasMaxLength(300);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             // Supports the paged instance list ordered by UpdatedAt.
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.WorkflowKey, e.BusinessKey, e.Status });
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<WorkflowBusinessKeyClaimEntity>()
+                .WithMany()
+                .HasForeignKey(e => new { e.WorkflowKey, e.BusinessKey })
+                .HasPrincipalKey(e => new { e.WorkflowKey, e.BusinessKey })
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -110,6 +123,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.MultiInstanceExecution)
                 .WithMany(e => e.UserTasks)
                 .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowBusinessKeyScopeEntity>(entity =>
+        {
+            entity.ToTable("workflow_business_key_scopes");
+            entity.HasKey(e => e.WorkflowKey);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300);
+            entity.Property(e => e.ActivatedAt).HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<WorkflowBusinessKeyClaimEntity>(entity =>
+        {
+            entity.ToTable("workflow_business_key_claims");
+            entity.HasKey(e => new { e.WorkflowKey, e.BusinessKey });
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300);
+            entity.Property(e => e.BusinessKey).HasMaxLength(300).UseCollation("C");
+            entity.HasIndex(e => e.ActiveInstanceId);
+            entity.HasIndex(e => e.LastInstanceId);
+            entity.HasOne<WorkflowInstanceEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.ActiveInstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<WorkflowInstanceEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.LastInstanceId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

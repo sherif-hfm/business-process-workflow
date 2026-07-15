@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using WorkflowEngine.Infrastructure.Data;
@@ -14,9 +15,11 @@ using WorkflowEngine.Shared.Models;
 namespace WorkflowEngine.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715152306_AddWorkflowBusinessKeys")]
+    partial class AddWorkflowBusinessKeys
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -702,19 +705,6 @@ namespace WorkflowEngine.Infrastructure.Data.Migrations
                     b.Navigation("Token");
                 });
 
-            modelBuilder.Entity("WorkflowEngine.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", b =>
-                {
-                    b.HasOne("WorkflowEngine.Infrastructure.Entities.WorkflowInstanceEntity", null)
-                        .WithMany()
-                        .HasForeignKey("ActiveInstanceId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("WorkflowEngine.Infrastructure.Entities.WorkflowInstanceEntity", null)
-                        .WithMany()
-                        .HasForeignKey("LastInstanceId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
             modelBuilder.Entity("WorkflowEngine.Infrastructure.Entities.WorkflowInstanceEntity", b =>
                 {
                     b.HasOne("WorkflowEngine.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
@@ -722,11 +712,6 @@ namespace WorkflowEngine.Infrastructure.Data.Migrations
                         .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("WorkflowEngine.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", null)
-                        .WithMany()
-                        .HasForeignKey("WorkflowKey", "BusinessKey")
-                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("WorkflowDefinition");
                 });

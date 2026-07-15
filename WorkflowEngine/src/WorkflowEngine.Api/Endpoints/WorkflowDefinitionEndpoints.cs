@@ -121,6 +121,7 @@ public static class WorkflowDefinitionEndpoints
             .AllowAnonymous()
             .Produces<MessageStartAckDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
         return app;
@@ -323,10 +324,12 @@ public static class WorkflowDefinitionEndpoints
     /// configured client id/secret (sent as <c>X-Client-Id</c>/<c>X-Client-Secret</c>) plus a
     /// required custom header named by the node's <c>headerName</c>. The default
     /// version of the workflow is resolved by <paramref name="workflowKey"/>. The message
-    /// payload is mapped into the node's start variables via <c>outputMappings</c>, so
-    /// required/defaults/NCalc <c>validation</c> still apply. When <c>idempotencyVariable</c>
-    /// is set on the node, a retried webhook with the same idempotency key returns the
-    /// existing instance instead of creating a duplicate.
+    /// <c>outputMappings</c> are both payload mappings and typed start-variable declarations.
+    /// Values are strictly type-checked; a missing path may use its mapping default, required
+    /// final values are enforced, and NCalc <c>validation</c> rules run against the complete
+    /// resolved value set. When <c>idempotencyVariable</c> is set, it declares a separate
+    /// implicit required string populated from <c>Idempotency-Key</c>; a retried webhook with
+    /// the same key returns the existing instance instead of creating a duplicate.
     ///
     /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
     /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400

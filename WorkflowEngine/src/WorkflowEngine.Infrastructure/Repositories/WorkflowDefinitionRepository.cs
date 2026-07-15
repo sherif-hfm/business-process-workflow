@@ -87,6 +87,10 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         return result is null ? null : CloneRecord(result);
     }
 
+    public Task<bool> IsBusinessKeyScopeActiveAsync(string workflowKey, CancellationToken cancellationToken) =>
+        dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
+            .AnyAsync(scope => scope.WorkflowKey == workflowKey, cancellationToken);
+
     public async Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken) =>
         await dbContext.WorkflowDefinitions
             .Where(w => w.Name == name)
@@ -100,11 +104,22 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         bool isPublished,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await LockBusinessKeyFamilyAsync(definition.Id, cancellationToken);
+
         // The first version of a workflow key becomes the default automatically;
         // subsequent versions are not default until explicitly set.
         var hasExisting = await dbContext.WorkflowDefinitions
             .AnyAsync(w => w.WorkflowKey == definition.Id, cancellationToken);
         var isDefault = !hasExisting;
+        var hasBusinessKeys = HasBusinessKeys(definition);
+        var scopeActive = await dbContext.WorkflowBusinessKeyScopes
+            .AnyAsync(scope => scope.WorkflowKey == definition.Id, cancellationToken);
+        if (scopeActive && !hasBusinessKeys)
+        {
+            throw new WorkflowDomainException(
+                $"Workflow key '{definition.Id}' has business keys enabled; new versions must configure businessKey on every entry event.");
+        }
 
         var entity = new WorkflowDefinitionEntity
         {
@@ -118,7 +133,16 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         };
 
         dbContext.WorkflowDefinitions.Add(entity);
+        if (isDefault && isPublished && hasBusinessKeys && !scopeActive)
+        {
+            dbContext.WorkflowBusinessKeyScopes.Add(new WorkflowBusinessKeyScopeEntity
+            {
+                WorkflowKey = definition.Id,
+                ActivatedAt = DateTimeOffset.UtcNow
+            });
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
         // A new version may become the default, invalidating the
@@ -135,6 +159,47 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
 
     public async Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken)
     {
+        if (isPublished)
+        {
+            var target = await dbContext.WorkflowDefinitions.AsNoTracking()
+                .SingleOrDefaultAsync(w => w.Id == id, cancellationToken);
+            if (target is null)
+            {
+                return false;
+            }
+
+            await using var publishTransaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            await LockBusinessKeyFamilyAsync(target.WorkflowKey, cancellationToken);
+            var scopeActive = await dbContext.WorkflowBusinessKeyScopes
+                .AnyAsync(scope => scope.WorkflowKey == target.WorkflowKey, cancellationToken);
+            var hasBusinessKeys = HasBusinessKeys(target.Definition);
+            if (scopeActive && !hasBusinessKeys)
+            {
+                throw new WorkflowDomainException(
+                    $"Workflow key '{target.WorkflowKey}' has business keys enabled; an unkeyed version cannot be published.");
+            }
+
+            if (target.IsDefault && hasBusinessKeys && !scopeActive)
+            {
+                dbContext.WorkflowBusinessKeyScopes.Add(new WorkflowBusinessKeyScopeEntity
+                {
+                    WorkflowKey = target.WorkflowKey,
+                    ActivatedAt = DateTimeOffset.UtcNow
+                });
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+
+            var publishAffected = await dbContext.WorkflowDefinitions
+                .Where(w => w.Id == id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.IsPublished, true), cancellationToken);
+            await publishTransaction.CommitAsync(cancellationToken);
+            if (publishAffected > 0)
+            {
+                InvalidateDefinition(id, target.WorkflowKey);
+            }
+            return publishAffected > 0;
+        }
+
         // Reject unpublishing the current default version: the default must
         // remain published so WorkflowKey resolution always yields a startable
         // version. The caller should set a different default first.
@@ -185,9 +250,8 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         // the same key before setting the new one (at most one default per key).
         var entity = await dbContext.WorkflowDefinitions.AsNoTracking()
             .Where(w => w.Id == id)
-            .Select(w => new { w.WorkflowKey, w.IsPublished })
+            .Select(w => new { w.WorkflowKey, w.IsPublished, w.Definition })
             .SingleOrDefaultAsync(cancellationToken);
-
         if (entity is null)
         {
             return false;
@@ -212,6 +276,29 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         // Wrap the clear-then-set in a transaction so concurrent requests cannot
         // leave multiple default rows for the same WorkflowKey.
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await LockBusinessKeyFamilyAsync(entity.WorkflowKey, cancellationToken);
+
+        if (isDefault)
+        {
+            var scopeActive = await dbContext.WorkflowBusinessKeyScopes
+                .AnyAsync(scope => scope.WorkflowKey == entity.WorkflowKey, cancellationToken);
+            var hasBusinessKeys = HasBusinessKeys(entity.Definition);
+            if (scopeActive && !hasBusinessKeys)
+            {
+                throw new WorkflowDomainException(
+                    $"Workflow key '{entity.WorkflowKey}' has business keys enabled; an unkeyed version cannot become default.");
+            }
+
+            if (hasBusinessKeys && !scopeActive)
+            {
+                dbContext.WorkflowBusinessKeyScopes.Add(new WorkflowBusinessKeyScopeEntity
+                {
+                    WorkflowKey = entity.WorkflowKey,
+                    ActivatedAt = DateTimeOffset.UtcNow
+                });
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+        }
 
         if (isDefault && previousDefault is not null)
         {
@@ -261,6 +348,24 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             .Where(w => w.Id == id)
             .Select(w => new { w.WorkflowKey, w.IsDefault })
             .SingleOrDefaultAsync(cancellationToken);
+        if (entity is null)
+        {
+            return false;
+        }
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await LockBusinessKeyFamilyAsync(entity.WorkflowKey, cancellationToken);
+        entity = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(w => w.Id == id)
+            .Select(w => new { w.WorkflowKey, w.IsDefault })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (entity is null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+        var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
+            .AnyAsync(scope => scope.WorkflowKey == entity.WorkflowKey, cancellationToken);
 
         var affected = await dbContext.WorkflowDefinitions
             .Where(w => w.Id == id)
@@ -276,14 +381,16 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             // the highest-version row if none are published.
             if (entity.IsDefault)
             {
-                var successor = await dbContext.WorkflowDefinitions.AsNoTracking()
-                    .Where(w => w.WorkflowKey == entity.WorkflowKey && w.IsPublished)
+                var candidates = await dbContext.WorkflowDefinitions.AsNoTracking()
+                    .Where(w => w.WorkflowKey == entity.WorkflowKey)
                     .OrderByDescending(w => w.Version)
-                    .FirstOrDefaultAsync(cancellationToken)
-                    ?? await dbContext.WorkflowDefinitions.AsNoTracking()
-                        .Where(w => w.WorkflowKey == entity.WorkflowKey)
-                        .OrderByDescending(w => w.Version)
-                        .FirstOrDefaultAsync(cancellationToken);
+                    .ToListAsync(cancellationToken);
+                if (scopeActive)
+                {
+                    candidates = candidates.Where(candidate => HasBusinessKeys(candidate.Definition)).ToList();
+                }
+                var successor = candidates.FirstOrDefault(candidate => candidate.IsPublished)
+                    ?? candidates.FirstOrDefault();
 
                 if (successor is not null)
                 {
@@ -306,6 +413,8 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             }
         }
 
+        await transaction.CommitAsync(cancellationToken);
+
         return affected > 0;
     }
 
@@ -318,6 +427,14 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
     // A sentinel stored in the cache to represent a known-missing definition so
     // repeated lookups for a non-existent id don't hit the database.
     private static readonly object NullSentinel = new();
+
+    private Task LockBusinessKeyFamilyAsync(string workflowKey, CancellationToken cancellationToken) =>
+        dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock(hashtext('workflow-business-key-scope'), hashtext({workflowKey}))",
+            cancellationToken);
+
+    private static bool HasBusinessKeys(WorkflowModel definition) =>
+        definition.FlowNodes.Any(node => BpmnFlowNodeTypes.IsEntry(node.Type) && node.BusinessKey is not null);
 
     // Deep-clones a record so callers can safely mutate the WorkflowModel
     // (WorkflowModelMigrator.Normalize runs on every ToRecord) without

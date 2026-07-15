@@ -6,6 +6,12 @@ public sealed class WorkflowInstanceEntity
 
     public long WorkflowDefinitionId { get; set; }
 
+    public string WorkflowKey { get; set; } = string.Empty;
+
+    public string? BusinessKey { get; set; }
+
+    public string? BusinessKeyUniqueness { get; set; }
+
     public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
 
     public string Status { get; set; } = "running";

@@ -19,7 +19,7 @@ public static class WorkflowModelMigrator
 
         foreach (var node in model.FlowNodes)
         {
-            ApplyNodeInvariants(node);
+            ApplyNodeInvariants(node, model.Variables);
         }
 
         NormalizeUserTaskDefaultFlows(model);
@@ -252,8 +252,22 @@ public static class WorkflowModelMigrator
         }
     }
 
-    private static void ApplyNodeInvariants(FlowNodeModel node)
+    private static void ApplyNodeInvariants(
+        FlowNodeModel node,
+        IReadOnlyList<VariableModel> processVariables)
     {
+        if (!BpmnFlowNodeTypes.IsEntry(node.Type))
+        {
+            node.BusinessKey = null;
+        }
+        else if (node.BusinessKey is not null)
+        {
+            node.BusinessKey.Uniqueness = CanonicalizeKnown(
+                node.BusinessKey.Uniqueness,
+                BusinessKeyUniqueness.Active,
+                BusinessKeyUniqueness.All);
+        }
+
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
             node.MultiInstance = null;
@@ -286,6 +300,7 @@ public static class WorkflowModelMigrator
             node.Roles = [];
             node.Variables = [];
             node.Service ??= new ServiceTaskModel();
+            NormalizeServiceOutputMappings(node.Service.OutputMappings, processVariables);
             node.Assignments = [];
             node.Message = null;
         }
@@ -353,14 +368,13 @@ public static class WorkflowModelMigrator
             node.Assignments = [];
             node.Script = null;
             node.Message ??= new MessageCatchModel();
+            NormalizeMessageCatchMappings(node.Message.OutputMappings, processVariables);
         }
         else if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
         {
             // A message start event is an entry point started by an external
-            // system. It carries start variables (like a startEvent) and the
-            // delivery configuration on node.Message (like a message catch), and
-            // nothing else. Pass-through: the engine auto-advances off it after
-            // creating the instance.
+            // system. Its typed output mappings are the start-variable declarations;
+            // node.Variables is retained only as an import source for older JSON.
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;
@@ -370,6 +384,7 @@ public static class WorkflowModelMigrator
             node.Assignments = [];
             node.Script = null;
             node.Message ??= new MessageCatchModel();
+            NormalizeMessageStartMappings(node);
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
@@ -411,6 +426,180 @@ public static class WorkflowModelMigrator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Converts the historical message-start shape (node variables plus raw output
+    /// mappings) into typed mappings. Immutable stored definitions are normalized in
+    /// memory; a later version/save naturally emits the canonical shape.
+    /// </summary>
+    private static void NormalizeMessageStartMappings(FlowNodeModel node)
+    {
+        var message = node.Message!;
+        message.OutputMappings ??= [];
+        var legacyVariables = node.Variables ?? [];
+        var hadLegacyVariables = legacyVariables.Count > 0;
+
+        if (hadLegacyVariables && !string.IsNullOrWhiteSpace(message.IdempotencyVariable))
+        {
+            var declaredIdempotency = legacyVariables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+            if (declaredIdempotency is not null)
+            {
+                message.IdempotencyVariable = declaredIdempotency.Name;
+            }
+
+            // The header is the sole source for the implicit idempotency variable.
+            // Older definitions could also map it from the body because the header
+            // overwrote that value at runtime; remove that now-ambiguous mapping.
+            message.OutputMappings.RemoveAll(mapping =>
+                string.Equals(mapping.Variable, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var represented = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mapping in message.OutputMappings)
+        {
+            var declared = legacyVariables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            if (declared is not null)
+            {
+                mapping.Variable = declared.Name;
+                mapping.DataType ??= declared.DataType;
+                mapping.IsArray ??= declared.IsArray;
+                mapping.Required = mapping.Required || declared.Required;
+                mapping.DefaultValue ??= declared.DefaultValue;
+                mapping.Validation ??= declared.Validation;
+                represented.Add(declared.Name);
+            }
+            else
+            {
+                // A legacy undeclared mapping was previously extracted but ignored
+                // by message start. Under the new create-variable behavior, preserve
+                // its raw shape by declaring it as JSON.
+                mapping.DataType ??= WorkflowVariableTypes.Json;
+                mapping.IsArray ??= false;
+            }
+
+            if (mapping.DataType is not null)
+            {
+                mapping.DataType = CanonicalizeKnown(
+                    mapping.DataType,
+                    WorkflowVariableTypes.String,
+                    WorkflowVariableTypes.Number,
+                    WorkflowVariableTypes.Boolean,
+                    WorkflowVariableTypes.Date,
+                    WorkflowVariableTypes.DateTime,
+                    WorkflowVariableTypes.Json);
+            }
+            mapping.IsArray ??= false;
+        }
+
+        foreach (var variable in legacyVariables)
+        {
+            if (represented.Contains(variable.Name)
+                || string.Equals(variable.Name, message.IdempotencyVariable, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var hasDefault = variable.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (System.Text.Json.JsonValueKind.Null
+                    or System.Text.Json.JsonValueKind.Undefined);
+            if (!hasDefault && !variable.Required)
+            {
+                // It could never produce a stored value in the old runtime.
+                continue;
+            }
+
+            // Default-only variables become valid pathless mappings. A required
+            // variable with neither mapping nor default remains pathless and will be
+            // rejected by definition validation with a precise missing-source error.
+            message.OutputMappings.Add(new MessageOutputMappingModel
+            {
+                Variable = variable.Name,
+                Path = string.Empty,
+                Required = variable.Required,
+                DataType = variable.DataType,
+                IsArray = variable.IsArray,
+                DefaultValue = variable.DefaultValue,
+                Validation = variable.Validation
+            });
+        }
+
+        node.Variables = [];
+    }
+
+    private static void NormalizeServiceOutputMappings(
+        IEnumerable<ServiceOutputMappingModel> mappings,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        foreach (var mapping in mappings)
+        {
+            NormalizeTypedOutputMapping(
+                mapping.Variable,
+                value => mapping.Variable = value,
+                mapping.DataType,
+                value => mapping.DataType = value,
+                mapping.IsArray,
+                value => mapping.IsArray = value,
+                processVariables);
+        }
+    }
+
+    private static void NormalizeMessageCatchMappings(
+        IEnumerable<MessageOutputMappingModel> mappings,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        foreach (var mapping in mappings)
+        {
+            NormalizeTypedOutputMapping(
+                mapping.Variable,
+                value => mapping.Variable = value,
+                mapping.DataType,
+                value => mapping.DataType = value,
+                mapping.IsArray,
+                value => mapping.IsArray = value,
+                processVariables);
+        }
+    }
+
+    /// <summary>
+    /// Canonicalizes a service/catch mapping. Historical raw mappings inherit a
+    /// matching process-variable contract; undeclared targets remain compatible
+    /// by becoming scalar JSON mappings.
+    /// </summary>
+    private static void NormalizeTypedOutputMapping(
+        string variableName,
+        Action<string> setVariableName,
+        string? dataType,
+        Action<string> setDataType,
+        bool? isArray,
+        Action<bool> setIsArray,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var processVariable = processVariables.FirstOrDefault(variable =>
+            string.Equals(variable.Name, variableName, StringComparison.OrdinalIgnoreCase));
+        if (processVariable is not null)
+        {
+            setVariableName(processVariable.Name);
+            dataType ??= processVariable.DataType;
+            isArray ??= processVariable.IsArray;
+        }
+        else
+        {
+            dataType ??= WorkflowVariableTypes.Json;
+            isArray ??= false;
+        }
+
+        setDataType(CanonicalizeKnown(
+            dataType,
+            WorkflowVariableTypes.String,
+            WorkflowVariableTypes.Number,
+            WorkflowVariableTypes.Boolean,
+            WorkflowVariableTypes.Date,
+            WorkflowVariableTypes.DateTime,
+            WorkflowVariableTypes.Json));
+        setIsArray(isArray.Value);
     }
 
     private static string CanonicalizeKnown(string value, params string[] supported)

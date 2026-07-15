@@ -28,6 +28,7 @@ public static class WorkflowInstanceEndpoints
         group.MapPost("/", StartInstance)
             .Produces<StartInstanceResultDto>(StatusCodes.Status201Created)
             .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
         group.MapGet("/", ListInstances)
@@ -150,6 +151,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="instanceId">Optional. Filter by unique instance ID.</param>
     /// <param name="workflowId">Optional. Filter by specific workflow version ID.</param>
     /// <param name="workflowKey">Optional. Filter by stable cross-version workflow key (spans all versions).</param>
+    /// <param name="businessKey">Optional. Exact, case-sensitive business-key match after trimming.</param>
     /// <param name="nodeId">Optional. Filter by the ID of the current resting flow node.</param>
     /// <param name="nodeExternalId">Optional. Filter by the external ID of the current resting flow node (case-insensitive).</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
@@ -168,6 +170,7 @@ public static class WorkflowInstanceEndpoints
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
@@ -177,7 +180,7 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
     }
 
     /// <summary>
@@ -186,6 +189,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="instanceId">Optional. Filter by unique instance ID.</param>
     /// <param name="workflowId">Optional. Filter by workflow definition version ID.</param>
     /// <param name="workflowKey">Optional. Filter by stable workflow key (spans all versions).</param>
+    /// <param name="businessKey">Optional. Exact, case-sensitive business-key match after trimming.</param>
     /// <param name="nodeId">Optional. Filter by flow node ID.</param>
     /// <param name="nodeExternalId">Optional. Filter by flow node external ID (case-insensitive).</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
@@ -207,6 +211,7 @@ public static class WorkflowInstanceEndpoints
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
@@ -217,7 +222,7 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+        return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
     }
 
     /// <summary>
@@ -404,10 +409,11 @@ public static class WorkflowInstanceEndpoints
     /// custom header named by the node's <c>headerName</c> whose value must equal
     /// <c>headerValue</c> (and satisfy the optional NCalc <c>headerValidation</c> rule, with
     /// the incoming header value bound as <c>header</c>). The raw JSON message body is then
-    /// mapped into instance variables via <c>outputMappings</c> (dotted paths; a
-    /// <c>required</c> mapping that cannot be resolved rejects the delivery before any
-    /// variables are written) and the engine advances down the catch node's single outgoing
-    /// flow.
+    /// mapped through typed <c>outputMappings</c>. External JSON types are strict; missing
+    /// paths may use ordered defaults; required final values and mapping/process NCalc rules
+    /// are checked against the final overlay before any variable is written. A failure rejects
+    /// the delivery with 400 and leaves the instance waiting; success advances down the catch
+    /// node's single outgoing flow.
     ///
     /// Returns a slim <see cref="MessageDeliveryAckDto"/> (no definition/variables/history,
     /// since the endpoint is anonymous). Correlation is by instance id only - the instance

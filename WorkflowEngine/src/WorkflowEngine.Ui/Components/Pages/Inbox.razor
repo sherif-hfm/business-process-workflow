@@ -43,6 +43,10 @@ else
             <input type="text" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="purchase-request" />
         </div>
         <div>
+            <label class="form-label">Business key</label>
+            <input type="text" class="form-control" @bind="businessKey" @bind:after="OnFilterChangedAsync" placeholder="VIOLATION-42" />
+        </div>
+        <div>
             <label class="form-label">Node id</label>
             <input type="number" class="form-control" @bind="nodeId" @bind:after="OnFilterChangedAsync" placeholder="3" />
         </div>
@@ -73,6 +77,7 @@ else
             <tr>
                 <th>Instance</th>
                 <th>Workflow</th>
+                <th>Business key</th>
                 <th>Current step</th>
                 <th>Step roles</th>
                 <th>Claimed by</th>
@@ -86,6 +91,7 @@ else
                 <tr>
                     <td>#@item.InstanceId</td>
                     <td>@item.WorkflowName</td>
+                    <td>@(item.BusinessKey ?? "-")</td>
                     <td>
                         @item.CurrentNodeName
                         @if (!string.IsNullOrWhiteSpace(item.CurrentNodeExternalId))
@@ -146,6 +152,7 @@ else
     private long? instanceId;
     private long? workflowId;
     private string? workflowKey;
+    private string? businessKey;
     private int? nodeId;
     private string? nodeExternalId;
     private string? error;
@@ -197,7 +204,7 @@ else
         {
             error = null;
             result = null;
-            result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey);
+            result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey);
         }
         catch (Exception ex)
         {

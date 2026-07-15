@@ -35,6 +35,10 @@
         <input type="text" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="purchase-request" />
     </div>
     <div>
+        <label class="form-label">Business key</label>
+        <input type="text" class="form-control" @bind="businessKey" @bind:after="OnFilterChangedAsync" placeholder="VIOLATION-42" />
+    </div>
+    <div>
         <label class="form-label">Node id</label>
         <input type="number" class="form-control" @bind="nodeId" @bind:after="OnFilterChangedAsync" placeholder="3" />
     </div>
@@ -64,6 +68,7 @@ else
             <tr>
                 <th>Instance</th>
                 <th>Workflow</th>
+                <th>Business key</th>
                 <th>Current step</th>
                 <th>Status</th>
                 <th>Task state</th>
@@ -76,6 +81,7 @@ else
                 <tr>
                     <td>#@instance.Id</td>
                     <td>@instance.WorkflowName v@instance.WorkflowVersion</td>
+                    <td>@(instance.BusinessKey ?? "-")</td>
                     <td>
                         @instance.CurrentNodeName
                         @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
@@ -107,6 +113,7 @@ else
     private long? instanceId;
     private long? workflowId;
     private string? workflowKey;
+    private string? businessKey;
     private int? nodeId;
     private string? nodeExternalId;
     private string? error;
@@ -189,7 +196,7 @@ else
         try
         {
             error = null;
-            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey);
+            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey);
         }
         catch (Exception ex)
         {

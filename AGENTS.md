@@ -173,8 +173,12 @@ Storage follows the hybrid design:
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
   placeholders from instance variables (`ServiceTaskTemplating`); on a `2xx`
-  response the configured `outputMappings` extract dotted-path values and write
-  them to instance variables (latest write wins). The call is synchronous inside
+  response the configured typed `outputMappings` extract dotted-path values,
+  apply ordered defaults, strictly validate their declared JSON types and NCalc
+  rules, then write the complete batch to instance variables (latest write wins).
+  A target matching a process variable must use its type/array contract and runs
+  both validations; undeclared targets are created by the mapping. No output is
+  written until every mapping succeeds. The call is synchronous inside
   the locked transaction with a bounded `timeoutSeconds` and **no retries**; on a
   non-2xx/timeout/network failure the engine looks up an attached
   `errorBoundaryEvent` (see Error events). If one exists the token routes out the
@@ -290,11 +294,12 @@ Storage follows the hybrid design:
   context) and must be truthy. All credential/header fields are `${var}`-templatable
   (`ServiceTaskTemplating.SubstituteScalar`), so a secret can be sourced from
   `${config.*}` / `${setting.*}` to stay out of the versioned definition JSON.
-  `outputMappings` (`{variable, path, required}`) extract dotted-path values from the inbound
-  JSON message body and write them to instance variables raw/uncoerced (mirrors a
-  `serviceTask`'s `ApplyServiceOutputsAsync`; targets need not be declared); a
-  `required` mapping whose path is unresolvable rejects the delivery with a 400
-  before any variables are written. The
+  Typed `outputMappings` extract dotted-path values from the inbound JSON,
+  resolve ordered defaults, enforce strict scalar/array types, and evaluate NCalc
+  rules against the final overlay. A required mapping must resolve from the
+  current delivery or its mapping default; an older stored value cannot satisfy
+  it. All mappings are staged before any write, so a failure returns 400 and
+  leaves the instance waiting with no partial output. The
   message endpoint is `AllowAnonymous` (it does not use the user JWT); a client
   id/secret mismatch throws `WorkflowUnauthorizedException` (401), while a header
   problem (missing/mismatch/validation failure) or a not-running / not-waiting
@@ -327,8 +332,9 @@ Storage follows the hybrid design:
   `POST /api/workflows/{workflowKey}/message-start` rather than by a user. It is
   **system-only**: `IsStart` is intentionally false, so the user `POST /api/instances`
   path rejects it and the Blazor "pick a start event" page does not list it. It
-  carries start `variables` (typed/required/validated like a `startEvent`'s) and a
-  `message` config (the same `MessageCatchModel` as an intermediate catch:
+  carries a `message` config whose typed `outputMappings` are its start-variable
+  declarations (there is no separate node `variables` section). The remaining
+  config is shared with an intermediate catch:
   `clientId`/`clientSecret`/`headerName`/`headerValue`/`headerValidation`/
   `outputMappings`, plus an optional `idempotencyVariable`). The caller addresses
   the workflow by its stable cross-version `workflowKey` (the latest published
@@ -339,12 +345,14 @@ Storage follows the hybrid design:
   missing/mismatch/validation failure), all `${var}`-templatable against an
   instance-less context (`config.*`/`setting.*` + non-caller-influenced `sys.*`;
   no `sys.user`/`sys.roles`/`sys.instanceId` since there is no caller/instance
-  yet). `outputMappings` extract dotted-path values from the inbound JSON body
-  and feed them as the start-variable values, so declared start `variables`
-  (required/defaults/NCalc `validation`) still apply. It is pass-through: after
+  yet). Each mapping declares `variable`, optional `path`, `dataType`, `isArray`,
+  `required`, optional `defaultValue`, and optional NCalc `validation`. Supplied
+  values are strictly typed; a missing path uses its default before the final
+  required check. It is pass-through: after
   creating the instance the engine auto-advances off it (history note
   `messageStart`), like a `startEvent`. **Idempotency.** When `idempotencyVariable`
-  names one of the node's declared start variables, the engine serializes
+  names an implicit required string variable populated from the idempotency
+  request header, the engine serializes
   concurrent retries with a transaction-scoped `pg_advisory_xact_lock` keyed on
   `(workflowKey, hashtext(keyValue))` and, before creating an instance, searches
   for an existing instance of the workflowKey already carrying that key value
@@ -355,6 +363,22 @@ Storage follows the hybrid design:
   `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
   definition/variables/history, since the endpoint is `AllowAnonymous`). Its
   node type fits the 32-character execution-token `NodeType` column.
+- **Generic start business keys.** A `startEvent` or `messageStartEvent` may
+  configure `businessKey: { variable, uniqueness }`, where `variable` is an
+  exactly named required scalar `string` start variable with no default (a typed
+  mapping with a nonblank path on a message start) and
+  `uniqueness` is `active` or `all`. Once any entry enables the feature, every
+  entry in that definition must configure it. Values are explicit JSON
+  strings, trimmed, nonblank, limited to 300 characters, and compared exactly
+  and case-sensitively. Claims are scoped by stable `WorkflowKey` across all
+  definition versions. `active` releases when the instance becomes completed,
+  faulted, or cancelled; `all` remains permanent. Normal duplicate starts return
+  409 (`business_key_conflict`, existing instance id, and `Location`), while a
+  message-start duplicate returns the existing slim acknowledgment. Message
+  idempotency may coexist only on a different variable: idempotency identifies a
+  transport retry, while the business key identifies the domain instance.
+  Enablement is prospective and irreversible for a workflow key: existing
+  instances stay unkeyed/non-blocking, and older unkeyed versions cannot start.
 - **Node roles are enforced** at runtime for `userTask` and user-initiated
   `startEvent` nodes. The caller's identity and roles come from a validated JWT
   (name + role claims), not from request fields.
@@ -408,8 +432,8 @@ what the cross-version `workflowKey` instance search matches.
   `AllowAnonymous` — auth is the node's client id/secret + required header, not
   the user JWT; returns a slim `MessageStartAckDto`).
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
-  `startEventId`), `GET /?status=&instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
-  `GET /inbox?instanceId=&workflowId=&workflowKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `startEventId`), `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
@@ -681,21 +705,21 @@ Node kinds and their outgoing-flow rules:
   headerValue, headerValidation, outputMappings) and exactly one unconditional
   outgoing flow. The instance rests on it until a matching message is delivered;
   the caller authenticates against the templated client credentials + required
-  header, the payload is mapped into instance variables via `outputMappings`
-  (raw, like a service task), and the engine advances down the flow. No user
+  header, the payload is mapped into instance variables through atomic typed
+  `outputMappings`, and the engine advances down the flow. No user
   action. Correlation is by instance id only (no cross-instance signal/message
   matching). No timeout escape hatch yet.
 - **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
-  single-ring circle with an envelope glyph on canvas. Carries start `variables`
-  (typed/validated like a `startEvent`) and a `message` config (the same shape as
-  an intermediate catch, plus an optional `idempotencyVariable`) and exactly one
+  single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
+  are typed start-variable declarations; there is no separate node `variables`
+  section. The config also supports an optional `idempotencyVariable` and exactly one
   unconditional outgoing flow. System-only: it is not a `startEvent` (`IsStart` is
   false), so it cannot be started via `POST /api/instances` and does not appear in
   the Blazor start picker. The engine creates the instance and auto-advances off
   it (pass-through, history note `messageStart`). The caller authenticates against
-  the templated client credentials + required header; `outputMappings` feed the
-  start variables (so required/defaults/validation still apply). An optional
+  the templated client credentials + required header; mappings strictly type payload
+  values, apply ordered defaults, enforce required values, and run NCalc validation. An optional
   `idempotencyVariable` dedupes retried webhooks (no duplicate instance).
 
 A workflow may define multiple `startEvent` and/or `messageStartEvent` nodes.
@@ -807,21 +831,22 @@ The REST configuration on a `serviceTask` flow node (`flowNode.service`).
   "body": "{ \"amount\": ${amount} }", // JSON template; ${var} -> variable's JSON value
   "timeoutSeconds": 30,        // per-call timeout (no retries)
   "statusVariable": "creditStatus", // optional; receives the HTTP status (0 on transport error)
-  "outputMappings": [          // response field -> instance variable (applied on 2xx)
-    { "variable": "creditScore", "path": "score", "required": true },
-    { "variable": "approved", "path": "decision.approved" }
+  "outputMappings": [          // typed response field -> instance variable (applied on 2xx)
+    { "variable": "creditScore", "path": "score", "dataType": "number", "isArray": false, "required": true, "defaultValue": null, "validation": "creditScore >= 0" },
+    { "variable": "approved", "path": "decision.approved", "dataType": "boolean", "isArray": false, "required": false, "defaultValue": false, "validation": null }
   ]
 }
 ```
 
-Each `outputMappings` entry is `{ variable, path, required }`. When `required` is
-true and the `path` cannot be resolved from the 2xx response body (or the body is
-not valid JSON), the task is failed: the engine routes out an attached
-`errorBoundaryEvent`'s error flow if present, otherwise the transition fails with
-a `WorkflowDomainException` (rollback + 400) - the same path as a non-2xx/timeout
-failure. A non-required miss is silently skipped (the historical behavior). The
-`statusVariable` is still written before the failure so an error path can branch
-on the HTTP status.
+Each mapping declares `variable`, `path`, `dataType`, `isArray`, `required`, an
+optional operation-specific `defaultValue`, and optional NCalc `validation`.
+External values must strictly match the declared JSON type (`date` is
+`YYYY-MM-DD`; `datetime` is ISO-8601). A missing path uses its default; a blank
+path is allowed only with a default. Required applies to the current response or
+that default, never an older stored value. Defaults resolve in mapping order and
+all validations see the final overlay. The complete batch is validated before
+any write. A failure routes through an attached error boundary or otherwise
+rolls back with 400; `statusVariable` remains available to the error path.
 
 A `serviceTask` may also have an attached `errorBoundaryEvent` (see Error
 events); on a non-2xx/timeout/network failure the token routes out the
@@ -851,26 +876,40 @@ variables + context, so a secret can be sourced from `${config.*}` /
   "headerName": "X-Webhook-Token",     // required custom header name; ${var} templatable
   "headerValue": "${config.webhookToken}", // required custom header value; ${var} templatable
   "headerValidation": "Len(header) >= 16", // optional NCalc; incoming value bound as `header`; must be truthy
-  "idempotencyVariable": "orderId",    // messageStartEvent only: declared start variable used as dedupe key
-  "outputMappings": [                  // extract from the inbound JSON message body (raw/uncoerced)
-    { "variable": "approved", "path": "decision.approved", "required": true },
-    { "variable": "reference", "path": "ref" }
+  "idempotencyVariable": "requestId",  // messageStartEvent only: implicit string variable from Idempotency-Key
+  "outputMappings": [
+    { "variable": "approved", "path": "decision.approved", "dataType": "boolean", "isArray": false, "required": true, "defaultValue": null, "validation": null },
+    { "variable": "reference", "path": "ref", "dataType": "string", "isArray": false, "required": false, "defaultValue": "unknown", "validation": "Len(reference) > 0" }
   ]
 }
 ```
 
-Each `outputMappings` entry is `{ variable, path, required }` (same shape as a
-`serviceTask`'s response mappings). When `required` is true and the `path`
-cannot be resolved from the message body (or the body is missing/not valid
-JSON), the delivery/start is rejected with a `WorkflowDomainException` (400)
-before any variables are written, so a partial delivery does not persist. A
-non-required miss is silently skipped.
+Canonical typed mapping example:
+
+```json
+{
+  "variable": "violationId",
+  "path": "violation.id",
+  "dataType": "string",
+  "isArray": false,
+  "required": true,
+  "validation": "StartsWith(violationId, 'V-')"
+}
+```
+
+Message starts and intermediate catches both declare `dataType`, `isArray`,
+optional `defaultValue`, and optional NCalc `validation`. Payload values must
+strictly match the declared JSON type (`date` is `YYYY-MM-DD`; `datetime` is
+ISO-8601). A missing path uses `defaultValue`, then fails with 400 when the final
+current-delivery value is required; an optional unresolved mapping leaves any
+older value unchanged. A blank path is valid only for a default-only mapping.
+Catch mapping resolution, validation, and persistence are atomic; message-start
+mapping resolution remains atomic with instance creation.
 
 `idempotencyVariable` is a `messageStartEvent`-only optional field (ignored by
-an intermediate catch). When set it must name one of the node's declared start
-variables; the engine looks for the dedupe key value in the request headers
-(`Idempotency-Key` or `X-Idempotency-Key`) and maps it to this variable (see
-the message-start idempotency behavior below).
+an intermediate catch). When set it declares an implicit required string
+variable populated from `Idempotency-Key` or `X-Idempotency-Key`; it may not
+collide with a payload mapping or business-key variable.
 
 **Intermediate catch delivery** (`POST /api/instances/{id}/message`,
 `AllowAnonymous`): the engine resolves the templated
@@ -884,11 +923,9 @@ client credentials (constant-time compare); requires the resolved header to be
 present, equal the resolved `headerValue` (constant-time compare), and (when
 `headerValidation` is set) satisfy the NCalc rule with the incoming value bound
 as `header` against the full context (caller `sys.user` included, since the
-caller is by then authenticated); then applies `outputMappings` from the raw
-JSON message body (dotted-path `ServiceTaskTemplating.TryExtract`, written raw
-via `AddVariableAsync` - targets need not be declared, mirroring a
-`serviceTask`); a `required` mapping whose path is unresolvable (or a
-missing/invalid JSON body) rejects the delivery with a
+caller is by then authenticated); then resolves the typed `outputMappings`
+against the JSON message body and final stored/context overlay. Strict type,
+required/default, or mapping/process NCalc failures reject the delivery with a
 `WorkflowDomainException` (400) before any variables are written. A client
 id/secret mismatch throws `WorkflowUnauthorizedException` (401); a header problem
 (missing/mismatch/validation failure), a required-mapping failure, or a
@@ -906,8 +943,8 @@ advanced off the catch node.
 `AllowAnonymous`): same auth mechanics, but the credential/header templates are
 resolved against an instance-less context (`config.*`/`setting.*` +
 non-caller-influenced `sys.*`; no `sys.instanceId`/`sys.user`/`sys.roles` since
-there is no caller/instance yet). `outputMappings` feed the start-variable values
-(passed into the same validation/resolution pipeline as a user `POST /api/instances`).
+there is no caller/instance yet). Typed `outputMappings` declare, resolve, validate,
+and persist the message-start variables directly.
 When `idempotencyVariable` is set, before creating an instance the engine acquires
 a transaction-scoped `pg_advisory_xact_lock(workflowKey, hashtext(keyValue))`,
 searches for an existing instance of the workflowKey already carrying that key
@@ -973,7 +1010,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
-| `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Carries start `variables` + `message` config (same as an intermediate catch, plus an optional `idempotencyVariable`). System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet); idempotency via an advisory-locked variable-search dedupe (no new table). |
+| `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables; `idempotencyVariable` is an optional implicit header-sourced string variable. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet); idempotency via an advisory-locked variable-search dedupe (no new table). |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |

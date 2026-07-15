@@ -17,17 +17,6 @@
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
-      "variables": [
-        {
-          "id": 1,
-          "name": "idempotencyKey",
-          "dataType": "string",
-          "isArray": false,
-          "required": false,
-          "defaultValue": null,
-          "validation": null
-        }
-      ],
       "condition": null,
       "assignments": [],
       "attachedToRef": null,

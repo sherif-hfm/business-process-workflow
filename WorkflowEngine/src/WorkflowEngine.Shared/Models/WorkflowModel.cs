@@ -210,8 +210,20 @@ public sealed class FlowNodeModel
     /// <summary>
     /// Declared variables scope limit for this node.
     /// </summary>
-    [JsonPropertyName("variables")]
+    [JsonIgnore]
     public List<VariableModel> Variables { get; set; } = [];
+
+    /// <summary>
+    /// JSON bridge that omits the obsolete separate variables section for a
+    /// messageStartEvent while preserving the common in-memory node API.
+    /// </summary>
+    [JsonPropertyName("variables")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<VariableModel>? SerializedVariables
+    {
+        get => BpmnFlowNodeTypes.IsMessageStart(Type) ? null : Variables;
+        set => Variables = value ?? [];
+    }
 
     /// <summary>
     /// Service task HTTP call configurations.
@@ -232,6 +244,13 @@ public sealed class FlowNodeModel
     [JsonPropertyName("message")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MessageCatchModel? Message { get; set; }
+
+    /// <summary>
+    /// Optional domain business-key configuration for a start or message-start event.
+    /// </summary>
+    [JsonPropertyName("businessKey")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public BusinessKeyModel? BusinessKey { get; set; }
 
     // scriptTask only: which authoring mode is active. "ncalc" (default) uses
     // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
@@ -397,7 +416,7 @@ public sealed class ServiceHeaderModel
 }
 
 /// <summary>
-/// Mappings to extract values from HTTP responses or inbound messages into variables.
+/// Maps a typed value from an HTTP service response into an instance variable.
 /// </summary>
 public sealed class ServiceOutputMappingModel
 {
@@ -422,6 +441,75 @@ public sealed class ServiceOutputMappingModel
     /// </summary>
     [JsonPropertyName("required")]
     public bool Required { get; set; }
+
+    /// <summary>
+    /// The scalar element type expected from the response.
+    /// Null identifies a legacy raw mapping until normalization.
+    /// </summary>
+    [JsonPropertyName("dataType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DataType { get; set; }
+
+    /// <summary>
+    /// Whether the response value must be an array of <see cref="DataType"/>.
+    /// </summary>
+    [JsonPropertyName("isArray")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? IsArray { get; set; }
+
+    /// <summary>
+    /// Operation-specific fallback used only when the response path is absent.
+    /// </summary>
+    [JsonPropertyName("defaultValue")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? DefaultValue { get; set; }
+
+    /// <summary>
+    /// Optional NCalc rule evaluated against the final output overlay.
+    /// </summary>
+    [JsonPropertyName("validation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Validation { get; set; }
+}
+
+/// <summary>
+/// Maps a typed value from an inbound message. On a message start the mapping is
+/// also the complete declaration of the start variable. On an intermediate
+/// message catch it is a typed, operation-specific write contract.
+/// </summary>
+public sealed class MessageOutputMappingModel
+{
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+
+    [JsonPropertyName("required")]
+    public bool Required { get; set; }
+
+    /// <summary>
+    /// Expected scalar element type. Null identifies a legacy raw mapping until
+    /// the definition migrator canonicalizes it.
+    /// </summary>
+    [JsonPropertyName("dataType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DataType { get; set; }
+
+    /// <summary>
+    /// Whether the mapped value must be an array of <see cref="DataType"/>.
+    /// </summary>
+    [JsonPropertyName("isArray")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? IsArray { get; set; }
+
+    [JsonPropertyName("defaultValue")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? DefaultValue { get; set; }
+
+    [JsonPropertyName("validation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Validation { get; set; }
 }
 
 // Delivery configuration for an intermediateMessageCatchEvent. All scalar
@@ -433,8 +521,9 @@ public sealed class ServiceOutputMappingModel
 // headers) and must supply a header matching headerName/headerValue. When
 // headerValidation is set, it is an NCalc rule evaluated with the incoming header
 // value bound as `header` (plus instance vars/context); it must be truthy.
-// outputMappings extract dotted-path values from the inbound JSON message body
-// and write them to instance variables raw/uncoerced (mirrors serviceTask).
+// Both message entry/catch outputMappings are typed contracts with defaults and
+// NCalc validation. Message-start mappings additionally act as start-variable
+// declarations.
 /// <summary>
 /// Delivery configuration for catching external messages or webhooks.
 /// </summary>
@@ -475,11 +564,11 @@ public sealed class MessageCatchModel
     /// Dotted-path maps to extract fields from the incoming JSON message body.
     /// </summary>
     [JsonPropertyName("outputMappings")]
-    public List<ServiceOutputMappingModel> OutputMappings { get; set; } = [];
+    public List<MessageOutputMappingModel> OutputMappings { get; set; } = [];
 
-    // messageStartEvent only (ignored by an intermediateMessageCatchEvent): names a
-    // declared start variable on the node whose value is used as the idempotency
-    // key. The variable must be mapped by outputMappings; before creating an
+    // messageStartEvent only (ignored by an intermediateMessageCatchEvent): names an
+    // implicit required string start variable whose value is used as the idempotency
+    // key. It is populated from the idempotency header, not outputMappings. Before creating an
     // instance the engine searches for an existing instance of this workflowKey
     // already carrying that key value and, if found, returns that instance's ack
     // instead of creating a duplicate (so a retried webhook is a no-op). The
@@ -606,6 +695,24 @@ public sealed class SequenceFlowModel
     /// </summary>
     [JsonPropertyName("cancelRemainingInstances")]
     public bool CancelRemainingInstances { get; set; }
+}
+
+/// <summary>
+/// Configures the start variable used as a workflow-family business key.
+/// </summary>
+public sealed class BusinessKeyModel
+{
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+
+    [JsonPropertyName("uniqueness")]
+    public string Uniqueness { get; set; } = null!;
+}
+
+public static class BusinessKeyUniqueness
+{
+    public const string Active = "active";
+    public const string All = "all";
 }
 
 /// <summary>
@@ -805,9 +912,9 @@ public static class BpmnFlowNodeTypes
     // down its single outgoing flow. Async integration / webhook / callback step.
     public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
     // Entry event started by an external system via
-    // POST /api/workflows/{workflowKey}/message-start. Carries start variables
-    // (like a startEvent) and a message config (credentials + required header +
-    // outputMappings + optional idempotencyVariable). IsStart is intentionally
+    // POST /api/workflows/{workflowKey}/message-start. Typed outputMappings on its
+    // message config are the start-variable declarations; idempotencyVariable is
+    // an implicit header-sourced string variable. IsStart is intentionally
     // false: the user POST /api/instances path rejects it, so a message-start
     // event is system-only. Pass-through: the engine auto-advances off it after
     // creating the instance (history note "messageStart").

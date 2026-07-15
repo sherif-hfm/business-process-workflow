@@ -35,6 +35,10 @@ else
                 <p class="text-muted">External ID: <strong>@instance.CurrentNodeExternalId</strong></p>
             }
             <p>Status: <strong>@instance.Status</strong></p>
+            @if (!string.IsNullOrWhiteSpace(instance.BusinessKey))
+            {
+                <p>Business key: <strong>@instance.BusinessKey</strong> <span class="text-muted">(@instance.BusinessKeyUniqueness)</span></p>
+            }
             @if (instance.UserTasks is not null)
             {
                 <p>Task state: <strong>@FormatTaskState(instance.UserTasks)</strong></p>

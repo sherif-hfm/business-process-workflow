@@ -163,6 +163,8 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException("Workflow must have at least one entry event (startEvent or messageStartEvent).");
         }
 
+        ValidateBusinessKeys(definition);
+
         ValidateProcessVariables(definition.Variables);
 
         var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
@@ -255,7 +257,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
             {
-                ValidateServiceTask(node);
+                ValidateServiceTask(node, definition.Variables);
             }
 
             if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
@@ -265,7 +267,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
             {
-                ValidateMessageCatch(node);
+                ValidateMessageCatch(node, definition.Variables);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -368,7 +370,9 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
-    private static void ValidateServiceTask(FlowNodeModel node)
+    private static void ValidateServiceTask(
+        FlowNodeModel node,
+        IReadOnlyList<VariableModel> processVariables)
     {
         var service = node.Service
             ?? throw new WorkflowDomainException($"Service task #{node.Id} must have a service configuration.");
@@ -401,20 +405,11 @@ public sealed class WorkflowDefinitionService(
             }
         }
 
-        foreach (var mapping in service.OutputMappings)
-        {
-            if (string.IsNullOrWhiteSpace(mapping.Variable))
-            {
-                throw new WorkflowDomainException(
-                    $"Service task #{node.Id} has an output mapping with no variable name.");
-            }
-
-            if (string.IsNullOrWhiteSpace(mapping.Path))
-            {
-                throw new WorkflowDomainException(
-                    $"Service task #{node.Id} output mapping for '{mapping.Variable}' must have a response path.");
-            }
-        }
+        ValidateTypedOutputMappings(
+            node.Id,
+            "Service task",
+            service.OutputMappings.Select(ToTypedOutputDefinition),
+            processVariables);
     }
 
     // An intermediateMessageCatchEvent rests until a message is delivered via
@@ -424,9 +419,9 @@ public sealed class WorkflowDefinitionService(
     // evaluated with the incoming header value bound as `header`. outputMappings
     // extract dotted-path values from the inbound JSON body. All scalar fields
     // are ${var}-templatable (only presence is checked at author time).
-    // Shared validation for the message config on an intermediateMessageCatchEvent
-    // and a messageStartEvent (creds/header/outputMappings). `kind` labels the
-    // node in messages (e.g. "Message catch event", "Message start event").
+    // Shared credential/header validation for an intermediateMessageCatchEvent
+    // and a messageStartEvent. Their mapping-contract rules are applied by the
+    // entry/catch-specific validators below.
     private static void ValidateMessageConfig(FlowNodeModel node, string kind)
     {
         var message = node.Message
@@ -467,49 +462,184 @@ public sealed class WorkflowDefinitionService(
                     $"{kind} #{node.Id} has an output mapping with no variable name.");
             }
 
-            if (string.IsNullOrWhiteSpace(mapping.Path))
-            {
-                throw new WorkflowDomainException(
-                    $"{kind} #{node.Id} output mapping for '{mapping.Variable}' must have a path.");
-            }
         }
     }
 
-    private static void ValidateMessageCatch(FlowNodeModel node)
-        => ValidateMessageConfig(node, "Message catch event");
+    private static void ValidateMessageCatch(
+        FlowNodeModel node,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        ValidateMessageConfig(node, "Message catch event");
+        ValidateTypedOutputMappings(
+            node.Id,
+            "Message catch event",
+            node.Message!.OutputMappings.Select(ToTypedOutputDefinition),
+            processVariables);
+    }
 
-    // A messageStartEvent carries start variables + a message config. The config
-    // is validated like a catch event; additionally, when idempotencyVariable is
-    // set it must name one of the node's declared start variables (the engine
-    // stores the mapped value as an instance variable and dedupes a retried
-    // webhook by searching for an existing instance carrying that key value).
+    // A messageStartEvent's typed output mappings are its start-variable
+    // declarations. idempotencyVariable is a separate implicit required string
+    // variable populated only from the idempotency request header.
     private static void ValidateMessageStart(FlowNodeModel node)
     {
         ValidateMessageConfig(node, "Message start event");
 
-        if (!string.IsNullOrWhiteSpace(node.Message!.IdempotencyVariable))
+        var message = node.Message!;
+        var variables = new List<VariableModel>(message.OutputMappings.Count);
+        foreach (var mapping in message.OutputMappings)
         {
-            var idempotencyVariable = node.Message!.IdempotencyVariable!;
-            var variable = node.Variables.SingleOrDefault(v =>
-                string.Equals(v.Name, idempotencyVariable, StringComparison.Ordinal));
-            if (variable is null)
+            if (mapping.DataType is null || mapping.IsArray is null)
             {
                 throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' is not a declared start variable on the node.");
+                    $"Message start event #{node.Id} output mapping for '{mapping.Variable}' must declare dataType and isArray.");
             }
 
-            // The dedupe search looks up the variable by exact string match
-            // (lower(ValueJson #>> '{}') = lower(@value)); a non-string dataType
-            // (e.g. date/number) can store a different textual representation than
-            // the raw mapped value, causing a missed dedupe on retry. Restrict to
-            // string to keep the search predictably exact.
-            if (!string.Equals(variable.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal))
+            var hasDefault = mapping.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (string.IsNullOrWhiteSpace(mapping.Path) && !hasDefault)
             {
                 throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' must have dataType 'string'.");
+                    $"Message start event #{node.Id} output mapping for '{mapping.Variable}' must have a path unless defaultValue is configured.");
+            }
+
+            var variable = ToMessageStartVariable(mapping);
+            variables.Add(variable);
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    mapping.DefaultValue!.Value,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+        }
+        ValidateVariables(variables, $"message start event #{node.Id} output mappings");
+
+        if (!string.IsNullOrWhiteSpace(message.IdempotencyVariable))
+        {
+            var idempotencyVariable = message.IdempotencyVariable!;
+            ValidateVariables(
+                [new VariableModel
+                {
+                    Name = idempotencyVariable,
+                    DataType = WorkflowVariableTypes.String,
+                    Required = true
+                }],
+                $"message start event #{node.Id} idempotency variable");
+
+            if (message.OutputMappings.Any(mapping =>
+                    string.Equals(mapping.Variable, idempotencyVariable, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} idempotencyVariable '{idempotencyVariable}' cannot also be an output mapping variable.");
+            }
+
+            if (node.BusinessKey is not null
+                && string.Equals(node.BusinessKey.Variable, idempotencyVariable, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} must use different variables for idempotencyVariable and businessKey.");
             }
         }
     }
+
+    private static VariableModel ToMessageStartVariable(MessageOutputMappingModel mapping) => new()
+    {
+        Name = mapping.Variable,
+        DataType = mapping.DataType ?? string.Empty,
+        IsArray = mapping.IsArray ?? false,
+        Required = mapping.Required,
+        DefaultValue = mapping.DefaultValue,
+        Validation = mapping.Validation
+    };
+
+    private static TypedOutputDefinition ToTypedOutputDefinition(ServiceOutputMappingModel mapping) => new(
+        mapping.Variable,
+        mapping.Path,
+        mapping.Required,
+        mapping.DataType,
+        mapping.IsArray,
+        mapping.DefaultValue,
+        mapping.Validation);
+
+    private static TypedOutputDefinition ToTypedOutputDefinition(MessageOutputMappingModel mapping) => new(
+        mapping.Variable,
+        mapping.Path,
+        mapping.Required,
+        mapping.DataType,
+        mapping.IsArray,
+        mapping.DefaultValue,
+        mapping.Validation);
+
+    private static void ValidateTypedOutputMappings(
+        int nodeId,
+        string kind,
+        IEnumerable<TypedOutputDefinition> source,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var mappings = source.ToList();
+        var variables = new List<VariableModel>(mappings.Count);
+        foreach (var mapping in mappings)
+        {
+            if (mapping.DataType is null || mapping.IsArray is null)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping for '{mapping.Variable}' must declare dataType and isArray.");
+            }
+
+            var hasDefault = mapping.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (string.IsNullOrWhiteSpace(mapping.Path) && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping for '{mapping.Variable}' must have a path unless defaultValue is configured.");
+            }
+
+            var variable = new VariableModel
+            {
+                Name = mapping.Variable,
+                DataType = mapping.DataType,
+                IsArray = mapping.IsArray.Value,
+                Required = mapping.Required,
+                DefaultValue = mapping.DefaultValue,
+                Validation = mapping.Validation
+            };
+            variables.Add(variable);
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    mapping.DefaultValue!.Value,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+
+            var processVariable = processVariables.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            if (processVariable is not null
+                && (!string.Equals(processVariable.DataType, variable.DataType, StringComparison.Ordinal)
+                    || processVariable.IsArray != variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping '{mapping.Variable}' must match process variable '{processVariable.Name}' type {TypedOutputValueValidator.DescribeExpected(processVariable.DataType, processVariable.IsArray)}.");
+            }
+        }
+
+        ValidateVariables(variables, $"{kind.ToLowerInvariant()} #{nodeId} output mappings");
+    }
+
+    private sealed record TypedOutputDefinition(
+        string Variable,
+        string Path,
+        bool Required,
+        string? DataType,
+        bool? IsArray,
+        JsonElement? DefaultValue,
+        string? Validation);
 
     // An errorBoundaryEvent is attached to exactly one serviceTask/scriptTask
     // (attachedToRef), has no incoming sequence flows (it is reached by the
@@ -734,6 +864,76 @@ public sealed class WorkflowDefinitionService(
                     throw new WorkflowDomainException(
                         $"Sequence flow #{flow.Id} completionCondition references a non-selectable outcome flow.");
                 }
+            }
+        }
+    }
+
+    private static void ValidateBusinessKeys(WorkflowModel definition)
+    {
+        var entries = definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsEntry(n.Type)).ToList();
+        if (entries.All(n => n.BusinessKey is null))
+        {
+            return;
+        }
+
+        var missing = entries.FirstOrDefault(n => n.BusinessKey is null);
+        if (missing is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{missing.Id} must configure businessKey because business keys are enabled for this workflow.");
+        }
+
+        foreach (var entry in entries)
+        {
+            var businessKey = entry.BusinessKey!;
+            if (string.IsNullOrWhiteSpace(businessKey.Variable))
+            {
+                throw new WorkflowDomainException($"Entry event #{entry.Id} businessKey.variable is required.");
+            }
+
+            if (businessKey.Uniqueness is not (BusinessKeyUniqueness.Active or BusinessKeyUniqueness.All))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} has unsupported businessKey.uniqueness '{businessKey.Uniqueness}'.");
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(entry.Type))
+            {
+                var mapping = entry.Message?.OutputMappings.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Variable, businessKey.Variable, StringComparison.Ordinal));
+                if (mapping is null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a typed output mapping on the message start event.");
+                }
+
+                if (!mapping.Required
+                    || mapping.IsArray is not false
+                    || !string.Equals(mapping.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal)
+                    || mapping.DefaultValue is not null
+                    || string.IsNullOrWhiteSpace(mapping.Path))
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} businessKey mapping '{businessKey.Variable}' must be a required scalar string with an explicit path and no defaultValue.");
+                }
+
+                continue;
+            }
+
+            var variable = entry.Variables.SingleOrDefault(v =>
+                string.Equals(v.Name, businessKey.Variable, StringComparison.Ordinal));
+            if (variable is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a declared start variable on the node.");
+            }
+
+            if (!variable.Required || variable.IsArray
+                || !string.Equals(variable.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal)
+                || variable.DefaultValue is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' must be a required scalar string with no defaultValue.");
             }
         }
     }

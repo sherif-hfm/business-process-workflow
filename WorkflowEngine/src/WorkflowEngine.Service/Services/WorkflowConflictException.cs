@@ -1,3 +1,9 @@
 namespace WorkflowEngine.Service.Services;
 
-public sealed class WorkflowConflictException(string message) : Exception(message);
+public class WorkflowConflictException(string message) : Exception(message);
+
+public sealed class BusinessKeyConflictException(long existingInstanceId)
+    : WorkflowConflictException("A workflow instance already owns this business key.")
+{
+    public long ExistingInstanceId { get; } = existingInstanceId;
+}

@@ -10,6 +10,27 @@ namespace WorkflowEngine.Tests;
 
 public sealed class DefinitionValidationTests
 {
+    public static IEnumerable<object[]> ValidTypedOutputDefaults()
+    {
+        var values = new (string Type, string Scalar, string Array)[]
+        {
+            (WorkflowVariableTypes.String, "\"value\"", "[\"a\",\"b\"]"),
+            (WorkflowVariableTypes.Number, "12.5", "[1,2.5]"),
+            (WorkflowVariableTypes.Boolean, "true", "[true,false]"),
+            (WorkflowVariableTypes.Date, "\"2026-07-15\"", "[\"2026-07-15\",\"2026-07-16\"]"),
+            (WorkflowVariableTypes.DateTime, "\"2026-07-15T10:30:00Z\"", "[\"2026-07-15T10:30:00Z\"]"),
+            (WorkflowVariableTypes.Json, "{\"source\":\"test\"}", "[{\"id\":1},2]")
+        };
+        foreach (var owner in new[] { "service", "catch" })
+        {
+            foreach (var value in values)
+            {
+                yield return new object[] { owner, value.Type, false, value.Scalar };
+                yield return new object[] { owner, value.Type, true, value.Array };
+            }
+        }
+    }
+
     [Fact]
     public async Task CreateAsync_CanonicalizesKnownMultiInstanceValuesCaseInsensitively()
     {
@@ -108,6 +129,459 @@ public sealed class DefinitionValidationTests
         Assert.Contains("case-insensitive", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task CreateAsync_CanonicalizesAndAcceptsValidBusinessKey()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == 1);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 90,
+            Name = "violationId",
+            DataType = WorkflowVariableTypes.String,
+            Required = true
+        });
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = "AlL"
+        };
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        Assert.Equal(BusinessKeyUniqueness.All,
+            repository.Added!.Definition.FlowNodes.Single(node => node.Id == 1).BusinessKey!.Uniqueness);
+    }
+
+    [Theory]
+    [InlineData("optional")]
+    [InlineData("array")]
+    [InlineData("number")]
+    [InlineData("default")]
+    public async Task CreateAsync_RejectsInvalidBusinessKeyVariable(string invalid)
+    {
+        var model = LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == 1);
+        var variable = new VariableModel
+        {
+            Id = 90,
+            Name = "violationId",
+            DataType = invalid == "number" ? WorkflowVariableTypes.Number : WorkflowVariableTypes.String,
+            Required = invalid != "optional",
+            IsArray = invalid == "array",
+            DefaultValue = invalid == "default" ? JsonSerializer.SerializeToElement("fallback") : null
+        };
+        start.Variables.Add(variable);
+        start.BusinessKey = new BusinessKeyModel { Variable = variable.Name, Uniqueness = BusinessKeyUniqueness.Active };
+        var service = CreateService(out _);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("required scalar string", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsPartialEntryCoverageAndMissingPolicy()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == 1);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 90,
+            Name = "violationId",
+            DataType = WorkflowVariableTypes.String,
+            Required = true
+        });
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = BusinessKeyUniqueness.Active
+        };
+        var secondStart = Clone(start);
+        secondStart.Id = 50;
+        secondStart.BusinessKey = null;
+        model.FlowNodes.Add(secondStart);
+        var secondFlow = Clone(model.SequenceFlows.Single(flow => flow.SourceRef == 1));
+        secondFlow.Id = 500;
+        secondFlow.SourceRef = 50;
+        model.SequenceFlows.Add(secondFlow);
+        var service = CreateService(out _);
+
+        var coverage = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("must configure businessKey", coverage.Message, StringComparison.OrdinalIgnoreCase);
+
+        secondStart.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = null!
+        };
+        var policy = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("unsupported businessKey.uniqueness", policy.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_NormalizesLegacyMessageStartVariablesIntoTypedMappings()
+    {
+        var model = CreateMessageStartModel();
+        var start = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        start.Variables =
+        [
+            new VariableModel
+            {
+                Id = 90,
+                Name = "amount",
+                DataType = WorkflowVariableTypes.Number,
+                Required = true,
+                Validation = "amount > 0"
+            },
+            new VariableModel
+            {
+                Id = 91,
+                Name = "country",
+                DataType = WorkflowVariableTypes.String,
+                DefaultValue = JsonSerializer.SerializeToElement("SA")
+            },
+            new VariableModel
+            {
+                Id = 92,
+                Name = "requestId",
+                DataType = WorkflowVariableTypes.String,
+                Required = true
+            },
+            new VariableModel
+            {
+                Id = 93,
+                Name = "unused",
+                DataType = WorkflowVariableTypes.String
+            }
+        ];
+        start.Message!.IdempotencyVariable = "requestId";
+        start.Message.OutputMappings =
+        [
+            new MessageOutputMappingModel { Variable = "AMOUNT", Path = "order.amount" },
+            new MessageOutputMappingModel { Variable = "raw", Path = "raw" }
+        ];
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        Assert.Empty(saved.Variables);
+        var amount = saved.Message!.OutputMappings.Single(mapping => mapping.Variable == "amount");
+        Assert.Equal(WorkflowVariableTypes.Number, amount.DataType);
+        Assert.False(amount.IsArray);
+        Assert.True(amount.Required);
+        Assert.Equal("amount > 0", amount.Validation);
+        var country = saved.Message.OutputMappings.Single(mapping => mapping.Variable == "country");
+        Assert.Equal(string.Empty, country.Path);
+        Assert.Equal("SA", country.DefaultValue!.Value.GetString());
+        var raw = saved.Message.OutputMappings.Single(mapping => mapping.Variable == "raw");
+        Assert.Equal(WorkflowVariableTypes.Json, raw.DataType);
+        Assert.DoesNotContain(saved.Message.OutputMappings, mapping => mapping.Variable == "requestId");
+        Assert.DoesNotContain(saved.Message.OutputMappings, mapping => mapping.Variable == "unused");
+        using var canonicalJson = JsonDocument.Parse(JsonSerializer.Serialize(saved));
+        Assert.False(canonicalJson.RootElement.TryGetProperty("variables", out _));
+    }
+
+    [Theory]
+    [InlineData("duplicate")]
+    [InlineData("path")]
+    [InlineData("type")]
+    [InlineData("validation")]
+    [InlineData("idempotency")]
+    [InlineData("defaultType")]
+    public async Task CreateAsync_RejectsInvalidTypedMessageStartMappings(string invalid)
+    {
+        var model = CreateMessageStartModel();
+        var start = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        var mapping = start.Message!.OutputMappings.Single();
+        if (invalid == "duplicate")
+        {
+            start.Message.OutputMappings.Add(new MessageOutputMappingModel
+            {
+                Variable = "VALUE",
+                Path = "other",
+                DataType = WorkflowVariableTypes.String,
+                IsArray = false
+            });
+        }
+        if (invalid == "path") mapping.Path = string.Empty;
+        if (invalid == "type") mapping.DataType = "integer";
+        if (invalid == "validation") mapping.Validation = "(";
+        if (invalid == "idempotency") start.Message.IdempotencyVariable = "Value";
+        if (invalid == "defaultType")
+        {
+            mapping.Path = string.Empty;
+            mapping.DataType = WorkflowVariableTypes.Number;
+            mapping.DefaultValue = JsonSerializer.SerializeToElement(true);
+        }
+        var service = CreateService(out _);
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_NormalizesLegacyServiceAndCatchMappingsToTypedContracts()
+    {
+        var model = CreateOutputMappingModel();
+        var serviceNode = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        serviceNode.Service!.OutputMappings =
+        [
+            new ServiceOutputMappingModel { Variable = "DECISION", Path = "result.decision", Required = true },
+            new ServiceOutputMappingModel { Variable = "rawService", Path = "raw" }
+        ];
+        var catchNode = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type));
+        catchNode.Message!.OutputMappings =
+        [
+            new MessageOutputMappingModel { Variable = "decision", Path = "decision" },
+            new MessageOutputMappingModel { Variable = "rawMessage", Path = "raw" }
+        ];
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var savedService = repository.Added!.Definition.FlowNodes
+            .Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        var decision = savedService.OutputMappings.Single(mapping => mapping.Variable == "decision");
+        Assert.Equal(WorkflowVariableTypes.String, decision.DataType);
+        Assert.False(decision.IsArray);
+        var rawService = savedService.OutputMappings.Single(mapping => mapping.Variable == "rawService");
+        Assert.Equal(WorkflowVariableTypes.Json, rawService.DataType);
+        Assert.False(rawService.IsArray);
+
+        var savedCatch = repository.Added.Definition.FlowNodes
+            .Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type)).Message!;
+        Assert.Equal(WorkflowVariableTypes.String,
+            savedCatch.OutputMappings.Single(mapping => mapping.Variable == "decision").DataType);
+        Assert.Equal(WorkflowVariableTypes.Json,
+            savedCatch.OutputMappings.Single(mapping => mapping.Variable == "rawMessage").DataType);
+    }
+
+    [Theory]
+    [InlineData("service", "duplicate")]
+    [InlineData("service", "path")]
+    [InlineData("service", "type")]
+    [InlineData("service", "default")]
+    [InlineData("service", "validation")]
+    [InlineData("service", "process")]
+    [InlineData("catch", "duplicate")]
+    [InlineData("catch", "path")]
+    [InlineData("catch", "type")]
+    [InlineData("catch", "default")]
+    [InlineData("catch", "validation")]
+    [InlineData("catch", "process")]
+    public async Task CreateAsync_RejectsInvalidTypedServiceAndCatchMappings(string owner, string invalid)
+    {
+        var model = CreateOutputMappingModel();
+        var isService = owner == "service";
+        var serviceMapping = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type))
+            .Service!.OutputMappings[0];
+        var catchMapping = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+            .Message!.OutputMappings[0];
+
+        if (invalid == "duplicate")
+        {
+            if (isService)
+            {
+                model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.OutputMappings.Add(
+                    new ServiceOutputMappingModel
+                    {
+                        Variable = "DECISION", Path = "duplicate", DataType = WorkflowVariableTypes.String, IsArray = false
+                    });
+            }
+            else
+            {
+                model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type)).Message!.OutputMappings.Add(
+                    new MessageOutputMappingModel
+                    {
+                        Variable = "DECISION", Path = "duplicate", DataType = WorkflowVariableTypes.String, IsArray = false
+                    });
+            }
+        }
+        else
+        {
+            if (isService)
+            {
+                if (invalid == "path") serviceMapping.Path = string.Empty;
+                if (invalid == "type") serviceMapping.DataType = "integer";
+                if (invalid == "default")
+                {
+                    serviceMapping.Path = string.Empty;
+                    serviceMapping.DefaultValue = JsonSerializer.SerializeToElement(true);
+                }
+                if (invalid == "validation") serviceMapping.Validation = "(";
+                if (invalid == "process") serviceMapping.DataType = WorkflowVariableTypes.Number;
+            }
+            else
+            {
+                if (invalid == "path") catchMapping.Path = string.Empty;
+                if (invalid == "type") catchMapping.DataType = "integer";
+                if (invalid == "default")
+                {
+                    catchMapping.Path = string.Empty;
+                    catchMapping.DefaultValue = JsonSerializer.SerializeToElement(true);
+                }
+                if (invalid == "validation") catchMapping.Validation = "(";
+                if (invalid == "process") catchMapping.DataType = WorkflowVariableTypes.Number;
+            }
+        }
+
+        var service = CreateService(out _);
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Theory]
+    [MemberData(nameof(ValidTypedOutputDefaults))]
+    public async Task CreateAsync_AcceptsEveryTypedServiceAndCatchDefault(
+        string owner,
+        string dataType,
+        bool isArray,
+        string defaultJson)
+    {
+        var model = CreateOutputMappingModel();
+        using var document = JsonDocument.Parse(defaultJson);
+        var variable = $"typed_{dataType}_{(isArray ? "array" : "scalar")}";
+        if (owner == "service")
+        {
+            model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type))
+                .Service!.OutputMappings.Add(new ServiceOutputMappingModel
+                {
+                    Variable = variable,
+                    Path = string.Empty,
+                    DataType = dataType,
+                    IsArray = isArray,
+                    DefaultValue = document.RootElement.Clone()
+                });
+        }
+        else
+        {
+            model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+                .Message!.OutputMappings.Add(new MessageOutputMappingModel
+                {
+                    Variable = variable,
+                    Path = string.Empty,
+                    DataType = dataType,
+                    IsArray = isArray,
+                    DefaultValue = document.RootElement.Clone()
+                });
+        }
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    private static WorkflowModel CreateMessageStartModel()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Type = BpmnFlowNodeTypes.MessageStartEvent;
+        start.Roles = [];
+        start.Variables = [];
+        start.Message = new MessageCatchModel
+        {
+            ClientId = "client",
+            ClientSecret = "secret",
+            HeaderName = "X-Correlation",
+            HeaderValue = "accepted",
+            OutputMappings =
+            [
+                new MessageOutputMappingModel
+                {
+                    Variable = "value",
+                    Path = "value",
+                    DataType = WorkflowVariableTypes.String,
+                    IsArray = false,
+                    Required = true
+                }
+            ]
+        };
+        model.InitialEventId = null;
+        return model;
+    }
+
+    internal static WorkflowModel CreateOutputMappingModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "typed-output-" + suffix,
+            Name = "Typed output " + suffix,
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1,
+                    Name = "decision",
+                    DataType = WorkflowVariableTypes.String,
+                    DefaultValue = JsonSerializer.SerializeToElement("pending"),
+                    Validation = "decision != 'forbidden'"
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Service",
+                    Type = BpmnFlowNodeTypes.ServiceTask,
+                    Service = new ServiceTaskModel
+                    {
+                        Url = "https://tests.local/typed",
+                        OutputMappings =
+                        [
+                            new ServiceOutputMappingModel
+                            {
+                                Variable = "decision",
+                                Path = "result.decision",
+                                DataType = WorkflowVariableTypes.String,
+                                IsArray = false,
+                                Required = true
+                            }
+                        ]
+                    }
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Message",
+                    Type = BpmnFlowNodeTypes.IntermediateMessageCatchEvent,
+                    Message = new MessageCatchModel
+                    {
+                        ClientId = "client",
+                        ClientSecret = "secret",
+                        HeaderName = "X-Correlation",
+                        HeaderValue = "accepted",
+                        OutputMappings =
+                        [
+                            new MessageOutputMappingModel
+                            {
+                                Variable = "decision",
+                                Path = "decision",
+                                DataType = WorkflowVariableTypes.String,
+                                IsArray = false,
+                                Required = true
+                            }
+                        ]
+                    }
+                },
+                new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
+            ]
+        };
+    }
+
     private static WorkflowDefinitionService CreateService(out CapturingDefinitionRepository repository)
     {
         repository = new CapturingDefinitionRepository();
@@ -142,6 +616,9 @@ public sealed class DefinitionValidationTests
 
     private sealed class CapturingDefinitionRepository : IWorkflowDefinitionRepository
     {
+        public Task<bool> IsBusinessKeyScopeActiveAsync(string workflowKey, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
+
         public WorkflowDefinitionRecord? Added { get; private set; }
 
         public Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken) =>

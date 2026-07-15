@@ -15,6 +15,8 @@ public interface IWorkflowDefinitionRepository
 
     Task<WorkflowDefinitionRecord?> GetDefaultByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);
 
+    Task<bool> IsBusinessKeyScopeActiveAsync(string workflowKey, CancellationToken cancellationToken);
+
     Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken);
 
     Task<WorkflowDefinitionRecord> AddAsync(
@@ -35,6 +37,9 @@ public interface IWorkflowRuntimeRepository
 {
     Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
+        string workflowKey,
+        string? businessKey,
+        string? businessKeyUniqueness,
         CurrentNodeSnapshot node,
         string? startedBy,
         CancellationToken cancellationToken);
@@ -44,6 +49,7 @@ public interface IWorkflowRuntimeRepository
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -57,6 +63,7 @@ public interface IWorkflowRuntimeRepository
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -210,6 +217,18 @@ public interface IWorkflowRuntimeRepository
     // idempotency key so the dedupe-by-variable check is race-free. The lock is
     // released on commit/rollback.
     Task AcquireStartLockAsync(string workflowKey, string idempotencyKeyValue, CancellationToken cancellationToken);
+
+    Task<BusinessKeyReservationRecord> ReserveBusinessKeyAsync(
+        string workflowKey,
+        string businessKey,
+        string uniqueness,
+        CancellationToken cancellationToken);
+
+    Task BindBusinessKeyAsync(
+        string workflowKey,
+        string businessKey,
+        long instanceId,
+        CancellationToken cancellationToken);
 }
 
 public interface IWorkflowSettingsRepository

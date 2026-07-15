@@ -7,11 +7,13 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Testcontainers.PostgreSql;
 using WorkflowEngine.Infrastructure.Data;
+using WorkflowEngine.Service.Abstractions;
 using Xunit;
 
 namespace WorkflowEngine.Tests;
@@ -107,7 +109,31 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                     .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
                         TestAuthenticationHandler.SchemeName,
                         _ => { });
+                services.RemoveAll<IServiceTaskInvoker>();
+                services.AddSingleton<IServiceTaskInvoker, DeterministicServiceTaskInvoker>();
             });
+        }
+    }
+
+    private sealed class DeterministicServiceTaskInvoker : IServiceTaskInvoker
+    {
+        public Task<ServiceTaskResult> InvokeAsync(
+            ServiceTaskRequest request,
+            CancellationToken cancellationToken)
+        {
+            var body = request.Url switch
+            {
+                var url when url.EndsWith("/typed-output-success", StringComparison.Ordinal) =>
+                    """{"result":{"decision":"approved","score":12},"tags":["safe","priority"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00+03:00","metadata":{"source":"service"},"ratings":[1.5,2.5]}""",
+                var url when url.EndsWith("/typed-output-invalid", StringComparison.Ordinal) =>
+                    """{"result":{"decision":"approved","score":"12"},"tags":["safe"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00Z","metadata":{},"ratings":[1]}""",
+                var url when url.EndsWith("/typed-output-blocked", StringComparison.Ordinal) =>
+                    """{"result":{"decision":"blocked","score":12},"tags":["safe"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00Z","metadata":{},"ratings":[1]}""",
+                _ => null
+            };
+            return Task.FromResult(body is null
+                ? new ServiceTaskResult(true, 404, null, "No deterministic test response configured.")
+                : new ServiceTaskResult(true, 200, body, null));
         }
     }
 

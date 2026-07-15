@@ -704,6 +704,10 @@ const MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS = [
   { value: "afterEach", label: "After each completed item" },
   { value: "afterAll", label: "After all items complete" }
 ];
+const BUSINESS_KEY_UNIQUENESS_OPTIONS = [
+  { value: "active", label: "Active instances only (reusable after terminal)" },
+  { value: "all", label: "All instances (never reusable)" }
+];
 function canonicalizeKnownValue(value, supported, fallback) {
   if (value === undefined) return fallback;
   if (typeof value !== "string") return value;
@@ -730,7 +734,28 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 function defaultService() {
   return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
 }
-function normalizeService(service) {
+function normalizeTypedOutputMapping(source, processVariables = [], preserveMissingType = false) {
+  const mapping = source && typeof source === "object" ? source : {};
+  const rawName = mapping.variable ? String(mapping.variable) : "";
+  const processVariable = (Array.isArray(processVariables) ? processVariables : []).find(variable =>
+    String(variable && variable.name || "").toLowerCase() === rawName.toLowerCase());
+  const explicitType = typeof mapping.dataType === "string"
+    ? canonicalizeKnownValue(mapping.dataType, VARIABLE_DATA_TYPES, mapping.dataType)
+    : null;
+  return {
+    variable: processVariable ? processVariable.name : rawName,
+    path: mapping.path ? String(mapping.path) : "",
+    dataType: explicitType ?? (preserveMissingType ? null : (processVariable?.dataType || "json")),
+    isArray: typeof mapping.isArray === "boolean"
+      ? mapping.isArray
+      : (preserveMissingType ? null : !!processVariable?.isArray),
+    required: !!mapping.required,
+    defaultValue: mapping.defaultValue === undefined ? null : mapping.defaultValue,
+    validation: typeof mapping.validation === "string" ? mapping.validation : null
+  };
+}
+
+function normalizeService(service, processVariables = []) {
   const base = defaultService();
   if (!service || typeof service !== "object") return base;
   return {
@@ -743,7 +768,7 @@ function normalizeService(service) {
     timeoutSeconds: Number.isFinite(+service.timeoutSeconds) && +service.timeoutSeconds > 0 ? Math.round(+service.timeoutSeconds) : base.timeoutSeconds,
     statusVariable: typeof service.statusVariable === "string" ? service.statusVariable : "",
     outputMappings: Array.isArray(service.outputMappings)
-      ? service.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "", required: !!(m && m.required) }))
+      ? service.outputMappings.map(mapping => normalizeTypedOutputMapping(mapping, processVariables))
       : []
   };
 }
@@ -759,7 +784,7 @@ function normalizeAssignments(assignments) {
 function defaultMessage() {
   return { clientId: "", clientSecret: "", headerName: "", headerValue: "", headerValidation: "", outputMappings: [], idempotencyVariable: "" };
 }
-function normalizeMessage(message) {
+function normalizeMessage(message, typedStart = false, processVariables = []) {
   const base = defaultMessage();
   if (!message || typeof message !== "object") return base;
   return {
@@ -769,10 +794,97 @@ function normalizeMessage(message) {
     headerValue: typeof message.headerValue === "string" ? message.headerValue : "",
     headerValidation: typeof message.headerValidation === "string" ? message.headerValidation : "",
     outputMappings: Array.isArray(message.outputMappings)
-      ? message.outputMappings.map(m => ({ variable: m && m.variable ? String(m.variable) : "", path: m && m.path ? String(m.path) : "", required: !!(m && m.required) }))
+      ? message.outputMappings.map(mapping =>
+          normalizeTypedOutputMapping(mapping, processVariables, typedStart))
       : [],
     idempotencyVariable: typeof message.idempotencyVariable === "string" ? message.idempotencyVariable : ""
   };
+}
+
+function hasConfiguredDefault(value) {
+  return value !== null && value !== undefined;
+}
+
+function normalizeLegacyMessageStartNode(node) {
+  if (!node || !isMessageStartEventType(node.type)) return;
+  node.message = normalizeMessage(node.message, true);
+  const message = node.message;
+  const legacyVariables = Array.isArray(node.variables) ? node.variables : [];
+  const hadLegacyVariables = legacyVariables.length > 0;
+
+  if (hadLegacyVariables && message.idempotencyVariable) {
+    const declaredIdempotency = legacyVariables.find(variable =>
+      String(variable.name || "").toLowerCase() === message.idempotencyVariable.toLowerCase());
+    if (declaredIdempotency) message.idempotencyVariable = declaredIdempotency.name;
+    message.outputMappings = message.outputMappings.filter(mapping =>
+      String(mapping.variable || "").toLowerCase() !== message.idempotencyVariable.toLowerCase());
+  }
+
+  const represented = new Set();
+  message.outputMappings.forEach(mapping => {
+    const declared = legacyVariables.find(variable =>
+      String(variable.name || "").toLowerCase() === String(mapping.variable || "").toLowerCase());
+    if (declared) {
+      mapping.variable = declared.name;
+      if (mapping.dataType == null) mapping.dataType = declared.dataType;
+      if (mapping.isArray == null) mapping.isArray = !!declared.isArray;
+      mapping.required = !!mapping.required || !!declared.required;
+      if (!hasConfiguredDefault(mapping.defaultValue) && hasConfiguredDefault(declared.defaultValue)) {
+        mapping.defaultValue = declared.defaultValue;
+      }
+      if (mapping.validation == null) mapping.validation = declared.validation ?? null;
+      represented.add(String(declared.name).toLowerCase());
+    } else {
+      if (mapping.dataType == null) mapping.dataType = "json";
+      if (mapping.isArray == null) mapping.isArray = false;
+      if (mapping.defaultValue === undefined) mapping.defaultValue = null;
+      if (mapping.validation === undefined) mapping.validation = null;
+    }
+    mapping.dataType = canonicalizeKnownValue(mapping.dataType, VARIABLE_DATA_TYPES, mapping.dataType);
+    if (mapping.isArray == null) mapping.isArray = false;
+  });
+
+  legacyVariables.forEach(variable => {
+    const key = String(variable.name || "").toLowerCase();
+    if (represented.has(key) || key === String(message.idempotencyVariable || "").toLowerCase()) return;
+    if (!hasConfiguredDefault(variable.defaultValue) && !variable.required) return;
+    message.outputMappings.push({
+      variable: variable.name,
+      path: "",
+      dataType: variable.dataType,
+      isArray: !!variable.isArray,
+      required: !!variable.required,
+      defaultValue: variable.defaultValue ?? null,
+      validation: variable.validation ?? null
+    });
+  });
+  node.variables = [];
+}
+
+function materializeMessageStartVariables(node) {
+  const variables = ((node.message && node.message.outputMappings) || []).map((mapping, index) => ({
+    id: index + 1,
+    name: mapping.variable,
+    dataType: mapping.dataType || "json",
+    isArray: !!mapping.isArray,
+    required: !!mapping.required,
+    defaultValue: mapping.defaultValue ?? null,
+    validation: mapping.validation ?? null
+  }));
+  const idempotencyName = String(node.message && node.message.idempotencyVariable || "").trim();
+  if (idempotencyName && !variables.some(variable =>
+      variable.name.toLowerCase() === idempotencyName.toLowerCase())) {
+    variables.push({
+      id: variables.length + 1,
+      name: idempotencyName,
+      dataType: "string",
+      isArray: false,
+      required: true,
+      defaultValue: null,
+      validation: null
+    });
+  }
+  return variables;
 }
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
@@ -907,6 +1019,12 @@ function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) || isStartEventType(type) || isMessageStartEventType(type) || isGatewayType(type) || isBoundaryEventType(type);
 }
 function applyTypeInvariants(node) {
+  if (!isStartEventType(node.type) && !isMessageStartEventType(node.type)) {
+    delete node.businessKey;
+  } else if (node.businessKey && typeof node.businessKey === "object") {
+    node.businessKey.uniqueness = canonicalizeKnownValue(
+      node.businessKey.uniqueness, ["active", "all"], undefined);
+  }
   if (!isUserTaskType(node.type)) delete node.multiInstance;
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
@@ -931,7 +1049,7 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.assignee = null;
-    node.service = normalizeService(node.service);
+    node.service = normalizeService(node.service, model.variables);
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
@@ -991,13 +1109,12 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
-    node.message = normalizeMessage(node.message);
+    node.message = normalizeMessage(node.message, false, model.variables);
   } else if (isMessageStartEventType(node.type)) {
     // A message start event is an entry point started by an external system via
-    // POST /api/workflows/{workflowKey}/message-start. It carries start variables
-    // (like a startEvent) and the delivery configuration on node.message (like a
-    // message catch), and nothing else. Pass-through: the engine auto-advances off
-    // it after creating the instance. It is NOT a user startEvent (system-only).
+    // POST /api/workflows/{workflowKey}/message-start. Its typed output mappings
+    // declare and populate start variables; the separate node variables collection
+    // is only an import source for older JSON.
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
@@ -1008,7 +1125,8 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
-    node.message = normalizeMessage(node.message);
+    node.message = normalizeMessage(node.message, true);
+    normalizeLegacyMessageStartNode(node);
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
     node.assignee = typeof node.assignee === "string" && node.assignee.trim()
@@ -1527,6 +1645,14 @@ function flowLabelInfo(flow, source) {
   return {
     mainLines, metaDisplay, hasCondition, hasFooter, metaTextWidth, footerWidth, width, height,
     title: `Flow #${flow.id}: ${main}${tooltipMeta ? ` · ${tooltipMeta}` : ""}`
+  };
+}
+function normalizeBusinessKeyForLoad(businessKey) {
+  if (!businessKey || typeof businessKey !== "object") return businessKey;
+  return {
+    variable: businessKey.variable,
+    uniqueness: canonicalizeKnownValue(
+      businessKey.uniqueness, ["active", "all"], undefined)
   };
 }
 
@@ -2074,7 +2200,16 @@ function renderNodeInspector() {
     inspector.appendChild(typeField);
   } else {
     selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
+      const businessKeysEnabled = model.flowNodes.some(n =>
+        (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
+      const previousType = node.type;
+      if (isMessageStartEventType(previousType) && isStartEventType(v)) {
+        node.variables = materializeMessageStartVariables(node);
+      }
       node.type = v;
+      if (businessKeysEnabled && (isStartEventType(v) || isMessageStartEventType(v)) && node.businessKey == null) {
+        node.businessKey = { variable: "", uniqueness: "active" };
+      }
       applyTypeInvariants(node);
       outgoingFlows(node.id).forEach(applyFlowInvariants);
       // If a node stops being a service/script task, any attached error
@@ -2245,12 +2380,13 @@ function renderNodeInspector() {
 
   if (isMessageStartEventType(node.type)) {
     renderMessageSection(node);
-    renderStartVariablesSection(node, "Variables on the message start event are the data extracted from the inbound message (via outputMappings) and validated/typed like start variables.");
+    renderBusinessKeySection(node);
   }
 
   if (isStartEventType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
     renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
+    renderBusinessKeySection(node);
   }
 
   if (!isEndEventType(node.type)) {
@@ -2332,8 +2468,55 @@ function renderStartVariablesSection(node, hint) {
   inspector.appendChild(addVariableBtn);
 }
 
+function appendTypedOutputMappingFields(box, mapping, requiredLabel, defaultPlaceholder) {
+  const typeField = document.createElement("div");
+  typeField.className = "field";
+  typeField.innerHTML = "<label>Data type</label>";
+  const typeSelect = document.createElement("select");
+  typeSelect.innerHTML = VARIABLE_DATA_TYPES.map(type =>
+    `<option value="${type}" ${mapping.dataType === type ? "selected" : ""}>${type}</option>`).join("");
+  typeSelect.value = mapping.dataType || "string";
+  typeField.appendChild(typeSelect);
+  box.appendChild(typeField);
+
+  const arrayCheckbox = variableCheckbox("Array", !!mapping.isArray, checked => {
+    mapping.isArray = checked;
+    mapping.defaultValue = parseDefaultValue(defaultInput.value, mapping);
+  });
+  box.appendChild(arrayCheckbox);
+  box.appendChild(variableCheckbox(requiredLabel, !!mapping.required, checked => { mapping.required = checked; }));
+
+  const defaultField = document.createElement("div");
+  defaultField.className = "field";
+  defaultField.innerHTML = "<label>Default value (optional)</label>";
+  const defaultInput = document.createElement("input");
+  defaultInput.type = "text";
+  defaultInput.value = defaultValueToText(mapping.defaultValue);
+  defaultInput.placeholder = defaultPlaceholder;
+  defaultInput.oninput = () => { mapping.defaultValue = parseDefaultValue(defaultInput.value, mapping); };
+  defaultField.appendChild(defaultInput);
+  box.appendChild(defaultField);
+
+  typeSelect.onchange = () => {
+    mapping.dataType = typeSelect.value;
+    mapping.defaultValue = parseDefaultValue(defaultInput.value, mapping);
+  };
+
+  const validationField = document.createElement("div");
+  validationField.className = "field";
+  validationField.innerHTML = "<label>Validation (NCalc, optional)</label>";
+  const validationInput = document.createElement("input");
+  validationInput.type = "text";
+  validationInput.value = mapping.validation || "";
+  validationInput.oninput = () => {
+    mapping.validation = validationInput.value.trim() ? validationInput.value : null;
+  };
+  validationField.appendChild(validationInput);
+  box.appendChild(validationField);
+}
+
 function renderServiceSection(node) {
-  node.service = normalizeService(node.service);
+  node.service = normalizeService(node.service, model.variables);
   const service = node.service;
 
   const title = document.createElement("h2");
@@ -2431,7 +2614,7 @@ function renderServiceSection(node) {
 
   const outHint = document.createElement("p");
   outHint.className = "empty-note";
-  outHint.textContent = "Write response fields into instance variables. Path is dotted, e.g. decision.approved or items.0.id.";
+  outHint.textContent = "Each mapping creates or updates a typed instance variable. The response path may be blank only when a default value is configured.";
   inspector.appendChild(outHint);
 
   service.outputMappings.forEach((mapping, index) => {
@@ -2458,7 +2641,11 @@ function renderServiceSection(node) {
     pathField.appendChild(pathInput);
     box.appendChild(pathField);
 
-    box.appendChild(variableCheckbox("Required (fail the task if this path is missing)", !!mapping.required, checked => { mapping.required = checked; }));
+    appendTypedOutputMappingFields(
+      box,
+      mapping,
+      "Required final value",
+      "Used only when the response path is absent");
 
     const del = document.createElement("button");
     del.textContent = "Delete mapping";
@@ -2473,14 +2660,21 @@ function renderServiceSection(node) {
   const addMappingBtn = document.createElement("button");
   addMappingBtn.textContent = "+ Add mapping";
   addMappingBtn.style.marginTop = "8px";
-  addMappingBtn.onclick = () => { service.outputMappings.push({ variable: "", path: "", required: false }); renderInspector(); };
+  addMappingBtn.onclick = () => {
+    service.outputMappings.push({
+      variable: "", path: "", dataType: "string", isArray: false,
+      required: false, defaultValue: null, validation: null
+    });
+    renderInspector();
+  };
   inspector.appendChild(addMappingBtn);
 }
 
 function renderMessageSection(node) {
-  node.message = normalizeMessage(node.message);
-  const message = node.message;
   const isStart = isMessageStartEventType(node.type);
+  node.message = normalizeMessage(node.message, isStart, model.variables);
+  normalizeLegacyMessageStartNode(node);
+  const message = node.message;
 
   const title = document.createElement("h2");
   title.textContent = isStart ? "Message (start)" : "Message (delivery)";
@@ -2505,7 +2699,8 @@ function renderMessageSection(node) {
   inspector.appendChild(valHint);
   field("Header validation (NCalc, optional)", "text", message.headerValidation, v => { message.headerValidation = v; });
 
-  // Output mappings (mirror the service-task response mappings UI)
+  // Message starts and catches share the typed mapping contract. Start mappings
+  // additionally declare the variables available during instance creation.
   const outTitle = document.createElement("h2");
   outTitle.textContent = "Output mappings";
   outTitle.style.marginTop = "16px";
@@ -2513,7 +2708,9 @@ function renderMessageSection(node) {
 
   const outHint = document.createElement("p");
   outHint.className = "empty-note";
-  outHint.textContent = "Write fields from the inbound message JSON body into instance variables. Path is dotted, e.g. decision.approved or items.0.id.";
+  outHint.textContent = isStart
+    ? "Each mapping declares and creates a typed start variable. The payload path may be blank only when a default value is configured."
+    : "Each mapping creates or updates a typed instance variable. The payload path may be blank only when a default value is configured.";
   inspector.appendChild(outHint);
 
   message.outputMappings.forEach((mapping, index) => {
@@ -2540,7 +2737,11 @@ function renderMessageSection(node) {
     pathField.appendChild(pathInput);
     box.appendChild(pathField);
 
-    box.appendChild(variableCheckbox("Required (reject the delivery with 400 if this path is missing)", !!mapping.required, checked => { mapping.required = checked; }));
+    appendTypedOutputMappingFields(
+      box,
+      mapping,
+      "Required final value",
+      "Used only when the payload path is absent");
 
     const del = document.createElement("button");
     del.textContent = "Delete mapping";
@@ -2555,12 +2756,17 @@ function renderMessageSection(node) {
   const addMappingBtn = document.createElement("button");
   addMappingBtn.textContent = "+ Add mapping";
   addMappingBtn.style.marginTop = "8px";
-  addMappingBtn.onclick = () => { message.outputMappings.push({ variable: "", path: "", required: false }); renderInspector(); };
+  addMappingBtn.onclick = () => {
+    message.outputMappings.push({
+      variable: "", path: "", dataType: "string", isArray: false,
+      required: false, defaultValue: null, validation: null
+    });
+    renderInspector();
+  };
   inspector.appendChild(addMappingBtn);
 
-  // Idempotency is a message-start concern: the named start variable's mapped
-  // value is the dedupe key, so a retried webhook returns the existing instance
-  // instead of creating a duplicate. Hidden for an intermediate catch event.
+  // Idempotency is a message-start concern. It declares an implicit required
+  // string variable populated only from the Idempotency-Key header.
   if (isStart) {
     const idemTitle = document.createElement("h2");
     idemTitle.textContent = "Idempotency (optional)";
@@ -2569,7 +2775,7 @@ function renderMessageSection(node) {
 
     const idemHint = document.createElement("p");
     idemHint.className = "empty-note";
-    idemHint.textContent = "Name a start variable whose mapped value dedupes a retried webhook: before creating an instance the engine searches for an existing instance of this workflowKey already carrying that key value and, if found, returns it instead of creating a duplicate. Leave blank to disable (a retry creates a duplicate).";
+    idemHint.textContent = "Transport retry identity only: this name becomes an implicit required string variable populated from the Idempotency-Key header. It must not duplicate an output mapping or the domain business key.";
     inspector.appendChild(idemHint);
     field("Idempotency variable", "text", message.idempotencyVariable, v => { message.idempotencyVariable = v; });
   }
@@ -2835,6 +3041,30 @@ function getAllAvailableVariables() {
             }
           }
         });
+      }
+      if (isMessageStartEventType(node.type) && node.message) {
+        (node.message.outputMappings || []).forEach(mapping => {
+          const name = String(mapping.variable || "").trim();
+          if (name && !varsMap.has(name)) {
+            varsMap.set(name, {
+              name,
+              dataType: mapping.dataType || "json",
+              isArray: !!mapping.isArray,
+              isProcessVar: false,
+              source: `Message start: ${node.name || '#' + node.id}`
+            });
+          }
+        });
+        const idempotencyName = String(node.message.idempotencyVariable || "").trim();
+        if (idempotencyName && !varsMap.has(idempotencyName)) {
+          varsMap.set(idempotencyName, {
+            name: idempotencyName,
+            dataType: "string",
+            isArray: false,
+            isProcessVar: false,
+            source: `Message start idempotency: ${node.name || '#' + node.id}`
+          });
+        }
       }
     });
   }
@@ -3499,6 +3729,43 @@ function parseDefaultValue(text, variable) {
   return coerceDefaultScalar(text, variable.dataType);
 }
 
+function renderBusinessKeySection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Domain business key";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Prevents two instances in this workflow family from representing the same business object. Once enabled, every start and message-start event must configure a required scalar string variable with no default.";
+  inspector.appendChild(hint);
+
+  inspector.appendChild(variableCheckbox("Enable business keys", node.businessKey != null, checked => {
+    const entries = model.flowNodes.filter(n => isStartEventType(n.type) || isMessageStartEventType(n.type));
+    if (checked) {
+      entries.forEach(entry => {
+        entry.businessKey ??= { variable: "", uniqueness: "active" };
+      });
+    } else {
+      entries.forEach(entry => { delete entry.businessKey; });
+    }
+    renderInspector();
+  }));
+
+  if (node.businessKey == null) return;
+  const sourceVariables = isMessageStartEventType(node.type)
+    ? ((node.message && node.message.outputMappings) || [])
+    : (node.variables || []);
+  const eligible = sourceVariables
+    .filter(variable => variable.required && !variable.isArray && variable.dataType === "string" &&
+      variable.defaultValue == null && (!isMessageStartEventType(node.type) || String(variable.path || "").trim()))
+    .map(variable => ({ value: variable.name || variable.variable, label: variable.name || variable.variable }));
+  selectField("Business key variable", [{ value: "", label: "— select required string —" }].concat(eligible),
+    node.businessKey.variable ?? "", value => { node.businessKey.variable = value; });
+  selectField("Uniqueness", BUSINESS_KEY_UNIQUENESS_OPTIONS,
+    node.businessKey.uniqueness, value => { node.businessKey.uniqueness = value; });
+}
+
 /* ---------- Canvas viewport ---------- */
 function clampZoom(value) {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
@@ -4070,6 +4337,7 @@ function validateModelForSave(candidate) {
   const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
   const processVariables = Array.isArray(candidate && candidate.variables) ? candidate.variables : [];
   const hasText = value => typeof value === "string" && value.trim().length > 0;
+  const hasMappingDefault = value => value !== null && value !== undefined;
   const countItems = value => Array.isArray(value) ? value.length : 0;
   const nodeLabel = node => "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
@@ -4116,6 +4384,149 @@ function validateModelForSave(candidate) {
     if (hasText(variable && variable.name)) {
       const key = variable.name.trim().toLowerCase();
       if (!processByName.has(key)) processByName.set(key, variable);
+    }
+  }
+
+  const supportedVariableTypes = new Set(["string", "number", "boolean", "date", "datetime", "json"]);
+  const isIsoDate = value => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  };
+  const isIsoDateTime = value => typeof value === "string" && value.includes("T") && !Number.isNaN(Date.parse(value));
+  const validTypedScalar = (value, dataType) => {
+    if (typeof value === "string" && value.includes("${")) return true;
+    if (dataType === "string") return typeof value === "string";
+    if (dataType === "number") return (typeof value === "number" && Number.isFinite(value)) ||
+      (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)));
+    if (dataType === "boolean") return typeof value === "boolean" ||
+      (typeof value === "string" && /^(true|false)$/i.test(value));
+    if (dataType === "date") return isIsoDate(value);
+    if (dataType === "datetime") return isIsoDateTime(value);
+    if (dataType === "json") return value !== undefined;
+    return false;
+  };
+  const validTypedValue = (value, mapping) => mapping.isArray
+    ? Array.isArray(value) && value.every(item => validTypedScalar(item, mapping.dataType))
+    : validTypedScalar(value, mapping.dataType);
+
+  function validateTypedOutputMappings(label, mappings, pathKind, enforceProcessContract) {
+    const seenMappings = new Set();
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+      if (!hasText(mapping && mapping.variable)) {
+        errors.push(label + " has an output mapping with no variable name.");
+        continue;
+      }
+      const variableName = mapping.variable.trim();
+      const key = variableName.toLowerCase();
+      if (/^(sys|config|setting|mi)\./i.test(variableName)) {
+        errors.push(label + " output mapping variable '" + variableName + "' uses a reserved context prefix.");
+      }
+      if (seenMappings.has(key)) {
+        errors.push(label + " output mapping variable '" + variableName + "' is duplicated; names are case-insensitive.");
+      }
+      seenMappings.add(key);
+      if (!supportedVariableTypes.has(mapping.dataType)) {
+        errors.push(label + " output mapping '" + variableName + "' has unsupported dataType '" + String(mapping.dataType) + "'.");
+      }
+      if (typeof mapping.isArray !== "boolean") {
+        errors.push(label + " output mapping '" + variableName + "' must declare isArray.");
+      }
+      const hasDefault = hasMappingDefault(mapping.defaultValue);
+      if (!hasText(mapping.path) && !hasDefault) {
+        errors.push(label + " output mapping '" + variableName + "' needs a " + pathKind + " path unless defaultValue is configured.");
+      }
+      if (hasDefault && supportedVariableTypes.has(mapping.dataType) && typeof mapping.isArray === "boolean" &&
+          !validTypedValue(mapping.defaultValue, mapping)) {
+        errors.push(label + " output mapping default for '" + variableName + "' does not match " +
+          mapping.dataType + (mapping.isArray ? "[]" : "") + ".");
+      }
+      if (mapping.validation != null && typeof mapping.validation !== "string") {
+        errors.push(label + " output mapping validation for '" + variableName + "' must be an NCalc string.");
+      }
+
+      const processVariable = processByName.get(key);
+      if (enforceProcessContract && processVariable &&
+          (mapping.dataType !== processVariable.dataType || mapping.isArray !== !!processVariable.isArray)) {
+        errors.push(label + " output mapping '" + variableName + "' must match process variable '" +
+          processVariable.name + "' type " + processVariable.dataType + (processVariable.isArray ? "[]" : "") + ".");
+      }
+    }
+    return seenMappings;
+  }
+
+  for (const node of nodes.filter(candidate => candidate && candidate.type === "serviceTask")) {
+    const service = node.service && typeof node.service === "object" ? node.service : {};
+    validateTypedOutputMappings(
+      "Service task #" + String(node.id),
+      service.outputMappings,
+      "response",
+      true);
+  }
+
+  for (const node of nodes.filter(candidate => candidate && candidate.type === "intermediateMessageCatchEvent")) {
+    const message = node.message && typeof node.message === "object" ? node.message : {};
+    validateTypedOutputMappings(
+      "Message catch event #" + String(node.id),
+      message.outputMappings,
+      "body",
+      true);
+  }
+
+  for (const node of nodes.filter(candidate => candidate && candidate.type === "messageStartEvent")) {
+    const label = "Message start event #" + String(node.id);
+    const message = node.message && typeof node.message === "object" ? node.message : {};
+    const mappings = Array.isArray(message.outputMappings) ? message.outputMappings : [];
+    const seenMappings = validateTypedOutputMappings(label, mappings, "body", false);
+
+    if (hasText(message.idempotencyVariable)) {
+      const idempotencyName = message.idempotencyVariable.trim();
+      if (/^(sys|config|setting|mi)\./i.test(idempotencyName)) {
+        errors.push(label + " idempotencyVariable '" + idempotencyName + "' uses a reserved context prefix.");
+      }
+      if (seenMappings.has(idempotencyName.toLowerCase())) {
+        errors.push(label + " idempotencyVariable '" + idempotencyName + "' cannot also be an output mapping variable.");
+      }
+    }
+  }
+
+  const entries = nodes.filter(node => node &&
+    (node.type === "startEvent" || node.type === "messageStartEvent"));
+  const keyedEntries = entries.filter(node => node.businessKey != null);
+  if (keyedEntries.length > 0 && keyedEntries.length !== entries.length) {
+    errors.push("Every startEvent and messageStartEvent must configure businessKey once business keys are enabled.");
+  }
+  for (const node of keyedEntries) {
+    const config = node.businessKey;
+    const label = "Entry event #" + String(node.id);
+    if (!config || typeof config !== "object" || !hasText(config.variable)) {
+      errors.push(label + " businessKey.variable is required.");
+      continue;
+    }
+    if (!["active", "all"].includes(config.uniqueness)) {
+      errors.push(label + " has unsupported businessKey.uniqueness '" + String(config.uniqueness) + "'.");
+    }
+    if (node.type === "messageStartEvent") {
+      const mapping = (node.message && Array.isArray(node.message.outputMappings)
+        ? node.message.outputMappings : [])
+        .find(candidate => candidate && candidate.variable === config.variable);
+      if (!mapping || !mapping.required || mapping.isArray || mapping.dataType !== "string" ||
+          mapping.defaultValue != null || !hasText(mapping.path)) {
+        errors.push(label + " businessKey mapping '" + config.variable +
+          "' must be an exactly named required scalar string with an explicit path and no defaultValue.");
+      }
+      if (hasText(node.message && node.message.idempotencyVariable) &&
+          node.message.idempotencyVariable.toLowerCase() === config.variable.toLowerCase()) {
+        errors.push(label + " must use different variables for idempotencyVariable and businessKey.");
+      }
+    } else {
+      const variable = (Array.isArray(node.variables) ? node.variables : [])
+        .find(candidate => candidate && candidate.name === config.variable);
+      if (!variable || !variable.required || variable.isArray || variable.dataType !== "string" || variable.defaultValue != null) {
+        errors.push(label + " businessKey variable '" + config.variable +
+          "' must be an exactly named required scalar string with no defaultValue.");
+      }
     }
   }
 
@@ -4292,20 +4703,36 @@ async function save() {
   // invariant helpers here: imported invalid source/flow settings must survive
   // long enough for validateModelForSave to report them.
   model.flowNodes.forEach(node => {
-    if (!node.multiInstance) return;
-    node.multiInstance.mode = canonicalizeKnownValue(
-      node.multiInstance.mode, ["parallel", "sequential"], "parallel");
-    node.multiInstance.source = canonicalizeKnownValue(
-      node.multiInstance.source, ["collection", "cardinality"], "collection");
-    node.multiInstance.completionEvaluation = canonicalizeKnownValue(
-      node.multiInstance.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+    if (isMessageStartEventType(node.type)) normalizeLegacyMessageStartNode(node);
+    if (isServiceTaskType(node.type)) {
+      node.service = normalizeService(node.service, model.variables);
+    }
+    if (isMessageCatchEventType(node.type)) {
+      node.message = normalizeMessage(node.message, false, model.variables);
+    }
+    if (node.businessKey && typeof node.businessKey === "object") {
+      node.businessKey.uniqueness = canonicalizeKnownValue(
+        node.businessKey.uniqueness, ["active", "all"], undefined);
+    }
+    if (node.multiInstance) {
+      node.multiInstance.mode = canonicalizeKnownValue(
+        node.multiInstance.mode, ["parallel", "sequential"], "parallel");
+      node.multiInstance.source = canonicalizeKnownValue(
+        node.multiInstance.source, ["collection", "cardinality"], "collection");
+      node.multiInstance.completionEvaluation = canonicalizeKnownValue(
+        node.multiInstance.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+    }
   });
   const validationErrors = validateModelForSave(model);
   if (validationErrors.length > 0) {
     showValidationErrors(validationErrors);
     return;
   }
-  const data = JSON.stringify(model, null, 2);
+  const canonical = JSON.parse(JSON.stringify(model));
+  canonical.flowNodes.forEach(node => {
+    if (isMessageStartEventType(node.type)) delete node.variables;
+  });
+  const data = JSON.stringify(canonical, null, 2);
 
   if (window.showSaveFilePicker) {
     try {
@@ -4442,11 +4869,12 @@ function migrateLegacyToNew(obj) {
 function loadFromObject(obj) {
   if (Array.isArray(obj.flowNodes)) {
     // Already BPMN schema.
+    const loadedProcessVariables = (obj.variables || []).map(normalizeVariable);
     model = {
       id: obj.id ?? 1,
       name: obj.name ?? "Workflow",
       initialEventId: obj.initialEventId ?? null,
-      variables: (obj.variables || []).map(normalizeVariable),
+      variables: loadedProcessVariables,
       lanes: (obj.lanes || []).map((p, i) => ({
         id: p.id,
         name: p.name ?? `Lane ${p.id}`,
@@ -4471,7 +4899,7 @@ function loadFromObject(obj) {
         variables: (s.variables || []).map(normalizeVariable),
         assignee: (typeof s.assignee === "string" && s.assignee.trim()) ? s.assignee : null,
         multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,
-        service: isServiceTaskType(s.type) ? normalizeService(s.service) : undefined,
+        service: isServiceTaskType(s.type) ? normalizeService(s.service, loadedProcessVariables) : undefined,
         scriptFormat: isScriptTaskType(s.type)
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
           : undefined,
@@ -4479,7 +4907,10 @@ function loadFromObject(obj) {
         script: isScriptTaskType(s.type) ? (typeof s.script === "string" ? s.script : "") : undefined,
         attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
         errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null,
-        message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type)) ? normalizeMessage(s.message) : undefined
+        message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
+          ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
+        businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
+          ? normalizeBusinessKeyForLoad(s.businessKey) : undefined
       })),
       sequenceFlows: (obj.sequenceFlows || []).map(f => ({
         id: f.id,
@@ -4504,6 +4935,8 @@ function loadFromObject(obj) {
     // Legacy phases/steps/actions document.
     model = migrateLegacyToNew(obj);
   }
+  model.flowNodes.filter(node => isMessageStartEventType(node.type))
+    .forEach(normalizeLegacyMessageStartNode);
   migrateLegacyUserTaskDefaultFlows();
   clearSelection();
 }

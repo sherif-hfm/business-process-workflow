@@ -16,6 +16,9 @@ public sealed record WorkflowDefinitionRecord(
 public sealed record WorkflowInstanceRecord(
     long Id,
     long WorkflowDefinitionId,
+    string WorkflowKey,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     long ActiveTokenId,
     int CurrentStepId,
     long? ActiveUserTaskId,
@@ -102,6 +105,8 @@ public sealed record InstanceListItem(
     long WorkflowDefinitionId,
     string WorkflowName,
     int WorkflowVersion,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
     long TokenId,
     long? UserTaskId,
     long? MultiInstanceExecutionId,
@@ -120,6 +125,8 @@ public sealed record InstanceListItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     UserTaskWorkSummaryRecord? UserTasks);
+
+public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
 
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);

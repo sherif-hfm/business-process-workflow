@@ -14,6 +14,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 {
     public async Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
+        string workflowKey,
+        string? businessKey,
+        string? businessKeyUniqueness,
         CurrentNodeSnapshot node,
         string? startedBy,
         CancellationToken cancellationToken)
@@ -22,6 +25,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var entity = new WorkflowInstanceEntity
         {
             WorkflowDefinitionId = workflowDefinitionId,
+            WorkflowKey = workflowKey,
+            BusinessKey = businessKey,
+            BusinessKeyUniqueness = businessKeyUniqueness,
             Status = WorkflowInstanceStatuses.Running,
             StartedBy = startedBy,
             CreatedAt = now,
@@ -48,6 +54,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -67,6 +74,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendInstanceIdFilter(where, args, instanceId);
         AppendWorkflowIdFilter(where, args, workflowId);
         AppendWorkflowKeyFilter(where, args, workflowKey);
+        AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId);
         AppendNodeExternalIdFilter(where, args, nodeExternalId);
         AppendVariableFilters(where, args, variableFilters);
@@ -100,6 +108,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
@@ -109,7 +118,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
-        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters);
+        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters);
         var eligibleCte = $"""
             WITH eligible AS (
                 SELECT ut."Id",
@@ -163,6 +172,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters)
@@ -223,6 +233,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendInstanceIdFilter(where, args, instanceId);
         AppendWorkflowIdFilter(where, args, workflowId);
         AppendWorkflowKeyFilter(where, args, workflowKey);
+        AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId);
         AppendNodeExternalIdFilter(where, args, nodeExternalId);
         AppendVariableFilters(where, args, variableFilters);
@@ -281,6 +292,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         where.Append(
             " AND EXISTS (SELECT 1 FROM workflow_definitions d" +
             " WHERE d.\"Id\" = w.\"WorkflowDefinitionId\" AND d.\"WorkflowKey\" = @workflowKey)");
+    }
+
+    // Business keys are normalized at start and stored with PostgreSQL's
+    // deterministic C collation, so this is an exact, case-sensitive match.
+    private static void AppendBusinessKeyFilter(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        string? businessKey)
+    {
+        if (string.IsNullOrWhiteSpace(businessKey))
+        {
+            return;
+        }
+
+        args.Add(("businessKey", businessKey.Trim()));
+        where.Append(" AND w.\"BusinessKey\" = @businessKey");
     }
 
     // Filters on the token/task node id. The value is parameter-bound,
@@ -384,6 +411,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 e.WorkflowDefinitionId,
                 definition?.Name ?? string.Empty,
                 definition?.Version ?? 0,
+                e.BusinessKey,
+                e.BusinessKeyUniqueness,
                 token.Id,
                 null,
                 null,
@@ -474,7 +503,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             var definition = definitions[instance.WorkflowDefinitionId];
             var token = tokens[task.TokenId];
             return new InstanceListItem(instance.Id, definition.Id, instance.WorkflowDefinitionId,
-                definition.Name, definition.Version, token.Id, task.Id, task.MultiInstanceExecutionId,
+                definition.Name, definition.Version, instance.BusinessKey, instance.BusinessKeyUniqueness,
+                token.Id, task.Id, task.MultiInstanceExecutionId,
                 task.ItemIndex, task.ItemValueJson?.RootElement.Clone(), task.Assignee, task.NodeId, task.NodeName,
                 task.NodeExternalId, token.NodeType, task.Roles, task.RequiresClaim, instance.Status,
                 task.ClaimedBy, instance.StartedBy, task.CreatedAt, task.UpdatedAt, null);
@@ -929,6 +959,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == id, cancellationToken);
         entity.Status = status;
         entity.UpdatedAt = now;
+        await ReleaseBusinessKeyClaimAsync(entity, status, cancellationToken);
 
         var trackedToken = dbContext.ExecutionTokens.Local
             .Where(t => t.InstanceId == id)
@@ -1029,6 +1060,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.UpdatedAt = now;
         entity.Status = status;
         entity.UpdatedAt = now;
+        await ReleaseBusinessKeyClaimAsync(entity, status, cancellationToken);
 
         if (status == WorkflowInstanceStatuses.Running && node.Type == BpmnFlowNodeTypes.UserTask && !node.IsMultiInstance)
         {
@@ -1148,6 +1180,68 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             $"SELECT pg_advisory_xact_lock(hashtext({workflowKey}), hashtext({idempotencyKeyValue}))", cancellationToken);
     }
 
+    public async Task<BusinessKeyReservationRecord> ReserveBusinessKeyAsync(
+        string workflowKey,
+        string businessKey,
+        string uniqueness,
+        CancellationToken cancellationToken)
+    {
+        var permanent = uniqueness == BusinessKeyUniqueness.All;
+        var inserted = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO workflow_business_key_claims
+                ("WorkflowKey", "BusinessKey", "IsPermanent", "ActiveInstanceId", "LastInstanceId")
+            VALUES ({workflowKey}, {businessKey}, {permanent}, NULL, NULL)
+            ON CONFLICT ("WorkflowKey", "BusinessKey") DO NOTHING
+            """, cancellationToken);
+
+        var claim = await dbContext.WorkflowBusinessKeyClaims
+            .FromSqlInterpolated($"SELECT * FROM workflow_business_key_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"BusinessKey\" = {businessKey} FOR UPDATE")
+            .SingleAsync(cancellationToken);
+
+        if (inserted == 0
+            && (permanent || claim.IsPermanent || claim.ActiveInstanceId is not null))
+        {
+            return new BusinessKeyReservationRecord(false, claim.ActiveInstanceId ?? claim.LastInstanceId);
+        }
+
+        return new BusinessKeyReservationRecord(true, null);
+    }
+
+    public async Task BindBusinessKeyAsync(
+        string workflowKey,
+        string businessKey,
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var claim = dbContext.WorkflowBusinessKeyClaims.Local.SingleOrDefault(c =>
+                        c.WorkflowKey == workflowKey && c.BusinessKey == businessKey)
+                    ?? await dbContext.WorkflowBusinessKeyClaims.SingleAsync(c =>
+                        c.WorkflowKey == workflowKey && c.BusinessKey == businessKey, cancellationToken);
+        claim.ActiveInstanceId = instanceId;
+        claim.LastInstanceId = instanceId;
+    }
+
+    private async Task ReleaseBusinessKeyClaimAsync(
+        WorkflowInstanceEntity instance,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (status == WorkflowInstanceStatuses.Running || instance.BusinessKey is null)
+        {
+            return;
+        }
+
+        var claim = dbContext.WorkflowBusinessKeyClaims.Local.SingleOrDefault(c =>
+            c.WorkflowKey == instance.WorkflowKey && c.BusinessKey == instance.BusinessKey);
+        claim ??= await dbContext.WorkflowBusinessKeyClaims
+            .FromSqlInterpolated($"SELECT * FROM workflow_business_key_claims WHERE \"WorkflowKey\" = {instance.WorkflowKey} AND \"BusinessKey\" = {instance.BusinessKey} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        if (claim?.ActiveInstanceId == instance.Id)
+        {
+            claim.ActiveInstanceId = null;
+        }
+    }
+
     private static WorkflowInstanceRecord ToRecord(
         WorkflowInstanceEntity entity,
         ExecutionTokenEntity token,
@@ -1155,6 +1249,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         new(
             entity.Id,
             entity.WorkflowDefinitionId,
+            entity.WorkflowKey,
+            entity.BusinessKey,
+            entity.BusinessKeyUniqueness,
             token.Id,
             token.NodeId,
             task?.Id,

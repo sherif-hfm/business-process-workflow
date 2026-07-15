@@ -86,6 +86,522 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task BusinessKeyPoliciesAreAtomicCaseSensitiveAndFilterable()
+    {
+        var activeModel = LoadUniqueModel("votes-users-list.json", "business-key-active");
+        ConfigureBusinessKey(activeModel, BusinessKeyUniqueness.Active);
+        var activeWorkflow = await CreateWorkflowAsync(activeModel);
+
+        using var first = await StartWithBusinessKeyAsync(activeWorkflow, "  V-42  ");
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        var firstAck = await ReadAsync<StartInstanceResultDto>(first);
+        Assert.Equal("V-42", firstAck.BusinessKey);
+        Assert.Equal(BusinessKeyUniqueness.Active, firstAck.BusinessKeyUniqueness);
+
+        using var duplicate = await StartWithBusinessKeyAsync(activeWorkflow, "V-42");
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        using (var conflict = JsonDocument.Parse(await duplicate.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal("business_key_conflict", conflict.RootElement.GetProperty("code").GetString());
+            Assert.Equal(firstAck.Id, conflict.RootElement.GetProperty("existingInstanceId").GetInt64());
+        }
+
+        using var differentCase = await StartWithBusinessKeyAsync(activeWorkflow, "v-42");
+        Assert.Equal(HttpStatusCode.Created, differentCase.StatusCode);
+
+        using var filtered = await SendAsync(HttpMethod.Get, "/api/instances?businessKey=V-42&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, filtered.StatusCode);
+        var page = await ReadAsync<PagedResult<InstanceSummaryDto>>(filtered);
+        Assert.Single(page.Items);
+        Assert.Equal(firstAck.Id, page.Items[0].Id);
+
+        using var inboxFiltered = await SendAsync(HttpMethod.Get, "/api/instances/inbox?businessKey=V-42&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, inboxFiltered.StatusCode);
+        var inboxPage = await ReadAsync<PagedResult<InboxItemDto>>(inboxFiltered);
+        Assert.Single(inboxPage.Items);
+        Assert.Equal("V-42", inboxPage.Items[0].BusinessKey);
+
+        var detail = await GetInstanceAsync(firstAck.Id);
+        Assert.Equal("V-42", detail.BusinessKey);
+        Assert.Equal(BusinessKeyUniqueness.Active, detail.BusinessKeyUniqueness);
+
+        using var cancelled = await SendAsync(HttpMethod.Post, $"/api/instances/{firstAck.Id}/cancel");
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+        using var reused = await StartWithBusinessKeyAsync(activeWorkflow, "V-42");
+        Assert.Equal(HttpStatusCode.Created, reused.StatusCode);
+
+        var allModel = LoadUniqueModel("votes-users-list.json", "business-key-all");
+        ConfigureBusinessKey(allModel, BusinessKeyUniqueness.All);
+        var allWorkflow = await CreateWorkflowAsync(allModel);
+        using var permanent = await StartWithBusinessKeyAsync(allWorkflow, "PERMANENT-1");
+        var permanentAck = await ReadAsync<StartInstanceResultDto>(permanent);
+        using var permanentCancelled = await SendAsync(HttpMethod.Post, $"/api/instances/{permanentAck.Id}/cancel");
+        Assert.Equal(HttpStatusCode.NoContent, permanentCancelled.StatusCode);
+        using var permanentDuplicate = await StartWithBusinessKeyAsync(allWorkflow, "PERMANENT-1");
+        Assert.Equal(HttpStatusCode.Conflict, permanentDuplicate.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConcurrentBusinessKeyStartsCreateExactlyOneInstance()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "business-key-concurrency");
+        ConfigureBusinessKey(model, BusinessKeyUniqueness.Active);
+        var workflow = await CreateWorkflowAsync(model);
+
+        var starts = await Task.WhenAll(
+            StartWithBusinessKeyAsync(workflow, "RACE-1"),
+            StartWithBusinessKeyAsync(workflow, "RACE-1"));
+        try
+        {
+            Assert.Single(starts, response => response.StatusCode == HttpStatusCode.Created);
+            Assert.Single(starts, response => response.StatusCode == HttpStatusCode.Conflict);
+        }
+        finally
+        {
+            foreach (var response in starts) response.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task MessageStartChecksTransportIdempotencyBeforeBusinessKey()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "business-key-message");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Type = BpmnFlowNodeTypes.MessageStartEvent;
+        start.Roles = [];
+        start.Variables = [];
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = BusinessKeyUniqueness.Active
+        };
+        start.Message = new MessageCatchModel
+        {
+            ClientId = "tests-client",
+            ClientSecret = "tests-secret",
+            HeaderName = "X-Correlation",
+            HeaderValue = "accepted",
+            IdempotencyVariable = "requestId",
+            OutputMappings =
+            [
+                new MessageOutputMappingModel
+                {
+                    Variable = "violationId",
+                    Path = "violationId",
+                    Required = true,
+                    DataType = WorkflowVariableTypes.String,
+                    IsArray = false
+                }
+            ]
+        };
+        model.InitialEventId = null;
+        await CreateWorkflowAsync(model);
+
+        using var first = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-1");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var firstAck = await ReadAsync<MessageStartAckDto>(first);
+
+        using var retry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-1");
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(retry)).InstanceId);
+
+        using var domainDuplicate = await SendMessageStartAsync(model.Id, "REQUEST-2", "V-1");
+        Assert.Equal(HttpStatusCode.OK, domainDuplicate.StatusCode);
+        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(domainDuplicate)).InstanceId);
+
+        using var mismatchedRetry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-2");
+        Assert.Equal(HttpStatusCode.Conflict, mismatchedRetry.StatusCode);
+
+        using var cancelled = await SendAsync(HttpMethod.Post, $"/api/instances/{firstAck.InstanceId}/cancel");
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+        using var reused = await SendMessageStartAsync(model.Id, "REQUEST-3", "V-1");
+        Assert.Equal(HttpStatusCode.OK, reused.StatusCode);
+        var reusedAck = await ReadAsync<MessageStartAckDto>(reused);
+        Assert.NotEqual(firstAck.InstanceId, reusedAck.InstanceId);
+
+        using var oldRetry = await SendMessageStartAsync(model.Id, "REQUEST-1", "V-1");
+        Assert.Equal(HttpStatusCode.OK, oldRetry.StatusCode);
+        Assert.Equal(firstAck.InstanceId, (await ReadAsync<MessageStartAckDto>(oldRetry)).InstanceId);
+    }
+
+    [Fact]
+    public async Task TypedMessageStartMappingsResolveDefaultsValidateTypesAndPersistAtomically()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "typed-message-start");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Type = BpmnFlowNodeTypes.MessageStartEvent;
+        start.Roles = [];
+        start.Variables = [];
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = BusinessKeyUniqueness.Active
+        };
+        start.Message = new MessageCatchModel
+        {
+            ClientId = "tests-client",
+            ClientSecret = "tests-secret",
+            HeaderName = "X-Correlation",
+            HeaderValue = "accepted",
+            OutputMappings =
+            [
+                TypedMapping("violationId", "violationId", WorkflowVariableTypes.String, required: true),
+                TypedMapping("amount", "order.amount", WorkflowVariableTypes.Number, required: true,
+                    validation: "amount > 0 and country == 'SA'"),
+                TypedMapping("country", "order.country", WorkflowVariableTypes.String,
+                    defaultValue: JsonSerializer.SerializeToElement("SA")),
+                TypedMapping("tags", "order.tags", WorkflowVariableTypes.String, required: true, isArray: true),
+                TypedMapping("businessDate", "order.businessDate", WorkflowVariableTypes.Date, required: true),
+                TypedMapping("receivedAt", "order.receivedAt", WorkflowVariableTypes.DateTime, required: true),
+                TypedMapping("metadata", "order.metadata", WorkflowVariableTypes.Json),
+                TypedMapping("region", string.Empty, WorkflowVariableTypes.String,
+                    defaultValue: JsonSerializer.SerializeToElement("central")),
+                TypedMapping("note", "order.note", WorkflowVariableTypes.String)
+            ]
+        };
+        model.InitialEventId = null;
+        await CreateWorkflowAsync(model);
+
+        using var valid = await SendMessageStartPayloadAsync(model.Id, new
+        {
+            violationId = "TYPED-1",
+            order = new
+            {
+                amount = 12.5,
+                tags = new[] { "safety", "priority" },
+                businessDate = "2026-07-15",
+                receivedAt = "2026-07-15T10:30:00+03:00",
+                metadata = new { source = "camera" }
+            }
+        });
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+        var ack = await ReadAsync<MessageStartAckDto>(valid);
+        var detail = await GetInstanceAsync(ack.InstanceId);
+        var values = detail.Variables.ToDictionary(variable => variable.VariableName, variable => variable.Value);
+        Assert.Equal("TYPED-1", values["violationId"].GetString());
+        Assert.Equal(12.5, values["amount"].GetDouble());
+        Assert.Equal("SA", values["country"].GetString());
+        Assert.Equal("central", values["region"].GetString());
+        Assert.Equal(2, values["tags"].GetArrayLength());
+        Assert.Equal("camera", values["metadata"].GetProperty("source").GetString());
+        Assert.DoesNotContain("note", values.Keys);
+
+        using var wrongType = await SendMessageStartPayloadAsync(model.Id, new
+        {
+            violationId = "BAD-TYPE",
+            order = new
+            {
+                amount = "12.5",
+                tags = new[] { "safety" },
+                businessDate = "2026-07-15",
+                receivedAt = "2026-07-15T10:30:00Z"
+            }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);
+
+        using var invalidDate = await SendMessageStartPayloadAsync(model.Id, new
+        {
+            violationId = "BAD-DATE",
+            order = new
+            {
+                amount = 1,
+                tags = new[] { "safety" },
+                businessDate = "15/07/2026",
+                receivedAt = "2026-07-15T10:30:00Z"
+            }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, invalidDate.StatusCode);
+
+        using var failedValidation = await SendMessageStartPayloadAsync(model.Id, new
+        {
+            violationId = "BAD-VALIDATION",
+            order = new
+            {
+                amount = -1,
+                tags = new[] { "safety" },
+                businessDate = "2026-07-15",
+                receivedAt = "2026-07-15T10:30:00Z"
+            }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, failedValidation.StatusCode);
+
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.WorkflowInstances.CountAsync(instance => instance.WorkflowKey == model.Id));
+        Assert.False(await db.WorkflowBusinessKeyClaims.AnyAsync(claim =>
+            claim.WorkflowKey == model.Id && claim.BusinessKey.StartsWith("BAD-")));
+    }
+
+    [Fact]
+    public async Task LegacyIntermediateMessageCatchMappingsNormalizeAndRemainCreateOrUpdateWrites()
+    {
+        var model = CreateRawMessageCatchModel();
+        var workflowId = await CreateWorkflowAsync(model);
+        using var started = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(workflowId, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, started.StatusCode);
+        var startAck = await ReadAsync<StartInstanceResultDto>(started);
+        Assert.Equal(2, startAck.CurrentNodeId);
+
+        using var first = await SendCatchMessageAsync(startAck.Id, "new");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(3, (await ReadAsync<MessageDeliveryAckDto>(first)).CurrentNodeId);
+
+        using var second = await SendCatchMessageAsync(startAck.Id, "updated");
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal("completed", (await ReadAsync<MessageDeliveryAckDto>(second)).Status);
+
+        var detail = await GetInstanceAsync(startAck.Id);
+        var statuses = detail.Variables.Where(variable => variable.VariableName == "externalStatus").ToList();
+        Assert.Equal(2, statuses.Count);
+        Assert.Equal("updated", statuses[^1].Value.GetString());
+    }
+
+    [Fact]
+    public async Task TypedMessageCatchMappingsResolveValidateAndWriteAtomically()
+    {
+        var model = CreateTypedMessageCatchModel();
+        var workflowId = await CreateWorkflowAsync(model);
+
+        var validStart = await StartWorkflowAsync(workflowId);
+        using (var valid = await SendCatchPayloadAsync(validStart.Id, new
+        {
+            result = new { decision = "approved", score = 12 },
+            tags = new[] { "safe", "priority" },
+            businessDate = "2026-07-15",
+            approved = true,
+            receivedAt = "2026-07-15T10:30:00+03:00",
+            metadata = new { source = "webhook" },
+            ratings = new[] { 1.5, 2.5 }
+        }))
+        {
+            Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+            Assert.Equal("completed", (await ReadAsync<MessageDeliveryAckDto>(valid)).Status);
+        }
+        var validDetail = await GetInstanceAsync(validStart.Id);
+        var latest = validDetail.Variables
+            .GroupBy(variable => variable.VariableName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal("approved", latest["decision"].GetString());
+        Assert.Equal(12, latest["score"].GetInt32());
+        Assert.Equal("SA", latest["country"].GetString());
+        Assert.Equal("SA-central", latest["region"].GetString());
+        Assert.Equal(2, latest["tags"].GetArrayLength());
+        Assert.Equal("2026-07-15", latest["businessDate"].GetString());
+        Assert.True(latest["approved"].GetBoolean());
+        Assert.Equal("2026-07-15T10:30:00+03:00", latest["receivedAt"].GetString());
+        Assert.Equal("webhook", latest["metadata"].GetProperty("source").GetString());
+        Assert.Equal(2, latest["ratings"].GetArrayLength());
+        Assert.DoesNotContain("note", latest.Keys);
+
+        var wrongTypeStart = await StartWorkflowAsync(workflowId);
+        using (var wrongType = await SendCatchPayloadAsync(wrongTypeStart.Id, new
+        {
+            result = new { decision = "approved", score = "12" },
+            tags = new[] { "safe" },
+            businessDate = "2026-07-15"
+        }))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);
+        }
+        await AssertCatchFailureLeftNoOutputsAsync(wrongTypeStart.Id);
+
+        var staleRequiredStart = await StartWorkflowAsync(workflowId);
+        using (var missingRequired = await SendCatchPayloadAsync(staleRequiredStart.Id, new
+        {
+            result = new { score = 12 },
+            tags = new[] { "safe" },
+            businessDate = "2026-07-15"
+        }))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, missingRequired.StatusCode);
+        }
+        await AssertCatchFailureLeftNoOutputsAsync(staleRequiredStart.Id);
+
+        var mappingValidationStart = await StartWorkflowAsync(workflowId);
+        using (var invalidMapping = await SendCatchPayloadAsync(mappingValidationStart.Id, new
+        {
+            result = new { decision = "approved", score = -1 },
+            tags = new[] { "safe" },
+            businessDate = "2026-07-15"
+        }))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, invalidMapping.StatusCode);
+        }
+        await AssertCatchFailureLeftNoOutputsAsync(mappingValidationStart.Id);
+
+        var processValidationStart = await StartWorkflowAsync(workflowId);
+        using (var invalidProcess = await SendCatchPayloadAsync(processValidationStart.Id, new
+        {
+            result = new { decision = "blocked", score = 12 },
+            tags = new[] { "safe" },
+            businessDate = "2026-07-15"
+        }))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, invalidProcess.StatusCode);
+        }
+        await AssertCatchFailureLeftNoOutputsAsync(processValidationStart.Id);
+    }
+
+    [Fact]
+    public async Task TypedServiceMappingsSucceedOrFailWithoutPartialWrites()
+    {
+        var successModel = CreateTypedServiceModel("success", "typed-output-success", withBoundary: false);
+        var successWorkflow = await CreateWorkflowAsync(successModel);
+        using (var started = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(successWorkflow, null, null, null)))
+        {
+            Assert.Equal(HttpStatusCode.Created, started.StatusCode);
+            Assert.Equal("completed", (await ReadAsync<StartInstanceResultDto>(started)).Status);
+        }
+        var successPage = await ListWorkflowInstancesAsync(successModel.Id);
+        var successDetail = await GetInstanceAsync(Assert.Single(successPage.Items).Id);
+        var successValues = successDetail.Variables
+            .GroupBy(variable => variable.VariableName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal("approved", successValues["decision"].GetString());
+        Assert.Equal(12, successValues["score"].GetInt32());
+        Assert.Equal("SA", successValues["country"].GetString());
+        Assert.Equal("SA-central", successValues["region"].GetString());
+        Assert.Equal(2, successValues["tags"].GetArrayLength());
+        Assert.True(successValues["approved"].GetBoolean());
+        Assert.Equal("2026-07-15T10:30:00+03:00", successValues["receivedAt"].GetString());
+        Assert.Equal("service", successValues["metadata"].GetProperty("source").GetString());
+        Assert.Equal(2, successValues["ratings"].GetArrayLength());
+        Assert.Equal(200, successValues["serviceStatus"].GetInt32());
+
+        var uncaughtModel = CreateTypedServiceModel("uncaught", "typed-output-invalid", withBoundary: false);
+        var uncaughtWorkflow = await CreateWorkflowAsync(uncaughtModel);
+        using (var failed = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(uncaughtWorkflow, null, null, null)))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, failed.StatusCode);
+        }
+        Assert.Empty((await ListWorkflowInstancesAsync(uncaughtModel.Id)).Items);
+
+        var boundaryModel = CreateTypedServiceModel("boundary", "typed-output-invalid", withBoundary: true);
+        var boundaryWorkflow = await CreateWorkflowAsync(boundaryModel);
+        using (var caught = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(boundaryWorkflow, null, null, null)))
+        {
+            Assert.Equal(HttpStatusCode.Created, caught.StatusCode);
+            Assert.Equal(5, (await ReadAsync<StartInstanceResultDto>(caught)).CurrentNodeId);
+        }
+        var boundaryPage = await ListWorkflowInstancesAsync(boundaryModel.Id);
+        var boundaryDetail = await GetInstanceAsync(Assert.Single(boundaryPage.Items).Id);
+        Assert.Single(boundaryDetail.Variables, variable => variable.VariableName == "decision");
+        Assert.DoesNotContain(boundaryDetail.Variables, variable =>
+            variable.VariableName is "score" or "country" or "region" or "tags" or "businessDate"
+                or "approved" or "receivedAt" or "metadata" or "ratings");
+        Assert.Equal(200, boundaryDetail.Variables.Last(variable => variable.VariableName == "serviceStatus").Value.GetInt32());
+        Assert.Contains("must be number", boundaryDetail.Variables.Last(variable => variable.VariableName == "serviceError").Value.GetString());
+
+        var processModel = CreateTypedServiceModel("process-validation", "typed-output-blocked", withBoundary: false);
+        var processWorkflow = await CreateWorkflowAsync(processModel);
+        using (var processFailure = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(processWorkflow, null, null, null)))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, processFailure.StatusCode);
+        }
+        Assert.Empty((await ListWorkflowInstancesAsync(processModel.Id)).Items);
+    }
+
+    [Fact]
+    public async Task BusinessKeyFamilyActivationBlocksUnkeyedVersionsAndPrematureKeyedStarts()
+    {
+        var unkeyed = LoadUniqueModel("votes-users-list.json", "business-key-family");
+        var oldWorkflowId = await CreateWorkflowAsync(unkeyed);
+        var keyed = Clone(unkeyed);
+        ConfigureBusinessKey(keyed, BusinessKeyUniqueness.Active);
+
+        using var createKeyed = await SendAsync(
+            HttpMethod.Put,
+            $"/api/workflows/{oldWorkflowId}",
+            new UpdateWorkflowRequest(keyed, true));
+        Assert.Equal(HttpStatusCode.OK, createKeyed.StatusCode);
+        var keyedVersion = await ReadAsync<WorkflowDetailDto>(createKeyed);
+
+        using var premature = await StartWithBusinessKeyAsync(keyedVersion.Id, "FAMILY-1");
+        Assert.Equal(HttpStatusCode.BadRequest, premature.StatusCode);
+
+        using var activate = await SendAsync(
+            HttpMethod.Post,
+            $"/api/workflows/{keyedVersion.Id}/set-default");
+        Assert.Equal(HttpStatusCode.NoContent, activate.StatusCode);
+
+        using var oldStart = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(oldWorkflowId, null, null, null));
+        Assert.Equal(HttpStatusCode.BadRequest, oldStart.StatusCode);
+
+        using var createUnkeyed = await SendAsync(
+            HttpMethod.Put,
+            $"/api/workflows/{oldWorkflowId}",
+            new UpdateWorkflowRequest(unkeyed, false));
+        Assert.Equal(HttpStatusCode.BadRequest, createUnkeyed.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent, "completed")]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent, "faulted")]
+    public async Task ImmediateTerminalStartsReleaseActiveBusinessKey(string endType, string expectedStatus)
+    {
+        var model = CreateImmediateBusinessKeyModel("business-key-" + expectedStatus, endType);
+        var workflow = await CreateWorkflowAsync(model);
+
+        using var first = await StartWithBusinessKeyAsync(workflow, "TERMINAL-1");
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(expectedStatus, (await ReadAsync<StartInstanceResultDto>(first)).Status);
+
+        using var reused = await StartWithBusinessKeyAsync(workflow, "TERMINAL-1");
+        Assert.Equal(HttpStatusCode.Created, reused.StatusCode);
+    }
+
+    [Fact]
+    public async Task FailedPassThroughRollsBackBusinessKeyReservation()
+    {
+        var model = CreateImmediateBusinessKeyModel("business-key-rollback", BpmnFlowNodeTypes.EndEvent);
+        var end = model.FlowNodes.Single(node => node.Id == 2);
+        end.Id = 3;
+        model.SequenceFlows.Single().TargetRef = 2;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 2,
+            Name = "Failing script",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = ScriptFormats.JavaScript,
+            Script = "throw new Error('business-key rollback');"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 102,
+            Name = "After script",
+            SourceRef = 2,
+            TargetRef = 3
+        });
+        var workflow = await CreateWorkflowAsync(model);
+
+        using var failed = await StartWithBusinessKeyAsync(workflow, "ROLLBACK-1");
+        Assert.Equal(HttpStatusCode.BadRequest, failed.StatusCode);
+
+        await using var db = fixture.CreateDbContext();
+        Assert.False(await db.WorkflowBusinessKeyClaims.AnyAsync(claim =>
+            claim.WorkflowKey == model.Id && claim.BusinessKey == "ROLLBACK-1"));
+        Assert.False(await db.WorkflowInstances.AnyAsync(instance =>
+            instance.WorkflowKey == model.Id && instance.BusinessKey == "ROLLBACK-1"));
+    }
+
+    [Fact]
     public async Task CardinalityAndCollectionBoundsFailAtomicallyBeforeFanOut()
     {
         var cardinalityWorkflow = await CreateWorkflowAsync(
@@ -516,6 +1032,385 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             new CreateWorkflowRequest(model, true));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         return (await ReadAsync<WorkflowDetailDto>(response)).Id;
+    }
+
+    private async Task<StartInstanceResultDto> StartWorkflowAsync(long workflowId)
+    {
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(workflowId, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        return await ReadAsync<StartInstanceResultDto>(response);
+    }
+
+    private async Task<PagedResult<InstanceSummaryDto>> ListWorkflowInstancesAsync(string workflowKey)
+    {
+        using var response = await SendAsync(
+            HttpMethod.Get,
+            "/api/instances?workflowKey=" + Uri.EscapeDataString(workflowKey) + "&pageSize=50");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadAsync<PagedResult<InstanceSummaryDto>>(response);
+    }
+
+    private async Task AssertCatchFailureLeftNoOutputsAsync(long instanceId)
+    {
+        var detail = await GetInstanceAsync(instanceId);
+        Assert.Equal("running", detail.Status);
+        Assert.Equal(2, detail.CurrentNodeId);
+        var decisionRows = detail.Variables.Where(variable => variable.VariableName == "decision").ToList();
+        Assert.Single(decisionRows);
+        Assert.Equal("pending", decisionRows[0].Value.GetString());
+        Assert.DoesNotContain(detail.Variables, variable =>
+            variable.VariableName is "score" or "country" or "region" or "tags" or "businessDate" or "note"
+                or "approved" or "receivedAt" or "metadata" or "ratings");
+    }
+
+    private Task<HttpResponseMessage> StartWithBusinessKeyAsync(long workflowId, string value) =>
+        SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(
+                workflowId,
+                null,
+                null,
+                new Dictionary<string, JsonElement>
+                {
+                    ["violationId"] = JsonSerializer.SerializeToElement(value)
+                }));
+
+    private async Task<HttpResponseMessage> SendMessageStartAsync(
+        string workflowKey,
+        string idempotencyKey,
+        string businessKey)
+    {
+        return await SendMessageStartPayloadAsync(
+            workflowKey,
+            new { violationId = businessKey },
+            idempotencyKey);
+    }
+
+    private async Task<HttpResponseMessage> SendMessageStartPayloadAsync(
+        string workflowKey,
+        object payload,
+        string? idempotencyKey = null)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/workflows/" + Uri.EscapeDataString(workflowKey) + "/message-start");
+        request.Headers.Add("X-Client-Id", "tests-client");
+        request.Headers.Add("X-Client-Secret", "tests-secret");
+        request.Headers.Add("X-Correlation", "accepted");
+        if (idempotencyKey is not null) request.Headers.Add("Idempotency-Key", idempotencyKey);
+        request.Content = JsonContent.Create(payload, options: JsonOptions);
+        return await fixture.Client.SendAsync(request);
+    }
+
+    private async Task<HttpResponseMessage> SendCatchMessageAsync(long instanceId, string status)
+        => await SendCatchPayloadAsync(instanceId, new { status });
+
+    private async Task<HttpResponseMessage> SendCatchPayloadAsync(long instanceId, object payload)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/api/instances/{instanceId}/message");
+        request.Headers.Add("X-Client-Id", "tests-client");
+        request.Headers.Add("X-Client-Secret", "tests-secret");
+        request.Headers.Add("X-Correlation", "accepted");
+        request.Content = JsonContent.Create(payload, options: JsonOptions);
+        return await fixture.Client.SendAsync(request);
+    }
+
+    private static MessageOutputMappingModel TypedMapping(
+        string variable,
+        string path,
+        string dataType,
+        bool required = false,
+        bool isArray = false,
+        JsonElement? defaultValue = null,
+        string? validation = null) => new()
+    {
+        Variable = variable,
+        Path = path,
+        DataType = dataType,
+        IsArray = isArray,
+        Required = required,
+        DefaultValue = defaultValue,
+        Validation = validation
+    };
+
+    private static ServiceOutputMappingModel ServiceTypedMapping(
+        string variable,
+        string path,
+        string dataType,
+        bool required = false,
+        bool isArray = false,
+        JsonElement? defaultValue = null,
+        string? validation = null) => new()
+    {
+        Variable = variable,
+        Path = path,
+        DataType = dataType,
+        IsArray = isArray,
+        Required = required,
+        DefaultValue = defaultValue,
+        Validation = validation
+    };
+
+    private static WorkflowModel CreateTypedMessageCatchModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "typed-message-catch-" + suffix,
+            Name = "Typed message catch " + suffix,
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1,
+                    Name = "decision",
+                    DataType = WorkflowVariableTypes.String,
+                    DefaultValue = JsonSerializer.SerializeToElement("pending"),
+                    Validation = "decision != 'blocked'"
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Message",
+                    Type = BpmnFlowNodeTypes.IntermediateMessageCatchEvent,
+                    Message = new MessageCatchModel
+                    {
+                        ClientId = "tests-client",
+                        ClientSecret = "tests-secret",
+                        HeaderName = "X-Correlation",
+                        HeaderValue = "accepted",
+                        OutputMappings =
+                        [
+                            TypedMapping("DECISION", "result.decision", WorkflowVariableTypes.String, required: true,
+                                validation: "score > 0 and country == 'SA'"),
+                            TypedMapping("score", "result.score", WorkflowVariableTypes.Number, required: true),
+                            TypedMapping("country", "details.country", WorkflowVariableTypes.String,
+                                defaultValue: JsonSerializer.SerializeToElement("SA")),
+                            TypedMapping("region", string.Empty, WorkflowVariableTypes.String,
+                                defaultValue: JsonSerializer.SerializeToElement("${country}-central"),
+                                validation: "StartsWith(region, 'SA-')"),
+                            TypedMapping("tags", "tags", WorkflowVariableTypes.String, required: true, isArray: true),
+                            TypedMapping("businessDate", "businessDate", WorkflowVariableTypes.Date, required: true),
+                            TypedMapping("approved", "approved", WorkflowVariableTypes.Boolean),
+                            TypedMapping("receivedAt", "receivedAt", WorkflowVariableTypes.DateTime),
+                            TypedMapping("metadata", "metadata", WorkflowVariableTypes.Json),
+                            TypedMapping("ratings", "ratings", WorkflowVariableTypes.Number, isArray: true),
+                            TypedMapping("note", "note", WorkflowVariableTypes.String)
+                        ]
+                    }
+                },
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateTypedServiceModel(
+        string label,
+        string responseName,
+        bool withBoundary)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var model = new WorkflowModel
+        {
+            Id = "typed-service-" + label + "-" + suffix,
+            Name = "Typed service " + label + " " + suffix,
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1,
+                    Name = "decision",
+                    DataType = WorkflowVariableTypes.String,
+                    DefaultValue = JsonSerializer.SerializeToElement("pending"),
+                    Validation = "decision != 'blocked'"
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Service",
+                    Type = BpmnFlowNodeTypes.ServiceTask,
+                    Service = new ServiceTaskModel
+                    {
+                        Url = "https://tests.local/" + responseName,
+                        StatusVariable = "serviceStatus",
+                        OutputMappings =
+                        [
+                            ServiceTypedMapping("DECISION", "result.decision", WorkflowVariableTypes.String, required: true,
+                                validation: "score > 0 and country == 'SA'"),
+                            ServiceTypedMapping("score", "result.score", WorkflowVariableTypes.Number, required: true),
+                            ServiceTypedMapping("country", "details.country", WorkflowVariableTypes.String,
+                                defaultValue: JsonSerializer.SerializeToElement("SA")),
+                            ServiceTypedMapping("region", string.Empty, WorkflowVariableTypes.String,
+                                defaultValue: JsonSerializer.SerializeToElement("${country}-central"),
+                                validation: "StartsWith(region, 'SA-')"),
+                            ServiceTypedMapping("tags", "tags", WorkflowVariableTypes.String, required: true, isArray: true),
+                            ServiceTypedMapping("businessDate", "businessDate", WorkflowVariableTypes.Date, required: true),
+                            ServiceTypedMapping("approved", "approved", WorkflowVariableTypes.Boolean),
+                            ServiceTypedMapping("receivedAt", "receivedAt", WorkflowVariableTypes.DateTime),
+                            ServiceTypedMapping("metadata", "metadata", WorkflowVariableTypes.Json),
+                            ServiceTypedMapping("ratings", "ratings", WorkflowVariableTypes.Number, isArray: true)
+                        ]
+                    }
+                },
+                new FlowNodeModel { Id = 3, Name = "Normal end", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+
+        if (withBoundary)
+        {
+            model.FlowNodes.Add(new FlowNodeModel
+            {
+                Id = 4,
+                Name = "Service error",
+                Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                AttachedToRef = 2,
+                ErrorVariable = "serviceError"
+            });
+            model.FlowNodes.Add(new FlowNodeModel
+            {
+                Id = 5,
+                Name = "Handle error",
+                Type = BpmnFlowNodeTypes.UserTask
+            });
+            model.FlowNodes.Add(new FlowNodeModel
+            {
+                Id = 6,
+                Name = "Handled end",
+                Type = BpmnFlowNodeTypes.EndEvent
+            });
+            model.SequenceFlows.Add(new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 5 });
+            model.SequenceFlows.Add(new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 6 });
+        }
+
+        return model;
+    }
+
+    private static WorkflowModel CreateRawMessageCatchModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        MessageCatchModel Message() => new()
+        {
+            ClientId = "tests-client",
+            ClientSecret = "tests-secret",
+            HeaderName = "X-Correlation",
+            HeaderValue = "accepted",
+            OutputMappings =
+            [
+                new MessageOutputMappingModel
+                {
+                    Variable = "externalStatus",
+                    Path = "status",
+                    Required = true
+                }
+            ]
+        };
+        return new WorkflowModel
+        {
+            Id = "message-catch-raw-" + suffix,
+            Name = "message-catch-raw-" + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "First message", Type = BpmnFlowNodeTypes.IntermediateMessageCatchEvent, Message = Message() },
+                new FlowNodeModel { Id = 3, Name = "Second message", Type = BpmnFlowNodeTypes.IntermediateMessageCatchEvent, Message = Message() },
+                new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
+            ]
+        };
+    }
+
+    private static void ConfigureBusinessKey(WorkflowModel model, string uniqueness)
+    {
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 90,
+            Name = "violationId",
+            DataType = WorkflowVariableTypes.String,
+            Required = true
+        });
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "violationId",
+            Uniqueness = uniqueness
+        };
+    }
+
+    private static WorkflowModel CreateImmediateBusinessKeyModel(string label, string endType)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var start = new FlowNodeModel
+        {
+            Id = 1,
+            Name = "Start",
+            Type = BpmnFlowNodeTypes.StartEvent,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 90,
+                    Name = "violationId",
+                    DataType = WorkflowVariableTypes.String,
+                    Required = true
+                }
+            ],
+            BusinessKey = new BusinessKeyModel
+            {
+                Variable = "violationId",
+                Uniqueness = BusinessKeyUniqueness.Active
+            }
+        };
+        return new WorkflowModel
+        {
+            Id = "tests-" + label + "-" + suffix,
+            Name = "Tests " + label + " " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                start,
+                new FlowNodeModel { Id = 2, Name = "End", Type = endType }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel
+                {
+                    Id = 101,
+                    Name = "Finish",
+                    SourceRef = 1,
+                    TargetRef = 2
+                }
+            ]
+        };
     }
 
     private async Task<InstanceDetailDto> StartAtReviewAsync(

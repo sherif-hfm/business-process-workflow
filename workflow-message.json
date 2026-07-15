@@ -68,7 +68,11 @@
           {
             "variable": "user-name",
             "path": "user-name",
-            "required": true
+            "dataType": "json",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
           }
         ],
         "idempotencyVariable": ""

@@ -67,6 +67,19 @@ try
                     messageStartEvent) connected by sequence flows, with pass-through routing,
                     role enforcement, claim locking, and NCalc condition evaluation.
 
+                    Start events may derive a generic domain business key from a required
+                    string start variable. Message-start output mappings are both payload
+                    mappings and typed start-variable declarations; their business key must
+                    reference a required scalar string mapping with an explicit payload path.
+                    Keys are exact and case-sensitive after trimming, scoped across every
+                    version of a workflow key, and use an atomic PostgreSQL claim with either
+                    active-only or permanent uniqueness.
+
+                    Service-response and intermediate-message-catch output mappings are also
+                    typed contracts. External JSON values are strict, missing paths may use
+                    ordered defaults, and mapping/process NCalc validations run against the
+                    final overlay before the atomic output batch is persisted.
+
                     ## Authentication
                     The `/api/instances` and `/api/workflows` groups require a bearer JWT
                     validated against a shared symmetric key (`Jwt:Key`). The Blazor UI mints its
@@ -186,6 +199,18 @@ try
             Log.Warning(ex, "Workflow domain exception: {Message}", ex.Message);
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+        }
+        catch (BusinessKeyConflictException ex)
+        {
+            Log.Warning("Workflow business-key conflict with existing instance {ExistingInstanceId}.", ex.ExistingInstanceId);
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            context.Response.Headers.Location = $"/api/instances/{ex.ExistingInstanceId}";
+            await context.Response.WriteAsJsonAsync(new
+            {
+                code = "business_key_conflict",
+                error = ex.Message,
+                existingInstanceId = ex.ExistingInstanceId
+            });
         }
         catch (WorkflowConflictException ex)
         {

@@ -64,7 +64,12 @@
         "outputMappings": [
           {
             "variable": "smsId",
-            "path": "smsId"
+            "path": "smsId",
+            "dataType": "json",
+            "isArray": false,
+            "required": false,
+            "defaultValue": null,
+            "validation": null
           }
         ]
       },

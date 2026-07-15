@@ -90,8 +90,8 @@ public interface IWorkflowEngineService
     /// <summary>
     /// Starts a new instance by delivering a message to a <c>messageStartEvent</c>,
     /// authenticating the caller against the node's expected client id/secret +
-    /// required custom header, mapping the message payload into the node's start
-    /// variables via <c>outputMappings</c>, and (when <c>idempotencyVariable</c> is
+    /// required custom header, declaring/resolving typed start variables through
+    /// <c>outputMappings</c>, and (when <c>idempotencyVariable</c> is
     /// set) deduping a retried webhook by searching for an existing instance of
     /// the workflowKey already carrying that key value. Returns a slim ack (no
     /// definition/variables/history). Throws <c>WorkflowUnauthorizedException</c>
@@ -110,6 +110,7 @@ public interface IWorkflowEngineService
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -122,6 +123,7 @@ public interface IWorkflowEngineService
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -203,7 +205,8 @@ public interface IWorkflowEngineService
 /// are taken from the <c>X-Client-Id</c>/<c>X-Client-Secret</c> request headers;
 /// <see cref="Headers"/> is the full request header collection (the catch node names
 /// its required header in configuration); <see cref="Payload"/> is the raw JSON body
-/// from which <c>outputMappings</c> extract values. <see cref="Actor"/> carries the
+/// from which typed <c>outputMappings</c> atomically resolve and validate values.
+/// <see cref="Actor"/> carries the
 /// resolved client id as the user for attribution/context (no JWT roles).
 /// </summary>
 public sealed record IncomingMessage(

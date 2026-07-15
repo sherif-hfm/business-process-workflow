@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -62,6 +63,8 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
+            instance.BusinessKey,
+            instance.BusinessKeyUniqueness,
             instance.StartedBy,
             instance.CreatedAt,
             instance.UpdatedAt);
@@ -94,6 +97,8 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
         }
 
+        await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
+
         logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
 
         var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
@@ -108,10 +113,38 @@ public sealed class WorkflowEngineService(
 
         EnsureRoleAllowed(startEvent, actor);
 
+        var normalizedStart = NormalizeBusinessKeyInput(startEvent, variableValues);
+        variableValues = normalizedStart.Values;
         ValidateVariableValues(startEvent.Variables, variableValues);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), startedBy, cancellationToken);
+        if (normalizedStart.BusinessKey is not null)
+        {
+            var reservation = await runtime.ReserveBusinessKeyAsync(
+                workflow.WorkflowKey,
+                normalizedStart.BusinessKey,
+                normalizedStart.Uniqueness!,
+                cancellationToken);
+            if (!reservation.Reserved)
+            {
+                throw new BusinessKeyConflictException(reservation.ExistingInstanceId
+                    ?? throw new InvalidOperationException("A conflicting business-key claim has no instance."));
+            }
+        }
+
+        var instance = await runtime.AddInstanceAsync(
+            workflow.Id,
+            workflow.WorkflowKey,
+            normalizedStart.BusinessKey,
+            normalizedStart.Uniqueness,
+            ToSnapshot(startEvent),
+            startedBy,
+            cancellationToken);
+        if (normalizedStart.BusinessKey is not null)
+        {
+            await runtime.BindBusinessKeyAsync(
+                workflow.WorkflowKey, normalizedStart.BusinessKey, instance.Id, cancellationToken);
+        }
 
         // Resolve templated defaults and run NCalc validation against the final values
         // overlaid with sys.*/config.* context, then persist each resolved value.
@@ -164,6 +197,7 @@ public sealed class WorkflowEngineService(
         // a webhook caller addresses the workflow without knowing per-version ids.
         var workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
             ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
+        await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
 
         // Select the messageStartEvent: match the requested externalId when given;
         // else the single message-start node; else reject as ambiguous/absent.
@@ -252,8 +286,10 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        // Extract payload -> values via the shared core (required-miss throws 400).
-        var mappedValues = ExtractMessageOutputs(messageConfig, message.Payload);
+        // Extract supplied payload values. Message-start required/default semantics
+        // are resolved from the typed mappings after the optional idempotency header
+        // is added to the validation context.
+        var suppliedValues = ExtractMessageStartOutputs(startEvent, messageConfig, message.Payload);
 
         // Idempotency: when idempotencyVariable is set, the value for that variable
         // is supplied via the request headers ('Idempotency-Key' or 'X-Idempotency-Key').
@@ -280,9 +316,31 @@ public sealed class WorkflowEngineService(
                     $"Message start event #{startEvent.Id} idempotency variable '{idempotencyVariable}' was not provided via 'Idempotency-Key' or 'X-Idempotency-Key' headers.");
             }
 
-            // Map it as a start variable so it gets validated and saved on the instance
-            mappedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
+            // The transport key is an implicit required string start variable.
+            suppliedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
         }
+
+        var mappingVariables = messageConfig.OutputMappings.Select(ToMessageStartVariable).ToList();
+        var resolutionContext = new Dictionary<string, JsonElement>(authContext, StringComparer.OrdinalIgnoreCase);
+        if (idempotencyKeyValue is not null)
+        {
+            resolutionContext[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
+        }
+
+        var resolvedValues = ResolveVariables(mappingVariables, suppliedValues, resolutionContext);
+        if (idempotencyKeyValue is not null)
+        {
+            resolvedValues[idempotencyVariable!] = JsonSerializer.SerializeToElement(idempotencyKeyValue);
+        }
+        ValidateVariableValues(mappingVariables, resolvedValues);
+        ValidateMessageStartTypes(startEvent, mappingVariables, resolvedValues);
+
+        // Business-key normalization trims the selected mapped string and writes the
+        // same canonical value back into the values persisted on the instance.
+        var normalizedStart = NormalizeBusinessKeyInput(startEvent, resolvedValues);
+        var mappedValues = normalizedStart.Values
+            ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        ValidateResolvedVariableRules(mappingVariables, mappedValues, resolutionContext);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         if (idempotencyKeyValue is not null)
@@ -297,33 +355,66 @@ public sealed class WorkflowEngineService(
             var existing = await FindByIdempotencyKeyAsync(workflowKey, idempotencyVariable!, idempotencyKeyValue, cancellationToken);
             if (existing is not null)
             {
-                logger.LogInformation("Message start request for workflowKey {WorkflowKey} with idempotency key '{IdempotencyKey}' was deduplicated. Existing instance: {InstanceId}",
-                    workflowKey, idempotencyKeyValue, existing.InstanceId);
+                if (existing.BusinessKey is not null
+                    && !string.Equals(existing.BusinessKey, normalizedStart.BusinessKey, StringComparison.Ordinal))
+                {
+                    throw new BusinessKeyConflictException(existing.Id);
+                }
+
+                logger.LogInformation("Message start request for workflowKey {WorkflowKey} was deduplicated. Existing instance: {InstanceId}",
+                    workflowKey, existing.Id);
                 await transaction.CommitAsync(cancellationToken);
-                return existing;
+                return await BuildStartAckAsync(existing.Id, cancellationToken);
+            }
+        }
+
+        if (normalizedStart.BusinessKey is not null)
+        {
+            var reservation = await runtime.ReserveBusinessKeyAsync(
+                workflow.WorkflowKey,
+                normalizedStart.BusinessKey,
+                normalizedStart.Uniqueness!,
+                cancellationToken);
+            if (!reservation.Reserved)
+            {
+                var existingId = reservation.ExistingInstanceId
+                    ?? throw new InvalidOperationException("A conflicting business-key claim has no instance.");
+                await transaction.CommitAsync(cancellationToken);
+                return await BuildStartAckAsync(existingId, cancellationToken);
             }
         }
 
         // Start the instance on the message-start node (pass-through: the loop
         // auto-advances off it on the next hop). Mirror StartInstanceAsync.
-        var instance = await runtime.AddInstanceAsync(workflow.Id, ToSnapshot(startEvent), performedBy, cancellationToken);
+        var instance = await runtime.AddInstanceAsync(
+            workflow.Id,
+            workflow.WorkflowKey,
+            normalizedStart.BusinessKey,
+            normalizedStart.Uniqueness,
+            ToSnapshot(startEvent),
+            performedBy,
+            cancellationToken);
+        if (normalizedStart.BusinessKey is not null)
+        {
+            await runtime.BindBusinessKeyAsync(
+                workflow.WorkflowKey, normalizedStart.BusinessKey, instance.Id, cancellationToken);
+        }
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        // Validate the mapped values as the start variables (required/defaults/
-        // NCalc validation), overlaid with sys.*/config.* context. Only declared
-        // start variables are persisted; extras are ignored.
+        // Every typed output mapping plus the implicit idempotency variable is an
+        // instance variable. Resolution and validation completed before reservation;
+        // persistence remains inside the start transaction.
         var startContext = WithContext(
             new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
             actor, instance, definition, startEvent);
-        var startValues = ResolveAndValidateVariables(startEvent.Variables, mappedValues, startContext);
-        foreach (var pair in startValues)
+        foreach (var pair in mappedValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
         }
 
         // Initialize process-level variables from their authored defaults.
         var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in startValues)
+        foreach (var pair in mappedValues)
         {
             processContext[pair.Key] = pair.Value;
         }
@@ -351,7 +442,7 @@ public sealed class WorkflowEngineService(
     // it (so a retried webhook is a no-op). Returns null when none exists. The
     // search reuses the variable-search path and spans any status (a completed/
     // faulted instance with the key still counts as "already started").
-    private async Task<MessageStartAckDto?> FindByIdempotencyKeyAsync(
+    private async Task<InstanceListItem?> FindByIdempotencyKeyAsync(
         string workflowKey,
         string idempotencyVariable,
         string idempotencyKeyValue,
@@ -366,6 +457,7 @@ public sealed class WorkflowEngineService(
             instanceId: null,
             workflowId: null,
             workflowKey: workflowKey,
+            businessKey: null,
             nodeId: null,
             nodeExternalId: null,
             variableFilters: filters,
@@ -378,8 +470,7 @@ public sealed class WorkflowEngineService(
             return null;
         }
 
-        var existing = paged.Items[0];
-        return await BuildStartAckAsync(existing.Id, cancellationToken);
+        return paged.Items[0];
     }
 
     // Builds the slim start ack: only the resting node identity + status, no
@@ -404,6 +495,7 @@ public sealed class WorkflowEngineService(
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -412,7 +504,7 @@ public sealed class WorkflowEngineService(
         CancellationToken cancellationToken)
     {
         var variableFilters = ParseVariableFilters(variables);
-        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
+        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
         var items = paged.Items.Select(ToSummary).ToList();
         return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
@@ -422,6 +514,7 @@ public sealed class WorkflowEngineService(
         long? instanceId,
         long? workflowId,
         string? workflowKey,
+        string? businessKey,
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
@@ -433,7 +526,7 @@ public sealed class WorkflowEngineService(
         var normalizedRoles = NormalizeRoles(actor.Roles);
         var variableFilters = ParseVariableFilters(variables);
         var paged = await runtime.ListInboxAsync(
-            normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, nodeId,
+            normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, businessKey, nodeId,
             nodeExternalId, variableFilters, page, pageSize, cancellationToken);
 
         if (paged.Items.Count == 0)
@@ -545,6 +638,8 @@ public sealed class WorkflowEngineService(
             multiInstance,
             row.WorkflowId,
             row.WorkflowName,
+            row.BusinessKey,
+            row.BusinessKeyUniqueness,
             row.CurrentNodeId,
             row.CurrentNodeName,
             row.CurrentNodeExternalId,
@@ -1513,11 +1608,18 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        // Map the inbound message payload into instance variables (raw/uncoerced),
-        // mirroring ApplyServiceOutputsAsync: dotted-path extraction via
-        // ServiceTaskTemplating.TryExtract, written via AddVariableAsync.
+        // Resolve the complete typed mapping batch before writing anything. The
+        // authenticated client becomes sys.user for defaults and NCalc rules.
+        var outputContext = WithContext(stored, actor, instance, workflow.Definition, node);
         var mappedValues = await ApplyMessageOutputsAsync(
-            instance.Id, node.Id, performedBy, messageConfig, message.Payload, cancellationToken);
+            instance.Id,
+            node.Id,
+            performedBy,
+            messageConfig,
+            workflow.Definition.Variables,
+            message.Payload,
+            outputContext,
+            cancellationToken);
         foreach (var pair in mappedValues)
         {
             stored[pair.Key] = pair.Value;
@@ -1660,89 +1762,193 @@ public sealed class WorkflowEngineService(
             instance.UpdatedAt);
     }
 
-    // Shared core: parses the inbound message body and extracts each
-    // outputMapping via dotted-path ServiceTaskTemplating.TryExtract into a
-    // name -> value dictionary. A `required` mapping whose path cannot be
-    // resolved (or a missing/invalid JSON body) throws a WorkflowDomainException
-    // so the caller can fail before any variables are written. Non-required
-    // misses are silently skipped (the variable is simply absent from the dict).
-    // Used by the message catch (which then writes the dict to the instance) and
-    // the message start (which feeds the dict as the start-variable values).
-    private Dictionary<string, JsonElement> ExtractMessageOutputs(
+    // Message-start mappings are typed start-variable declarations. A missing path
+    // is not an extraction failure here: defaults and final required checks run in
+    // declaration order after extraction. A supplied value, however, must already
+    // have the declared JSON type and never falls back to the default.
+    private static Dictionary<string, JsonElement> ExtractMessageStartOutputs(
+        FlowNodeModel node,
         MessageCatchModel message,
         JsonElement? payload)
     {
         var result = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-
-        if (message.OutputMappings.Count == 0)
-        {
-            return result;
-        }
-
         if (payload is not { } body || body.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-            var firstRequired = message.OutputMappings.FirstOrDefault(m => m.Required);
-            if (firstRequired is not null)
-            {
-                throw new WorkflowDomainException(
-                    $"Message output mapping for '{firstRequired.Variable}' failed: no message body was provided.");
-            }
-
             return result;
         }
 
-        JsonDocument document;
-        try
+        foreach (var mapping in message.OutputMappings)
         {
-            document = JsonDocument.Parse(body.GetRawText());
-        }
-        catch (JsonException ex)
-        {
-            logger.LogWarning(ex, "Failed to parse message payload JSON.");
-            var firstRequired = message.OutputMappings.FirstOrDefault(m => m.Required);
-            if (firstRequired is not null)
+            if (string.IsNullOrWhiteSpace(mapping.Path)
+                || !ServiceTaskTemplating.TryExtract(body, mapping.Path, out var value))
+            {
+                continue;
+            }
+
+            var variable = ToMessageStartVariable(mapping);
+            if (!TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
             {
                 throw new WorkflowDomainException(
-                    $"Message output mapping for '{firstRequired.Variable}' (path '{firstRequired.Path}') failed: message body is not valid JSON.");
+                    $"Message start event #{node.Id} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
-
-            return result;
-        }
-
-        using (document)
-        {
-            foreach (var mapping in message.OutputMappings)
-            {
-                if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
-                {
-                    result[mapping.Variable] = value.Clone();
-                }
-                else if (mapping.Required)
-                {
-                    throw new WorkflowDomainException(
-                        $"Message output mapping for '{mapping.Variable}' failed: path '{mapping.Path}' was not found in the message body.");
-                }
-            }
+            result[mapping.Variable] = value.Clone();
         }
 
         return result;
     }
 
-    // Maps the inbound message payload into instance variables using the catch
-    // node's outputMappings: dotted-path extraction (numeric segments index
-    // arrays), values written raw via AddVariableAsync (no coercion; targets need
-    // not be declared, mirroring a serviceTask). A `required` mapping whose path
-    // cannot be resolved throws a WorkflowDomainException (400) before any
-    // variables are written, so a partial delivery does not persist.
+    private static VariableModel ToMessageStartVariable(MessageOutputMappingModel mapping) => new()
+    {
+        Name = mapping.Variable,
+        DataType = mapping.DataType ?? string.Empty,
+        IsArray = mapping.IsArray ?? false,
+        Required = mapping.Required,
+        DefaultValue = mapping.DefaultValue,
+        Validation = mapping.Validation
+    };
+
+    private static void ValidateMessageStartTypes(
+        FlowNodeModel node,
+        IReadOnlyList<VariableModel> variables,
+        Dictionary<string, JsonElement> values)
+    {
+        foreach (var variable in variables)
+        {
+            if (!TryGetValue(values, variable.Name, out var value))
+            {
+                continue;
+            }
+
+            if (!TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} output mapping '{variable.Name}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+        }
+    }
+
+    // Resolves typed service/catch outputs entirely in memory. External values
+    // are strict; defaults resolve in mapping order; all mapping validations and
+    // matching process-variable validations see the final overlay.
+    private static Dictionary<string, JsonElement> ResolveTypedOutputs(
+        int nodeId,
+        string kind,
+        IReadOnlyList<TypedOutputRuntime> mappings,
+        IReadOnlyList<VariableModel> processVariables,
+        JsonElement? payload,
+        Dictionary<string, JsonElement> contextBase)
+    {
+        var supplied = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        if (payload is { } body
+            && body.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+        {
+            foreach (var mapping in mappings)
+            {
+                if (string.IsNullOrWhiteSpace(mapping.Path)
+                    || !ServiceTaskTemplating.TryExtract(body, mapping.Path, out var value))
+                {
+                    continue;
+                }
+
+                if (!TypedOutputValueValidator.IsValid(value, mapping.DataType, mapping.IsArray))
+                {
+                    throw new WorkflowDomainException(
+                        $"{kind} #{nodeId} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(mapping.DataType, mapping.IsArray)}.");
+                }
+                supplied[mapping.Variable] = value.Clone();
+            }
+        }
+
+        var declarations = mappings.Select(mapping => new VariableModel
+        {
+            Name = mapping.Variable,
+            DataType = mapping.DataType,
+            IsArray = mapping.IsArray,
+            Required = mapping.Required,
+            DefaultValue = mapping.DefaultValue,
+            Validation = mapping.Validation
+        }).ToList();
+
+        var resolved = ResolveVariables(declarations, supplied, contextBase);
+        ValidateVariableValues(declarations, resolved);
+        foreach (var mapping in mappings)
+        {
+            if (TryGetValue(resolved, mapping.Variable, out var value)
+                && !TypedOutputValueValidator.IsValid(value, mapping.DataType, mapping.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(mapping.DataType, mapping.IsArray)}.");
+            }
+        }
+
+        ValidateResolvedVariableRules(declarations, resolved, contextBase);
+
+        var writtenProcessVariables = processVariables
+            .Where(processVariable =>
+                mappings.Any(mapping => string.Equals(
+                    mapping.Variable,
+                    processVariable.Name,
+                    StringComparison.OrdinalIgnoreCase))
+                && TryGetValue(resolved, processVariable.Name, out _))
+            .ToList();
+        ValidateResolvedVariableRules(writtenProcessVariables, resolved, contextBase);
+        return resolved;
+    }
+
+    private static TypedOutputRuntime ToTypedOutputRuntime(
+        MessageOutputMappingModel mapping,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var processVariable = processVariables.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+        return new TypedOutputRuntime(
+            processVariable?.Name ?? mapping.Variable,
+            mapping.Path,
+            mapping.Required,
+            mapping.DataType ?? processVariable?.DataType ?? WorkflowVariableTypes.Json,
+            mapping.IsArray ?? processVariable?.IsArray ?? false,
+            mapping.DefaultValue,
+            mapping.Validation);
+    }
+
+    private static TypedOutputRuntime ToTypedOutputRuntime(
+        ServiceOutputMappingModel mapping,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var processVariable = processVariables.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+        return new TypedOutputRuntime(
+            processVariable?.Name ?? mapping.Variable,
+            mapping.Path,
+            mapping.Required,
+            mapping.DataType ?? processVariable?.DataType ?? WorkflowVariableTypes.Json,
+            mapping.IsArray ?? processVariable?.IsArray ?? false,
+            mapping.DefaultValue,
+            mapping.Validation);
+    }
+
+    // Message catch failures throw before any AddVariableAsync call, so the
+    // endpoint returns 400 and the locked instance remains on the catch node.
     private async Task<Dictionary<string, JsonElement>> ApplyMessageOutputsAsync(
         long instanceId,
         int nodeId,
         string? setBy,
         MessageCatchModel message,
+        IReadOnlyList<VariableModel> processVariables,
         JsonElement? payload,
+        Dictionary<string, JsonElement> contextBase,
         CancellationToken cancellationToken)
     {
-        var values = ExtractMessageOutputs(message, payload);
+        var mappings = message.OutputMappings
+            .Select(mapping => ToTypedOutputRuntime(mapping, processVariables))
+            .ToList();
+        var values = ResolveTypedOutputs(
+            nodeId,
+            "Message catch event",
+            mappings,
+            processVariables,
+            payload,
+            contextBase);
         foreach (var pair in values)
         {
             await runtime.AddVariableAsync(instanceId, pair.Key, nodeId, setBy, pair.Value, cancellationToken);
@@ -2197,7 +2403,16 @@ public sealed class WorkflowEngineService(
 
         if (result.IsSuccess)
         {
-            var mappingFailure = await ApplyServiceOutputsAsync(instance.Id, node.Id, performedBy, service, result, storedOverlay, cancellationToken);
+            var mappingFailure = await ApplyServiceOutputsAsync(
+                instance.Id,
+                node.Id,
+                performedBy,
+                service,
+                result,
+                definition.Variables,
+                new Dictionary<string, JsonElement>(variables, StringComparer.OrdinalIgnoreCase),
+                storedOverlay,
+                cancellationToken);
             if (mappingFailure is not null)
             {
                 // A required output mapping could not be resolved from the 2xx
@@ -2229,56 +2444,65 @@ public sealed class WorkflowEngineService(
         return TaskExecutionOutcome.Fail($"Service task #{node.Id} call to '{url}' failed ({reason}).");
     }
 
-    // Applies a service task's output mappings to the response body. Returns null
-    // on success, or a human-readable failure reason when a `required` mapping's
-    // path cannot be resolved from the body (the caller treats that as a task
-    // failure so an attached errorBoundaryEvent can route the error path, or the
-    // transition rolls back with a 400). Non-required misses are silently skipped,
-    // matching the historical behavior.
+    // Stages and validates every service response mapping before writing any of
+    // them. A mapping error is returned as a task failure so an attached boundary
+    // can catch it; a successful batch is then appended atomically in the current
+    // instance transaction.
     private async Task<string?> ApplyServiceOutputsAsync(
         long instanceId,
         int nodeId,
         string? setBy,
         ServiceTaskModel service,
         ServiceTaskResult result,
+        IReadOnlyList<VariableModel> processVariables,
+        Dictionary<string, JsonElement> contextBase,
         Dictionary<string, JsonElement> storedOverlay,
         CancellationToken cancellationToken)
     {
-        if (service.OutputMappings.Count == 0 || string.IsNullOrWhiteSpace(result.Body))
+        if (service.OutputMappings.Count == 0)
         {
             return null;
         }
 
-        JsonDocument document;
+        JsonDocument? document = null;
         try
         {
-            document = JsonDocument.Parse(result.Body);
+            if (!string.IsNullOrWhiteSpace(result.Body))
+            {
+                document = JsonDocument.Parse(result.Body);
+            }
         }
         catch (JsonException ex)
         {
             logger.LogWarning(ex, "Failed to parse HTTP service task response body as JSON. Body: {Body}", result.Body);
-            // Non-JSON response body: any required mapping fails; optional ones are skipped.
-            var firstRequired = service.OutputMappings.FirstOrDefault(m => m.Required);
-            return firstRequired is null
-                ? null
-                : $"Service task output mapping for '{firstRequired.Variable}' (path '{firstRequired.Path}') failed: response body is not valid JSON.";
         }
 
-        using (document)
+        try
         {
-            foreach (var mapping in service.OutputMappings)
+            using (document)
             {
-                if (ServiceTaskTemplating.TryExtract(document.RootElement, mapping.Path, out var value))
+                var mappings = service.OutputMappings
+                    .Select(mapping => ToTypedOutputRuntime(mapping, processVariables))
+                    .ToList();
+                var payload = document is null ? (JsonElement?)null : document.RootElement;
+                var values = ResolveTypedOutputs(
+                    nodeId,
+                    "Service task",
+                    mappings,
+                    processVariables,
+                    payload,
+                    contextBase);
+
+                foreach (var pair in values)
                 {
-                    var cloned = value.Clone();
-                    await runtime.AddVariableAsync(instanceId, mapping.Variable, nodeId, setBy, cloned, cancellationToken);
-                    storedOverlay[mapping.Variable] = cloned;
-                }
-                else if (mapping.Required)
-                {
-                    return $"Service task output mapping for '{mapping.Variable}' failed: path '{mapping.Path}' was not found in the response.";
+                    await runtime.AddVariableAsync(instanceId, pair.Key, nodeId, setBy, pair.Value, cancellationToken);
+                    storedOverlay[pair.Key] = pair.Value;
                 }
             }
+        }
+        catch (WorkflowDomainException ex)
+        {
+            return ex.Message;
         }
 
         return null;
@@ -2653,6 +2877,16 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement>? variableValues,
         Dictionary<string, JsonElement> contextBase)
     {
+        var resolved = ResolveVariables(variables, variableValues, contextBase);
+        ValidateResolvedVariableRules(variables, resolved, contextBase);
+        return resolved;
+    }
+
+    private static Dictionary<string, JsonElement> ResolveVariables(
+        IReadOnlyList<VariableModel> variables,
+        Dictionary<string, JsonElement>? variableValues,
+        Dictionary<string, JsonElement> contextBase)
+    {
         var working = new Dictionary<string, JsonElement>(contextBase, StringComparer.OrdinalIgnoreCase);
         var resolved = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
 
@@ -2670,6 +2904,20 @@ public sealed class WorkflowEngineService(
             }
         }
 
+        return resolved;
+    }
+
+    private static void ValidateResolvedVariableRules(
+        IReadOnlyList<VariableModel> variables,
+        Dictionary<string, JsonElement> resolved,
+        Dictionary<string, JsonElement> contextBase)
+    {
+        var working = new Dictionary<string, JsonElement>(contextBase, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in resolved)
+        {
+            working[pair.Key] = pair.Value;
+        }
+
         foreach (var variable in variables)
         {
             if (string.IsNullOrWhiteSpace(variable.Validation))
@@ -2683,8 +2931,6 @@ public sealed class WorkflowEngineService(
                     $"Variable '{variable.Name}' failed validation: '{variable.Validation}'.");
             }
         }
-
-        return resolved;
     }
 
     // A missing optional variable falls back to its authored default: any ${...}
@@ -2792,6 +3038,8 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
+            instance.BusinessKey,
+            instance.BusinessKeyUniqueness,
             instance.StartedBy,
             instance.CreatedAt,
             instance.UpdatedAt,
@@ -2830,6 +3078,75 @@ public sealed class WorkflowEngineService(
         }
 
         return workflow;
+    }
+
+    private async Task EnsureBusinessKeyFamilyStartableAsync(
+        WorkflowDefinitionRecord workflow,
+        CancellationToken cancellationToken)
+    {
+        var scopeActive = await definitions.IsBusinessKeyScopeActiveAsync(
+            workflow.WorkflowKey, cancellationToken);
+        var hasBusinessKeys = workflow.Definition.FlowNodes.Any(node =>
+            BpmnFlowNodeTypes.IsEntry(node.Type) && node.BusinessKey is not null);
+
+        if (scopeActive && !hasBusinessKeys)
+        {
+            throw new WorkflowDomainException(
+                "This older unkeyed workflow version cannot start after business keys were enabled for its workflow key.");
+        }
+
+        if (!scopeActive && hasBusinessKeys)
+        {
+            throw new WorkflowDomainException(
+                "This keyed workflow version cannot start until it becomes the default published version.");
+        }
+    }
+
+    private static BusinessKeyStartInput NormalizeBusinessKeyInput(
+        FlowNodeModel startEvent,
+        Dictionary<string, JsonElement>? values)
+    {
+        if (startEvent.BusinessKey is null)
+        {
+            return new BusinessKeyStartInput(values, null, null);
+        }
+
+        var variableName = startEvent.BusinessKey.Variable;
+        if (!TryGetValue(values, variableName, out var supplied)
+            || supplied.ValueKind != JsonValueKind.String)
+        {
+            throw new WorkflowDomainException(
+                $"Business key variable '{variableName}' must be supplied as an explicit JSON string.");
+        }
+
+        var businessKey = supplied.GetString()?.Trim() ?? string.Empty;
+        if (businessKey.Length == 0)
+        {
+            throw new WorkflowDomainException("Business key must not be blank.");
+        }
+
+        if (businessKey.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException("Business key must not exceed 300 characters.");
+        }
+
+        var normalized = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        if (values is not null)
+        {
+            foreach (var pair in values)
+            {
+                if (!string.Equals(pair.Key, variableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    normalized[pair.Key] = pair.Value.Clone();
+                }
+            }
+        }
+        normalized[variableName] = JsonSerializer.SerializeToElement(businessKey);
+
+        return new BusinessKeyStartInput(
+            normalized,
+            businessKey,
+            startEvent.BusinessKey.Uniqueness);
     }
 
     private async Task<WorkflowDefinitionRecord> GetWorkflowAsync(long id, CancellationToken cancellationToken) =>
@@ -2884,6 +3201,8 @@ public sealed class WorkflowEngineService(
             row.CurrentNodeName,
             row.CurrentNodeExternalId,
             row.Status,
+            row.BusinessKey,
+            row.BusinessKeyUniqueness,
             row.StartedBy,
             row.CreatedAt,
             row.UpdatedAt,
@@ -3204,6 +3523,20 @@ public sealed class WorkflowEngineService(
 
         return values.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
     }
+
+    private sealed record BusinessKeyStartInput(
+        Dictionary<string, JsonElement>? Values,
+        string? BusinessKey,
+        string? Uniqueness);
+
+    private sealed record TypedOutputRuntime(
+        string Variable,
+        string Path,
+        bool Required,
+        string DataType,
+        bool IsArray,
+        JsonElement? DefaultValue,
+        string? Validation);
 
     // Outcome of executing a serviceTask/scriptTask in the pass-through loop. On
     // Success the loop advances down the node's single outgoing flow. On Failure
