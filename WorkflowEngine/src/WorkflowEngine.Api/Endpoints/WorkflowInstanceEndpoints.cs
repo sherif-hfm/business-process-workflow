@@ -175,7 +175,8 @@ public static class WorkflowInstanceEndpoints
     /// <param name="businessKey">Optional. Exact, case-sensitive business-key match after trimming.</param>
     /// <param name="nodeId">Optional. Filter by the ID of the current resting flow node.</param>
     /// <param name="nodeExternalId">Optional. Filter by the external ID of the current resting flow node (case-insensitive).</param>
-    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
+    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
+    /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each summary (default false).</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
     /// <param name="service">The workflow engine service.</param>
@@ -195,13 +196,14 @@ public static class WorkflowInstanceEndpoints
         int? nodeId,
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
+        bool? includeVariables,
         int? page,
         int? pageSize,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, includeVariables ?? false, p, s, cancellationToken));
     }
 
     /// <summary>
@@ -213,7 +215,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="businessKey">Optional. Exact, case-sensitive business-key match after trimming.</param>
     /// <param name="nodeId">Optional. Filter by flow node ID.</param>
     /// <param name="nodeExternalId">Optional. Filter by flow node external ID (case-insensitive).</param>
-    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's scalar value, AND-combined.</param>
+    /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
     /// <param name="principal">The security principal of the current actor.</param>

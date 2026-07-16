@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using WorkflowEngine.Infrastructure.Data;
@@ -12,6 +13,112 @@ namespace WorkflowEngine.Tests;
 [Collection(PostgresApiCollection.Name)]
 public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
 {
+    [Fact]
+    public async Task InstanceListVariablesAddOnePageBoundedQueryAndKeepOnlyLatestValues()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var workflowKey = $"list-variable-projection-{suffix}";
+        long newestInstanceId;
+
+        await using (var setup = fixture.CreateDbContext())
+        {
+            var definition = new WorkflowDefinitionEntity
+            {
+                Name = workflowKey,
+                WorkflowKey = workflowKey,
+                Version = 1,
+                IsPublished = true,
+                Definition = new WorkflowModel { Id = workflowKey, Name = workflowKey }
+            };
+            setup.WorkflowDefinitions.Add(definition);
+            await setup.SaveChangesAsync();
+
+            var now = DateTimeOffset.UtcNow;
+            var instances = Enumerable.Range(0, 3)
+                .Select(index => new WorkflowInstanceEntity
+                {
+                    WorkflowDefinitionId = definition.Id,
+                    WorkflowKey = workflowKey,
+                    Status = "running",
+                    CreatedAt = now.AddSeconds(index),
+                    UpdatedAt = now.AddSeconds(index)
+                })
+                .ToList();
+            setup.WorkflowInstances.AddRange(instances);
+            await setup.SaveChangesAsync();
+
+            setup.ExecutionTokens.AddRange(instances.Select(instance => new ExecutionTokenEntity
+            {
+                InstanceId = instance.Id,
+                NodeId = 2,
+                NodeName = "Review",
+                NodeType = "userTask",
+                Status = ExecutionTokenStatuses.Active
+            }));
+            await setup.SaveChangesAsync();
+
+            newestInstanceId = instances[^1].Id;
+            setup.InstanceVariables.AddRange(
+                new InstanceVariableEntity
+                {
+                    InstanceId = instances[0].Id,
+                    VariableName = "outOfPage",
+                    ValueJson = JsonDocument.Parse("true")
+                },
+                new InstanceVariableEntity
+                {
+                    InstanceId = newestInstanceId,
+                    VariableName = "requestAmount",
+                    ValueJson = JsonDocument.Parse("100")
+                });
+            await setup.SaveChangesAsync();
+
+            setup.InstanceVariables.Add(new InstanceVariableEntity
+            {
+                InstanceId = newestInstanceId,
+                VariableName = "requestAmount",
+                ValueJson = JsonDocument.Parse("5000")
+            });
+            await setup.SaveChangesAsync();
+        }
+
+        var baselineCounter = new ReaderCommandCounter();
+        var baselineOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.DataSource)
+            .AddInterceptors(baselineCounter)
+            .Options;
+        await using var baselineContext = new AppDbContext(baselineOptions);
+        var baselineRepository = new WorkflowRuntimeRepository(baselineContext);
+        var baseline = await baselineRepository.ListInstancesAsync(
+            null, null, null, workflowKey, null, null, null, [], false, 1, 2, CancellationToken.None);
+
+        Assert.Equal(2, baseline.Items.Count);
+        Assert.All(baseline.Items, item => Assert.Null(item.Variables));
+        Assert.Empty(baselineCounter.LatestVariableInstanceIds);
+
+        var includedCounter = new ReaderCommandCounter();
+        var includedOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.DataSource)
+            .AddInterceptors(includedCounter)
+            .Options;
+        await using var includedContext = new AppDbContext(includedOptions);
+        var includedRepository = new WorkflowRuntimeRepository(includedContext);
+        var included = await includedRepository.ListInstancesAsync(
+            null, null, null, workflowKey, null, null, null, [], true, 1, 2, CancellationToken.None);
+
+        Assert.Equal(baselineCounter.ReaderCommands + 1, includedCounter.ReaderCommands);
+        Assert.Equal(baseline.Items.Select(item => item.Id), included.Items.Select(item => item.Id));
+        Assert.All(included.Items, item => Assert.NotNull(item.Variables));
+        Assert.Equal(5000, included.Items.Single(item => item.Id == newestInstanceId)
+            .Variables!["requestAmount"].GetInt32());
+        Assert.Empty(included.Items.Single(item => item.Id != newestInstanceId).Variables!);
+
+        var queriedIds = Assert.Single(includedCounter.LatestVariableInstanceIds);
+        Assert.Equal(
+            included.Items.Select(item => item.Id).OrderBy(id => id),
+            queriedIds.OrderBy(id => id));
+    }
+
     [Fact]
     public async Task Aggregate_projection_query_counts_do_not_grow_with_execution_or_item_count()
     {
@@ -140,8 +247,13 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
     private sealed class ReaderCommandCounter : DbCommandInterceptor
     {
         public int ReaderCommands { get; private set; }
+        public List<long[]> LatestVariableInstanceIds { get; } = [];
 
-        public void Reset() => ReaderCommands = 0;
+        public void Reset()
+        {
+            ReaderCommands = 0;
+            LatestVariableInstanceIds.Clear();
+        }
 
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
             DbCommand command,
@@ -150,6 +262,14 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
             CancellationToken cancellationToken = default)
         {
             ReaderCommands++;
+            if (command.CommandText.Contains("SELECT DISTINCT ON", StringComparison.Ordinal))
+            {
+                var ids = command.Parameters.Cast<DbParameter>()
+                    .Select(parameter => parameter.Value)
+                    .OfType<long[]>()
+                    .Single();
+                LatestVariableInstanceIds.Add(ids.ToArray());
+            }
             return ValueTask.FromResult(result);
         }
     }

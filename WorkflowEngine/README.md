@@ -63,6 +63,7 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `POST /api/workflows/{id}/publish`
 - `POST /api/instances`
 - `GET /api/instances?status=running`
+- `GET /api/instances?includeVariables=true`
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/{id}`
 - `GET /api/instances/{id}/flows`
@@ -103,7 +104,12 @@ The live API runner writes Markdown and JSON evidence under the repository-level
 The list (`GET /api/instances`) and inbox (`GET /api/instances/inbox`) endpoints
 accept repeated `var=name:value` query params to filter by instance variable
 values, e.g. `GET /api/instances?var=reqno:4711&var=priority:high`. Each pair is
-an exact, case-insensitive match on the variable's scalar value; multiple pairs
-are AND-combined, and on the inbox the filter is additive on top of the caller's
-role/claim scope. In the Blazor UI, the Instances and Inbox pages expose this as
-a comma-separated `name:value` filter box.
+an exact, case-insensitive match on the variable's latest scalar value; multiple
+pairs are AND-combined, and on the inbox the filter is additive on top of the
+caller's role/claim scope. In the Blazor UI, the Instances and Inbox pages expose
+this as a comma-separated `name:value` filter box.
+
+The instance list also accepts `includeVariables=true`. Each returned summary
+then includes a `variables` object containing the latest JSON value for every
+variable name; instances without variables receive an empty object. The property
+is omitted, and no variable query runs, when the parameter is absent or false.

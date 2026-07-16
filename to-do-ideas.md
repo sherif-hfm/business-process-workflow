@@ -1,6 +1,4 @@
 
-- check conflict claim and Assignee 
-- in instance list api add Node ID  and External ID to return 
 
 - add Parallel Gateways
 - async flow asyncAfter/asyncBefore
@@ -14,6 +12,8 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add variables latest values to GET /api/instances response (done)
+- in GET /api/instances endpoint add Node ID  and External ID to return (existing) 
 - start event and message start event business keys unique constraints (done)
 - start event Idempotency (done)
 - parallel multi instance and sequence multi instance for user task (done)

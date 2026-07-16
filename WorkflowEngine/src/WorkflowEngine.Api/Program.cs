@@ -160,7 +160,11 @@ try
                 {
                     if (string.Equals(param.Name, "var", StringComparison.Ordinal) && param.In == ParameterLocation.Query)
                     {
-                        param.Description = "Repeated `var=name:value` filter. Exact, case-insensitive match on an instance variable's scalar value. Multiple entries are AND-combined. Array/object variables never match.";
+                        param.Description = "Repeated `var=name:value` filter. Exact, case-insensitive match on an instance variable's latest scalar value. Multiple entries are AND-combined. Array/object variables never match.";
+                    }
+                    else if (string.Equals(param.Name, "includeVariables", StringComparison.Ordinal) && param.In == ParameterLocation.Query)
+                    {
+                        param.Description = "When true, each instance summary includes a `variables` object containing the latest value for every variable. Defaults to false.";
                     }
                 }
             }

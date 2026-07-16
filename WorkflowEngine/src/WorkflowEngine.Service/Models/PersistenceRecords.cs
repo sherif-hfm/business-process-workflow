@@ -125,7 +125,8 @@ public sealed record InstanceListItem(
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    UserTaskWorkSummaryRecord? UserTasks);
+    UserTaskWorkSummaryRecord? UserTasks,
+    IReadOnlyDictionary<string, JsonElement>? Variables);
 
 public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
 

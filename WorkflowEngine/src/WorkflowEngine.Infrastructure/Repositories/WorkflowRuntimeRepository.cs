@@ -60,6 +60,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -100,7 +101,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var items = await ToListItemsAsync(entities, cancellationToken);
+        var items = await ToListItemsAsync(entities, includeVariables, cancellationToken);
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
 
@@ -348,8 +349,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             : " AND lower(t.\"NodeExternalId\") = lower(@nodeExternalId)");
     }
 
-    // Appends one correlated EXISTS per filter: the variable must exist on the
-    // instance with a scalar value equal (case-insensitively) to the target.
+    // Appends one correlated lookup per filter. Only the newest row for the
+    // variable participates, and its scalar value must equal the target
+    // case-insensitively. A latest array/object value never matches, and an older
+    // scalar value cannot match through it.
     // Names/values bind as parameters, so there is no SQL injection surface.
     // `#>> ARRAY[]::text[]` extracts the root scalar as text (equivalent to the
     // `#>> '{}'` literal but brace-free, since FromSqlRaw runs string.Format
@@ -364,8 +367,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             args.Add(($"vn{i}", filters[i].Name));
             args.Add(($"vv{i}", filters[i].Value));
             where.Append(
-                $" AND EXISTS (SELECT 1 FROM instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
-                $" AND v.\"VariableName\" = @vn{i} AND lower(v.\"ValueJson\" #>> ARRAY[]::text[]) = lower(@vv{i}))");
+                $" AND (SELECT CASE WHEN jsonb_typeof(v.\"ValueJson\") NOT IN ('array', 'object')" +
+                $" THEN lower(v.\"ValueJson\" #>> ARRAY[]::text[]) END" +
+                $" FROM instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
+                $" AND v.\"VariableName\" = @vn{i} ORDER BY v.\"Id\" DESC LIMIT 1) = lower(@vv{i})");
         }
     }
 
@@ -374,6 +379,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
     private async Task<IReadOnlyList<InstanceListItem>> ToListItemsAsync(
         IReadOnlyList<WorkflowInstanceEntity> entities,
+        bool includeVariables,
         CancellationToken cancellationToken)
     {
         if (entities.Count == 0)
@@ -398,6 +404,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .GroupBy(t => t.InstanceId)
             .ToDictionary(g => g.Key, g => g.First());
         var taskSummaries = await GetUserTaskWorkSummariesAsync(instanceIds, cancellationToken);
+        var variablesByInstance = includeVariables
+            ? await GetLatestVariableValuesAsync(instanceIds, cancellationToken)
+            : null;
 
         return entities.Select(e =>
         {
@@ -407,6 +416,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 throw new InvalidOperationException($"Workflow instance #{e.Id} has no execution token.");
             }
             taskSummaries.TryGetValue(e.Id, out var taskSummary);
+            IReadOnlyDictionary<string, System.Text.Json.JsonElement>? variables = null;
+            if (variablesByInstance is not null)
+            {
+                variables = variablesByInstance.TryGetValue(e.Id, out var values)
+                    ? values
+                    : new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase);
+            }
+
             return new InstanceListItem(
                 e.Id,
                 definition?.Id ?? 0,
@@ -432,8 +449,35 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 e.StartedBy,
                 e.CreatedAt,
                 e.UpdatedAt,
-                taskSummary);
+                taskSummary,
+                variables);
         }).ToList();
+    }
+
+    private async Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, System.Text.Json.JsonElement>>>
+        GetLatestVariableValuesAsync(
+            IReadOnlyCollection<long> instanceIds,
+            CancellationToken cancellationToken)
+    {
+        var ids = instanceIds.ToArray();
+        var rows = await dbContext.InstanceVariables
+            .FromSqlInterpolated($"""
+                SELECT DISTINCT ON (v."InstanceId", v."VariableName") v.*
+                FROM instance_variables AS v
+                WHERE v."InstanceId" = ANY ({ids})
+                ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
+                """)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(variable => variable.InstanceId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyDictionary<string, System.Text.Json.JsonElement>)group.ToDictionary(
+                    variable => variable.VariableName,
+                    variable => variable.ValueJson.RootElement.Clone(),
+                    StringComparer.OrdinalIgnoreCase));
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken)
@@ -509,7 +553,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 token.Id, task.Id, task.MultiInstanceExecutionId,
                 task.ItemIndex, task.ItemValueJson?.RootElement.Clone(), task.Assignee, task.NodeId, task.NodeName,
                 task.NodeExternalId, token.NodeType, task.Roles, task.RequiresClaim, instance.Status,
-                task.ClaimedBy, instance.StartedBy, task.CreatedAt, task.UpdatedAt, null);
+                task.ClaimedBy, instance.StartedBy, task.CreatedAt, task.UpdatedAt, null, null);
         }).ToList();
     }
 

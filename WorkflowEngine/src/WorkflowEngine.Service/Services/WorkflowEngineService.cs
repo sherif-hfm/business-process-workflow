@@ -477,12 +477,13 @@ public sealed class WorkflowEngineService(
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
+        bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
         var variableFilters = ParseVariableFilters(variables);
-        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, page, pageSize, cancellationToken);
+        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, includeVariables, page, pageSize, cancellationToken);
         var items = paged.Items.Select(ToSummary).ToList();
         return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
@@ -3185,7 +3186,8 @@ public sealed class WorkflowEngineService(
             row.StartedBy,
             row.CreatedAt,
             row.UpdatedAt,
-            row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks));
+            row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks),
+            row.Variables);
 
     private async Task<UserTaskDto?> BuildUserTaskDtoAsync(UserTaskRecord task, CancellationToken cancellationToken)
     {

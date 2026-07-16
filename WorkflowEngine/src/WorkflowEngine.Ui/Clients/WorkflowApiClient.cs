@@ -75,6 +75,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         long? workflowId = null,
         string? workflowKey = null,
         string? businessKey = null,
+        bool includeVariables = false,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
@@ -101,6 +102,11 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         if (!string.IsNullOrWhiteSpace(businessKey))
         {
             url += $"&businessKey={Uri.EscapeDataString(businessKey.Trim())}";
+        }
+
+        if (includeVariables)
+        {
+            url += "&includeVariables=true";
         }
 
         if (nodeId is not null)

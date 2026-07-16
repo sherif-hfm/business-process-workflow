@@ -54,6 +54,7 @@ public interface IWorkflowRuntimeRepository
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

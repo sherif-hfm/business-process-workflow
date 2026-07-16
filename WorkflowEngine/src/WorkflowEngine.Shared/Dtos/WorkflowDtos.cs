@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using WorkflowEngine.Shared.Models;
 
 namespace WorkflowEngine.Shared.Dtos;
@@ -175,6 +176,7 @@ public sealed record UserTaskActionAckDto(
 /// <param name="CreatedAt">The timestamp when the instance was created.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 /// <param name="UserTasks">Aggregate state for the current open user-task work, when present.</param>
+/// <param name="Variables">Latest instance variable values when explicitly requested; otherwise omitted.</param>
 public sealed record InstanceSummaryDto(
     long Id,
     long WorkflowId,
@@ -189,7 +191,9 @@ public sealed record InstanceSummaryDto(
     string? StartedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    UserTaskWorkSummaryDto? UserTasks);
+    UserTaskWorkSummaryDto? UserTasks,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, JsonElement>? Variables);
 
 /// <summary>
 /// Represents full details of a workflow instance, including variable values and history.

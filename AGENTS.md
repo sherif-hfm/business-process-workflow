@@ -468,7 +468,7 @@ what the cross-version `workflowKey` instance search matches.
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
   `startEventId`; a configured idempotency value is accepted only through its
   HTTP header and a duplicate returns `StartConflictDto` with 409/`Location`),
-  `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged),
+  `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&page=&pageSize=` (paged),
   `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
@@ -482,6 +482,9 @@ what the cross-version `workflowKey` instance search matches.
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
   offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
   repository can later switch to keyset paging without an API change.
+  `includeVariables=true` adds a compact `variables` dictionary with only the
+  latest JSON value per name, loaded in one page-bounded query; otherwise that
+  property is omitted and no variables are loaded.
   Inbox role/assignment/claim filtering, counting, ordering, and paging all run
   in PostgreSQL. The service loads definitions only for the returned page to
   calculate outgoing-flow `CanAct`/`CanClaim` flags.
@@ -492,16 +495,16 @@ what the cross-version `workflowKey` instance search matches.
   and advances the parent token through the interrupting flow.
 - **Variable search.** Both list endpoints accept repeated `var=name:value`
   query params (split on the first `:`, so values may contain `:`). Each pair is
-  an exact, case-insensitive match on an instance variable's scalar value; when
-  several are supplied they are AND-combined. Matching is compiled to one
-  correlated `EXISTS` over `instance_variables` per pair
-  (`lower("ValueJson" #>> '{}') = lower(@value)`), all values bound as
-  parameters. The inbox filter is additive on top of the actor role/claim scope.
+  an exact, case-insensitive match on an instance variable's latest scalar value;
+  when several are supplied they are AND-combined. Matching selects the greatest
+  variable-row `Id` for the requested name before comparing its JSON scalar text,
+  with all values bound as parameters. The inbox filter is additive on top of the
+  actor role/claim scope.
   For the list endpoint the `var` filter combines with `status`. Malformed
   entries (missing `:` or empty name) are rejected via `WorkflowDomainException`.
   Array/object variables never match, and value ranges/operators are out of
-  scope. An `instance_variables (VariableName, InstanceId)` index backs the
-  lookup.
+  scope. The `(InstanceId, VariableName, Id DESC)` and
+  `(VariableName, InstanceId)` indexes back the latest lookup and name search.
 - **Instance id / workflow id search.** Both list endpoints accept optional
   integer `instanceId=` and `workflowId=` query params: exact matches on the
   instance primary key (`w."Id" = @instanceId`) and the owning definition
