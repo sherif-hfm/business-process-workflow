@@ -1,14 +1,242 @@
 @page "/"
+@implements IDisposable
+@using Flowbit.Ui.Auth
+@inject DashboardService Dashboard
+@inject TokenState Token
 
-<PageTitle>Flowbit</PageTitle>
+<PageTitle>Overview · Flowbit</PageTitle>
 
-<h1>Flowbit</h1>
+<PageHeader Eyebrow="Workspace" Title="Operations overview"
+            Description="Monitor workflow health, pick up work, and keep recent activity moving.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@loading">
+            <AppIcon Name="refresh" />
+            @(loading ? "Refreshing…" : "Refresh")
+        </button>
+        <a class="btn btn-primary" href="workflows"><AppIcon Name="plus" /> Start workflow</a>
+    </Actions>
+</PageHeader>
 
-<p>
-    Run workflow instances from definitions exported by the visual editor.
-</p>
+@if (!Token.HasToken)
+{
+    <section class="panel mb-3" aria-labelledby="identity-heading">
+        <div class="empty-state">
+            <div class="empty-state-icon"><AppIcon Name="token" /></div>
+            <h2 id="identity-heading" class="h5 mb-1">Choose a test identity</h2>
+            <p>Set a user and roles to load your operational dashboard and exercise authorized workflow functions.</p>
+            <a class="btn btn-primary mt-3" href="token">Open Test Identity</a>
+        </div>
+    </section>
+}
+else if (loading && snapshot is null)
+{
+    <div class="loading-grid" role="status" aria-label="Loading dashboard">
+        <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+}
+else if (snapshot is not null)
+{
+    <section class="metrics-grid" aria-label="Workflow metrics">
+        <MetricCard Label="All instances" Value="@Metric(snapshot.TotalInstances, snapshot.InstancesError)" Icon="instances" Hint="Across every status" />
+        <MetricCard Label="Running now" Value="@Metric(snapshot.RunningInstances, snapshot.InstancesError)" Icon="activity" Tone="success" Hint="Active process instances" />
+        <MetricCard Label="My work" Value="@Metric(snapshot.InboxCount, snapshot.InboxError)" Icon="inbox" Tone="warning" Hint="@($"Tasks visible to {IdentityName}")" />
+        <MetricCard Label="Faulted" Value="@Metric(snapshot.FaultedInstances, snapshot.InstancesError)" Icon="alert" Tone="danger" Hint="Instances needing attention" />
+    </section>
 
-<div class="d-flex gap-2">
-    <a class="btn btn-primary" href="workflows">Workflow definitions</a>
-    <a class="btn btn-outline-primary" href="instances">Instances inbox</a>
-</div>
+    <div class="dashboard-grid">
+        <div class="dashboard-stack">
+            <section class="panel panel-flush" aria-labelledby="recent-instances-heading">
+                <div class="section-heading">
+                    <div>
+                        <h2 id="recent-instances-heading">Recent instances</h2>
+                        <p>Latest process activity across the workspace</p>
+                    </div>
+                    <a class="section-link" href="instances">View all <AppIcon Name="chevron-right" /></a>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(snapshot.InstancesError))
+                {
+                    <div class="alert alert-danger m-3" role="alert">Instances could not be loaded. @snapshot.InstancesError</div>
+                }
+                else if (snapshot.RecentInstances.Count == 0)
+                {
+                    <EmptyState Icon="instances" Title="No instances yet" Description="Start a published workflow to see recent process activity here." />
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <caption class="visually-hidden">Most recently updated workflow instances</caption>
+                            <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Current step</th><th scope="col">Status</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                            <tbody>
+                                @foreach (var item in snapshot.RecentInstances)
+                                {
+                                    <tr>
+                                        <td><span class="mono-id">#@item.Id</span>@if (!string.IsNullOrWhiteSpace(item.BusinessKey)) { <span class="data-subtitle">@item.BusinessKey</span> }</td>
+                                        <td><a class="data-title" href="@($"instances/{item.Id}")">@item.WorkflowName</a><span class="data-subtitle">Version @item.WorkflowVersion</span></td>
+                                        <td>@item.CurrentNodeName@if (!string.IsNullOrWhiteSpace(item.CurrentNodeExternalId)) { <span class="data-subtitle">@item.CurrentNodeExternalId</span> }</td>
+                                        <td><StatusBadge Status="@item.Status" /></td>
+                                        <td><span title="@item.UpdatedAt.ToString("O")">@RelativeTime(item.UpdatedAt)</span></td>
+                                        <td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="@($"instances/{item.Id}")">Open</a></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+
+            <section class="panel" aria-labelledby="health-heading">
+                <div class="section-heading">
+                    <div><h2 id="health-heading">Instance health</h2><p>Current lifecycle distribution</p></div>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(snapshot.InstancesError))
+                {
+                    <div class="alert alert-danger mb-0" role="alert">Status totals are unavailable.</div>
+                }
+                else
+                {
+                    <div class="distribution-bar" aria-label="Completed @snapshot.CompletedInstances, faulted @snapshot.FaultedInstances, cancelled @snapshot.CancelledInstances">
+                        <span class="distribution-completed" style="width:@Percent(snapshot.CompletedInstances)%"></span>
+                        <span class="distribution-faulted" style="width:@Percent(snapshot.FaultedInstances)%"></span>
+                        <span class="distribution-cancelled" style="width:@Percent(snapshot.CancelledInstances)%"></span>
+                    </div>
+                    <div class="health-strip">
+                        <div class="health-stat"><span>Completed</span><strong>@snapshot.CompletedInstances.ToString("N0")</strong></div>
+                        <div class="health-stat"><span>Faulted</span><strong>@snapshot.FaultedInstances.ToString("N0")</strong></div>
+                        <div class="health-stat"><span>Cancelled</span><strong>@snapshot.CancelledInstances.ToString("N0")</strong></div>
+                    </div>
+                }
+            </section>
+        </div>
+
+        <aside class="dashboard-stack">
+            <section class="panel" aria-labelledby="my-work-heading">
+                <div class="section-heading">
+                    <div><h2 id="my-work-heading">My work</h2><p>Tasks ready for your attention</p></div>
+                    <a class="section-link" href="inbox">Inbox <AppIcon Name="chevron-right" /></a>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(snapshot.InboxError))
+                {
+                    <div class="alert alert-danger mb-0" role="alert">Your inbox could not be loaded. @snapshot.InboxError</div>
+                }
+                else if (snapshot.RecentInbox.Count == 0)
+                {
+                    <EmptyState Icon="check" Title="You're all caught up" Description="No visible work items need attention." />
+                }
+                else
+                {
+                    <div class="quick-list">
+                        @foreach (var item in snapshot.RecentInbox)
+                        {
+                            <a class="quick-item" href="@($"user-tasks/{item.UserTaskId}")">
+                                <span class="quick-icon">@Initials(item.WorkflowName)</span>
+                                <span class="quick-copy"><strong>@item.CurrentNodeName</strong><small>@item.WorkflowName · @TaskState(item)</small></span>
+                                <AppIcon Name="chevron-right" />
+                            </a>
+                        }
+                    </div>
+                }
+            </section>
+
+            <section class="panel" aria-labelledby="quick-start-heading">
+                <div class="section-heading">
+                    <div><h2 id="quick-start-heading">Quick start</h2><p>Published workflow definitions</p></div>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(snapshot.WorkflowsError))
+                {
+                    <div class="alert alert-info mb-0" role="status">Workflow administration is restricted for this identity.</div>
+                }
+                else if (PublishedWorkflows.Count == 0)
+                {
+                    <EmptyState Icon="workflows" Title="No published workflows" Description="Publish a definition before starting a new instance." />
+                }
+                else
+                {
+                    <div class="quick-list">
+                        @foreach (var workflow in PublishedWorkflows)
+                        {
+                            <a class="quick-item" href="@($"workflows/{workflow.Id}/start")">
+                                <span class="quick-icon">@Initials(workflow.Name)</span>
+                                <span class="quick-copy"><strong>@workflow.Name</strong><small>Version @workflow.Version@(workflow.IsDefault ? " · Default" : "")</small></span>
+                                <AppIcon Name="chevron-right" />
+                            </a>
+                        }
+                    </div>
+                }
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    private DashboardSnapshot? snapshot;
+    private bool loading;
+    private CancellationTokenSource? loadCts;
+
+    private string IdentityName => Token.CurrentUser ?? "you";
+    private IReadOnlyList<WorkflowSummaryDto> PublishedWorkflows => snapshot?.Workflows
+        .Where(w => w.IsPublished)
+        .OrderByDescending(w => w.IsDefault)
+        .ThenByDescending(w => w.CreatedAt)
+        .Take(4)
+        .ToList() ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        loadCts?.Cancel();
+        loadCts?.Dispose();
+        loadCts = new CancellationTokenSource();
+        loading = true;
+        try
+        {
+            snapshot = await Dashboard.LoadAsync(loadCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(LoadAsync);
+    private static string Metric(long value, string? error) => error is null ? value.ToString("N0") : "—";
+    private double Percent(long value)
+    {
+        var total = snapshot is null ? 0 : snapshot.CompletedInstances + snapshot.FaultedInstances + snapshot.CancelledInstances;
+        return total == 0 ? 0 : Math.Round(value * 100d / total, 2);
+    }
+
+    private static string RelativeTime(DateTimeOffset value)
+    {
+        var elapsed = DateTimeOffset.UtcNow - value.ToUniversalTime();
+        if (elapsed.TotalMinutes < 1) return "Just now";
+        if (elapsed.TotalHours < 1) return $"{Math.Max(1, (int)elapsed.TotalMinutes)}m ago";
+        if (elapsed.TotalDays < 1) return $"{(int)elapsed.TotalHours}h ago";
+        if (elapsed.TotalDays < 7) return $"{(int)elapsed.TotalDays}d ago";
+        return value.ToLocalTime().ToString("MMM d");
+    }
+
+    private static string Initials(string value)
+    {
+        var parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return string.Concat(parts.Take(2).Select(p => char.ToUpperInvariant(p[0])));
+    }
+
+    private static string TaskState(InboxItemDto item) => item.CanAct ? "Ready to act" : item.CanClaim ? "Can claim" : "View only";
+
+    public void Dispose()
+    {
+        Token.Changed -= OnTokenChanged;
+        loadCts?.Cancel();
+        loadCts?.Dispose();
+    }
+}

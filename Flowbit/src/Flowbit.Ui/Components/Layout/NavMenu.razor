@@ -1,42 +1,37 @@
-<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">Flowbit</a>
+<nav class="nav-groups">
+    <div class="nav-group">
+        <div class="nav-label">Workspace</div>
+        <NavLink class="nav-link" href="" Match="NavLinkMatch.All" @onclick="OnNavigate">
+            <AppIcon Name="overview" />
+            <span>Overview</span>
+        </NavLink>
+        <NavLink class="nav-link" href="inbox" @onclick="OnNavigate">
+            <AppIcon Name="inbox" />
+            <span>My work</span>
+        </NavLink>
+        <NavLink class="nav-link" href="instances" @onclick="OnNavigate">
+            <AppIcon Name="instances" />
+            <span>Instances</span>
+        </NavLink>
     </div>
-</div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+    <div class="nav-group">
+        <div class="nav-label">Manage</div>
+        <NavLink class="nav-link" href="workflows" @onclick="OnNavigate">
+            <AppIcon Name="workflows" />
+            <span>Workflows</span>
+        </NavLink>
+    </div>
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="nav flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
-        </div>
+    <div class="nav-group developer-group">
+        <div class="nav-label">Developer</div>
+        <NavLink class="nav-link" href="token" @onclick="OnNavigate">
+            <AppIcon Name="token" />
+            <span>Test identity</span>
+        </NavLink>
+    </div>
+</nav>
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="workflows">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Workflows
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="instances">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Instances
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="inbox">
-                <span class="bi bi-inbox-nav-menu" aria-hidden="true"></span> Inbox
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="token">
-                <span class="bi bi-key-fill-nav-menu" aria-hidden="true"></span> Token
-            </NavLink>
-        </div>
-    </nav>
-</div>
-
+@code {
+    [Parameter] public EventCallback OnNavigate { get; set; }
+}

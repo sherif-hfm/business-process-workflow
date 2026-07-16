@@ -1,60 +1,59 @@
 @page "/workflows"
-@rendermode InteractiveServer
 @using System.Text.Json
 @inject WorkflowApiClient Api
+@inject IJSRuntime JS
 
-<PageTitle>Workflow Definitions</PageTitle>
+<PageTitle>Workflows · Flowbit</PageTitle>
 
-<h1>Workflow Definitions</h1>
+<PageHeader Eyebrow="Manage" Title="Workflow definitions"
+            Description="Import editor JSON, control published versions, and start new process instances.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+        <a class="btn btn-primary" href="#import-workflow"><AppIcon Name="plus" /> Import definition</a>
+    </Actions>
+</PageHeader>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <div class="alert alert-danger">@error</div>
+    <div class="alert alert-danger" role="alert">@error</div>
 }
 
-<section class="mb-4">
-    <h2 class="h4">Import editor JSON</h2>
-    <p class="text-muted">Select the JSON file exported by <code>flowbit-editor.html</code> to import it.</p>
-    <div class="mb-3">
-        <InputFile @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json" />
+<section id="import-workflow" class="panel mb-3" aria-labelledby="import-workflow-heading">
+    <div class="section-heading">
+        <div><h2 id="import-workflow-heading">Import editor JSON</h2><p>Select a workflow exported by <code>flowbit-editor.html</code>. Files are limited to 2 MB.</p></div>
     </div>
+    <label class="form-label" for="workflow-json-file">Workflow definition file</label>
+    <InputFile id="workflow-json-file" @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json,application/json" />
     @if (!string.IsNullOrWhiteSpace(workflowJson))
     {
-        <div class="card mb-3 bg-light text-dark">
-            <div class="card-body">
-                <h5 class="card-title h6">Loaded File Details</h5>
-                <p class="card-text mb-1 small"><strong>Name:</strong> @fileName</p>
-                <p class="card-text mb-2 small"><strong>Size:</strong> @(fileSize.HasValue ? $"{fileSize.Value:N0} bytes" : "Unknown")</p>
-                <details>
-                    <summary class="text-primary small" style="cursor: pointer;">View JSON Preview</summary>
-                    <pre class="bg-white p-2 mt-2 border rounded font-monospace" style="max-height: 200px; overflow-y: auto; font-size: 0.8em; white-space: pre-wrap; word-break: break-all;">@workflowJson</pre>
-                </details>
-            </div>
+        <div class="summary-grid my-3">
+            <div class="summary-item"><span>File</span><strong>@fileName</strong></div>
+            <div class="summary-item"><span>Size</span><strong>@(fileSize.HasValue ? $"{fileSize.Value:N0} bytes" : "Unknown")</strong></div>
         </div>
+        <details class="mb-3"><summary class="section-link">Preview JSON</summary><pre class="bg-light p-3 mt-2 border rounded font-monospace overflow-auto" style="max-height: 220px; white-space: pre-wrap; overflow-wrap: anywhere;">@workflowJson</pre></details>
     }
-    <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-primary" @onclick="ImportAsync" disabled="@(string.IsNullOrWhiteSpace(workflowJson))">
-            @(publishOnImport ? "Import and publish" : "Import")
+    <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+        <button class="btn btn-primary" @onclick="ImportAsync" disabled="@(string.IsNullOrWhiteSpace(workflowJson) || importing)">
+            @(importing ? "Importing…" : publishOnImport ? "Import and publish" : "Import definition")
         </button>
-        <div class="form-check ms-2">
+        <div class="form-check">
             <input type="checkbox" class="form-check-input" id="publishOnImport" @bind="publishOnImport" />
             <label class="form-check-label" for="publishOnImport">Publish on import</label>
         </div>
     </div>
 </section>
 
-<section>
-    <div class="d-flex align-items-center justify-content-between mb-3">
-        <h2 class="h4 mb-0">Definitions</h2>
-        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync">Refresh</button>
+<section aria-labelledby="definitions-heading">
+    <div class="section-heading">
+        <div><h2 id="definitions-heading">Definitions</h2><p>@(workflows is null ? "Loading workflow families…" : $"{workflows.Count:N0} workflow families")</p></div>
     </div>
     @if (workflows is null)
     {
-        <p>Loading...</p>
+        <div class="loading-grid" role="status"><div class="skeleton"></div><div class="skeleton"></div></div>
     }
     else if (workflows.Count == 0)
     {
-        <p>No workflow definitions found. Import a workflow JSON definition to get started.</p>
+        <div class="panel"><EmptyState Icon="workflows" Title="No workflow definitions" Description="Import a JSON definition from the Flowbit editor to get started." /></div>
     }
     else
     {
@@ -65,21 +64,13 @@
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="accordion-button @(isExpanded ? "" : "collapsed")" type="button"
-                                @onclick="() => ToggleExpand(workflow.WorkflowKey)">
-                            <span class="me-3"><strong>@workflow.Name</strong></span>
-                            <span class="badge bg-secondary me-2">v@(workflow.Version)</span>
+                                aria-expanded="@(isExpanded ? "true" : "false")" @onclick="() => ToggleExpand(workflow.WorkflowKey)">
+                            <span class="me-auto"><strong>@workflow.Name</strong><span class="data-subtitle">@workflow.WorkflowKey · Version @workflow.Version</span></span>
                             @if (workflow.IsDefault)
                             {
-                                <span class="badge bg-primary me-2">Default</span>
+                                <StatusBadge Status="default" Text="Default" />
                             }
-                            @if (workflow.IsPublished)
-                            {
-                                <span class="badge bg-success">Published</span>
-                            }
-                            else
-                            {
-                                <span class="badge bg-warning text-dark">Unpublished</span>
-                            }
+                            <StatusBadge Status="@(workflow.IsPublished ? "published" : "unpublished")" />
                         </button>
                     </h2>
                     @if (isExpanded)
@@ -87,7 +78,7 @@
                         <div class="accordion-body">
                             @if (loadingKeys.Contains(workflow.WorkflowKey))
                             {
-                                <p>Loading versions...</p>
+                                <div role="status" class="text-muted">Loading versions…</div>
                             }
                             else if (!versionsByKey.TryGetValue(workflow.WorkflowKey, out var rows) || rows.Count == 0)
                             {
@@ -95,14 +86,15 @@
                             }
                             else
                             {
-                                <table class="table table-sm">
+                                <div class="table-responsive"><table class="table table-sm align-middle">
+                                    <caption class="visually-hidden">Versions of @workflow.Name</caption>
                                     <thead>
                                         <tr>
-                                            <th>Version</th>
-                                            <th>Published</th>
-                                            <th>Default</th>
-                                            <th>Created</th>
-                                            <th class="text-end">Actions</th>
+                                            <th scope="col">Version</th>
+                                            <th scope="col">Publication</th>
+                                            <th scope="col">Default</th>
+                                            <th scope="col">Created</th>
+                                            <th scope="col" class="text-end">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -113,51 +105,47 @@
                                                 <td>
                                                     @if (v.IsPublished)
                                                     {
-                                                        <span class="badge bg-success">Yes</span>
+                                                        <StatusBadge Status="published" />
                                                     }
                                                     else
                                                     {
-                                                        <span class="badge bg-warning text-dark">No</span>
+                                                        <StatusBadge Status="unpublished" />
                                                     }
                                                 </td>
                                                 <td>
                                                     @if (v.IsDefault)
                                                     {
-                                                        <span class="badge bg-primary">Default</span>
+                                                        <StatusBadge Status="default" Text="Default" />
                                                     }
                                                     else
                                                     {
-                                                        <span class="text-muted">-</span>
+                                                        <span class="text-muted">—</span>
                                                     }
                                                 </td>
                                                 <td class="small text-muted">@v.CreatedAt.ToLocalTime().ToString("g")</td>
-                                                <td class="text-end">
+                                                <td><div class="d-flex flex-wrap justify-content-end gap-1">
                                                     @if (v.IsPublished)
                                                     {
                                                         <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{v.Id}/start")">Start</a>
                                                     }
-                                                    else
-                                                    {
-                                                        <span class="text-muted small ms-1" title="Publish this version to start instances">Unpublished</span>
-                                                    }
                                                     @if (v.IsPublished)
                                                     {
-                                                        <button class="btn btn-sm btn-outline-warning ms-1" @onclick="() => UnpublishAsync(v.Id)">Unpublish</button>
+                                                        <button class="btn btn-sm btn-outline-secondary" disabled="@busyIds.Contains(v.Id)" @onclick="() => UnpublishAsync(v.Id)">Unpublish</button>
                                                     }
                                                     else
                                                     {
-                                                        <button class="btn btn-sm btn-outline-success ms-1" @onclick="() => PublishAsync(v.Id)">Publish</button>
+                                                        <button class="btn btn-sm btn-outline-primary" disabled="@busyIds.Contains(v.Id)" @onclick="() => PublishAsync(v.Id)">Publish</button>
                                                     }
                                                     @if (!v.IsDefault)
                                                     {
-                                                        <button class="btn btn-sm btn-outline-primary ms-1" @onclick="() => SetDefaultAsync(v.Id)" disabled="@(!v.IsPublished)">Set Default</button>
+                                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetDefaultAsync(v.Id)" disabled="@(!v.IsPublished || busyIds.Contains(v.Id))">Set default</button>
                                                     }
-                                                    <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => DeleteAsync(v.Id)">Delete</button>
-                                                </td>
+                                                    <button class="btn btn-sm btn-outline-danger" disabled="@busyIds.Contains(v.Id)" @onclick="() => DeleteAsync(v.Id)">Delete</button>
+                                                </div></td>
                                             </tr>
                                         }
                                     </tbody>
-                                </table>
+                                </table></div>
                             }
                         </div>
                     }
@@ -177,12 +165,14 @@
     private Dictionary<string, IReadOnlyList<WorkflowSummaryDto>> versionsByKey = new();
     private HashSet<string> expandedKeys = new();
     private HashSet<string> loadingKeys = new();
+    private HashSet<long> busyIds = new();
     private string? workflowJson;
     private string? error;
     private string? fileName;
     private long? fileSize;
     private object inputFileKey = new();
     private bool publishOnImport = true;
+    private bool importing;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -260,6 +250,7 @@
     {
         try
         {
+            importing = true;
             error = null;
             var definition = JsonSerializer.Deserialize<WorkflowModel>(workflowJson ?? string.Empty, JsonOptions)
                 ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
@@ -274,61 +265,50 @@
         {
             error = ex.Message;
         }
+        finally
+        {
+            importing = false;
+        }
     }
 
-    private async Task PublishAsync(long id)
-    {
-        try
-        {
-            error = null;
-            await Api.PublishWorkflowAsync(id);
-            await ReloadVersionsAsync();
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
-    }
+    private Task PublishAsync(long id) => RunVersionActionAsync(id, () => Api.PublishWorkflowAsync(id));
 
     private async Task UnpublishAsync(long id)
     {
-        try
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Unpublish this workflow version? New instances will no longer be able to start from it.");
+        if (confirmed)
         {
-            error = null;
-            await Api.UnpublishWorkflowAsync(id);
-            await ReloadVersionsAsync();
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
+            await RunVersionActionAsync(id, () => Api.UnpublishWorkflowAsync(id));
         }
     }
 
-    private async Task SetDefaultAsync(long id)
-    {
-        try
-        {
-            error = null;
-            await Api.SetDefaultWorkflowAsync(id);
-            await ReloadVersionsAsync();
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
-    }
+    private Task SetDefaultAsync(long id) => RunVersionActionAsync(id, () => Api.SetDefaultWorkflowAsync(id));
 
     private async Task DeleteAsync(long id)
     {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Delete this workflow version? This cannot be undone.");
+        if (confirmed)
+        {
+            await RunVersionActionAsync(id, () => Api.DeleteWorkflowAsync(id));
+        }
+    }
+
+    private async Task RunVersionActionAsync(long id, Func<Task> action)
+    {
         try
         {
+            busyIds.Add(id);
             error = null;
-            await Api.DeleteWorkflowAsync(id);
+            await action();
             await ReloadVersionsAsync();
         }
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+        finally
+        {
+            busyIds.Remove(id);
         }
     }
 

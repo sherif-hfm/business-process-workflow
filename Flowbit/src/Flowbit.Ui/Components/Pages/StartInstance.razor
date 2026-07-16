@@ -1,92 +1,93 @@
 @page "/workflows/{WorkflowId:long}/start"
-@rendermode InteractiveServer
 @using System.Text.Json
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
 @inject TokenState Token
 
-<PageTitle>Start Workflow</PageTitle>
+<PageTitle>Start Workflow · Flowbit</PageTitle>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <div class="alert alert-danger">@error</div>
+    <div class="alert alert-danger" role="alert">@error</div>
 }
 
 @if (workflow is null)
 {
-    <p>Loading...</p>
+    <PageHeader Eyebrow="Workflows" Title="Start workflow" Description="Loading the selected definition…" />
+    <div class="form-surface"><div class="skeleton" role="status"></div></div>
 }
 else
 {
     var startEvents = AllowedStartEvents();
     var selectedNode = startEvents.SingleOrDefault(n => n.Id == selectedStartEventId);
 
-    <h1>Start @workflow.Name</h1>
-    <p class="text-muted">Version @workflow.Version</p>
+    <PageHeader Eyebrow="New instance" Title="@($"Start {workflow.Name}")"
+                Description="@($"Configure the entry point and process values for version {workflow.Version}.")">
+        <Actions><a class="btn btn-outline-secondary" href="workflows">Back to workflows</a></Actions>
+    </PageHeader>
 
     @if (startEvents.Count == 0)
     {
-        <div class="alert alert-warning">
-            You do not have the required roles to start this workflow.
-        </div>
-        <a class="btn btn-secondary" href="workflows">Back</a>
+        <section class="panel"><EmptyState Icon="alert" Title="Start is not authorized" Description="Your current test identity does not have a role accepted by any user-startable event in this workflow."><a class="btn btn-primary" href="token">Change test identity</a></EmptyState></section>
     }
     else
     {
-        @if (startEvents.Count > 1)
-        {
-            <div class="mb-3">
-                <label class="form-label">Start event</label>
-                <select class="form-select" @bind="selectedStartEventId" @bind:after="OnStartEventChanged">
-                    @foreach (var startEvent in startEvents)
-                    {
-                        <option value="@startEvent.Id">
-                            #@startEvent.Id @startEvent.Name@(startEvent.Id == workflow.Definition.InitialEventId ? " (default)" : "")
-                        </option>
-                    }
-                </select>
+        <section class="form-surface" aria-labelledby="start-configuration-heading">
+            <div class="section-heading">
+                <div><h2 id="start-configuration-heading">Start configuration</h2><p>Required values are marked with an asterisk.</p></div>
+                <StatusBadge Status="published" Text="@($"Version {workflow.Version}")" />
             </div>
-        }
-        else if (selectedNode is not null)
-        {
-            <p class="text-muted">Start event: <strong>@selectedNode.Name</strong></p>
-        }
 
-        @if (selectedNode is not null && selectedNode.Variables.Count > 0)
-        {
-            <h2 class="h4">Start variables</h2>
-            @foreach (var variable in selectedNode.Variables)
+            @if (startEvents.Count > 1)
             {
                 <div class="mb-3">
-                    <label class="form-label">
-                        @variable.Name
-                        <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
-                        @if (variable.Required)
+                    <label class="form-label" for="start-event">Start event</label>
+                    <select id="start-event" class="form-select" @bind="selectedStartEventId" @bind:after="OnStartEventChanged">
+                        @foreach (var startEvent in startEvents)
                         {
-                            <span class="text-danger">*</span>
+                            <option value="@startEvent.Id">@startEvent.Name@(startEvent.Id == workflow.Definition.InitialEventId ? " (default)" : "")</option>
                         }
-                    </label>
-                    <input class="form-control" value="@GetInput(variable.Name)" @oninput="e => SetInput(variable.Name, e.Value?.ToString())" />
+                    </select>
                 </div>
             }
-        }
+            else if (selectedNode is not null)
+            {
+                <div class="summary-item mb-3"><span>Start event</span><strong>@selectedNode.Name</strong></div>
+            }
 
-        @if (selectedNode?.Idempotency is not null)
-        {
-            <div class="mb-3">
-                <label class="form-label">
-                    Transport retry key
-                    <span class="text-muted">(@selectedNode.Idempotency.HeaderName)</span>
-                    <span class="text-danger">*</span>
-                </label>
-                <input class="form-control" @bind="idempotencyKey" />
-                <div class="form-text">A retry with the same key returns the existing instance as a 409 conflict.</div>
+            @if (selectedNode is not null && selectedNode.Variables.Count > 0)
+            {
+                <div class="form-grid">
+                    @foreach (var variable in selectedNode.Variables)
+                    {
+                        var inputId = $"start-variable-{variable.Name.Replace(" ", "-")}";
+                        <div class="@(variable.IsArray ? "full" : null)">
+                            <label class="form-label" for="@inputId">@variable.Name <span class="field-type">@variable.DataType@(variable.IsArray ? "[]" : "")</span>@if (variable.Required) { <span class="required-mark" aria-label="required"> *</span> }</label>
+                            <input id="@inputId" class="form-control" value="@GetInput(variable.Name)" @oninput="e => SetInput(variable.Name, e.Value?.ToString())" placeholder="@InputHint(variable)" />
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-info">This start event does not require process variables.</div>
+            }
+
+            @if (selectedNode?.Idempotency is not null)
+            {
+                <div class="mt-3">
+                    <label class="form-label" for="idempotency-key">Transport retry key <span class="field-type">@selectedNode.Idempotency.HeaderName</span><span class="required-mark" aria-label="required"> *</span></label>
+                    <input id="idempotency-key" class="form-control" @bind="idempotencyKey" autocomplete="off" />
+                    <div class="form-text">Retries with this value return the existing instance as a conflict instead of starting another.</div>
+                </div>
+            }
+
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <button class="btn btn-primary" @onclick="StartAsync" disabled="@submitting"><AppIcon Name="plus" /> @(submitting ? "Starting…" : "Start instance")</button>
+                <a class="btn btn-outline-secondary" href="workflows">Cancel</a>
             </div>
-        }
-
-        <button class="btn btn-primary" @onclick="StartAsync">Start instance</button>
-        <a class="btn btn-link" href="workflows">Back</a>
+        </section>
     }
 }
 
@@ -99,6 +100,7 @@ else
     private int? selectedStartEventId;
     private string? idempotencyKey;
     private string? error;
+    private bool submitting;
 
     protected override async Task OnInitializedAsync()
     {
@@ -163,6 +165,7 @@ else
 
         try
         {
+            submitting = true;
             error = null;
             var startEvent = workflow.Definition.FlowNodes.Single(n => n.Id == selectedStartEventId);
             var variables = BuildPayload(startEvent.Variables);
@@ -182,7 +185,20 @@ else
         {
             error = ex.Message;
         }
+        finally
+        {
+            submitting = false;
+        }
     }
+
+    private static string InputHint(VariableModel variable) => variable.IsArray
+        ? "Comma-separated values"
+        : variable.DataType switch
+        {
+            WorkflowVariableTypes.Number => "Enter a number",
+            WorkflowVariableTypes.Boolean => "true or false",
+            _ => $"Enter {variable.Name}"
+        };
 
     private Dictionary<string, JsonElement> BuildPayload(IEnumerable<VariableModel> variables)
     {

@@ -1,0 +1,19 @@
+<div class="empty-state">
+    <div class="empty-state-icon"><AppIcon Name="@Icon" /></div>
+    <h3>@Title</h3>
+    @if (!string.IsNullOrWhiteSpace(Description))
+    {
+        <p>@Description</p>
+    }
+    @if (ChildContent is not null)
+    {
+        <div class="mt-3">@ChildContent</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public string Icon { get; set; } = "inbox";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

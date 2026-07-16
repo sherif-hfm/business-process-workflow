@@ -1,69 +1,102 @@
 @page "/user-tasks/{TaskId:long}"
-@rendermode InteractiveServer
 @using System.Globalization
 @using System.Text.Json
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
 
-<PageTitle>User task #@TaskId</PageTitle>
+<PageTitle>User Task #@TaskId · Flowbit</PageTitle>
 
-@if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger">@error</div> }
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+
 @if (task is null)
 {
-    <p>Loading...</p>
+    <PageHeader Eyebrow="My work" Title="Loading task" Description="@($"Retrieving work item #{TaskId}…")" />
+    <div class="panel"><div class="skeleton" role="status"></div></div>
 }
 else
 {
-    <h1>@task.NodeName</h1>
-    <p class="text-muted">Task #@task.Id · Instance #@task.InstanceId</p>
-    <div class="card mb-3"><div class="card-body">
-        <p>Status: <strong>@task.Status</strong></p>
-        <p>Assignee: <strong>@(task.Assignee ?? "shared pool")</strong></p>
-        <p>Claimed by: <strong>@(task.ClaimedBy ?? "-")</strong></p>
-        @if (task.ItemIndex is not null) { <p>Item: <strong>#@task.ItemIndex</strong> @Format(task.ItemValue)</p> }
+    <PageHeader Eyebrow="User task" Title="@task.NodeName" Description="@($"Task #{task.Id} · Instance #{task.InstanceId}")">
+        <Actions>
+            <a class="btn btn-outline-secondary" href="inbox">Back to my work</a>
+            <a class="btn btn-outline-primary" href="@($"instances/{task.InstanceId}")">View instance</a>
+        </Actions>
+    </PageHeader>
+
+    <section class="panel mb-3" aria-labelledby="task-summary-heading">
+        <div class="section-heading">
+            <div><h2 id="task-summary-heading">Task summary</h2><p>Assignment, claim, and execution context.</p></div>
+            <StatusBadge Status="@task.Status" />
+        </div>
+        <div class="summary-grid">
+            <div class="summary-item"><span>Assignee</span><strong>@(task.Assignee ?? "Shared pool")</strong></div>
+            <div class="summary-item"><span>Claimed by</span><strong>@(task.ClaimedBy ?? "Unclaimed")</strong></div>
+            <div class="summary-item"><span>Claim required</span><strong>@(task.RequiresClaim ? "Yes" : "No")</strong></div>
+            <div class="summary-item"><span>Last updated</span><strong>@task.UpdatedAt.ToLocalTime().ToString("g")</strong></div>
+            @if (task.ItemIndex is not null)
+            {
+                <div class="summary-item"><span>Multi-instance item</span><strong>#@task.ItemIndex · @Format(task.ItemValue)</strong></div>
+            }
+        </div>
+
         @if (task.MultiInstance is not null)
         {
-            var p = task.MultiInstance;
-            <p>Progress: <strong>@p.Completed / @p.Total completed</strong>, @p.Active active, @p.Pending pending, @p.Cancelled cancelled</p>
-            @foreach (var count in p.FlowCounts)
-            {
-                <span class="badge text-bg-secondary me-1">Flow #@count.FlowId: @count.Count (@count.Percent.ToString("0.#")%)</span>
-            }
-        }
-        @if (task.Status == "active" && task.Assignee is null && task.RequiresClaim)
-        {
-            <div class="mt-3 d-flex gap-2">
-                <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim</button>
-                @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+            var progress = task.MultiInstance;
+            var percent = progress.Total == 0 ? 0 : progress.Completed * 100d / progress.Total;
+            <div class="mt-3">
+                <div class="d-flex justify-content-between gap-2 small"><strong>@progress.Completed of @progress.Total completed</strong><span class="text-muted">@progress.Active active · @progress.Pending pending · @progress.Cancelled cancelled</span></div>
+                <div class="progress mt-2" role="progressbar" aria-valuenow="@progress.Completed" aria-valuemin="0" aria-valuemax="@progress.Total"><div class="progress-bar" style="width:@percent%"></div></div>
+                @if (progress.FlowCounts.Count > 0)
                 {
-                    <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                    <div class="d-flex flex-wrap gap-2 mt-2">@foreach (var count in progress.FlowCounts) { <StatusBadge Status="neutral" Text="@($"Flow #{count.FlowId}: {count.Count} ({count.Percent:0.#}%)")" /> }</div>
                 }
             </div>
         }
-    </div></div>
 
-    <h2 class="h4">Actions</h2>
-    @if (flows.Count == 0) { <p>No actions are currently available.</p> }
-    @foreach (var flow in flows)
-    {
-        <div class="card mb-3"><div class="card-body">
-            <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
-            @if (flow.CancelRemainingInstances) { <span class="badge text-bg-danger">Interrupts remaining items</span> }
-            @foreach (var variable in flow.Variables)
-            {
-                <div class="mb-2">
-                    <label class="form-label">
-                        @variable.Name
-                        <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
-                        @(variable.Required ? "*" : "")
-                    </label>
-                    <input class="form-control" value="@GetInput(flow.Id, variable.Name)"
-                           @oninput="e => SetInput(flow.Id, variable.Name, e.Value?.ToString())" />
-                </div>
-            }
-            <button class="btn btn-primary" @onclick="() => TakeAsync(flow)">Take action</button>
-        </div></div>
-    }
+        @if (task.Status == "active" && task.Assignee is null && task.RequiresClaim)
+        {
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <button class="btn btn-outline-primary" @onclick="ClaimAsync" disabled="@busy">Claim task</button>
+                @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                {
+                    <button class="btn btn-outline-secondary" @onclick="UnclaimAsync" disabled="@busy">Unclaim</button>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="content-section" aria-labelledby="task-actions-heading">
+        <div class="section-heading"><div><h2 id="task-actions-heading">Available actions</h2><p>Choose an outcome and provide any required values.</p></div></div>
+        @if (flows.Count == 0)
+        {
+            <div class="panel"><EmptyState Icon="clock" Title="No actions available" Description="This task may need to be claimed, may be assigned to someone else, or may already have moved forward." /></div>
+        }
+        else
+        {
+            <div class="action-grid">
+                @foreach (var flow in flows)
+                {
+                    <article class="action-card @(flow.CancelRemainingInstances ? "danger" : null)">
+                        <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
+                            <div><span class="page-eyebrow">Flow #@flow.Id</span><h3>@(string.IsNullOrWhiteSpace(flow.Name) ? $"Continue to node #{flow.TargetRef}" : flow.Name)</h3></div>
+                            @if (flow.CancelRemainingInstances) { <StatusBadge Status="danger" Text="Interrupt" /> }
+                        </div>
+                        @foreach (var variable in flow.Variables)
+                        {
+                            var inputId = $"task-{TaskId}-flow-{flow.Id}-{variable.Name.Replace(" ", "-")}";
+                            <div class="mb-3">
+                                <label class="form-label" for="@inputId">@variable.Name <span class="field-type">@variable.DataType@(variable.IsArray ? "[]" : "")</span>@if (variable.Required) { <span class="required-mark" aria-label="required"> *</span> }</label>
+                                <input id="@inputId" class="form-control" value="@GetInput(flow.Id, variable.Name)" @oninput="e => SetInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                            </div>
+                        }
+                        <button class="btn @(flow.CancelRemainingInstances ? "btn-danger" : "btn-primary")" disabled="@busy" @onclick="() => TakeAsync(flow)">@(busy ? "Submitting…" : "Take action")</button>
+                    </article>
+                }
+            </div>
+        }
+    </section>
 }
 
 @code {
@@ -72,6 +105,7 @@ else
     private IReadOnlyList<SequenceFlowModel> flows = [];
     private readonly Dictionary<string, string?> inputs = [];
     private string? error;
+    private bool busy;
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -80,11 +114,13 @@ else
         try { error = null; task = await Api.GetUserTaskAsync(TaskId); flows = await Api.GetUserTaskFlowsAsync(TaskId); }
         catch (Exception ex) { error = ex.Message; }
     }
-    private async Task ClaimAsync() { try { task = await Api.ClaimUserTaskAsync(TaskId); await LoadAsync(); } catch (Exception ex) { error = ex.Message; } }
-    private async Task UnclaimAsync() { try { task = await Api.UnclaimUserTaskAsync(TaskId); await LoadAsync(); } catch (Exception ex) { error = ex.Message; } }
+
+    private async Task ClaimAsync() => await RunBusyAsync(async () => { task = await Api.ClaimUserTaskAsync(TaskId); await LoadAsync(); });
+    private async Task UnclaimAsync() => await RunBusyAsync(async () => { task = await Api.UnclaimUserTaskAsync(TaskId); await LoadAsync(); });
+
     private async Task TakeAsync(SequenceFlowModel flow)
     {
-        try
+        await RunBusyAsync(async () =>
         {
             var values = new Dictionary<string, JsonElement>();
             foreach (var variable in flow.Variables)
@@ -96,9 +132,16 @@ else
             var ack = await Api.TakeUserTaskFlowAsync(TaskId, flow.Id, new TakeFlowRequest(values));
             if (ack is not null && ack.CurrentNodeId != task?.NodeId) Navigation.NavigateTo($"instances/{ack.InstanceId}");
             else await LoadAsync();
-        }
-        catch (Exception ex) { error = ex.Message; }
+        });
     }
+
+    private async Task RunBusyAsync(Func<Task> action)
+    {
+        try { busy = true; error = null; await action(); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+
     private string? GetInput(int flowId, string name) => inputs.GetValueOrDefault($"{flowId}:{name}");
     private void SetInput(int flowId, string name, string? value) => inputs[$"{flowId}:{name}"] = value;
     private static string Format(JsonElement? value) => value is null ? "" : value.Value.ValueKind == JsonValueKind.String ? value.Value.GetString() ?? "" : value.Value.GetRawText();
@@ -110,11 +153,7 @@ else
             if (raw.TrimStart().StartsWith('['))
             {
                 using var document = JsonDocument.Parse(raw);
-                if (document.RootElement.ValueKind != JsonValueKind.Array)
-                {
-                    throw new FormatException($"Variable '{variable.Name}' must be a JSON array.");
-                }
-
+                if (document.RootElement.ValueKind != JsonValueKind.Array) throw new FormatException($"Variable '{variable.Name}' must be a JSON array.");
                 return document.RootElement.Clone();
             }
 

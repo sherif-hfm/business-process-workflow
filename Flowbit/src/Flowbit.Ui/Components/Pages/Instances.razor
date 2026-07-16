@@ -1,110 +1,99 @@
 @page "/instances"
-@rendermode InteractiveServer
 @inject WorkflowApiClient Api
 
-<PageTitle>Instances</PageTitle>
+<PageTitle>Instances · Flowbit</PageTitle>
 
-<h1>Instances</h1>
+<PageHeader Eyebrow="Operations" Title="Workflow instances"
+            Description="Monitor every process run, investigate its current step, and filter by technical or business context.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+        <a class="btn btn-primary" href="workflows"><AppIcon Name="plus" /> Start workflow</a>
+    </Actions>
+</PageHeader>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <div class="alert alert-danger">@error</div>
+    <div class="alert alert-danger" role="alert">@error</div>
 }
 
-<div class="d-flex gap-2 align-items-end mb-3">
-    <div>
-        <label class="form-label">Status</label>
-        <select class="form-select" @bind="status" @bind:after="OnFilterChangedAsync">
-            <option value="">All</option>
-            <option value="running">Running</option>
-            <option value="completed">Completed</option>
-            <option value="faulted">Faulted</option>
-            <option value="cancelled">Cancelled</option>
-        </select>
-    </div>
-    <div>
-        <label class="form-label">Instance id</label>
-        <input type="number" class="form-control" @bind="instanceId" @bind:after="OnFilterChangedAsync" placeholder="42" />
-    </div>
-    <div>
-        <label class="form-label">Workflow id</label>
-        <input type="number" class="form-control" @bind="workflowId" @bind:after="OnFilterChangedAsync" placeholder="1" />
-    </div>
-    <div>
-        <label class="form-label">Workflow key</label>
-        <input type="text" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="purchase-request" />
-    </div>
-    <div>
-        <label class="form-label">Business key</label>
-        <input type="text" class="form-control" @bind="businessKey" @bind:after="OnFilterChangedAsync" placeholder="VIOLATION-42" />
-    </div>
-    <div>
-        <label class="form-label">Node id</label>
-        <input type="number" class="form-control" @bind="nodeId" @bind:after="OnFilterChangedAsync" placeholder="3" />
-    </div>
-    <div>
-        <label class="form-label">Node external id</label>
-        <input class="form-control" @bind="nodeExternalId" @bind:after="OnFilterChangedAsync" placeholder="TASK_MANAGER_APPROVAL" />
-    </div>
-    <div class="flex-grow-1">
-        <label class="form-label">Variables (name:value, comma-separated)</label>
-        <input class="form-control" @bind="variableFilter" @bind:after="OnFilterChangedAsync" placeholder="reqno:4711, priority:high" />
-    </div>
-    <button class="btn btn-outline-primary" @onclick="LoadAsync">Refresh</button>
+<div class="status-tabs" role="tablist" aria-label="Instance status">
+    <button class="status-tab @(string.IsNullOrEmpty(status) ? "active" : null)" role="tab" aria-selected="@(string.IsNullOrEmpty(status) ? "true" : "false")" @onclick="@(() => SetStatusAsync(null))">All</button>
+    <button class="status-tab @(status == "running" ? "active" : null)" role="tab" aria-selected="@(status == "running" ? "true" : "false")" @onclick="@(() => SetStatusAsync("running"))">Running</button>
+    <button class="status-tab @(status == "completed" ? "active" : null)" role="tab" aria-selected="@(status == "completed" ? "true" : "false")" @onclick="@(() => SetStatusAsync("completed"))">Completed</button>
+    <button class="status-tab @(status == "faulted" ? "active" : null)" role="tab" aria-selected="@(status == "faulted" ? "true" : "false")" @onclick="@(() => SetStatusAsync("faulted"))">Faulted</button>
+    <button class="status-tab @(status == "cancelled" ? "active" : null)" role="tab" aria-selected="@(status == "cancelled" ? "true" : "false")" @onclick="@(() => SetStatusAsync("cancelled"))">Cancelled</button>
 </div>
 
-@if (result is null)
-{
-    <p>Loading...</p>
-}
-else if (result.Items.Count == 0)
-{
-    <p>No instances found.</p>
-}
-else
-{
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Instance</th>
-                <th>Workflow</th>
-                <th>Business key</th>
-                <th>Current step</th>
-                <th>Status</th>
-                <th>Task state</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var instance in result.Items)
-            {
-                <tr>
-                    <td>#@instance.Id</td>
-                    <td>@instance.WorkflowName v@instance.WorkflowVersion</td>
-                    <td>@(instance.BusinessKey ?? "-")</td>
-                    <td>
-                        @instance.CurrentNodeName
-                        @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
-                        {
-                            <div class="text-muted small">@instance.CurrentNodeExternalId</div>
-                        }
-                    </td>
-                    <td>@instance.Status</td>
-                    <td>@FormatTaskState(instance.UserTasks)</td>
-                    <td class="text-end">
-                        <a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-
-    <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-        <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
-        <span class="text-muted small">Page @result.Page of @TotalPages (@result.TotalCount total)</span>
+<section class="filter-panel" aria-labelledby="instance-filter-heading">
+    <div class="section-heading mb-0">
+        <div><h2 id="instance-filter-heading">Advanced filters</h2><p>Search identifiers, current nodes, business keys, or variable values.</p></div>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="() => advancedOpen = !advancedOpen" aria-expanded="@(advancedOpen ? "true" : "false")" aria-controls="instance-filter-fields">
+            @(advancedOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
+        </button>
     </div>
-}
+    @if (advancedOpen)
+    {
+        <div id="instance-filter-fields" class="filter-grid mt-3">
+            <div><label class="form-label" for="instance-id-filter">Instance ID</label><input id="instance-id-filter" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
+            <div><label class="form-label" for="workflow-id-filter">Workflow version ID</label><input id="workflow-id-filter" type="number" class="form-control" @bind="workflowId" placeholder="1" /></div>
+            <div><label class="form-label" for="workflow-key-filter">Workflow key</label><input id="workflow-key-filter" class="form-control" @bind="workflowKey" placeholder="purchase-request" /></div>
+            <div><label class="form-label" for="business-key-filter">Business key</label><input id="business-key-filter" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
+            <div><label class="form-label" for="node-id-filter">Node ID</label><input id="node-id-filter" type="number" class="form-control" @bind="nodeId" placeholder="3" /></div>
+            <div><label class="form-label" for="external-node-filter">Node external ID</label><input id="external-node-filter" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
+            <div class="filter-span-2"><label class="form-label" for="variable-filter">Variables</label><input id="variable-filter" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+            <div class="filter-actions">
+                <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+            </div>
+        </div>
+    }
+</section>
+
+<section class="panel panel-flush" aria-labelledby="instance-results-heading">
+    <div class="section-heading">
+        <div><h2 id="instance-results-heading">Results</h2><p>@(result is null ? "Loading instances…" : $"{result.TotalCount:N0} matching instances")</p></div>
+    </div>
+
+    @if (result is null)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (result.Items.Count == 0)
+    {
+        <EmptyState Icon="instances" Title="No matching instances" Description="Try a different status or clear the advanced filters." />
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <caption class="visually-hidden">Workflow instances matching the selected filters</caption>
+                <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Current step</th><th scope="col">Status</th><th scope="col">Work state</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                <tbody>
+                    @foreach (var instance in result.Items)
+                    {
+                        <tr>
+                            <td><span class="mono-id">#@instance.Id</span><span class="data-subtitle">@(instance.BusinessKey ?? "No business key")</span></td>
+                            <td><a class="data-title" href="@($"instances/{instance.Id}")">@instance.WorkflowName</a><span class="data-subtitle">Version @instance.WorkflowVersion</span></td>
+                            <td>@instance.CurrentNodeName@if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId)) { <span class="data-subtitle">@instance.CurrentNodeExternalId</span> }</td>
+                            <td><StatusBadge Status="@instance.Status" /></td>
+                            <td>@FormatTaskState(instance.UserTasks)</td>
+                            <td><span title="@instance.UpdatedAt.ToString("O")">@instance.UpdatedAt.ToLocalTime().ToString("g")</span></td>
+                            <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
 
 @code {
     private PagedResult<InstanceSummaryDto>? result;
@@ -117,41 +106,29 @@ else
     private int? nodeId;
     private string? nodeExternalId;
     private string? error;
+    private bool advancedOpen;
     private int page = 1;
     private const int PageSize = 50;
+
+    private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
+        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
 
     private IReadOnlyList<string> ParseVariableFilter() =>
         string.IsNullOrWhiteSpace(variableFilter)
             ? []
             : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private int TotalPages => result is null || result.TotalCount == 0
-        ? 1
-        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-
+    private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
     private bool HasNextPage => result is not null && page < TotalPages;
 
     private static string FormatTaskState(UserTaskWorkSummaryDto? tasks)
     {
-        if (tasks is null)
-        {
-            return "-";
-        }
-
+        if (tasks is null) return "—";
         if (tasks.ActiveCount == 1 && tasks.PendingCount == 0)
         {
-            if (!string.IsNullOrWhiteSpace(tasks.SoleAssignee))
-            {
-                return $"Assigned to {tasks.SoleAssignee}";
-            }
-            if (!string.IsNullOrWhiteSpace(tasks.SoleClaimedBy))
-            {
-                return $"Claimed by {tasks.SoleClaimedBy}";
-            }
-            if (!tasks.IsMultiInstance)
-            {
-                return "Unclaimed";
-            }
+            if (!string.IsNullOrWhiteSpace(tasks.SoleAssignee)) return $"Assigned to {tasks.SoleAssignee}";
+            if (!string.IsNullOrWhiteSpace(tasks.SoleClaimedBy)) return $"Claimed by {tasks.SoleClaimedBy}";
+            if (!tasks.IsMultiInstance) return "Unclaimed";
         }
 
         var parts = new List<string> { $"{tasks.ActiveCount} active" };
@@ -163,33 +140,19 @@ else
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
-    private async Task OnFilterChangedAsync()
+    private async Task SetStatusAsync(string? value) { status = value; page = 1; await LoadAsync(); }
+    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task ClearFiltersAsync()
     {
+        variableFilter = workflowKey = businessKey = nodeExternalId = null;
+        instanceId = workflowId = null;
+        nodeId = null;
         page = 1;
         await LoadAsync();
     }
 
-    private async Task PreviousPageAsync()
-    {
-        if (page <= 1)
-        {
-            return;
-        }
-
-        page--;
-        await LoadAsync();
-    }
-
-    private async Task NextPageAsync()
-    {
-        if (!HasNextPage)
-        {
-            return;
-        }
-
-        page++;
-        await LoadAsync();
-    }
+    private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
+    private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
 
     private async Task LoadAsync()
     {

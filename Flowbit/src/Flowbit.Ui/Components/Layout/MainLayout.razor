@@ -1,19 +1,74 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
+@implements IDisposable
+@using Flowbit.Ui.Auth
+@inject TokenState Token
 
-<div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
+<a class="skip-link" href="#main-content">Skip to main content</a>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
+<div class="app-shell">
+    <aside id="primary-navigation" class="sidebar @(mobileNavOpen ? "is-open" : null)" aria-label="Primary navigation">
+        <a class="brand" href="" @onclick="CloseNavigation">
+            <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span>
+                <strong>Flowbit</strong>
+                <small>Workflow operations</small>
+            </span>
+        </a>
+
+        <NavMenu OnNavigate="CloseNavigation" />
+
+        <div class="sidebar-footer">
+            <a class="sidebar-identity" href="token" @onclick="CloseNavigation">
+                <span class="avatar">@IdentityInitial</span>
+                <span class="identity-copy">
+                    <strong>@IdentityName</strong>
+                    <small>@IdentityRoleSummary</small>
+                </span>
+                <AppIcon Name="chevron-right" />
+            </a>
         </div>
+    </aside>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
+    @if (mobileNavOpen)
+    {
+        <button class="sidebar-scrim" type="button" aria-label="Close navigation" @onclick="CloseNavigation"></button>
+    }
+
+    <div class="workspace">
+        <header class="topbar">
+            <div class="topbar-leading">
+                <button class="mobile-menu" type="button" aria-label="Open navigation"
+                        aria-controls="primary-navigation" aria-expanded="@(mobileNavOpen ? "true" : "false")"
+                        @onclick="ToggleNavigation">
+                    <span></span><span></span><span></span>
+                </button>
+                <div>
+                    <strong>Operations workspace</strong>
+                    <small>Design, run, and manage business workflows</small>
+                </div>
+            </div>
+
+            <div class="topbar-actions">
+                <a class="btn btn-primary btn-sm topbar-start" href="workflows">
+                    <AppIcon Name="plus" />
+                    Start workflow
+                </a>
+                <a class="topbar-profile" href="token" aria-label="Open test identity settings">
+                    <span class="avatar">@IdentityInitial</span>
+                    <span>
+                        <strong>@IdentityName</strong>
+                        <small>@(Token.HasToken ? "Test identity" : "Set test identity")</small>
+                    </span>
+                </a>
+            </div>
+        </header>
+
+        <main id="main-content" tabindex="-1">
+            <article class="content-shell">
+                @Body
+            </article>
+        </main>
+    </div>
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
@@ -21,3 +76,21 @@
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    private bool mobileNavOpen;
+
+    private string IdentityName => Token.HasToken ? Token.CurrentUser ?? "Anonymous" : "No identity";
+    private string IdentityInitial => IdentityName[..1].ToUpperInvariant();
+    private string IdentityRoleSummary => Token.HasToken
+        ? Token.CurrentRoles.Count == 0 ? "No roles" : string.Join(", ", Token.CurrentRoles.Take(2))
+        : "Configure test token";
+
+    protected override void OnInitialized() => Token.Changed += OnTokenChanged;
+
+    private void ToggleNavigation() => mobileNavOpen = !mobileNavOpen;
+    private void CloseNavigation() => mobileNavOpen = false;
+    private void OnTokenChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

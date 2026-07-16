@@ -1,5 +1,4 @@
 @page "/instances/{InstanceId:long}"
-@rendermode InteractiveServer
 @implements IAsyncDisposable
 @using System.Text.Json
 @using Flowbit.Ui.Auth
@@ -8,61 +7,63 @@
 @inject TokenState Token
 @inject IJSRuntime JS
 
-<PageTitle>Instance Detail</PageTitle>
+<PageTitle>Instance #@InstanceId · Flowbit</PageTitle>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <div class="alert alert-danger">@error</div>
+    <div class="alert alert-danger" role="alert">@error</div>
 }
 
 @if (instance is null)
 {
-    <p>Loading...</p>
+    <PageHeader Eyebrow="Instance" Title="@($"Loading instance #{InstanceId}")" Description="Retrieving process state, actions, variables, and history…" />
+    <div class="panel"><div class="skeleton" role="status"></div></div>
 }
 else
 {
     var currentNode = CurrentNode;
     var completedMultiInstanceItems = CompletedMultiInstanceItems;
 
-    <h1>Instance #@instance.Id</h1>
-    <p class="text-muted">@instance.Workflow.Name v@instance.Workflow.Version</p>
+    <PageHeader Eyebrow="Workflow instance" Title="@($"Instance #{instance.Id}")"
+                Description="@($"{instance.Workflow.Name} · Version {instance.Workflow.Version}")">
+        <Actions>
+            <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+            <a class="btn btn-outline-primary" href="instances">Back to instances</a>
+        </Actions>
+    </PageHeader>
 
-    <div class="card mb-3">
-        <div class="card-body">
-            <h2 class="h4">@instance.CurrentNodeName</h2>
+    <section class="panel mb-3" aria-labelledby="instance-summary-heading">
+        <div class="section-heading">
+            <div><h2 id="instance-summary-heading">@instance.CurrentNodeName</h2><p>Current execution position</p></div>
+            <StatusBadge Status="@instance.Status" />
+        </div>
+        <div class="summary-grid">
             @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
             {
-                <p class="text-muted">External ID: <strong>@instance.CurrentNodeExternalId</strong></p>
+                <div class="summary-item"><span>External node ID</span><strong>@instance.CurrentNodeExternalId</strong></div>
             }
-            <p>Status: <strong>@instance.Status</strong></p>
+            <div class="summary-item"><span>Node ID</span><strong>#@instance.CurrentNodeId</strong></div>
             @if (!string.IsNullOrWhiteSpace(instance.BusinessKey))
             {
-                <p>Business key: <strong>@instance.BusinessKey</strong> <span class="text-muted">(@instance.BusinessKeyUniqueness)</span></p>
+                <div class="summary-item"><span>Business key</span><strong>@instance.BusinessKey · @instance.BusinessKeyUniqueness</strong></div>
             }
             @if (instance.UserTasks is not null)
             {
-                <p>Task state: <strong>@FormatTaskState(instance.UserTasks)</strong></p>
+                <div class="summary-item"><span>Task state</span><strong>@FormatTaskState(instance.UserTasks)</strong></div>
             }
-            <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
+            <div class="summary-item"><span>Started by</span><strong>@(instance.StartedBy ?? "—")</strong></div>
+            <div class="summary-item"><span>Created</span><strong>@instance.CreatedAt.ToLocalTime().ToString("g")</strong></div>
             @if (instance.MultiInstance is not null)
             {
                 var progress = instance.MultiInstance;
-                <p>Multi-instance: <strong>@progress.Completed / @progress.Total completed</strong>, @progress.Active active, @progress.Pending pending, @progress.Cancelled cancelled</p>
-                @foreach (var count in progress.FlowCounts)
-                {
-                    <span class="badge text-bg-secondary me-1">@FlowLabel(count.FlowId): @count.Count (@count.Percent.ToString("0.#")%)</span>
-                }
+                <div class="summary-item"><span>Multi-instance</span><strong>@progress.Completed / @progress.Total completed · @progress.Active active</strong></div>
             }
-
-            <p>Acting as: <strong>@ActingUser</strong>
-                <span class="text-muted">
-                    (@(Token.CurrentRoles.Count == 0 ? "no roles" : string.Join(", ", Token.CurrentRoles)))
-                </span>
-            </p>
+            <div class="summary-item"><span>Acting as</span><strong>@ActingUser · @(Token.CurrentRoles.Count == 0 ? "No roles" : string.Join(", ", Token.CurrentRoles))</strong></div>
+        </div>
 
             @if (instance.Status == "running" && currentNode?.RequiresClaim == true && instance.MultiInstance is null)
             {
-                <div class="d-flex gap-2 mb-3">
+                <div class="d-flex flex-wrap gap-2 mt-3">
                     <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
                     @if (CanUnclaim)
                     {
@@ -73,14 +74,20 @@ else
 
             @if (instance.Status == "running" && CanCancel)
             {
-                <button class="btn btn-outline-danger" @onclick="CancelAsync">Cancel instance</button>
+                <button class="btn btn-outline-danger mt-3" @onclick="CancelAsync">Cancel instance</button>
             }
-        </div>
-    </div>
+    </section>
+
+    <nav class="status-tabs" aria-label="Instance sections">
+        <a class="status-tab active text-decoration-none" href="#actions">Actions</a>
+        @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results">Multi-instance results</a> }
+        <a class="status-tab text-decoration-none" href="#variables">Variables</a>
+        <a class="status-tab text-decoration-none" href="#history">History</a>
+    </nav>
 
     @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0)
     {
-        <section class="mb-4">
+        <section id="multi-instance-results" class="panel mb-3">
             <h2 class="h4">Multi-instance result</h2>
             @if (completedMultiInstanceItems.Count == 0)
             {
@@ -125,7 +132,7 @@ else
     }
     @if (interruptFlows.Count > 0)
     {
-        <section class="mb-4 border border-danger rounded p-3">
+        <section class="panel mb-3 border-danger">
             <h2 class="h4 text-danger">Interrupt actions</h2>
             <p class="text-muted">These actions apply to the whole multi-instance execution and cancel unfinished work items.</p>
             <div class="row">
@@ -165,7 +172,7 @@ else
             </div>
         </section>
     }
-    <section class="mb-4">
+    <section id="actions" class="panel mb-3">
         <h2 class="h4">Available actions</h2>
         @if (currentNode?.RequiresClaim == true && instance.Status == "running")
         {
@@ -230,7 +237,7 @@ else
         }
     </section>
 
-    <section class="mb-4">
+    <section id="variables" class="panel mb-3">
         <h2 class="h4">Variables</h2>
         @if (instance.Variables.Count == 0)
         {
@@ -238,13 +245,14 @@ else
         }
         else
         {
-            <table class="table table-sm">
+            <div class="table-responsive"><table class="table table-sm">
+                <caption class="visually-hidden">Latest variables stored on instance #@instance.Id</caption>
                 <thead>
                     <tr>
-                        <th>Name</th>
-                        <th>Flow</th>
-                        <th>Set by</th>
-                        <th>Value</th>
+                        <th scope="col">Name</th>
+                        <th scope="col">Flow</th>
+                        <th scope="col">Set by</th>
+                        <th scope="col">Value</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -258,11 +266,11 @@ else
                         </tr>
                     }
                 </tbody>
-            </table>
+            </table></div>
         }
     </section>
 
-    <section>
+    <section id="history" class="panel">
         <h2 class="h4">History</h2>
         @if (instance.History.Count == 0)
         {
@@ -270,14 +278,15 @@ else
         }
         else
         {
-            <table class="table table-sm">
+            <div class="table-responsive"><table class="table table-sm">
+                <caption class="visually-hidden">Transition history for instance #@instance.Id</caption>
                 <thead>
                     <tr>
-                        <th>When</th>
-                        <th>From</th>
-                        <th>To</th>
-                        <th>Flow</th>
-                        <th>Note</th>
+                        <th scope="col">When</th>
+                        <th scope="col">From</th>
+                        <th scope="col">To</th>
+                        <th scope="col">Flow</th>
+                        <th scope="col">Note</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -292,7 +301,7 @@ else
                         </tr>
                     }
                 </tbody>
-            </table>
+            </table></div>
         }
     </section>
 }
@@ -477,6 +486,14 @@ else
 
     private async Task CancelAsync()
     {
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Cancel instance #{InstanceId}? Open tasks will be cancelled and this cannot be resumed.");
+        if (!confirmed)
+        {
+            return;
+        }
+
         await RefreshFrom(async () =>
         {
             await Api.CancelAsync(InstanceId);

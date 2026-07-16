@@ -1,149 +1,126 @@
 @page "/inbox"
-@rendermode InteractiveServer
+@implements IDisposable
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
 @inject TokenState Token
 
-<PageTitle>Inbox</PageTitle>
+<PageTitle>My Work · Flowbit</PageTitle>
 
-<h1>Inbox</h1>
+<PageHeader Eyebrow="Workspace" Title="My work"
+            Description="Review the user tasks visible to your current identity and move work forward.">
+    <Actions>
+        <a class="btn btn-outline-secondary" href="token"><AppIcon Name="token" /> Change identity</a>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken)"><AppIcon Name="refresh" /> Refresh inbox</button>
+    </Actions>
+</PageHeader>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <div class="alert alert-danger">@error</div>
+    <div class="alert alert-danger" role="alert">@error</div>
 }
 
 @if (!Token.HasToken)
 {
-    <div class="alert alert-warning">
-        No token set. <a href="token">Generate a token</a> to choose an identity and roles.
-    </div>
+    <section class="panel">
+        <EmptyState Icon="token" Title="A test identity is required" Description="Generate or paste a token to load the work items authorized for that user and role set.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
 }
 else
 {
-    <div class="d-flex flex-wrap gap-3 align-items-end mb-3">
-        <div>
-            <div class="text-muted small">Signed in as</div>
-            <div><strong>@(Token.CurrentUser ?? "anonymous")</strong>
-                <span class="text-muted">
-                    (@(Token.CurrentRoles.Count == 0 ? "no roles" : string.Join(", ", Token.CurrentRoles)))
-                </span>
+    <section class="panel mb-3" aria-label="Current identity">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div class="d-flex align-items-center gap-3">
+                <span class="avatar">@IdentityInitial</span>
+                <div><span class="data-subtitle mt-0">Working as</span><strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong></div>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                @if (Token.CurrentRoles.Count == 0)
+                {
+                    <StatusBadge Status="neutral" Text="No roles" />
+                }
+                else
+                {
+                    @foreach (var role in Token.CurrentRoles)
+                    {
+                        <StatusBadge Status="primary" Text="@role" />
+                    }
+                }
             </div>
         </div>
-        <div>
-            <label class="form-label">Instance id</label>
-            <input type="number" class="form-control" @bind="instanceId" @bind:after="OnFilterChangedAsync" placeholder="42" />
-        </div>
-        <div>
-            <label class="form-label">Workflow id</label>
-            <input type="number" class="form-control" @bind="workflowId" @bind:after="OnFilterChangedAsync" placeholder="1" />
-        </div>
-        <div>
-            <label class="form-label">Workflow key</label>
-            <input type="text" class="form-control" @bind="workflowKey" @bind:after="OnFilterChangedAsync" placeholder="purchase-request" />
-        </div>
-        <div>
-            <label class="form-label">Business key</label>
-            <input type="text" class="form-control" @bind="businessKey" @bind:after="OnFilterChangedAsync" placeholder="VIOLATION-42" />
-        </div>
-        <div>
-            <label class="form-label">Node id</label>
-            <input type="number" class="form-control" @bind="nodeId" @bind:after="OnFilterChangedAsync" placeholder="3" />
-        </div>
-        <div>
-            <label class="form-label">Node external id</label>
-            <input class="form-control" @bind="nodeExternalId" @bind:after="OnFilterChangedAsync" placeholder="TASK_MANAGER_APPROVAL" />
-        </div>
-        <div class="flex-grow-1">
-            <label class="form-label">Variables (name:value, comma-separated)</label>
-            <input class="form-control" @bind="variableFilter" @bind:after="OnFilterChangedAsync" placeholder="reqno:4711, priority:high" />
-        </div>
-        <button class="btn btn-primary" @onclick="LoadAsync">Refresh</button>
-    </div>
-}
+    </section>
 
-@if (result is null)
-{
-    <p>Set a token, then refresh to load your inbox.</p>
-}
-else if (result.Items.Count == 0)
-{
-    <p>No inbox items found.</p>
-}
-else
-{
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Instance</th>
-                <th>Workflow</th>
-                <th>Business key</th>
-                <th>Current step</th>
-                <th>Step roles</th>
-                <th>Claimed by</th>
-                <th>Status</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var item in result.Items)
-            {
-                <tr>
-                    <td>#@item.InstanceId</td>
-                    <td>@item.WorkflowName</td>
-                    <td>@(item.BusinessKey ?? "-")</td>
-                    <td>
-                        @item.CurrentNodeName
-                        @if (!string.IsNullOrWhiteSpace(item.CurrentNodeExternalId))
-                        {
-                            <div class="text-muted small">@item.CurrentNodeExternalId</div>
-                        }
-                        @if (item.ItemIndex is not null)
-                        {
-                            <div class="text-muted small">Item #@item.ItemIndex</div>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(item.Assignee))
-                        {
-                            <div class="text-muted small">Assigned to @item.Assignee</div>
-                        }
-                        else if (item.ItemIndex is not null)
-                        {
-                            <div class="text-muted small">Shared pool</div>
-                        }
-                        @if (item.MultiInstance is not null)
-                        {
-                            <div class="text-muted small">@item.MultiInstance.Completed / @item.MultiInstance.Total completed</div>
-                        }
-                    </td>
-                    <td>@(item.NodeRoles.Count == 0 ? "(any)" : string.Join(", ", item.NodeRoles))</td>
-                    <td>@(item.ClaimedBy ?? "-")</td>
-                    <td>
-                        @if (item.CanAct)
-                        {
-                            <span class="badge text-bg-success">Ready to act</span>
-                        }
-                        else if (item.CanClaim)
-                        {
-                            <span class="badge text-bg-warning">Can claim</span>
-                        }
-                        else
-                        {
-                            <span class="badge text-bg-secondary">View only</span>
-                        }
-                    </td>
-                    <td class="text-end">
-                        <a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+    <section class="filter-panel" aria-labelledby="inbox-filter-heading">
+        <div class="section-heading mb-0">
+            <div><h2 id="inbox-filter-heading">Inbox filters</h2><p>Narrow work by workflow, node, instance, or process data.</p></div>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="() => filtersOpen = !filtersOpen" aria-expanded="@(filtersOpen ? "true" : "false")" aria-controls="inbox-filter-fields">
+                @(filtersOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
+            </button>
+        </div>
+        @if (filtersOpen)
+        {
+            <div id="inbox-filter-fields" class="filter-grid mt-3">
+                <div><label class="form-label" for="inbox-instance-id">Instance ID</label><input id="inbox-instance-id" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
+                <div><label class="form-label" for="inbox-workflow-id">Workflow version ID</label><input id="inbox-workflow-id" type="number" class="form-control" @bind="workflowId" placeholder="1" /></div>
+                <div><label class="form-label" for="inbox-workflow-key">Workflow key</label><input id="inbox-workflow-key" class="form-control" @bind="workflowKey" placeholder="purchase-request" /></div>
+                <div><label class="form-label" for="inbox-business-key">Business key</label><input id="inbox-business-key" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
+                <div><label class="form-label" for="inbox-node-id">Node ID</label><input id="inbox-node-id" type="number" class="form-control" @bind="nodeId" placeholder="3" /></div>
+                <div><label class="form-label" for="inbox-node-external">Node external ID</label><input id="inbox-node-external" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
+                <div class="filter-span-2"><label class="form-label" for="inbox-variables">Variables</label><input id="inbox-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+                <div class="filter-actions">
+                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
+                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                </div>
+            </div>
+        }
+    </section>
 
-    <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-        <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
-        <span class="text-muted small">Page @result.Page of @TotalPages (@result.TotalCount total)</span>
-    </div>
+    <section class="panel panel-flush" aria-labelledby="inbox-results-heading">
+        <div class="section-heading">
+            <div><h2 id="inbox-results-heading">Work items</h2><p>@(result is null ? "Loading your inbox…" : $"{result.TotalCount:N0} visible tasks")</p></div>
+        </div>
+
+        @if (result is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (result.Items.Count == 0)
+        {
+            <EmptyState Icon="check" Title="You're all caught up" Description="No work items match this identity and filter set." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <caption class="visually-hidden">Work items visible to the current test identity</caption>
+                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                    <tbody>
+                        @foreach (var item in result.Items)
+                        {
+                            <tr>
+                                <td><a class="data-title" href="@($"user-tasks/{item.UserTaskId}")">@item.CurrentNodeName</a><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
+                                <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? "No business key")</span></td>
+                                <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>
+                                <td>@if (item.MultiInstance is not null) { <span>@item.MultiInstance.Completed / @item.MultiInstance.Total</span><span class="data-subtitle">Multi-instance</span> } else { <span>Single task</span> }</td>
+                                <td><StatusBadge Status="@Readiness(item)" Text="@Readiness(item)" /></td>
+                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
 }
 
 @code {
@@ -156,59 +133,50 @@ else
     private int? nodeId;
     private string? nodeExternalId;
     private string? error;
+    private bool filtersOpen;
     private int page = 1;
     private const int PageSize = 50;
 
-    private int TotalPages => result is null || result.TotalCount == 0
-        ? 1
-        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-
+    private string IdentityInitial => (Token.CurrentUser ?? "A")[..1].ToUpperInvariant();
+    private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
+        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
+    private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
     private bool HasNextPage => result is not null && page < TotalPages;
+    private IReadOnlyList<string> ParseVariableFilter() => string.IsNullOrWhiteSpace(variableFilter) ? [] : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private IReadOnlyList<string> ParseVariableFilter() =>
-        string.IsNullOrWhiteSpace(variableFilter)
-            ? []
-            : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-    private async Task OnFilterChangedAsync()
+    protected override async Task OnInitializedAsync()
     {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken) await LoadAsync();
+    }
+
+    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task ClearFiltersAsync()
+    {
+        variableFilter = workflowKey = businessKey = nodeExternalId = null;
+        instanceId = workflowId = null;
+        nodeId = null;
         page = 1;
         await LoadAsync();
     }
-
-    private async Task PreviousPageAsync()
-    {
-        if (page <= 1)
-        {
-            return;
-        }
-
-        page--;
-        await LoadAsync();
-    }
-
-    private async Task NextPageAsync()
-    {
-        if (!HasNextPage)
-        {
-            return;
-        }
-
-        page++;
-        await LoadAsync();
-    }
+    private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
+    private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
 
     private async Task LoadAsync()
     {
+        if (!Token.HasToken) { result = null; return; }
         try
         {
             error = null;
             result = null;
             result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey);
         }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
+        catch (Exception ex) { error = ex.Message; }
     }
+
+    private void OnTokenChanged() => _ = InvokeAsync(LoadAsync);
+    private static string Assignment(InboxItemDto item) => !string.IsNullOrWhiteSpace(item.Assignee) ? $"Assigned to {item.Assignee}" : !string.IsNullOrWhiteSpace(item.ClaimedBy) ? $"Claimed by {item.ClaimedBy}" : "Shared pool";
+    private static string Readiness(InboxItemDto item) => item.CanAct ? "Ready to act" : item.CanClaim ? "Can claim" : "View only";
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
 }

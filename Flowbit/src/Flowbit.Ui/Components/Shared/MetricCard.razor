@@ -1,0 +1,19 @@
+<article class="metric-card metric-@Tone">
+    <div class="metric-icon"><AppIcon Name="@Icon" /></div>
+    <div class="metric-copy">
+        <span>@Label</span>
+        <strong>@Value</strong>
+        @if (!string.IsNullOrWhiteSpace(Hint))
+        {
+            <small>@Hint</small>
+        }
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Value { get; set; } = string.Empty;
+    [Parameter] public string Icon { get; set; } = "activity";
+    [Parameter] public string Tone { get; set; } = "primary";
+    [Parameter] public string? Hint { get; set; }
+}

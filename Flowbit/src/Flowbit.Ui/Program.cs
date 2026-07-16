@@ -2,6 +2,7 @@ using Serilog;
 using Flowbit.Ui.Components;
 using Flowbit.Ui.Clients;
 using Flowbit.Ui.Auth;
+using Flowbit.Ui.Dashboard;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -23,6 +24,7 @@ try
     builder.Services.AddSingleton<TokenState>();
     builder.Services.AddSingleton<DevTokenFactory>();
     builder.Services.AddTransient<AuthTokenHandler>();
+    builder.Services.AddScoped<DashboardService>();
 
     builder.Services.AddHttpClient<WorkflowApiClient>(client =>
     {

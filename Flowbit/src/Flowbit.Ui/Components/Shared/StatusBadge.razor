@@ -1,0 +1,22 @@
+<span class="status-badge status-@Tone">
+    <span class="status-dot" aria-hidden="true"></span>
+    @Label
+</span>
+
+@code {
+    [Parameter, EditorRequired] public string? Status { get; set; }
+    [Parameter] public string? Text { get; set; }
+
+    private string Normalized => Status?.Trim().ToLowerInvariant() ?? string.Empty;
+    private string Label => Text ?? (string.IsNullOrWhiteSpace(Status)
+        ? "Unknown"
+        : char.ToUpperInvariant(Status![0]) + Status[1..]);
+    private string Tone => Normalized switch
+    {
+        "running" or "active" or "published" or "ready" or "ready to act" => "success",
+        "pending" or "can claim" or "unpublished" or "warning" => "warning",
+        "faulted" or "failed" or "error" or "cancelled" or "danger" => "danger",
+        "completed" or "default" or "assigned" or "primary" => "primary",
+        _ => "neutral"
+    };
+}
