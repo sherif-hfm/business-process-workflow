@@ -71,6 +71,7 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `POST /api/instances/{id}/unclaim`
 - `POST /api/instances/{id}/flows/{flowId}`
 - `POST /api/instances/{id}/cancel`
+- `GET /api/auth/context` (server-resolved workflow actor and roles)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
 
@@ -85,6 +86,14 @@ canonicalized when definitions are loaded. Unknown or explicitly null values,
 duplicate node/flow ids, and case-variant duplicate variable names are rejected.
 Cardinality and collection fan-out are bounded before allocation by
 `Workflow.MultiInstance.MaxInstances`.
+
+The JWT claim used as the canonical workflow actor can be configured in
+`public.engine_settings` with namespace `Authentication`, key
+`UserIdentityClaim`, and a stable claim name such as `sub` or `oid`. The value is
+loaded once at API startup. If the row is absent, the API retains the legacy
+`Identity.Name`/`NameIdentifier` selection; a configured claim that is missing or
+invalid causes a 401. Restart all API replicas after changing it, and migrate or
+drain active assignments and claims before switching identity formats.
 
 ## Verification
 

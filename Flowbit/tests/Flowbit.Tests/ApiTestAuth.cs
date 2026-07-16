@@ -16,12 +16,20 @@ internal static class ApiTestAuth
         HttpRequestMessage request,
         string user = "test-admin",
         params string[] roles)
+        => AuthorizeWithClaims(request, user, [], roles);
+
+    public static HttpRequestMessage AuthorizeWithClaims(
+        HttpRequestMessage request,
+        string user,
+        IEnumerable<Claim> additionalClaims,
+        params string[] roles)
     {
         var claims = new List<Claim>
         {
             new(ClaimTypes.Name, user),
             new(JwtRegisteredClaimNames.Sub, user)
         };
+        claims.AddRange(additionalClaims);
         claims.AddRange(roles.DefaultIfEmpty("admin").Select(role => new Claim(ClaimTypes.Role, role)));
         var credentials = new SigningCredentials(
             new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Key)),

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
+using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
@@ -37,6 +38,8 @@ public static class WorkflowDefinitionEndpoints
                 return await next(invocationContext);
             }
 
+            var actorResolver = httpContext.RequestServices.GetRequiredService<IActorContextResolver>();
+            var actor = actorResolver.Resolve(httpContext.User);
             var settingsService = httpContext.RequestServices.GetRequiredService<IEngineSettingsService>();
 
             // Fetch the required role from engine settings, defaulting to "admin" if not configured
@@ -54,7 +57,7 @@ public static class WorkflowDefinitionEndpoints
             if (!allowedRoles.Any(r => userRoles.Contains(r)))
             {
                 Log.Warning("User '{User}' with roles [{Roles}] is forbidden from accessing workflow definitions. Required role(s): '{RequiredRole}'",
-                    httpContext.User.Identity?.Name ?? "anonymous",
+                    actor.User ?? "anonymous",
                     string.Join(", ", userRoles),
                     requiredRole);
                 return Results.Forbid();

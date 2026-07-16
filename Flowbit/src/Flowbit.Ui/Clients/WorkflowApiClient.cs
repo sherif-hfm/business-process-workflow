@@ -6,6 +6,14 @@ namespace Flowbit.Ui.Clients;
 
 public sealed class WorkflowApiClient(HttpClient httpClient)
 {
+    public async Task<ActorContextDto> GetActorContextAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.GetAsync("/api/auth/context", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ActorContextDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty actor context.");
+    }
+
     public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowsAsync(CancellationToken cancellationToken = default) =>
         await httpClient.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(
             "/api/workflows",

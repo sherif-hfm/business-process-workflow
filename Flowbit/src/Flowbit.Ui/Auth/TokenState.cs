@@ -1,6 +1,4 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using Serilog;
+using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Ui.Auth;
 
@@ -14,6 +12,7 @@ public sealed class TokenState
     private string? token;
     private string? currentUser;
     private IReadOnlyList<string> currentRoles = [];
+    private bool identityResolved;
 
     public event Action? Changed;
 
@@ -61,6 +60,17 @@ public sealed class TokenState
         }
     }
 
+    public bool IdentityResolved
+    {
+        get
+        {
+            lock (gate)
+            {
+                return identityResolved;
+            }
+        }
+    }
+
     public void Set(string? newToken)
     {
         lock (gate)
@@ -70,11 +80,16 @@ public sealed class TokenState
                 token = null;
                 currentUser = null;
                 currentRoles = [];
+                identityResolved = false;
             }
             else
             {
                 token = newToken.Trim();
-                (currentUser, currentRoles) = Parse(token);
+                // The API is authoritative because its configured identity claim may
+                // differ from the token's conventional name/sub claims.
+                currentUser = null;
+                currentRoles = [];
+                identityResolved = false;
             }
         }
 
@@ -83,30 +98,27 @@ public sealed class TokenState
 
     public void Clear() => Set(null);
 
-    private static (string? User, IReadOnlyList<string> Roles) Parse(string token)
+    public void ApplyResolvedContext(ActorContextDto context)
     {
-        try
+        lock (gate)
         {
-            var handler = new JwtSecurityTokenHandler();
-            if (!handler.CanReadToken(token))
-            {
-                return (null, []);
-            }
+            currentUser = context.User;
+            currentRoles = context.Roles;
+            identityResolved = true;
+        }
 
-            var jwt = handler.ReadJwtToken(token);
-            var user = jwt.Claims
-                .FirstOrDefault(c => c.Type is ClaimTypes.Name or "name" or "unique_name")?.Value
-                ?? jwt.Subject;
-            var roles = jwt.Claims
-                .Where(c => c.Type is ClaimTypes.Role or "role" or "roles")
-                .Select(c => c.Value)
-                .ToList();
-            return (user, roles);
-        }
-        catch (Exception ex)
+        Changed?.Invoke();
+    }
+
+    public void ClearResolvedContext()
+    {
+        lock (gate)
         {
-            Log.Warning(ex, "Failed to read or parse JWT token.");
-            return (null, []);
+            currentUser = null;
+            currentRoles = [];
+            identityResolved = false;
         }
+
+        Changed?.Invoke();
     }
 }

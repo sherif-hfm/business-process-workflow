@@ -46,6 +46,20 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         SetEnvironment("Jwt__Issuer", ApiTestAuth.Issuer);
         SetEnvironment("Jwt__Audience", ApiTestAuth.Audience);
         SetEnvironment("Jwt__Key", ApiTestAuth.Key);
+
+        // Program reads the process-latched actor identity setting during startup,
+        // so the schema must exist before WebApplicationFactory starts the host.
+        var migrationDataSourceBuilder = new NpgsqlDataSourceBuilder(_postgres.GetConnectionString());
+        migrationDataSourceBuilder.EnableDynamicJson();
+        await using (var migrationDataSource = migrationDataSourceBuilder.Build())
+        {
+            var migrationOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(migrationDataSource)
+                .Options;
+            await using var migrationDb = new AppDbContext(migrationOptions);
+            await migrationDb.Database.MigrateAsync();
+        }
+
         Factory = new WorkflowApiFactory(_postgres.GetConnectionString());
         Client = Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
@@ -54,8 +68,6 @@ public sealed class PostgresApiFixture : IAsyncLifetime
 
         await using var scope = Factory.Services.CreateAsyncScope();
         DataSource = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.MigrateAsync();
     }
 
     public async Task DisposeAsync()

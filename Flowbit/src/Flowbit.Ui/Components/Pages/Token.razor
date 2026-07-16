@@ -2,6 +2,7 @@
 @using Flowbit.Ui.Auth
 @inject DevTokenFactory TokenFactory
 @inject TokenState TokenStore
+@inject Flowbit.Ui.Clients.WorkflowApiClient Api
 
 <PageTitle>Test Identity · Flowbit</PageTitle>
 
@@ -68,7 +69,7 @@
             @if (TokenStore.HasToken)
             {
                 <div class="summary-grid mb-3">
-                    <div class="summary-item"><span>User</span><strong>@(TokenStore.CurrentUser ?? "anonymous")</strong></div>
+                    <div class="summary-item"><span>User</span><strong>@IdentityLabel</strong></div>
                     <div class="summary-item"><span>Roles</span><strong>@(TokenStore.CurrentRoles.Count == 0 ? "None" : string.Join(", ", TokenStore.CurrentRoles))</strong></div>
                 </div>
             }
@@ -112,7 +113,11 @@
         roles = string.Join(", ", current);
     }
 
-    private void Generate()
+    private string IdentityLabel => TokenStore.IdentityResolved
+        ? TokenStore.CurrentUser ?? "anonymous"
+        : "Not resolved";
+
+    private async Task Generate()
     {
         try
         {
@@ -122,17 +127,34 @@
             var token = TokenFactory.Create(user, roleList, expiresInMinutes);
             TokenStore.Set(token);
             rawToken = token;
+            await ResolveIdentityAsync();
         }
         catch (Exception ex)
         {
+            TokenStore.ClearResolvedContext();
             error = ex.Message;
         }
     }
 
-    private void ApplyRaw()
+    private async Task ApplyRaw()
     {
-        error = null;
-        TokenStore.Set(rawToken);
+        try
+        {
+            error = null;
+            TokenStore.Set(rawToken);
+            await ResolveIdentityAsync();
+        }
+        catch (Exception ex)
+        {
+            TokenStore.ClearResolvedContext();
+            error = ex.Message;
+        }
+    }
+
+    private async Task ResolveIdentityAsync()
+    {
+        var context = await Api.GetActorContextAsync();
+        TokenStore.ApplyResolvedContext(context);
     }
 
     private void Clear()

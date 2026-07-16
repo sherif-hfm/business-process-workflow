@@ -447,7 +447,17 @@ Storage follows the hybrid design:
   page (`DevTokenFactory` + `TokenState`) so a tester can switch user/roles on
   the fly; `AuthTokenHandler` attaches it as a `Bearer` header. For production,
   swap `AddJwtBearer` to a real OIDC identity provider and remove the UI minting
-  page.
+  page. The canonical workflow actor may be selected with the process-latched
+  `public.engine_settings` row `Authentication.UserIdentityClaim` (namespace
+  `Authentication`, key `UserIdentityClaim`, value such as `sub` or `oid`). The
+  setting is loaded at API startup; when absent, identity retains the legacy
+  `Identity.Name` then `NameIdentifier` behavior. When configured, the token must
+  contain one nonblank, unambiguous value no longer than 300 characters or the
+  request fails with 401. That identity drives `sys.user`, inbox/assignee matching,
+  claims, completions, and actor audit fields. Roles and allowlisted `sys.claim.*`
+  values remain independent. `GET /api/auth/context` returns the resolved actor to
+  the Blazor UI. Changing the claim requires restarting every API replica and must
+  be treated as an identity migration for active work.
 
 Definitions are versioned: `POST /api/workflows` creates v1, `PUT
 /api/workflows/{id}` creates a new immutable version, and only a *published*

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
+using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
@@ -95,6 +96,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="request">Parameters specifying the workflow to start and initial variables.</param>
     /// <param name="detail">Optional. If set to 'full', returns the detailed instance DTO instead of the slim version.</param>
     /// <param name="principal">The security principal containing the actor identity.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -126,10 +128,11 @@ public static class WorkflowInstanceEndpoints
         StartInstanceRequest request,
         string? detail,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        var actor = ToActor(principal);
+        var actor = actorResolver.Resolve(principal);
         var headers = ToHeaderDictionary(context.Request.Headers);
         try
         {
@@ -179,6 +182,8 @@ public static class WorkflowInstanceEndpoints
     /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each summary (default false).</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
+    /// <param name="principal">The security principal containing the actor identity.</param>
+    /// <param name="actorResolver">Validates the configured canonical actor identity.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -199,9 +204,12 @@ public static class WorkflowInstanceEndpoints
         bool? includeVariables,
         int? page,
         int? pageSize,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
+        _ = actorResolver.Resolve(principal);
         var (p, s) = NormalizePaging(page, pageSize);
         return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, includeVariables ?? false, p, s, cancellationToken));
     }
@@ -219,6 +227,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
     /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -241,17 +250,20 @@ public static class WorkflowInstanceEndpoints
         int? page,
         int? pageSize,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.GetInboxAsync(ToActor(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
+        return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, p, s, cancellationToken));
     }
 
     /// <summary>
     /// Retrieves full structural and execution details of a specific workflow instance.
     /// </summary>
     /// <param name="id">The database ID of the workflow instance.</param>
+    /// <param name="principal">The security principal containing the actor identity.</param>
+    /// <param name="actorResolver">Validates the configured canonical actor identity.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -261,9 +273,12 @@ public static class WorkflowInstanceEndpoints
     /// </remarks>
     public static async Task<IResult> GetInstance(
         long id,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
+        _ = actorResolver.Resolve(principal);
         var instance = await service.GetInstanceAsync(id, cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
     }
@@ -273,6 +288,7 @@ public static class WorkflowInstanceEndpoints
     /// </summary>
     /// <param name="id">The database ID of the workflow instance.</param>
     /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -286,10 +302,11 @@ public static class WorkflowInstanceEndpoints
     public static async Task<IResult> GetAvailableFlows(
         long id,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        return Results.Ok(await service.GetAvailableFlowsAsync(id, ToActor(principal), cancellationToken));
+        return Results.Ok(await service.GetAvailableFlowsAsync(id, actorResolver.Resolve(principal), cancellationToken));
     }
 
     private static async Task<IResult> ListUserTasks(
@@ -298,12 +315,13 @@ public static class WorkflowInstanceEndpoints
         int? page,
         int? pageSize,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
         var paging = NormalizePaging(page, pageSize);
         return Results.Ok(await service.ListUserTasksAsync(id, status, paging.Page, paging.PageSize,
-            ToActor(principal), cancellationToken));
+            actorResolver.Resolve(principal), cancellationToken));
     }
 
     /// <summary>
@@ -311,6 +329,7 @@ public static class WorkflowInstanceEndpoints
     /// </summary>
     /// <param name="id">The database ID of the workflow instance.</param>
     /// <param name="principal">The security principal of the current actor claiming the task.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -325,10 +344,11 @@ public static class WorkflowInstanceEndpoints
     public static async Task<IResult> ClaimInstance(
         long id,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        var instance = await service.ClaimAsync(id, ToActor(principal), cancellationToken);
+        var instance = await service.ClaimAsync(id, actorResolver.Resolve(principal), cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
     }
 
@@ -337,6 +357,7 @@ public static class WorkflowInstanceEndpoints
     /// </summary>
     /// <param name="id">The database ID of the workflow instance.</param>
     /// <param name="principal">The security principal of the current actor releasing the claim.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -349,10 +370,11 @@ public static class WorkflowInstanceEndpoints
     public static async Task<IResult> UnclaimInstance(
         long id,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        var instance = await service.UnclaimAsync(id, ToActor(principal), cancellationToken);
+        var instance = await service.UnclaimAsync(id, actorResolver.Resolve(principal), cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
     }
 
@@ -363,6 +385,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="flowId">The unique integer ID of the sequence flow to transition along.</param>
     /// <param name="request">Transition payload containing values for variables to submit/set.</param>
     /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -385,13 +408,14 @@ public static class WorkflowInstanceEndpoints
         int flowId,
         TakeFlowRequest request,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
         var instance = await service.TakeFlowAsync(
             id,
             flowId,
-            ToActor(principal),
+            actorResolver.Resolve(principal),
             request.Variables,
             cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
@@ -402,6 +426,7 @@ public static class WorkflowInstanceEndpoints
     /// </summary>
     /// <param name="id">The database ID of the workflow instance to cancel.</param>
     /// <param name="principal">The security principal of the current actor.</param>
+    /// <param name="actorResolver">Resolves the configured canonical actor identity from the principal.</param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
@@ -413,10 +438,11 @@ public static class WorkflowInstanceEndpoints
     public static async Task<IResult> CancelInstance(
         long id,
         ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        return await service.CancelAsync(id, ToActor(principal), cancellationToken) ? Results.NoContent() : Results.NotFound();
+        return await service.CancelAsync(id, actorResolver.Resolve(principal), cancellationToken) ? Results.NoContent() : Results.NotFound();
     }
 
     /// <summary>
@@ -510,22 +536,4 @@ public static class WorkflowInstanceEndpoints
         return (normalizedPage, normalizedPageSize);
     }
 
-    private static ActorContext ToActor(ClaimsPrincipal principal)
-    {
-        var user = principal.Identity?.Name
-            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
-        var roles = principal.FindAll(ClaimTypes.Role)
-            .Select(claim => claim.Value)
-            .ToArray();
-
-        // Capture all claims (first value per type); the engine applies the
-        // configured allowlist when exposing them as sys.claim.* context values.
-        var claims = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var claim in principal.Claims)
-        {
-            claims.TryAdd(claim.Type, claim.Value);
-        }
-
-        return new ActorContext(user, roles, claims);
-    }
 }

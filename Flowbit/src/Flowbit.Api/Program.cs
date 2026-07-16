@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.OpenApi;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Serilog;
+using Flowbit.Api.Auth;
 using Flowbit.Api.Endpoints;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.DependencyInjection;
@@ -180,6 +181,13 @@ try
     builder.Services.AddSingleton(workflowContextOptions);
     builder.Services.AddSingleton(TimeProvider.System);
 
+    // The actor identity claim is read from engine_settings once during startup.
+    // Keeping it process-latched prevents active work ownership from changing in
+    // the middle of a request or workflow execution.
+    var actorIdentityConfiguration = new ActorIdentityConfiguration();
+    builder.Services.AddSingleton(actorIdentityConfiguration);
+    builder.Services.AddSingleton<IActorContextResolver, ActorContextResolver>();
+
     // scriptTask JavaScript execution limits (Jint sandbox: timeout / statements / memory).
     var scriptOptions = builder.Configuration
         .GetSection(ScriptOptions.SectionName)
@@ -239,10 +247,27 @@ try
         {
             options.SwaggerEndpoint("/openapi/v1.json", "Flowbit API v1");
         });
+    }
 
-        using var scope = app.Services.CreateScope();
-        var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
-        await initializer.InitializeDatabaseAsync();
+    using (var scope = app.Services.CreateScope())
+    {
+        if (app.Environment.IsDevelopment())
+        {
+            var initializer = scope.ServiceProvider.GetRequiredService<DatabaseInitializer>();
+            await initializer.InitializeDatabaseAsync();
+        }
+
+        var settingsService = scope.ServiceProvider.GetRequiredService<IEngineSettingsService>();
+        var identitySetting = await settingsService.GetByKeyAsync(
+            ActorIdentityConfiguration.SettingKey,
+            CancellationToken.None);
+        actorIdentityConfiguration.Initialize(identitySetting);
+
+        Log.Information(
+            "Workflow actor identity initialized from {Source}.",
+            actorIdentityConfiguration.ClaimType is null
+                ? "legacy Identity.Name/NameIdentifier selection"
+                : $"engine setting '{ActorIdentityConfiguration.SettingKey}'");
     }
 
     app.UseHttpsRedirection();
@@ -251,6 +276,7 @@ try
     app.UseAuthorization();
 
     app.MapGet("/", () => Results.Redirect("/swagger"));
+    app.MapAuthenticationEndpoints();
     app.MapWorkflowDefinitionEndpoints();
     app.MapWorkflowInstanceEndpoints();
     app.MapUserTaskEndpoints();

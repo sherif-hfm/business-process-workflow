@@ -5,6 +5,11 @@ using Flowbit.Shared.Models;
 namespace Flowbit.Shared.Dtos;
 
 /// <summary>
+/// The server-resolved identity used for authenticated workflow operations.
+/// </summary>
+public sealed record ActorContextDto(string? User, IReadOnlyList<string> Roles);
+
+/// <summary>
 /// Represents a summary of a workflow definition version.
 /// </summary>
 /// <param name="Id">The unique database ID of this workflow version.</param>
