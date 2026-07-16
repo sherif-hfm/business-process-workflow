@@ -1,4 +1,4 @@
-# Business Process Workflow Editor
+# Flowbit — Workflow Editor
 
 A single-file, dependency-free visual editor for designing business process
 workflows in the browser. Users lay out **flow nodes** inside **lanes**
@@ -22,19 +22,19 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 
 | File | Purpose |
 | --- | --- |
-| `workflow-editor.html` | The entire application: markup, CSS, and JS in one file. |
+| `flowbit-editor.html` | The entire application: markup, CSS, and JS in one file. |
 | `workflow.json` | A sample/exported workflow ("Purchase Request Approval") used as example data. It matches the JSON format the editor saves and loads. |
-| `WorkflowEngine/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
+| `Flowbit/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
 | `AGENTS.md` | This document. |
 
-To run it, open `workflow-editor.html` directly in a modern browser. No install,
+To run it, open `flowbit-editor.html` directly in a modern browser. No install,
 no server required.
 
 ---
 
 ## How it works (architecture)
 
-Everything lives in `workflow-editor.html`. The key pieces:
+Everything lives in `flowbit-editor.html`. The key pieces:
 
 - **State**: A single global `model` object holds the whole workflow. Interaction
   state lives in globals like `selected`, `connectMode`, `drag`, `laneDrag`,
@@ -62,26 +62,26 @@ There are no automated tests. Validation is manual, in-browser.
 
 ---
 
-## Runtime engine (`WorkflowEngine/`)
+## Runtime engine (`Flowbit/`)
 
-`WorkflowEngine/` is a separate .NET 10 solution for running workflow instances
+`Flowbit/` is a separate .NET 10 solution for running workflow instances
 from the JSON definitions produced by the editor. It preserves the editor's JSON
 format rather than normalizing the definition into node/flow tables.
 
 Projects:
 
-- `src/WorkflowEngine.Api` - API layer: Minimal API endpoints, OpenAPI, startup
+- `src/Flowbit.Api` - API layer: Minimal API endpoints, OpenAPI, startup
   composition, development migration/seed.
-- `src/WorkflowEngine.Service` - Service layer: workflow engine behavior,
+- `src/Flowbit.Service` - Service layer: workflow engine behavior,
   definition validation, sequence-flow condition evaluation
   (`SequenceFlowConditionEvaluator`, NCalc), service interfaces, repository
   ports, and DI extension.
-- `src/WorkflowEngine.Infrastructure` - Infrastructure layer: EF Core,
+- `src/Flowbit.Infrastructure` - Infrastructure layer: EF Core,
   PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations,
   scriptTask JavaScript execution (`JintScriptEvaluator`, sandboxed Jint), and
   unit of work.
-- `src/WorkflowEngine.Shared` - shared DTOs and C# model for the editor JSON.
-- `src/WorkflowEngine.Ui` - Blazor Server UI that calls the API through a typed
+- `src/Flowbit.Shared` - shared DTOs and C# model for the editor JSON.
+- `src/Flowbit.Ui` - Blazor Server UI that calls the API through a typed
   `HttpClient`.
 
 Storage follows the hybrid design:
@@ -563,19 +563,19 @@ what the cross-version `workflowKey` instance search matches.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
 
-To run locally from `WorkflowEngine/`:
+To run locally from `Flowbit/`:
 
 ```powershell
 docker compose up -d
-dotnet run --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj --launch-profile http
-dotnet run --project .\src\WorkflowEngine.Ui\WorkflowEngine.Ui.csproj --launch-profile http
+dotnet run --project .\src\Flowbit.Api\Flowbit.Api.csproj --launch-profile http
+dotnet run --project .\src\Flowbit.Ui\Flowbit.Ui.csproj --launch-profile http
 ```
 
 For instance throughput tests, start the API with the `LoadTest` environment so
 Serilog uses Warning level and console/file I/O does not dominate the result:
 
 ```powershell
-dotnet run --no-launch-profile --project .\src\WorkflowEngine.Api\WorkflowEngine.Api.csproj -- --environment LoadTest --urls http://localhost:5017
+dotnet run --no-launch-profile --project .\src\Flowbit.Api\Flowbit.Api.csproj -- --environment LoadTest --urls http://localhost:5017
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 1000 --concurrency 32
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 200000 --concurrency 32
 # For an already-started cardinality multi-instance task whose normal outcome is flow 201:
@@ -1140,7 +1140,7 @@ when extending the model so new features stay close to BPMN terminology.
   roles), normalized by `normalizeRoles()` (a legacy singular `role` string is
   migrated into an array). Shown as small labels on nodes and edges.
 - **Requires claim**: `userTask` nodes carry a boolean `requiresClaim`
-  (enforced at runtime in `WorkflowEngine/`). Hidden for other node types.
+  (enforced at runtime in `Flowbit/`). Hidden for other node types.
 - **Automatic task / start event flow**: `task` and `startEvent` each own one
   unconditional outgoing flow, drawn as a dashed edge. The engine follows it in
   the pass-through loop with `automatic` / `start` history notes. `serviceTask`
@@ -1184,4 +1184,4 @@ when extending the model so new features stay close to BPMN terminology.
 
 Keep editor changes in the single HTML file unless there is a strong reason to
 split it. Preserve the editor's no-dependency, no-build nature. Runtime engine
-changes belong under `WorkflowEngine/`.
+changes belong under `Flowbit/`.

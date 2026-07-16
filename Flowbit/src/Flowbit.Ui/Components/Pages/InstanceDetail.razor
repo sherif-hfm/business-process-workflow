@@ -1,0 +1,713 @@
+@page "/instances/{InstanceId:long}"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject NavigationManager Navigation
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Instance Detail</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@if (instance is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    var currentNode = CurrentNode;
+    var completedMultiInstanceItems = CompletedMultiInstanceItems;
+
+    <h1>Instance #@instance.Id</h1>
+    <p class="text-muted">@instance.Workflow.Name v@instance.Workflow.Version</p>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h2 class="h4">@instance.CurrentNodeName</h2>
+            @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
+            {
+                <p class="text-muted">External ID: <strong>@instance.CurrentNodeExternalId</strong></p>
+            }
+            <p>Status: <strong>@instance.Status</strong></p>
+            @if (!string.IsNullOrWhiteSpace(instance.BusinessKey))
+            {
+                <p>Business key: <strong>@instance.BusinessKey</strong> <span class="text-muted">(@instance.BusinessKeyUniqueness)</span></p>
+            }
+            @if (instance.UserTasks is not null)
+            {
+                <p>Task state: <strong>@FormatTaskState(instance.UserTasks)</strong></p>
+            }
+            <p>Started by: <strong>@(instance.StartedBy ?? "-")</strong></p>
+            @if (instance.MultiInstance is not null)
+            {
+                var progress = instance.MultiInstance;
+                <p>Multi-instance: <strong>@progress.Completed / @progress.Total completed</strong>, @progress.Active active, @progress.Pending pending, @progress.Cancelled cancelled</p>
+                @foreach (var count in progress.FlowCounts)
+                {
+                    <span class="badge text-bg-secondary me-1">@FlowLabel(count.FlowId): @count.Count (@count.Percent.ToString("0.#")%)</span>
+                }
+            }
+
+            <p>Acting as: <strong>@ActingUser</strong>
+                <span class="text-muted">
+                    (@(Token.CurrentRoles.Count == 0 ? "no roles" : string.Join(", ", Token.CurrentRoles)))
+                </span>
+            </p>
+
+            @if (instance.Status == "running" && currentNode?.RequiresClaim == true && instance.MultiInstance is null)
+            {
+                <div class="d-flex gap-2 mb-3">
+                    <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
+                    @if (CanUnclaim)
+                    {
+                        <button class="btn btn-outline-secondary" @onclick="UnclaimAsync">Unclaim</button>
+                    }
+                </div>
+            }
+
+            @if (instance.Status == "running" && CanCancel)
+            {
+                <button class="btn btn-outline-danger" @onclick="CancelAsync">Cancel instance</button>
+            }
+        </div>
+    </div>
+
+    @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0)
+    {
+        <section class="mb-4">
+            <h2 class="h4">Multi-instance result</h2>
+            @if (completedMultiInstanceItems.Count == 0)
+            {
+                <p>No work items completed yet.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr>
+                                <th>Execution</th>
+                                <th>Item</th>
+                                <th>User</th>
+                                <th>Action</th>
+                                <th>Submitted data</th>
+                                <th>When</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in completedMultiInstanceItems)
+                            {
+                                <tr>
+                                    <td>#@item.MultiInstanceExecutionId</td>
+                                    <td>@FormatItemNumber(item.ItemIndex)</td>
+                                    <td>@(item.PerformedBy ?? "-")</td>
+                                    <td>@FlowLabel(item.SequenceFlowId)</td>
+                                    <td><code class="text-break">@FormatPayload(item.Payload)</code></td>
+                                    <td>@item.PerformedAt.LocalDateTime</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+
+    @if (instance.MultiInstance is not null)
+    {
+        <div class="alert alert-info">Open a specific work item from the Inbox to claim or take an action.</div>
+    }
+    @if (interruptFlows.Count > 0)
+    {
+        <section class="mb-4 border border-danger rounded p-3">
+            <h2 class="h4 text-danger">Interrupt actions</h2>
+            <p class="text-muted">These actions apply to the whole multi-instance execution and cancel unfinished work items.</p>
+            <div class="row">
+                @foreach (var flow in interruptFlows)
+                {
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100 border-danger">
+                            <div class="card-body">
+                                <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
+                                <p class="text-muted">Interrupts this execution and moves to node #@flow.TargetRef</p>
+                                @foreach (var variable in flow.Variables)
+                                {
+                                    <div class="mb-2">
+                                        <label class="form-label">
+                                            @variable.Name
+                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                                            @if (variable.Required)
+                                            {
+                                                <span class="text-danger">*</span>
+                                            }
+                                        </label>
+                                        <input class="form-control"
+                                               value="@GetFlowInput(flow.Id, variable.Name)"
+                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                    </div>
+                                }
+
+                                <button class="btn btn-danger"
+                                        disabled="@interruptSubmitting"
+                                        @onclick="() => TakeInterruptFlowAsync(flow)">
+                                    @(interruptSubmitting ? "Submitting..." : "Interrupt and cancel remaining items")
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+    <section class="mb-4">
+        <h2 class="h4">Available actions</h2>
+        @if (currentNode?.RequiresClaim == true && instance.Status == "running")
+        {
+            if (string.IsNullOrWhiteSpace(CurrentClaimedBy))
+            {
+                if (availableFlows.Any(f => !f.CanActWithoutClaim))
+                {
+                    <div class="alert alert-info">Claim this task before taking standard actions.</div>
+                }
+            }
+            else if (!CanTakeActions)
+            {
+                if (availableFlows.Any(f => !f.CanActWithoutClaim))
+                {
+                    <div class="alert alert-info">This task is claimed by <strong>@CurrentClaimedBy</strong>. Only they can take standard actions.</div>
+                }
+            }
+        }
+        @if (instance.MultiInstance is not null)
+        {
+            <p>Personal work-item actions are available from the Inbox.</p>
+        }
+        else if (availableFlows.Count == 0)
+        {
+            <p>No user actions are available.</p>
+        }
+        else
+        {
+            <div class="row">
+                @foreach (var flow in availableFlows)
+                {
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
+                                <p class="text-muted">Moves to node #@flow.TargetRef</p>
+                                @foreach (var variable in flow.Variables)
+                                {
+                                    <div class="mb-2">
+                                        <label class="form-label">
+                                            @variable.Name
+                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
+                                            @if (variable.Required)
+                                            {
+                                                <span class="text-danger">*</span>
+                                            }
+                                        </label>
+                                        <input class="form-control"
+                                               value="@GetFlowInput(flow.Id, variable.Name)"
+                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                    </div>
+                                }
+
+                                <button class="btn btn-primary"
+                                        disabled="@(!CanTakeFlow(flow))"
+                                        @onclick="() => TakeFlowAsync(flow)">Take action</button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h4">Variables</h2>
+        @if (instance.Variables.Count == 0)
+        {
+            <p>No variables captured.</p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Flow</th>
+                        <th>Set by</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var variable in instance.Variables)
+                    {
+                        <tr>
+                            <td>@variable.VariableName</td>
+                            <td>@(variable.SourceFlowId?.ToString() ?? "start")</td>
+                            <td>@(variable.SetBy ?? "-")</td>
+                            <td><code>@FormatJson(variable.Value)</code></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2 class="h4">History</h2>
+        @if (instance.History.Count == 0)
+        {
+            <p>No transitions yet.</p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Flow</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in instance.History)
+                    {
+                        <tr>
+                            <td>@item.PerformedAt.LocalDateTime</td>
+                            <td>#@item.FromNodeId</td>
+                            <td>#@item.ToNodeId</td>
+                            <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
+                            <td>@item.Note</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    private InstanceDetailDto? instance;
+    private IReadOnlyList<SequenceFlowModel> availableFlows = [];
+    private IReadOnlyList<SequenceFlowModel> interruptFlows = [];
+    private readonly Dictionary<string, string?> flowInputs = [];
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private readonly CancellationTokenSource pollCancellation = new();
+    private Task? pollTask;
+    private string? error;
+    private bool interruptSubmitting;
+
+    private string ActingUser => NormalizeUser(Token.CurrentUser);
+
+    // Instance DTOs intentionally do not own a claim. For the legacy
+    // instance-addressed controls, the grouped work summary identifies the
+    // claimant only when the current active task is unambiguous.
+    private string? CurrentClaimedBy => instance?.UserTasks?.SoleClaimedBy;
+
+    private FlowNodeModel? CurrentNode =>
+        instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
+
+    private IReadOnlyList<InstanceHistoryDto> CompletedMultiInstanceItems =>
+        instance?.History
+            .Where(item => item.MultiInstanceExecutionId is not null
+                           && item.UserTaskId is not null
+                           && item.SequenceFlowId is not null
+                           && IsCompletedMultiInstanceItem(item.Note))
+            .OrderByDescending(item => item.PerformedAt)
+            .ThenByDescending(item => item.Id)
+            .ToList()
+        ?? [];
+
+    private bool CanTakeActions
+    {
+        get
+        {
+            if (instance is null || instance.Status != "running")
+            {
+                return false;
+            }
+
+            var node = CurrentNode;
+            if (node is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
+            {
+                return false;
+            }
+
+            if (!node.RequiresClaim)
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
+                && CurrentClaimedBy == ActingUser;
+        }
+    }
+
+    private bool CanTakeFlow(SequenceFlowModel flow)
+    {
+        if (instance is null || instance.Status != "running")
+        {
+            return false;
+        }
+
+        var node = CurrentNode;
+        if (node is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
+        {
+            return false;
+        }
+
+        if (!node.RequiresClaim || flow.CanActWithoutClaim)
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
+            && CurrentClaimedBy == ActingUser;
+    }
+
+    private bool CanUnclaim
+    {
+        get
+        {
+            if (instance is null) return false;
+            if (string.IsNullOrWhiteSpace(CurrentClaimedBy)) return false;
+
+            var normalizedUser = ActingUser;
+            if (string.Equals(CurrentClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var unclaimRoles = instance.Workflow?.Definition?.UnclaimRoles ?? [];
+            if (unclaimRoles.Count > 0)
+            {
+                var actorRoles = Token.CurrentRoles ?? [];
+                return unclaimRoles.Any(r => actorRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+            }
+
+            return false;
+        }
+    }
+
+    private bool CanCancel
+    {
+        get
+        {
+            if (instance is null) return false;
+
+            var cancelRoles = instance.Workflow?.Definition?.CancelRoles ?? [];
+            if (cancelRoles.Count == 0)
+            {
+                return true;
+            }
+
+            var actorRoles = Token.CurrentRoles ?? [];
+            return cancelRoles.Any(r => actorRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        pollTask = PollAsync(pollCancellation.Token);
+    }
+
+    private static string FormatTaskState(UserTaskWorkSummaryDto tasks)
+    {
+        if (tasks.ActiveCount == 1 && tasks.PendingCount == 0)
+        {
+            if (!string.IsNullOrWhiteSpace(tasks.SoleAssignee))
+            {
+                return $"Assigned to {tasks.SoleAssignee}";
+            }
+            if (!string.IsNullOrWhiteSpace(tasks.SoleClaimedBy))
+            {
+                return $"Claimed by {tasks.SoleClaimedBy}";
+            }
+            if (!tasks.IsMultiInstance)
+            {
+                return "Unclaimed";
+            }
+        }
+
+        var parts = new List<string> { $"{tasks.ActiveCount} active" };
+        if (tasks.PendingCount > 0) parts.Add($"{tasks.PendingCount} pending");
+        if (tasks.ClaimedCount > 0) parts.Add($"{tasks.ClaimedCount} claimed");
+        if (tasks.AssignedCount > 0) parts.Add($"{tasks.AssignedCount} assigned");
+        return string.Join(", ", parts);
+    }
+
+    private async Task LoadAsync()
+    {
+        await refreshGate.WaitAsync();
+        try
+        {
+            error = null;
+            await RefreshInstanceStateAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    private async Task ClaimAsync() => await RefreshFrom(async () =>
+        instance = await Api.ClaimAsync(InstanceId));
+
+    private async Task UnclaimAsync() => await RefreshFrom(async () =>
+        instance = await Api.UnclaimAsync(InstanceId));
+
+    private async Task CancelAsync()
+    {
+        await RefreshFrom(async () =>
+        {
+            await Api.CancelAsync(InstanceId);
+            Navigation.NavigateTo("/instances");
+        });
+    }
+
+    private async Task TakeFlowAsync(SequenceFlowModel flow)
+    {
+        await RefreshFrom(async () =>
+        {
+            var variables = BuildPayload(flow);
+            instance = await Api.TakeFlowAsync(
+                InstanceId,
+                flow.Id,
+                new TakeFlowRequest(variables));
+        });
+    }
+
+    private async Task TakeInterruptFlowAsync(SequenceFlowModel flow)
+    {
+        var executionId = instance?.MultiInstance?.ExecutionId;
+        if (executionId is null || interruptSubmitting)
+        {
+            return;
+        }
+
+        var flowName = string.IsNullOrWhiteSpace(flow.Name) ? $"flow #{flow.Id}" : flow.Name;
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Take '{flowName}' and cancel every unfinished work item?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        await refreshGate.WaitAsync();
+        try
+        {
+            interruptSubmitting = true;
+            error = null;
+            var variables = BuildPayload(flow);
+            instance = await Api.TakeMultiInstanceInterruptFlowAsync(
+                executionId.Value,
+                flow.Id,
+                new TakeFlowRequest(variables));
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            interruptSubmitting = false;
+            try
+            {
+                await RefreshInstanceStateAsync();
+            }
+            catch (Exception ex)
+            {
+                error ??= ex.Message;
+            }
+            refreshGate.Release();
+        }
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (instance?.MultiInstance is not { Status: "active" })
+                {
+                    continue;
+                }
+
+                if (!await refreshGate.WaitAsync(0, cancellationToken))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        try
+                        {
+                            await RefreshInstanceStateAsync(cancellationToken);
+                            StateHasChanged();
+                        }
+                        catch
+                        {
+                            // Keep the last successful state and retry on the next tick.
+                        }
+                    });
+                }
+                finally
+                {
+                    refreshGate.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task RefreshInstanceStateAsync(CancellationToken cancellationToken = default)
+    {
+        var refreshed = await Api.GetInstanceAsync(InstanceId, cancellationToken);
+        if (refreshed is not null)
+        {
+            instance = refreshed;
+        }
+        await LoadAvailableActionsAsync(cancellationToken);
+    }
+
+    private async Task LoadAvailableActionsAsync(CancellationToken cancellationToken = default)
+    {
+        availableFlows = instance is null || instance.MultiInstance is not null
+            ? []
+            : await Api.GetAvailableFlowsAsync(InstanceId, cancellationToken);
+        interruptFlows = instance?.MultiInstance is { Status: "active" } progress
+            ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId, cancellationToken)
+            : [];
+    }
+
+    private async Task RefreshFrom(Func<Task> action)
+    {
+        await refreshGate.WaitAsync();
+        try
+        {
+            error = null;
+            await action();
+            instance ??= await Api.GetInstanceAsync(InstanceId);
+            await LoadAvailableActionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    private string? GetFlowInput(int flowId, string variableName) =>
+        flowInputs.TryGetValue(Key(flowId, variableName), out var value) ? value : null;
+
+    private void SetFlowInput(int flowId, string variableName, string? value) =>
+        flowInputs[Key(flowId, variableName)] = value;
+
+    private Dictionary<string, JsonElement> BuildPayload(SequenceFlowModel flow)
+    {
+        var payload = new Dictionary<string, JsonElement>();
+        foreach (var variable in flow.Variables)
+        {
+            var raw = GetFlowInput(flow.Id, variable.Name);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            payload[variable.Name] = ToJsonElement(variable, raw);
+        }
+
+        return payload;
+    }
+
+    private static string Key(int flowId, string variableName) => $"{flowId}:{variableName}";
+
+    private static string NormalizeUser(string? user) =>
+        string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
+
+    private string FlowLabel(int? flowId)
+    {
+        if (flowId is null)
+        {
+            return "-";
+        }
+
+        var flow = instance?.Workflow.Definition.SequenceFlows.SingleOrDefault(candidate => candidate.Id == flowId.Value);
+        return string.IsNullOrWhiteSpace(flow?.Name)
+            ? $"Flow #{flowId.Value}"
+            : $"{flow.Name} (#{flowId.Value})";
+    }
+
+    private static bool IsCompletedMultiInstanceItem(string? note) =>
+        note is "multiInstanceItem" or "multiInstanceComplete" or "multiInstanceInterrupt";
+
+    private static string FormatItemNumber(int? itemIndex) =>
+        itemIndex is null ? "-" : (itemIndex.Value + 1).ToString();
+
+    private static string FormatPayload(Dictionary<string, JsonElement>? payload) =>
+        payload is null || payload.Count == 0 ? "-" : JsonSerializer.Serialize(payload);
+
+    private static string FormatJson(JsonElement element) =>
+        element.ValueKind == JsonValueKind.String ? element.GetString() ?? string.Empty : element.GetRawText();
+
+    public async ValueTask DisposeAsync()
+    {
+        pollCancellation.Cancel();
+        if (pollTask is not null)
+        {
+            try
+            {
+                await pollTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        pollCancellation.Dispose();
+    }
+
+    private static JsonElement ToJsonElement(VariableModel variable, string raw)
+    {
+        if (variable.IsArray)
+        {
+            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return JsonSerializer.SerializeToElement(values);
+        }
+
+        return variable.DataType switch
+        {
+            WorkflowVariableTypes.Number when decimal.TryParse(raw, out var number) => JsonSerializer.SerializeToElement(number),
+            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
+            _ => JsonSerializer.SerializeToElement(raw)
+        };
+    }
+}

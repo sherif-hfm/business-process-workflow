@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Flowbit.Api/Flowbit.Api.csproj" />
+    <Project Path="src/Flowbit.Infrastructure/Flowbit.Infrastructure.csproj" />
+    <Project Path="src/Flowbit.Service/Flowbit.Service.csproj" />
+    <Project Path="src/Flowbit.Shared/Flowbit.Shared.csproj" />
+    <Project Path="src/Flowbit.Ui/Flowbit.Ui.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Flowbit.Tests/Flowbit.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/InstanceLoadTest/InstanceLoadTest.csproj" />
+    <Project Path="tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj" />
+    <Project Path="tools/MultiInstanceVerifier/MultiInstanceVerifier.csproj" />
+  </Folder>
+</Solution>
