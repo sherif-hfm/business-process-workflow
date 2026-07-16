@@ -4,7 +4,7 @@
 - async flow asyncAfter/asyncBefore
 - Timers events
 
-- inhance ui to be like modern dashboard
+
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
 - add endpoint to get latest values of variables  for instance
 - add endpoint to get history of instance
@@ -12,6 +12,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- inhance ui to be like modern dashboard (done)
 - add variables latest values to GET /api/instances response (done)
 - in GET /api/instances endpoint add Node ID  and External ID to return (existing) 
 - start event and message start event business keys unique constraints (done)
