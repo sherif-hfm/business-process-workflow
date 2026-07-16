@@ -37,7 +37,7 @@ a:hover { color: var(--fb-primary-hover); }
 button, input, select, textarea { font: inherit; }
 
 :focus-visible { outline: 3px solid rgba(79, 70, 229, .28) !important; outline-offset: 2px; box-shadow: none !important; }
-h1:focus { outline: 3px solid rgba(79, 70, 229, .28); outline-offset: 4px; }
+h1[tabindex="-1"]:focus { outline: none !important; box-shadow: none !important; }
 
 h1, h2, h3, h4, h5, h6 { color: var(--fb-ink); letter-spacing: -.018em; }
 h1 { font-size: clamp(1.55rem, 2.2vw, 2rem); font-weight: 760; }
