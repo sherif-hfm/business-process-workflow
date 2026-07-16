@@ -1,6 +1,5 @@
-
-
 - add Parallel Gateways
+- add quorum/complex gateway
 - async flow asyncAfter/asyncBefore
 - Timers events
 
