@@ -1070,6 +1070,117 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task OnePerActorConcurrentCompletionsAllowOnlyOneCaseInsensitiveActorCompletion()
+    {
+        var model = LoadUniqueModel("votes-cardinality-approve-reject.json", "one-per-actor-completion");
+        var multi = model.FlowNodes.Single(node => node.Id == 2).MultiInstance!;
+        Assert.True(multi.OnePerActor);
+
+        var workflowId = await CreateWorkflowAsync(model);
+        var scenario = await StartAndEnterAsync(
+            workflowId,
+            new Dictionary<string, JsonElement>
+            {
+                ["voters"] = JsonSerializer.SerializeToElement(3)
+            });
+        var executionId = scenario.MultiInstance!.ExecutionId;
+        var tasks = (await ListTasksAsync(scenario.Id, "CaseUser", "User")).Items
+            .OrderBy(task => task.ItemIndex)
+            .ToList();
+        Assert.Equal(3, tasks.Count);
+
+        var completions = await Task.WhenAll(
+                SendAsync(
+                    HttpMethod.Post,
+                    $"/api/user-tasks/{tasks[0].Id}/flows/201",
+                    new TakeFlowRequest(null),
+                    "CaseUser",
+                    "User"),
+                SendAsync(
+                    HttpMethod.Post,
+                    $"/api/user-tasks/{tasks[1].Id}/flows/201",
+                    new TakeFlowRequest(null),
+                    "caseuser",
+                    "User"))
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        using (completions[0])
+        using (completions[1])
+        {
+            Assert.Equal(1, completions.Count(response => response.StatusCode == HttpStatusCode.OK));
+            Assert.Equal(1, completions.Count(response => response.StatusCode == HttpStatusCode.Conflict));
+        }
+
+        await using var db = fixture.CreateDbContext();
+        var execution = await db.MultiInstanceExecutions.AsNoTracking()
+            .SingleAsync(item => item.Id == executionId);
+        Assert.True(execution.OnePerActor);
+        Assert.Equal(MultiInstanceExecutionStatuses.Active, execution.Status);
+        Assert.Equal(1, execution.CompletedCount);
+        Assert.Equal(1, await db.UserTasks.AsNoTracking().CountAsync(task =>
+            task.MultiInstanceExecutionId == executionId
+            && task.Status == UserTaskStatuses.Completed
+            && task.CompletedBy != null
+            && task.CompletedBy.ToLower() == "caseuser"));
+        Assert.Equal(1, await db.MultiInstanceFlowCounts.AsNoTracking()
+            .Where(count => count.ExecutionId == executionId && count.FlowId == 201)
+            .Select(count => count.CompletedCount)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task OnePerActorConcurrentClaimsAllowOnlyOneClaimPerCaseInsensitiveActor()
+    {
+        var model = LoadUniqueModel("votes-cardinality-approve-reject.json", "one-per-actor-claim");
+        var node = model.FlowNodes.Single(item => item.Id == 2);
+        node.RequiresClaim = true;
+        Assert.True(node.MultiInstance!.OnePerActor);
+
+        var workflowId = await CreateWorkflowAsync(model);
+        var scenario = await StartAndEnterAsync(
+            workflowId,
+            new Dictionary<string, JsonElement>
+            {
+                ["voters"] = JsonSerializer.SerializeToElement(2)
+            });
+        var executionId = scenario.MultiInstance!.ExecutionId;
+        var tasks = (await ListTasksAsync(scenario.Id, "CaseUser", "User")).Items
+            .OrderBy(task => task.ItemIndex)
+            .ToList();
+        Assert.Equal(2, tasks.Count);
+
+        var claims = await Task.WhenAll(
+                SendAsync(
+                    HttpMethod.Post,
+                    $"/api/user-tasks/{tasks[0].Id}/claim",
+                    null,
+                    "CaseUser",
+                    "User"),
+                SendAsync(
+                    HttpMethod.Post,
+                    $"/api/user-tasks/{tasks[1].Id}/claim",
+                    null,
+                    "caseuser",
+                    "User"))
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        using (claims[0])
+        using (claims[1])
+        {
+            Assert.Equal(1, claims.Count(response => response.StatusCode == HttpStatusCode.OK));
+            Assert.Equal(1, claims.Count(response => response.StatusCode == HttpStatusCode.Conflict));
+        }
+
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.UserTasks.AsNoTracking().CountAsync(task =>
+            task.MultiInstanceExecutionId == executionId
+            && task.Status == UserTaskStatuses.Active
+            && task.ClaimedBy != null
+            && task.ClaimedBy.ToLower() == "caseuser"));
+        Assert.Equal(0, await db.UserTasks.AsNoTracking().CountAsync(task =>
+            task.MultiInstanceExecutionId == executionId
+            && task.Status == UserTaskStatuses.Completed));
+    }
+
+    [Fact]
     public async Task ConcurrentClaimsCompletionsInterruptAndCancellationSerializeWithoutDoubleAdvance()
     {
         var claimModel = LoadUniqueModel("votes-cardinality-approve-reject.json", "concurrent-claim");
