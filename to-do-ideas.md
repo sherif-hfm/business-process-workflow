@@ -2,6 +2,7 @@
 - add Parallel Gateways
 - terminateEndEvent
 - add quorum/complex gateway
+- add Workflow runner simulator
 - async flow asyncAfter/asyncBefore
 - Timers events
 
