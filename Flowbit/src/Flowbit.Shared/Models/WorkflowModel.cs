@@ -852,6 +852,15 @@ public sealed class VariableModel
     public bool IsArray { get; set; }
 
     /// <summary>
+    /// If true, a process-level variable may hold JSON null. This contract is
+    /// supported only for top-level workflow variables; start/flow variables
+    /// remain input contracts and cannot opt into nullability.
+    /// </summary>
+    [JsonPropertyName("nullable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Nullable { get; set; }
+
+    /// <summary>
     /// If true, the variable must be supplied before advancing the transition.
     /// </summary>
     [JsonPropertyName("required")]

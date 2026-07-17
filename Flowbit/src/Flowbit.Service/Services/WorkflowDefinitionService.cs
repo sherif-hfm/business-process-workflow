@@ -1048,15 +1048,25 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
     {
-        ValidateVariables(variables, owner, requireDefault: false, allowRequiredDefault: false);
+        ValidateVariables(
+            variables,
+            owner,
+            requireDefault: false,
+            allowRequiredDefault: false,
+            allowNullable: false);
     }
 
-    // Process-level variables are computed (never user-supplied), so each one must
-    // declare a defaultValue that initializes it at instance start. The shared
-    // name/type/prefix/validation checks are reused via the requireDefault path.
+    // Process-level variables are computed (never user-supplied). Non-nullable
+    // declarations require a concrete default; nullable declarations may omit it
+    // and are initialized to a persisted JSON null at instance start.
     private static void ValidateProcessVariables(IEnumerable<VariableModel> variables)
     {
-        ValidateVariables(variables, "process variables", requireDefault: true, allowRequiredDefault: false);
+        ValidateVariables(
+            variables,
+            "process variables",
+            requireDefault: true,
+            allowRequiredDefault: false,
+            allowNullable: true);
     }
 
     private static void ValidateEntryProcessVariableCollisions(WorkflowModel definition)
@@ -1123,7 +1133,8 @@ public sealed class WorkflowDefinitionService(
         IEnumerable<VariableModel> variables,
         string owner,
         bool requireDefault,
-        bool allowRequiredDefault)
+        bool allowRequiredDefault,
+        bool allowNullable = false)
     {
         var materialized = variables.ToList();
         var duplicateName = materialized
@@ -1167,17 +1178,21 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Variable '{variable.Name}' on {owner} has unsupported type '{variable.DataType}'.");
             }
 
-            if (requireDefault
-                && (variable.DefaultValue is null
-                    || variable.DefaultValue.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
+            if (variable.Nullable && !allowNullable)
             {
                 throw new WorkflowDomainException(
-                    $"Process variable '{variable.Name}' on {owner} must have a defaultValue.");
+                    $"Variable '{variable.Name}' on {owner} cannot be nullable; nullable is supported only for process variables.");
             }
 
             var defaultValue = variable.DefaultValue.GetValueOrDefault();
             var hasDefault = variable.DefaultValue is not null
                 && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (requireDefault && !variable.Nullable && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' on {owner} must have a defaultValue.");
+            }
+
             if (!requireDefault && !allowRequiredDefault && variable.Required && hasDefault)
             {
                 throw new WorkflowDomainException(

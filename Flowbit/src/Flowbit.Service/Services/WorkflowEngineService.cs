@@ -228,7 +228,12 @@ public sealed class WorkflowEngineService(
         {
             processContext[pair.Key] = pair.Value;
         }
-        var processValues = ResolveAndValidateVariables(workflow.Definition.Variables, null, processContext);
+        var processValues = ResolveAndValidateVariables(
+            workflow.Definition.Variables,
+            null,
+            processContext,
+            enforceRequired: false,
+            materializeNullableNullDefaults: true);
         foreach (var pair in processValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, null, startedBy, pair.Value, cancellationToken);
@@ -456,7 +461,12 @@ public sealed class WorkflowEngineService(
         {
             processContext[pair.Key] = pair.Value;
         }
-        var processValues = ResolveAndValidateVariables(definition.Variables, null, processContext);
+        var processValues = ResolveAndValidateVariables(
+            definition.Variables,
+            null,
+            processContext,
+            enforceRequired: false,
+            materializeNullableNullDefaults: true);
         foreach (var pair in processValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
@@ -2161,7 +2171,7 @@ public sealed class WorkflowEngineService(
                     continue;
                 }
 
-                if (!TypedOutputValueValidator.IsValid(value, mapping.DataType, mapping.IsArray))
+                if (!IsTypedOutputValueValid(value, mapping))
                 {
                     throw new WorkflowDomainException(
                         $"{kind} #{nodeId} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(mapping.DataType, mapping.IsArray)}.");
@@ -2175,6 +2185,7 @@ public sealed class WorkflowEngineService(
             Name = mapping.Variable,
             DataType = mapping.DataType,
             IsArray = mapping.IsArray,
+            Nullable = mapping.ProcessNullable == true,
             Required = mapping.Required,
             DefaultValue = mapping.DefaultValue,
             Validation = mapping.Validation
@@ -2185,7 +2196,7 @@ public sealed class WorkflowEngineService(
         foreach (var mapping in mappings)
         {
             if (TryGetValue(resolved, mapping.Variable, out var value)
-                && !TypedOutputValueValidator.IsValid(value, mapping.DataType, mapping.IsArray))
+                && !IsTypedOutputValueValid(value, mapping))
             {
                 throw new WorkflowDomainException(
                     $"{kind} #{nodeId} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(mapping.DataType, mapping.IsArray)}.");
@@ -2218,6 +2229,7 @@ public sealed class WorkflowEngineService(
             mapping.Required,
             mapping.DataType ?? processVariable?.DataType ?? WorkflowVariableTypes.Json,
             mapping.IsArray ?? processVariable?.IsArray ?? false,
+            processVariable?.Nullable,
             mapping.DefaultValue,
             mapping.Validation);
     }
@@ -2234,8 +2246,23 @@ public sealed class WorkflowEngineService(
             mapping.Required,
             mapping.DataType ?? processVariable?.DataType ?? WorkflowVariableTypes.Json,
             mapping.IsArray ?? processVariable?.IsArray ?? false,
+            processVariable?.Nullable,
             mapping.DefaultValue,
             mapping.Validation);
+    }
+
+    // A mapping that targets a declared process variable inherits its nullable
+    // contract. Undeclared outputs retain the historical typed-output behavior,
+    // including JSON mappings accepting JSON null.
+    private static bool IsTypedOutputValueValid(JsonElement value, TypedOutputRuntime mapping)
+    {
+        if ((value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            && mapping.ProcessNullable is { } nullable)
+        {
+            return nullable;
+        }
+
+        return TypedOutputValueValidator.IsValid(value, mapping.DataType, mapping.IsArray);
     }
 
     // Message catch failures throw before any AddVariableAsync call, so the
@@ -2917,46 +2944,57 @@ public sealed class WorkflowEngineService(
         var overlay = new Dictionary<string, JsonElement>(variables, StringComparer.OrdinalIgnoreCase);
         var writes = new List<(VariableModel Target, JsonElement Value)>();
 
-        if (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
+        try
         {
-            if (string.IsNullOrWhiteSpace(node.Script))
+            if (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
             {
-                return TaskExecutionOutcome.Ok();
-            }
+                if (string.IsNullOrWhiteSpace(node.Script))
+                {
+                    return TaskExecutionOutcome.Ok();
+                }
 
-            var context = new EngineScriptContext(overlay, byName, writes);
-            var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
-            if (!result.Success)
+                var context = new EngineScriptContext(overlay, byName, writes);
+                var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
+                if (!result.Success)
+                {
+                    logger.LogWarning("Script task #{NodeId} (javascript) on instance {InstanceId} failed: {Error}", node.Id, instance.Id, result.Error);
+                    return TaskExecutionOutcome.Fail($"Script task #{node.Id} failed: {result.Error}");
+                }
+            }
+            else
             {
-                logger.LogWarning("Script task #{NodeId} (javascript) on instance {InstanceId} failed: {Error}", node.Id, instance.Id, result.Error);
-                return TaskExecutionOutcome.Fail($"Script task #{node.Id} failed: {result.Error}");
+                if (node.Assignments.Count == 0)
+                {
+                    return TaskExecutionOutcome.Ok();
+                }
+
+                foreach (var assignment in node.Assignments)
+                {
+                    if (string.IsNullOrWhiteSpace(assignment.Variable))
+                    {
+                        throw new WorkflowDomainException($"Script task #{node.Id} has an assignment with no variable name.");
+                    }
+
+                    if (!byName.TryGetValue(assignment.Variable, out var target))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
+                    }
+
+                    var result = SequenceFlowConditionEvaluator.EvaluateValue(assignment.Expression, overlay);
+                    var coerced = CoerceScriptValue(result, target);
+                    overlay[target.Name!] = coerced;
+                    writes.Add((target, coerced));
+                }
             }
         }
-        else
+        catch (WorkflowDomainException ex)
         {
-            if (node.Assignments.Count == 0)
-            {
-                return TaskExecutionOutcome.Ok();
-            }
-
-            foreach (var assignment in node.Assignments)
-            {
-                if (string.IsNullOrWhiteSpace(assignment.Variable))
-                {
-                    throw new WorkflowDomainException($"Script task #{node.Id} has an assignment with no variable name.");
-                }
-
-                if (!byName.TryGetValue(assignment.Variable, out var target))
-                {
-                    throw new WorkflowDomainException(
-                        $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
-                }
-
-                var result = SequenceFlowConditionEvaluator.EvaluateValue(assignment.Expression, overlay);
-                var coerced = CoerceScriptValue(result, target);
-                overlay[target.Name!] = coerced;
-                writes.Add((target, coerced));
-            }
+            logger.LogWarning(ex,
+                "Script task #{NodeId} on instance {InstanceId} rejected a process-variable write.",
+                node.Id,
+                instance.Id);
+            return TaskExecutionOutcome.Fail($"Script task #{node.Id} failed: {ex.Message}");
         }
 
         if (writes.Count == 0)
@@ -2972,6 +3010,13 @@ public sealed class WorkflowEngineService(
         foreach (var target in writes.Select(w => w.Target).Distinct())
         {
             if (string.IsNullOrWhiteSpace(target.Validation))
+            {
+                continue;
+            }
+
+            if (target.Nullable
+                && overlay.TryGetValue(target.Name, out var currentValue)
+                && (currentValue.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
             {
                 continue;
             }
@@ -3055,6 +3100,14 @@ public sealed class WorkflowEngineService(
     // (a genuine JS array) has each element coerced to the declared element type.
     private static JsonElement CoerceScriptValue(object? result, VariableModel variable)
     {
+        if (result is null)
+        {
+            var nullValue = JsonSerializer.SerializeToElement<object?>(null);
+            EnsureProcessVariableValueAllowed(variable, nullValue);
+            return nullValue;
+        }
+
+        JsonElement coerced;
         if (variable.IsArray)
         {
             if (result is JsonElement { ValueKind: JsonValueKind.Array } arrayElement)
@@ -3065,15 +3118,43 @@ public sealed class WorkflowEngineService(
                     items.Add(CoerceScriptScalar(JsonElementToObject(item), variable.DataType));
                 }
 
-                return JsonSerializer.SerializeToElement(items);
+                coerced = JsonSerializer.SerializeToElement(items);
             }
-
-            // A scalar result (NCalc never produces arrays) is wrapped so a
-            // declared array variable still receives a single-element value.
-            return JsonSerializer.SerializeToElement(new[] { CoerceScriptScalar(result, variable.DataType) });
+            else
+            {
+                // A scalar result (NCalc never produces arrays) is wrapped so a
+                // declared array variable still receives a single-element value.
+                coerced = JsonSerializer.SerializeToElement(
+                    new[] { CoerceScriptScalar(result, variable.DataType) });
+            }
+        }
+        else
+        {
+            coerced = JsonSerializer.SerializeToElement(CoerceScriptScalar(result, variable.DataType));
         }
 
-        return JsonSerializer.SerializeToElement(CoerceScriptScalar(result, variable.DataType));
+        EnsureProcessVariableValueAllowed(variable, coerced);
+        return coerced;
+    }
+
+    private static void EnsureProcessVariableValueAllowed(VariableModel variable, JsonElement value)
+    {
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            if (variable.Nullable)
+            {
+                return;
+            }
+
+            throw new WorkflowDomainException(
+                $"Process variable '{variable.Name}' does not allow null.");
+        }
+
+        if (!TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
+        {
+            throw new WorkflowDomainException(
+                $"Process variable '{variable.Name}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+        }
     }
 
     private static object? CoerceScriptScalar(object? result, string dataType)
@@ -3237,10 +3318,16 @@ public sealed class WorkflowEngineService(
     private static Dictionary<string, JsonElement> ResolveAndValidateVariables(
         IReadOnlyList<VariableModel> variables,
         Dictionary<string, JsonElement>? variableValues,
-        Dictionary<string, JsonElement> contextBase)
+        Dictionary<string, JsonElement> contextBase,
+        bool enforceRequired = true,
+        bool materializeNullableNullDefaults = false)
     {
-        var resolved = ResolveVariables(variables, variableValues, contextBase);
-        ValidateVariableValues(variables, resolved);
+        var resolved = ResolveVariables(
+            variables,
+            variableValues,
+            contextBase,
+            materializeNullableNullDefaults);
+        ValidateVariableValues(variables, resolved, enforceRequired);
         ValidateResolvedVariableRules(variables, resolved, contextBase);
         return resolved;
     }
@@ -3248,7 +3335,8 @@ public sealed class WorkflowEngineService(
     private static Dictionary<string, JsonElement> ResolveVariables(
         IReadOnlyList<VariableModel> variables,
         Dictionary<string, JsonElement>? variableValues,
-        Dictionary<string, JsonElement> contextBase)
+        Dictionary<string, JsonElement> contextBase,
+        bool materializeNullableNullDefaults = false)
     {
         var working = new Dictionary<string, JsonElement>(contextBase, StringComparer.OrdinalIgnoreCase);
         var resolved = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
@@ -3260,7 +3348,11 @@ public sealed class WorkflowEngineService(
                 resolved[variable.Name] = value;
                 working[variable.Name] = value;
             }
-            else if (TryResolveDefault(variable, working, out var defaultValue))
+            else if (TryResolveDefault(
+                variable,
+                working,
+                materializeNullableNullDefaults,
+                out var defaultValue))
             {
                 resolved[variable.Name] = defaultValue;
                 working[variable.Name] = defaultValue;
@@ -3288,6 +3380,13 @@ public sealed class WorkflowEngineService(
                 continue;
             }
 
+            if (variable.Nullable
+                && TryGetValue(resolved, variable.Name, out var currentValue)
+                && (currentValue.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
+            {
+                continue;
+            }
+
             if (!SequenceFlowConditionEvaluator.Evaluate(variable.Validation, working))
             {
                 throw new WorkflowDomainException(
@@ -3303,13 +3402,20 @@ public sealed class WorkflowEngineService(
     private static bool TryResolveDefault(
         VariableModel variable,
         IReadOnlyDictionary<string, JsonElement> map,
+        bool materializeNullableNullDefault,
         out JsonElement value)
     {
         value = default;
         if (variable.DefaultValue is not { } raw
             || raw.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-            return false;
+            if (!materializeNullableNullDefault || !variable.Nullable)
+            {
+                return false;
+            }
+
+            value = JsonSerializer.SerializeToElement<object?>(null);
+            return true;
         }
 
         value = CoerceDefault(SubstituteDefault(raw, map), variable);
@@ -4035,7 +4141,8 @@ public sealed class WorkflowEngineService(
 
     private static void ValidateVariableValues(
         IReadOnlyList<VariableModel> variables,
-        Dictionary<string, JsonElement>? values)
+        Dictionary<string, JsonElement>? values,
+        bool enforceRequired = true)
     {
         if (values is not null)
         {
@@ -4049,7 +4156,7 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        foreach (var variable in variables.Where(v => v.Required))
+        foreach (var variable in variables.Where(v => enforceRequired && v.Required))
         {
             if (!TryGetValue(values, variable.Name, out var value) || IsEmpty(value))
             {
@@ -4060,6 +4167,8 @@ public sealed class WorkflowEngineService(
         foreach (var variable in variables)
         {
             if (TryGetValue(values, variable.Name, out var value)
+                && !(variable.Nullable
+                    && (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
                 && !TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
             {
                 throw new WorkflowDomainException(
@@ -4209,6 +4318,7 @@ public sealed class WorkflowEngineService(
         bool Required,
         string DataType,
         bool IsArray,
+        bool? ProcessNullable,
         JsonElement? DefaultValue,
         string? Validation);
 

@@ -143,6 +143,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                     """{"result":{"decision":"approved","score":"12"},"tags":["safe"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00Z","metadata":{},"ratings":[1]}""",
                 var url when url.EndsWith("/typed-output-blocked", StringComparison.Ordinal) =>
                     """{"result":{"decision":"blocked","score":12},"tags":["safe"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00Z","metadata":{},"ratings":[1]}""",
+                var url when url.EndsWith("/nullable-output", StringComparison.Ordinal) =>
+                    """{"value":null}""",
                 _ => null
             };
             return Task.FromResult(body is null

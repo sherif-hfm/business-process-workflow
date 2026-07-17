@@ -331,6 +331,78 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
+    public async Task CreateAsync_AcceptsNullableProcessVariablesAndStillValidatesConcreteDefaults()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "optionalScore",
+            DataType = WorkflowVariableTypes.Number,
+            Nullable = true,
+            Validation = "optionalScore > 0"
+        });
+        model.Variables.Add(new VariableModel
+        {
+            Id = 99,
+            Name = "optionalReviewers",
+            DataType = WorkflowVariableTypes.String,
+            IsArray = true,
+            Nullable = true,
+            DefaultValue = JsonSerializer.SerializeToElement<string[]?>(null)
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+
+        model.Variables.Single(variable => variable.Name == "optionalScore").DefaultValue =
+            JsonSerializer.SerializeToElement("not-a-number");
+        var invalidConcreteDefault = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("defaultValue", invalidConcreteDefault.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsMissingNonNullableProcessDefaultAndNullableInputVariables()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "missingInitialValue",
+            DataType = WorkflowVariableTypes.String
+        });
+
+        var missingDefault = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("must have a defaultValue", missingDefault.Message, StringComparison.OrdinalIgnoreCase);
+
+        model.Variables.RemoveAt(model.Variables.Count - 1);
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "nullableInput",
+            DataType = WorkflowVariableTypes.String,
+            Nullable = true
+        });
+        var nullableStart = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("only for process variables", nullableStart.Message, StringComparison.OrdinalIgnoreCase);
+
+        start.Variables.Clear();
+        model.SequenceFlows.First(flow => flow.SourceRef == 2 && flow.IsSelectable).Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "nullableActionInput",
+            DataType = WorkflowVariableTypes.String,
+            Nullable = true
+        });
+        var nullableFlow = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("only for process variables", nullableFlow.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task CreateNewVersionAsync_PreservesSourceWorkflowKeyAcrossRenameAndBodyIdChange()
     {
         var sourceModel = LoadModel("votes-users-list.json");

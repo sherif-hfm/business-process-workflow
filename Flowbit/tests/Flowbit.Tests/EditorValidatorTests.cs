@@ -398,6 +398,43 @@ public sealed class EditorValidatorTests
             error.Contains("cannot define a defaultValue", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Validator_EnforcesNullableProcessVariableContract()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "optionalScore",
+            DataType = WorkflowVariableTypes.Number,
+            Nullable = true,
+            Validation = "optionalScore > 0"
+        });
+        Assert.Empty(Validate(model));
+
+        var processVariable = model.Variables.Single(variable => variable.Name == "optionalScore");
+        processVariable.Nullable = false;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("must have a defaultValue", StringComparison.OrdinalIgnoreCase));
+
+        processVariable.Nullable = true;
+        processVariable.DefaultValue = JsonSerializer.SerializeToElement("invalid");
+        Assert.Contains(Validate(model), error =>
+            error.Contains("does not match number", StringComparison.OrdinalIgnoreCase));
+
+        processVariable.DefaultValue = null;
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 99,
+            Name = "nullableInput",
+            DataType = WorkflowVariableTypes.String,
+            Nullable = true
+        });
+        Assert.Contains(Validate(model), error =>
+            error.Contains("only for process variables", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static IReadOnlyList<string> Validate(WorkflowModel model)
     {
         var html = ReadEditorSource();

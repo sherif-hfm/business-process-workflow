@@ -447,6 +447,14 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     public async Task TypedMessageStartMappingsResolveDefaultsValidateTypesAndPersistAtomically()
     {
         var model = LoadUniqueModel("votes-users-list.json", "typed-message-start");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 99,
+            Name = "nullableProcessState",
+            DataType = WorkflowVariableTypes.Number,
+            Nullable = true,
+            Validation = "nullableProcessState > 0"
+        });
         var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
         start.Type = BpmnFlowNodeTypes.MessageStartEvent;
         start.Roles = [];
@@ -508,6 +516,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         Assert.Equal("central", values["region"].GetString());
         Assert.Equal(2, values["tags"].GetArrayLength());
         Assert.Equal("camera", values["metadata"].GetProperty("source").GetString());
+        Assert.Equal(JsonValueKind.Null, values["nullableProcessState"].ValueKind);
         Assert.DoesNotContain("note", values.Keys);
 
         using var wrongType = await SendMessageStartPayloadAsync(model.Id, new
@@ -739,6 +748,81 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             Assert.Equal(HttpStatusCode.BadRequest, processFailure.StatusCode);
         }
         Assert.Empty((await ListWorkflowInstancesAsync(processModel.Id)).Items);
+    }
+
+    [Fact]
+    public async Task ServiceAndMessageMappingsRespectNullableProcessTargetsAndRequiredOutputs()
+    {
+        foreach (var useServiceTask in new[] { true, false })
+        {
+            foreach (var scenario in new[]
+                     {
+                         (Nullable: true, Required: false, Accepted: true),
+                         (Nullable: false, Required: false, Accepted: false),
+                         (Nullable: true, Required: true, Accepted: false)
+                     })
+            {
+                var model = CreateNullableOutputModel(
+                    useServiceTask,
+                    scenario.Nullable,
+                    scenario.Required);
+                var workflowId = await CreateWorkflowAsync(model);
+
+                if (useServiceTask)
+                {
+                    using var response = await SendAsync(
+                        HttpMethod.Post,
+                        "/api/instances",
+                        new StartInstanceRequest(workflowId, null, null, null));
+                    Assert.Equal(
+                        scenario.Accepted ? HttpStatusCode.Created : HttpStatusCode.BadRequest,
+                        response.StatusCode);
+
+                    if (scenario.Accepted)
+                    {
+                        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+                        var detail = await GetInstanceAsync(acknowledgement.Id);
+                        var targetRows = detail.Variables.Where(variable =>
+                            variable.VariableName == "target").ToList();
+                        Assert.Equal(2, targetRows.Count);
+                        Assert.All(targetRows, variable =>
+                            Assert.Equal(JsonValueKind.Null, variable.Value.ValueKind));
+                    }
+                    else
+                    {
+                        Assert.Empty((await ListWorkflowInstancesAsync(model.Id)).Items);
+                    }
+                }
+                else
+                {
+                    var started = await StartWorkflowAsync(workflowId);
+                    using var response = await SendCatchPayloadAsync(started.Id, new { value = (string?)null });
+                    Assert.Equal(
+                        scenario.Accepted ? HttpStatusCode.OK : HttpStatusCode.BadRequest,
+                        response.StatusCode);
+
+                    var detail = await GetInstanceAsync(started.Id);
+                    var targetRows = detail.Variables.Where(variable =>
+                        variable.VariableName == "target").ToList();
+                    if (scenario.Accepted)
+                    {
+                        Assert.Equal("completed", detail.Status);
+                        Assert.Equal(2, targetRows.Count);
+                        Assert.All(targetRows, variable =>
+                            Assert.Equal(JsonValueKind.Null, variable.Value.ValueKind));
+                    }
+                    else
+                    {
+                        Assert.Equal("running", detail.Status);
+                        Assert.Equal(2, detail.CurrentNodeId);
+                        Assert.Single(targetRows);
+                        Assert.Equal(
+                            scenario.Nullable ? JsonValueKind.Null : JsonValueKind.String,
+                            targetRows[0].Value.ValueKind);
+                    }
+                }
+            }
+        }
     }
 
     [Fact]
@@ -1784,6 +1868,93 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         }
 
         return model;
+    }
+
+    private static WorkflowModel CreateNullableOutputModel(
+        bool useServiceTask,
+        bool nullable,
+        bool required)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var activity = new FlowNodeModel
+        {
+            Id = 2,
+            Name = useServiceTask ? "Service" : "Message",
+            Type = useServiceTask
+                ? BpmnFlowNodeTypes.ServiceTask
+                : BpmnFlowNodeTypes.IntermediateMessageCatchEvent
+        };
+        if (useServiceTask)
+        {
+            activity.Service = new ServiceTaskModel
+            {
+                Url = "https://tests.local/nullable-output",
+                OutputMappings =
+                [
+                    new ServiceOutputMappingModel
+                    {
+                        Variable = "target",
+                        Path = "value",
+                        DataType = WorkflowVariableTypes.String,
+                        IsArray = false,
+                        Required = required,
+                        Validation = "Len(target) > 0"
+                    }
+                ]
+            };
+        }
+        else
+        {
+            activity.Message = new MessageCatchModel
+            {
+                ClientId = "tests-client",
+                ClientSecret = "tests-secret",
+                HeaderName = "X-Correlation",
+                HeaderValue = "accepted",
+                OutputMappings =
+                [
+                    new MessageOutputMappingModel
+                    {
+                        Variable = "target",
+                        Path = "value",
+                        DataType = WorkflowVariableTypes.String,
+                        IsArray = false,
+                        Required = required,
+                        Validation = "Len(target) > 0"
+                    }
+                ]
+            };
+        }
+
+        return new WorkflowModel
+        {
+            Id = $"nullable-{(useServiceTask ? "service" : "message")}-{nullable}-{required}-{suffix}",
+            Name = "Nullable output " + suffix,
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1,
+                    Name = "target",
+                    DataType = WorkflowVariableTypes.String,
+                    Nullable = nullable,
+                    DefaultValue = nullable ? null : JsonSerializer.SerializeToElement("initial"),
+                    Validation = "Len(target) > 0"
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                activity,
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
     }
 
     private static WorkflowModel CreateRawMessageCatchModel()

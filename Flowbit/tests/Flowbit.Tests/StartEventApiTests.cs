@@ -111,6 +111,116 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task Start_PersistsNullableProcessVariablesAndExposesThemToJavaScript()
+    {
+        var model = CreateModel("nullable-process-start");
+        model.Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "creditScore",
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = true,
+                Validation = "creditScore > 0"
+            },
+            new VariableModel
+            {
+                Id = 2,
+                Name = "reviewers",
+                DataType = WorkflowVariableTypes.String,
+                IsArray = true,
+                Nullable = true
+            },
+            new VariableModel
+            {
+                Id = 3,
+                Name = "observedNull",
+                DataType = WorkflowVariableTypes.Boolean,
+                DefaultValue = JsonSerializer.SerializeToElement(false)
+            }
+        ];
+        InsertScriptTask(model, new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Observe null",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = ScriptFormats.JavaScript,
+            Script = "execution.setVariable('observedNull', execution.hasVariable('creditScore') && execution.getVariable('creditScore') === null);"
+        });
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var response = await StartAsync(new StartInstanceRequest(workflow.Id, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+
+        Assert.Equal(JsonValueKind.Null, detail.Variables.Last(variable =>
+            variable.VariableName == "creditScore").Value.ValueKind);
+        Assert.Equal(JsonValueKind.Null, detail.Variables.Last(variable =>
+            variable.VariableName == "reviewers").Value.ValueKind);
+        Assert.True(detail.Variables.Last(variable =>
+            variable.VariableName == "observedNull").Value.GetBoolean());
+    }
+
+    [Fact]
+    public async Task Start_NCalcAndJavaScriptNullWritesRespectProcessNullability()
+    {
+        foreach (var scriptFormat in new[] { ScriptFormats.NCalc, ScriptFormats.JavaScript })
+        {
+            foreach (var nullable in new[] { true, false })
+            {
+                var model = CreateModel($"null-write-{scriptFormat}-{nullable}");
+                model.Variables =
+                [
+                    new VariableModel
+                    {
+                        Id = 1,
+                        Name = "result",
+                        DataType = WorkflowVariableTypes.String,
+                        Nullable = nullable,
+                        DefaultValue = nullable ? null : JsonSerializer.SerializeToElement("initial"),
+                        Validation = "Len(result) > 0"
+                    }
+                ];
+                InsertScriptTask(model, new FlowNodeModel
+                {
+                    Id = 4,
+                    Name = "Write null",
+                    Type = BpmnFlowNodeTypes.ScriptTask,
+                    ScriptFormat = scriptFormat,
+                    Script = scriptFormat == ScriptFormats.JavaScript
+                        ? "execution.setVariable('result', null);"
+                        : null,
+                    Assignments = scriptFormat == ScriptFormats.NCalc
+                        ? [new AssignmentModel { Variable = "result", Expression = "null" }]
+                        : []
+                });
+                var workflow = await CreateWorkflowAsync(model, true);
+
+                using var response = await StartAsync(new StartInstanceRequest(workflow.Id, null, null, null));
+                if (nullable)
+                {
+                    Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+                    var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+                    var detail = await GetInstanceAsync(acknowledgement.Id);
+                    Assert.Equal(JsonValueKind.Null, detail.Variables.Last(variable =>
+                        variable.VariableName == "result").Value.ValueKind);
+                }
+                else
+                {
+                    Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                    var body = await response.Content.ReadAsStringAsync();
+                    Assert.Contains("does not allow null", body, StringComparison.OrdinalIgnoreCase);
+                    await using var db = fixture.CreateDbContext();
+                    Assert.False(await db.WorkflowInstances.AnyAsync(instance =>
+                        instance.WorkflowDefinitionId == workflow.Id));
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task Start_EnforcesRoleExplicitEntryAndClaimInheritanceSemantics()
     {
         var model = CreateModel("roles-and-history");
@@ -323,6 +433,21 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
                 new SequenceFlowModel { Id = 20, Name = "Complete", SourceRef = 2, TargetRef = 3 }
             ]
         };
+    }
+
+    private static void InsertScriptTask(WorkflowModel model, FlowNodeModel scriptTask)
+    {
+        var startFlow = model.SequenceFlows.Single(flow => flow.SourceRef == 1);
+        var originalTarget = startFlow.TargetRef;
+        startFlow.TargetRef = scriptTask.Id;
+        model.FlowNodes.Add(scriptTask);
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 15,
+            Name = string.Empty,
+            SourceRef = scriptTask.Id,
+            TargetRef = originalTarget
+        });
     }
 
     private static VariableModel Variable(

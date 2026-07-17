@@ -3619,9 +3619,13 @@ function variableRow(owner, variable, hideRequired) {
     // Process variables are computed (never user-supplied); required is meaningless.
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "Process variable: initialized from the default at start, updated by script tasks.";
+    note.textContent = "Process variable: initialized at start, then updated by automatic tasks.";
     note.style.margin = "0";
     box.appendChild(note);
+    box.appendChild(variableCheckbox("Allow null", !!variable.nullable, checked => {
+      variable.nullable = checked;
+      renderInspector();
+    }));
   } else {
     box.appendChild(variableCheckbox("Required", variable.required, checked => {
       variable.required = checked;
@@ -3630,14 +3634,16 @@ function variableRow(owner, variable, hideRequired) {
     }));
   }
 
-  // The default value field shows for process variables (always) and for optional
-  // start/flow variables. Process variables must have a default so they are
-  // initialized at instance start; the engine rejects a missing default at author time.
+  // The initial/default value field shows for process variables (always) and for
+  // optional start/flow variables. A nullable process variable may leave it blank;
+  // non-nullable process variables still require a concrete initial value.
   if (hideRequired || !variable.required) {
     const defField = document.createElement("div");
     defField.className = "field";
     defField.innerHTML = hideRequired
-      ? "<label>Default value (initial)</label>"
+      ? (variable.nullable
+          ? "<label>Initial value (optional; blank = null)</label>"
+          : "<label>Initial value (required)</label>")
       : "<label>Default value (optional)</label>";
     const defInput = document.createElement("input");
     defInput.type = "text";
@@ -3748,6 +3754,7 @@ function addVariable(owner) {
     name: "variable",
     dataType: "string",
     isArray: false,
+    nullable: false,
     required: false,
     defaultValue: null,
     validation: null
@@ -4511,7 +4518,7 @@ function validateModelForSave(candidate) {
     ? Array.isArray(value) && value.every(item => validTypedScalar(item, mapping.dataType))
     : validTypedScalar(value, mapping.dataType);
 
-  function validateVariableContracts(variables, owner, requireDefault) {
+  function validateVariableContracts(variables, owner, requireDefault, allowNullable) {
     for (const variable of Array.isArray(variables) ? variables : []) {
       if (!hasText(variable && variable.name)) continue;
       const name = variable.name.trim();
@@ -4521,7 +4528,14 @@ function validateModelForSave(candidate) {
         continue;
       }
       const hasDefault = hasMappingDefault(variable.defaultValue);
-      if (requireDefault && !hasDefault) {
+      if (variable.nullable != null && typeof variable.nullable !== "boolean") {
+        errors.push("Variable '" + name + "' on " + owner + " has a non-boolean nullable value.");
+      }
+      if (!!variable.nullable && !allowNullable) {
+        errors.push("Variable '" + name + "' on " + owner +
+          " cannot be nullable; nullable is supported only for process variables.");
+      }
+      if (requireDefault && !variable.nullable && !hasDefault) {
         errors.push("Process variable '" + name + "' must have a defaultValue.");
       }
       if (!requireDefault && variable.required && hasDefault) {
@@ -4535,12 +4549,12 @@ function validateModelForSave(candidate) {
     }
   }
 
-  validateVariableContracts(processVariables, "process variables", true);
+  validateVariableContracts(processVariables, "process variables", true, true);
   for (const node of nodes) {
-    validateVariableContracts(node && node.variables, "flow node #" + String(node && node.id), false);
+    validateVariableContracts(node && node.variables, "flow node #" + String(node && node.id), false, false);
   }
   for (const flow of flows) {
-    validateVariableContracts(flow && flow.variables, "sequence flow #" + String(flow && flow.id), false);
+    validateVariableContracts(flow && flow.variables, "sequence flow #" + String(flow && flow.id), false, false);
   }
 
   function validateTypedOutputMappings(label, mappings, pathKind, enforceProcessContract) {
@@ -4982,6 +4996,7 @@ function normalizeVariable(v) {
     name: v.name ?? v.label ?? `Variable ${v.id}`,
     dataType: v.dataType ?? "string",
     isArray: !!v.isArray,
+    nullable: !!v.nullable,
     required: !!v.required,
     defaultValue: v.required ? null : (v.defaultValue ?? null),
     validation: (v.validation ?? "").trim() === "" ? null : v.validation

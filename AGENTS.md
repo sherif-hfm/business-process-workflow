@@ -741,14 +741,17 @@ access) with a single bound `execution` host object:
 
 - `execution.getVariable(name)` - reads a stored instance variable or `sys.*`/
   `config.*` context value (same map as NCalc assignments), marshalled to a native
-  JS value (number/string/boolean/array/object).
+  JS value (number/string/boolean/array/object/null). A nullable process variable
+  initialized to JSON `null` returns JavaScript `null`.
 - `execution.setVariable(name, value)` - writes a **declared process variable**
   (`model.variables`); the JS value is marshalled back to JSON and coerced to the
   target's declared `dataType`/`isArray`, exactly like an NCalc assignment. An
-  undeclared target throws (rolls back the transition).
+  undeclared target throws (rolls back the transition). A null write is accepted
+  only when the target declares `nullable: true`.
 - `execution.getVariables()` - a snapshot object of all currently visible
   variables (property access, e.g. `vars.amount`).
-- `execution.hasVariable(name)` - existence check.
+- `execution.hasVariable(name)` - existence check. It returns `true` for a
+  persisted nullable variable whose current value is JSON `null`.
 - A script reads its own writes within the same execution (an in-memory overlay),
   so `execution.getVariable('tax')` after `setVariable('tax', ...)` sees the new
   value even before it is persisted.
@@ -849,6 +852,8 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
 
 ### Variable
 Typed data attached to a start event (node) or a user-task sequence flow.
+These input variables cannot declare `nullable: true`; required inputs reject
+null, while optional JSON inputs retain their existing JSON-value behavior.
 
 ```jsonc
 {
@@ -898,22 +903,46 @@ parse-checked at author time in `ValidateDefinition`
 ### Process variables
 In addition to start-event and sequence-flow variables, a workflow may declare
 **process-level variables** at the top level (`model.variables`). These are
-instance-scoped: never supplied by a user, initialized from their `defaultValue`
-at instance start, and mutated by `scriptTask` nodes during pass-through routing.
+instance-scoped: never supplied by a user, initialized from a concrete
+`defaultValue` or a declared nullable null at instance start, and mutated by
+script tasks and typed service/message outputs during pass-through routing.
 They are visible to gateways, service-task templates, and validation rules
 through the same `WithContext` overlay as any other stored variable.
+
+```jsonc
+{
+  "id": 1,
+  "name": "creditScore",
+  "dataType": "number",
+  "isArray": false,
+  "nullable": true,
+  "defaultValue": null,
+  "validation": "creditScore > 0"
+}
+```
 
 Process variables differ from start/flow variables in a few respects:
 
 - `required` is meaningless (the value is computed, not collected) and is hidden
   in the editor. `ValidateDefinition` does not reject it but the engine ignores
   it; the editor forces `required: false`.
-- `defaultValue` is **required** (validated at author time). Every process
-  variable is initialized from its default at start (templated + coerced like a
-  start-variable default, so `${sys.user}` / `${amount}` placeholders work), so
-  every declared name is readable from hop 0 of the pass-through loop.
-- `validation` runs both after the start initialization and after every
-  `scriptTask` write that targets the variable, reusing the gateway evaluator.
+- `nullable` is optional and defaults to `false`. Non-nullable process variables
+  require a concrete `defaultValue`. For `nullable: true`, an omitted or null
+  default initializes and persists JSON `null`; a concrete default is still
+  allowed and type-checked. Nullability applies to the whole value, so an array
+  may itself be null while a non-null array still enforces its element type.
+- Concrete defaults are templated + coerced like start-variable defaults, so
+  `${sys.user}` / `${amount}` placeholders work. Every process declaration,
+  including a null one, is persisted and readable from hop 0.
+- NCalc and JavaScript script writes, plus service-task and intermediate-message
+  mappings that target a process variable, enforce its `nullable` and type/array
+  contract. An optional mapping may write an explicitly extracted null to a
+  nullable target; a missing path still performs no write, and `defaultValue:
+  null` remains no operation-specific fallback. `required: true` mappings reject
+  null even for nullable targets.
+- `validation` runs after start initialization and each mapping/script write when
+  the value is concrete. Accepted null values skip both the operation mapping's
+  rule and the process-variable rule until a concrete value is written.
 - The editor surfaces them in the "Workflow" inspector panel (shown when nothing
   is selected), separate from the per-node / per-flow variable editors.
 
