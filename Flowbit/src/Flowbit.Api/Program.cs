@@ -100,7 +100,8 @@ try
                     - 401 Unauthorized for a client id/secret mismatch on machine endpoints
                     - 403 Forbidden for a missing required role on the workflow-definition endpoints
                     - 404 Not Found when a referenced instance or definition id does not exist
-                    - 409 Conflict when a task or multi-instance execution was concurrently completed
+                    - 409 Conflict when a task/instance is no longer active or a multi-instance
+                      execution was concurrently completed
                     """,
             };
 

@@ -278,6 +278,8 @@
   .node.selected rect,
   .node.selected circle.body,
   .node.selected polygon.body { stroke: #fff; stroke-width: 3; }
+  .node.selected.endEvent circle.body,
+  .node.selected.errorEndEvent circle.body { stroke: #fff; stroke-width: 5; }
   .node.selected.errorBoundaryEvent circle.body { stroke: #fff; stroke-width: 3; }
   .node text { fill: #fff; font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: #d6e0ed; font-size: 10.5px; }
@@ -1032,6 +1034,12 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
     delete node.message;
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
@@ -1265,7 +1273,7 @@ function applyFlowInvariants(flow) {
 const NODE_ICON_SYMBOL = {
   [NODE_TYPE.START_EVENT]: "icon-start",
   [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
-  [NODE_TYPE.END_EVENT]: "icon-end",
+  [NODE_TYPE.END_EVENT]: null,
   [NODE_TYPE.ERROR_END_EVENT]: "icon-error",
   [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
@@ -1330,7 +1338,10 @@ function appendTextLines(parent, lines, attrs, lineHeight = 16) {
 }
 
 function appendNodeIcon(g, nodeType, x, y, size, className = "node-icon") {
-  const symbol = NODE_ICON_SYMBOL[nodeType] || "icon-task";
+  const symbol = Object.prototype.hasOwnProperty.call(NODE_ICON_SYMBOL, nodeType)
+    ? NODE_ICON_SYMBOL[nodeType]
+    : "icon-task";
+  if (!symbol) return null;
   const icon = el("use", { href: `#${symbol}`, x, y, width: size, height: size, class: className });
   g.appendChild(icon);
   return icon;
@@ -2249,6 +2260,11 @@ function renderNodeInspector() {
     inspector.appendChild(typeField);
   } else {
     selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
+      if (isEndEventType(v) && outgoingFlows(node.id).length > 0) {
+        alert("Remove all outgoing sequence flows before changing this node to an end event.");
+        renderInspector();
+        return;
+      }
       const businessKeysEnabled = model.flowNodes.some(n =>
         (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
       const previousType = node.type;
@@ -4639,6 +4655,13 @@ function validateModelForSave(candidate) {
     if (collision) {
       errors.push("Entry event #" + entry.id + " variable '" + collision.trim() +
         "' collides with a process variable; names are case-insensitive.");
+    }
+  }
+
+  for (const node of nodes.filter(node => node &&
+      (node.type === "endEvent" || node.type === "errorEndEvent"))) {
+    if (flows.some(flow => flow && flow.sourceRef === node.id)) {
+      errors.push("End event #" + node.id + " cannot have outgoing sequence flows.");
     }
   }
   const reservedIdempotencyHeaders = new Set([

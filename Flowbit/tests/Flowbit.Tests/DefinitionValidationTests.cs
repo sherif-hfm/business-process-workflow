@@ -109,6 +109,108 @@ public sealed class DefinitionValidationTests
         Assert.Contains("duplicated", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
+    public async Task CreateAsync_RejectsOutgoingFlowsFromTerminalEvents(string terminalType)
+    {
+        var model = LoadModel("votes-users-list.json");
+        var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
+        terminal.Type = terminalType;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = model.SequenceFlows.Max(flow => flow.Id) + 1,
+            Name = "Invalid terminal flow",
+            SourceRef = terminal.Id,
+            TargetRef = terminal.Id
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains($"End event #{terminal.Id} cannot have outgoing sequence flows", error.Message);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
+    public void Normalize_ClearsFieldsThatDoNotBelongToTerminalEvents(string terminalType)
+    {
+        var model = LoadModel("votes-users-list.json");
+        var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
+        terminal.Type = terminalType;
+        terminal.RequiresClaim = true;
+        terminal.ClaimMode = ClaimModes.FromNode;
+        terminal.InheritClaimFromNodeId = 2;
+        terminal.Roles = ["Manager"];
+        terminal.Variables =
+        [
+            new VariableModel { Id = 999, Name = "terminalInput", DataType = WorkflowVariableTypes.String }
+        ];
+        terminal.Service = new ServiceTaskModel
+        {
+            Url = "https://should-not-survive.invalid",
+            Headers = [new ServiceHeaderModel { Name = "Authorization", Value = "secret-terminal-token" }]
+        };
+        terminal.Message = new MessageCatchModel
+        {
+            ClientId = "terminal-client",
+            ClientSecret = "secret-terminal-client",
+            HeaderName = "X-Terminal",
+            HeaderValue = "terminal"
+        };
+        terminal.ScriptFormat = ScriptFormats.JavaScript;
+        terminal.Assignments = [new AssignmentModel { Variable = "result", Expression = "1" }];
+        terminal.Script = "execution.setVariable('result', 1);";
+        terminal.AssigneeExpression = "'alice'";
+        terminal.MultiInstance = new MultiInstanceModel();
+        terminal.AttachedToRef = 2;
+        terminal.ErrorVariable = "terminalError";
+        terminal.BusinessKey = new BusinessKeyModel { Variable = "terminalKey", Uniqueness = BusinessKeyUniqueness.Active };
+        terminal.Idempotency = new IdempotencyModel { HeaderName = "X-Terminal-Key", Variable = "terminalRequest" };
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.False(terminal.RequiresClaim);
+        Assert.Equal(ClaimModes.Fresh, terminal.ClaimMode);
+        Assert.Null(terminal.InheritClaimFromNodeId);
+        Assert.Empty(terminal.Roles);
+        Assert.Empty(terminal.Variables);
+        Assert.Null(terminal.Service);
+        Assert.Null(terminal.Message);
+        Assert.Equal(ScriptFormats.NCalc, terminal.ScriptFormat);
+        Assert.Empty(terminal.Assignments);
+        Assert.Null(terminal.Script);
+        Assert.Null(terminal.AssigneeExpression);
+        Assert.Null(terminal.MultiInstance);
+        Assert.Null(terminal.AttachedToRef);
+        Assert.Null(terminal.ErrorVariable);
+        Assert.Null(terminal.BusinessKey);
+        Assert.Null(terminal.Idempotency);
+        var json = JsonSerializer.Serialize(model);
+        Assert.DoesNotContain("secret-terminal", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Normalize_MapsLegacyErrorEndEventWithoutTurningItIntoAUserTask()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "legacy-error-end",
+            Name = "Legacy error end",
+            LegacySteps =
+            [
+                new LegacyStepModel { Id = 1, Name = "Fault", Type = BpmnFlowNodeTypes.ErrorEndEvent }
+            ]
+        };
+
+        WorkflowModelMigrator.Normalize(model);
+
+        var terminal = Assert.Single(model.FlowNodes);
+        Assert.Equal(BpmnFlowNodeTypes.ErrorEndEvent, terminal.Type);
+        Assert.True(BpmnFlowNodeTypes.IsEnd(terminal.Type));
+    }
+
     [Fact]
     public async Task CreateAsync_RejectsCaseInsensitiveVariableNameDuplicates()
     {

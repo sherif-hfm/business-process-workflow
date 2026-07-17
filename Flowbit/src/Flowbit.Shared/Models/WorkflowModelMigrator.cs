@@ -220,6 +220,7 @@ public static class WorkflowModelMigrator
         "startEvent" => BpmnFlowNodeTypes.StartEvent,
         "end" => BpmnFlowNodeTypes.EndEvent,
         "endEvent" => BpmnFlowNodeTypes.EndEvent,
+        "errorEndEvent" => BpmnFlowNodeTypes.ErrorEndEvent,
         "task" when step.AutoAdvance => BpmnFlowNodeTypes.Task,
         "task" => BpmnFlowNodeTypes.UserTask,
         "userTask" => BpmnFlowNodeTypes.UserTask,
@@ -278,7 +279,14 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
+            node.Service = null;
             node.Message = null;
+            node.ScriptFormat = ScriptFormats.NCalc;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
         }
         else if (BpmnFlowNodeTypes.IsAutomatic(node.Type) || BpmnFlowNodeTypes.IsGateway(node.Type))
         {

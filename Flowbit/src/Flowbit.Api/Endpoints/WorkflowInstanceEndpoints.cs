@@ -72,13 +72,15 @@ public static class WorkflowInstanceEndpoints
             .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
-            .Produces(StatusCodes.Status404NotFound);
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
 
         group.MapPost("/{id:long}/cancel", CancelInstance)
             .Produces(StatusCodes.Status204NoContent)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
-            .Produces(StatusCodes.Status404NotFound);
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
 
         group.MapPost("/{id:long}/message", DeliverMessage)
             .AllowAnonymous()
@@ -403,7 +405,7 @@ public static class WorkflowInstanceEndpoints
     /// A 400 is returned for an unavailable flow, a role/claim mismatch, a missing required
     /// variable, a failed validation rule, a gateway with no matching/default flow, or a
     /// service/script task failure with no attached error boundary; 404 when the instance
-    /// does not exist.
+    /// does not exist; 409 when the instance is no longer running.
     /// </remarks>
     public static async Task<IResult> TakeFlow(
         long id,
@@ -434,8 +436,8 @@ public static class WorkflowInstanceEndpoints
     /// <remarks>
     /// Transitions a <c>running</c> instance to the <c>cancelled</c> status. The caller must
     /// hold a role listed in the workflow's <c>cancelRoles</c>. Returns 204 on success. A
-    /// 400 is returned when the instance is not running or the caller lacks a cancel role;
-    /// 404 when the instance does not exist.
+    /// 400 is returned when the caller lacks a cancel role; 404 when the instance does not
+    /// exist; 409 when it is no longer running.
     /// </remarks>
     public static async Task<IResult> CancelInstance(
         long id,

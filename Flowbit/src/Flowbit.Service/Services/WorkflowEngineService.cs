@@ -1648,9 +1648,7 @@ public sealed class WorkflowEngineService(
             cancellationToken);
 
         var nextNode = GetFlowNode(workflow.Definition, winning.TargetRef);
-        var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? WorkflowInstanceStatuses.Faulted
-            : BpmnFlowNodeTypes.IsEnd(nextNode.Type) ? WorkflowInstanceStatuses.Completed
-            : WorkflowInstanceStatuses.Running;
+        var nextStatus = StatusForTargetNode(nextNode);
         var lockedInstance = instance with
         {
             CurrentStepId = nextNode.Id,
@@ -1706,7 +1704,7 @@ public sealed class WorkflowEngineService(
         if (instance.Status != WorkflowInstanceStatuses.Running)
         {
             logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: instance status is {Status} (not Running).", flowId, id, instance.Status);
-            throw new WorkflowDomainException("Only running instances can take a sequence flow.");
+            throw new WorkflowConflictException("Only running instances can take a sequence flow.");
         }
 
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
@@ -1790,11 +1788,7 @@ public sealed class WorkflowEngineService(
             cancellationToken);
 
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
-        var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-            ? WorkflowInstanceStatuses.Faulted
-            : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                ? WorkflowInstanceStatuses.Completed
-                : WorkflowInstanceStatuses.Running;
+        var nextStatus = StatusForTargetNode(nextNode);
 
         instance = instance with
         {
@@ -1953,11 +1947,7 @@ public sealed class WorkflowEngineService(
         var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault()
             ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no outgoing sequence flow.");
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
-        var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-            ? WorkflowInstanceStatuses.Faulted
-            : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                ? WorkflowInstanceStatuses.Completed
-                : WorkflowInstanceStatuses.Running;
+        var nextStatus = StatusForTargetNode(nextNode);
 
         await runtime.AddHistoryAsync(
             instance.Id,
@@ -2444,11 +2434,7 @@ public sealed class WorkflowEngineService(
 
             var flow = SelectPassThroughFlow(definition, currentNode, variables);
             var nextNode = GetFlowNode(definition, flow.TargetRef);
-            var nextStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-                ? WorkflowInstanceStatuses.Faulted
-                : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                    ? WorkflowInstanceStatuses.Completed
-                    : WorkflowInstanceStatuses.Running;
+            var nextStatus = StatusForTargetNode(nextNode);
 
             var note = currentNode.Type switch
             {
@@ -3832,6 +3818,13 @@ public sealed class WorkflowEngineService(
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)
         ?? throw new WorkflowDomainException($"Flow node #{nodeId} was not found in workflow '{definition.Name}'.");
+
+    private static string StatusForTargetNode(FlowNodeModel node) =>
+        BpmnFlowNodeTypes.IsErrorEnd(node.Type)
+            ? WorkflowInstanceStatuses.Faulted
+            : BpmnFlowNodeTypes.IsEnd(node.Type)
+                ? WorkflowInstanceStatuses.Completed
+                : WorkflowInstanceStatuses.Running;
 
     private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.SourceRef == nodeId).ToList();

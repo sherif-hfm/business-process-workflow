@@ -982,6 +982,82 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task CardinalityDefault_EnteringErrorEndEventFaultsAndClosesAllWork()
+    {
+        var model = LoadUniqueModel("votes-cardinality-approve-reject.json", "error-end-default");
+        var workflowId = await CreateWorkflowAsync(model);
+        var scenario = await StartAndEnterAsync(
+            workflowId,
+            new Dictionary<string, JsonElement>
+            {
+                ["voters"] = JsonSerializer.SerializeToElement(1)
+            });
+        var task = Assert.Single((await ListTasksAsync(scenario.Id, "solo", "User")).Items);
+
+        using (var flows = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/user-tasks/{task.Id}/flows",
+                   null,
+                   "solo",
+                   "User"))
+        {
+            Assert.Equal(HttpStatusCode.OK, flows.StatusCode);
+            Assert.Equal(new[] { 201, 205 }, (await ReadAsync<List<SequenceFlowModel>>(flows))
+                .Select(flow => flow.Id)
+                .Order()
+                .ToArray());
+        }
+
+        using (var hiddenDefault = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/user-tasks/{task.Id}/flows/207",
+                   new TakeFlowRequest(null),
+                   "solo",
+                   "User"))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, hiddenDefault.StatusCode);
+        }
+
+        using var completed = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{task.Id}/flows/201",
+            new TakeFlowRequest(null),
+            "solo",
+            "User");
+        Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+        var ack = await ReadAsync<UserTaskActionAckDto>(completed);
+        Assert.Equal("faulted", ack.InstanceStatus);
+        Assert.Equal(6, ack.CurrentNodeId);
+        Assert.Equal(UserTaskStatuses.Completed, ack.TaskStatus);
+        Assert.NotNull(ack.MultiInstance);
+        Assert.Equal(MultiInstanceExecutionStatuses.Completed, ack.MultiInstance.Status);
+        Assert.Equal(207, ack.MultiInstance.WinningFlowId);
+        Assert.Equal("all", ack.MultiInstance.CompletionReason);
+        Assert.Equal(1, Assert.Single(ack.MultiInstance.FlowCounts, count => count.FlowId == 201).Count);
+
+        var detail = await GetInstanceAsync(scenario.Id);
+        Assert.Equal("faulted", detail.Status);
+        Assert.Equal(6, detail.CurrentNodeId);
+        Assert.Null(detail.UserTasks);
+        Assert.Single(detail.History, entry =>
+            entry.Note == "multiInstanceComplete" && entry.SequenceFlowId == 207);
+        Assert.Empty((await ListTasksAsync(scenario.Id, "solo", "User")).Items);
+
+        await using var db = fixture.CreateDbContext();
+        var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == scenario.Id);
+        Assert.Equal(BpmnFlowNodeTypes.ErrorEndEvent, token.NodeType);
+        Assert.Equal(ExecutionTokenStatuses.Faulted, token.Status);
+        var execution = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == scenario.Id);
+        Assert.Equal(MultiInstanceExecutionStatuses.Completed, execution.Status);
+        Assert.Equal(207, execution.WinningFlowId);
+        Assert.Equal("all", execution.CompletionReason);
+        Assert.NotNull(execution.CompletedAt);
+        Assert.False(await db.UserTasks.AnyAsync(row =>
+            row.InstanceId == scenario.Id
+            && (row.Status == UserTaskStatuses.Active || row.Status == UserTaskStatuses.Pending)));
+    }
+
+    [Fact]
     public async Task WorkSummaryIsAccurateAndChildClaimsTouchParentTimestamp()
     {
         var cardinality = LoadUniqueModel("votes-cardinality-approve-reject.json", "work-summary");

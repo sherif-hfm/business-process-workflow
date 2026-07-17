@@ -35,7 +35,9 @@ public static class UserTaskEndpoints
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
         group.MapPost("/{taskId:long}/flows/{flowId:int}", TakeFlow)
-            .Produces<UserTaskActionAckDto>().Produces(StatusCodes.Status409Conflict);
+            .Produces<UserTaskActionAckDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status409Conflict);
         return app;
     }
 
