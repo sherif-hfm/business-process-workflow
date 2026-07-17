@@ -26,6 +26,12 @@
   and assigned task counts. Claim ownership is exposed only by task DTOs; instance
   DTOs do not project a task claimant.
 - Node and sequence-flow roles are enforced from the authenticated actor's JWT.
+- Workflow-level `taskAssignmentRoles` authorize assignment managers to assign,
+  reassign, and unassign active normal or multi-instance user-task work items.
+- Optional workflow-level `taskDistribution` credentials authorize an external
+  distributor across every active version of the stable workflow key. Credential
+  values may be literal or `${setting.*}` / `${config.*}` references; prefer
+  references because literal secrets are visible in versioned definition JSON.
 
 ## Run Locally
 
@@ -71,6 +77,12 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `POST /api/instances/{id}/unclaim`
 - `POST /api/instances/{id}/flows/{flowId}`
 - `POST /api/instances/{id}/cancel`
+- `GET /api/user-tasks/manage` (assignment-manager scoped)
+- `POST /api/user-tasks/{taskId}/assign`
+- `POST /api/user-tasks/{taskId}/unassign`
+- `GET /api/task-distribution/workflows/{workflowKey}/tasks`
+- `POST /api/task-distribution/workflows/{workflowKey}/tasks/{taskId}/assign`
+- `POST /api/task-distribution/workflows/{workflowKey}/tasks/{taskId}/unassign`
 - `GET /api/auth/context` (server-resolved workflow actor and roles)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
@@ -80,6 +92,30 @@ The multi-instance execution endpoints expose only selectable interrupting flows
 roles. They let an authorized actor interrupt the parent execution even without
 an active child work item; unfinished child items are cancelled and the workflow
 continues through the selected flow.
+
+Task assignment mutations use `expectedUpdatedAt` for optimistic concurrency and
+accept an optional audit reason. Assignment clears any existing claim and creates
+direct ownership; unassignment clears both ownership fields and restores the
+node's authored `requiresClaim` setting. Every real change is recorded in instance
+history. Workflows without `taskAssignmentRoles` expose no manageable tasks.
+
+The task-distribution endpoints are machine-facing and do not use JWT roles.
+They authenticate `X-Client-Id` / `X-Client-Secret` against `taskDistribution`
+on the current published default definition, while listing and mutating tasks
+across all versions of that workflow family. They preserve the same optimistic
+concurrency and audit behavior as manager actions. The list is minimal by
+default; `includeVariables=true` adds latest instance variables for the returned
+page. Missing configuration disables external distribution. Production callers
+must use TLS and should be rate-limited at the gateway.
+
+Example configuration:
+
+```json
+"taskDistribution": {
+  "clientId": "workforce-service",
+  "clientSecret": "${setting.taskDistribution.clientSecret}"
+}
+```
 
 Known multi-instance `mode`, `source`, and `completionEvaluation` casing is
 canonicalized when definitions are loaded. Unknown or explicitly null values,

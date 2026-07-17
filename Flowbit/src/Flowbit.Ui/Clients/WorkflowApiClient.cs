@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Net;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
@@ -182,6 +183,42 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
     }
 
+    public async Task<PagedResult<ManagedUserTaskDto>> GetManagedUserTasksAsync(
+        int page = 1,
+        int pageSize = 50,
+        long? taskId = null,
+        long? instanceId = null,
+        long? workflowId = null,
+        string? workflowKey = null,
+        string? businessKey = null,
+        int? nodeId = null,
+        string? nodeExternalId = null,
+        string? owner = null,
+        string? ownership = null,
+        IEnumerable<string>? variables = null,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/user-tasks/manage?page={page}&pageSize={pageSize}";
+        if (taskId is not null) url += $"&taskId={taskId.Value}";
+        if (instanceId is not null) url += $"&instanceId={instanceId.Value}";
+        if (workflowId is not null) url += $"&workflowId={workflowId.Value}";
+        if (!string.IsNullOrWhiteSpace(workflowKey))
+            url += $"&workflowKey={Uri.EscapeDataString(workflowKey.Trim())}";
+        if (!string.IsNullOrWhiteSpace(businessKey))
+            url += $"&businessKey={Uri.EscapeDataString(businessKey.Trim())}";
+        if (nodeId is not null) url += $"&nodeId={nodeId.Value}";
+        if (!string.IsNullOrWhiteSpace(nodeExternalId))
+            url += $"&nodeExternalId={Uri.EscapeDataString(nodeExternalId.Trim())}";
+        if (!string.IsNullOrWhiteSpace(owner))
+            url += $"&owner={Uri.EscapeDataString(owner.Trim())}";
+        if (!string.IsNullOrWhiteSpace(ownership))
+            url += $"&ownership={Uri.EscapeDataString(ownership.Trim())}";
+        url += BuildVariableQuery(variables);
+
+        return await httpClient.GetFromJsonAsync<PagedResult<ManagedUserTaskDto>>(url, cancellationToken)
+            ?? new PagedResult<ManagedUserTaskDto>([], page, pageSize, 0);
+    }
+
     private static string BuildVariableQuery(IEnumerable<string>? variables)
     {
         if (variables is null)
@@ -276,6 +313,28 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<UserTaskDto>(cancellationToken);
     }
 
+    public async Task<UserTaskAssignmentAckDto?> AssignUserTaskAsync(
+        long taskId,
+        AssignUserTaskRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync(
+            $"/api/user-tasks/{taskId}/assign", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskAssignmentAckDto>(cancellationToken);
+    }
+
+    public async Task<UserTaskAssignmentAckDto?> UnassignUserTaskAsync(
+        long taskId,
+        UnassignUserTaskRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync(
+            $"/api/user-tasks/{taskId}/unassign", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskAssignmentAckDto>(cancellationToken);
+    }
+
     public async Task<UserTaskActionAckDto?> TakeUserTaskFlowAsync(
         long taskId, int flowId, TakeFlowRequest request, CancellationToken cancellationToken = default)
     {
@@ -317,8 +376,14 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new InvalidOperationException(string.IsNullOrWhiteSpace(text)
+        throw new WorkflowApiException(response.StatusCode, string.IsNullOrWhiteSpace(text)
             ? response.ReasonPhrase
             : text);
     }
+}
+
+public sealed class WorkflowApiException(HttpStatusCode statusCode, string? message)
+    : InvalidOperationException(message)
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
 }

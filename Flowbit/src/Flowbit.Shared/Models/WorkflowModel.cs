@@ -68,6 +68,22 @@ public sealed class WorkflowModel
     [JsonPropertyName("unclaimRoles")]
     public List<string> UnclaimRoles { get; set; } = [];
 
+    /// <summary>
+    /// The roles allowed to assign, reassign, or release active user-task work items.
+    /// An empty list disables task-assignment management for this workflow version.
+    /// </summary>
+    [JsonPropertyName("taskAssignmentRoles")]
+    public List<string> TaskAssignmentRoles { get; set; } = [];
+
+    /// <summary>
+    /// Optional client credentials that authorize the external task distributor
+    /// for every active task in this workflow family. Values may be literals or
+    /// trusted <c>${setting.*}</c>/<c>${config.*}</c> references.
+    /// </summary>
+    [JsonPropertyName("taskDistribution")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TaskDistributionModel? TaskDistribution { get; set; }
+
     // ---- Legacy read shims (older JSONB snapshots) ----
     // These are populated only when deserializing pre-BPMN documents and are
     // folded into the new structure by WorkflowModelMigrator. They are never
@@ -84,6 +100,18 @@ public sealed class WorkflowModel
     [JsonPropertyName("steps")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public List<LegacyStepModel>? LegacySteps { get; set; }
+}
+
+/// <summary>
+/// Machine credentials for the workflow-family task-distribution API.
+/// </summary>
+public sealed class TaskDistributionModel
+{
+    [JsonPropertyName("clientId")]
+    public string ClientId { get; set; } = string.Empty;
+
+    [JsonPropertyName("clientSecret")]
+    public string ClientSecret { get; set; } = string.Empty;
 }
 
 /// <summary>

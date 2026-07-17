@@ -73,6 +73,38 @@ public interface IWorkflowRuntimeRepository
         int pageSize,
         CancellationToken cancellationToken);
 
+    Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
+        IReadOnlyCollection<string> managerRoles,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<VariableFilter> variableFilters,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+
+    Task<PagedResult<ManagedUserTaskRecord>> ListDistributableUserTasksAsync(
+        string workflowKey,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<VariableFilter> variableFilters,
+        bool includeVariables,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
@@ -131,6 +163,11 @@ public interface IWorkflowRuntimeRepository
         string claimedBy,
         CancellationToken cancellationToken);
 
+    Task<long?> GetOwnedMultiInstanceItemIdAsync(
+        long executionId,
+        string owner,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyDictionary<int, int>> ListMultiInstanceFlowCountsAsync(
         long executionId,
         CancellationToken cancellationToken);
@@ -155,6 +192,12 @@ public interface IWorkflowRuntimeRepository
     Task CancelOpenUserTasksAsync(long instanceId, CancellationToken cancellationToken);
 
     Task UpdateUserTaskClaimAsync(long taskId, string? claimedBy, CancellationToken cancellationToken);
+
+    Task<DateTimeOffset> UpdateUserTaskAssignmentAsync(
+        long taskId,
+        string? assignee,
+        bool requiresClaim,
+        CancellationToken cancellationToken);
 
     Task<DateTimeOffset> TouchInstanceAsync(long id, CancellationToken cancellationToken);
 
@@ -208,6 +251,18 @@ public interface IWorkflowRuntimeRepository
         string note,
         CancellationToken cancellationToken);
 
+    Task AddUserTaskHistoryAsync(
+        long instanceId,
+        long tokenId,
+        long userTaskId,
+        long? multiInstanceExecutionId,
+        int? itemIndex,
+        int nodeId,
+        string performedBy,
+        Dictionary<string, JsonElement> payload,
+        string note,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(
         long instanceId,
         CancellationToken cancellationToken);
@@ -239,6 +294,8 @@ public interface IWorkflowRuntimeRepository
 public interface IWorkflowSettingsRepository
 {
     Task<IReadOnlyDictionary<string, JsonElement>> LoadAllAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, JsonElement>> LoadAllFreshAsync(CancellationToken cancellationToken);
 }
 
 public interface IEngineSettingsRepository

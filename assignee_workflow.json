@@ -8,6 +8,7 @@
     {
       "id": 1,
       "name": "Start",
+      "externalId": null,
       "type": "startEvent",
       "laneId": null,
       "x": 100,
@@ -17,11 +18,14 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 2,
       "name": "assign task",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 327,
@@ -33,11 +37,15 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 3,
       "name": "perform task",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 663,
@@ -49,11 +57,15 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "assignee": "assign_user"
+      "assignee": "assign_user",
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
       "name": "New Node",
+      "externalId": null,
       "type": "endEvent",
       "laneId": null,
       "x": 1082,
@@ -63,13 +75,16 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
       "name": "",
+      "externalId": null,
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -85,6 +100,7 @@
     {
       "id": 102,
       "name": "assign ",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -110,6 +126,7 @@
     {
       "id": 103,
       "name": "perform ",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -124,5 +141,12 @@
     }
   ],
   "cancelRoles": [],
-  "unclaimRoles": []
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "Manager"
+  ],
+  "taskDistribution": {
+    "clientId": "user",
+    "clientSecret": "123"
+  }
 }

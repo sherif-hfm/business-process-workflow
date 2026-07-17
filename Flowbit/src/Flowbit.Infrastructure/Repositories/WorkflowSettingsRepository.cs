@@ -23,6 +23,15 @@ public sealed class WorkflowSettingsRepository(AppDbContext dbContext, IMemoryCa
             return cached;
         }
 
+        return await LoadFreshAndCacheAsync(cancellationToken);
+    }
+
+    public Task<IReadOnlyDictionary<string, JsonElement>> LoadAllFreshAsync(CancellationToken cancellationToken) =>
+        LoadFreshAndCacheAsync(cancellationToken);
+
+    private async Task<IReadOnlyDictionary<string, JsonElement>> LoadFreshAndCacheAsync(
+        CancellationToken cancellationToken)
+    {
         var settings = await dbContext.WorkflowSettings
             .AsNoTracking()
             .Select(s => new { s.Namespace, s.Name, s.Value })

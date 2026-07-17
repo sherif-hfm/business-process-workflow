@@ -2,6 +2,9 @@
   "id": "purchase-request-approval",
   "name": "Purchase Request Approval",
   "initialEventId": 1,
+  "taskAssignmentRoles": [
+    "Manager"
+  ],
   "lanes": [
     {
       "id": 1,

@@ -20,6 +20,10 @@ public sealed record ActorContext(
         new(null, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 }
 
+public sealed record TaskDistributionCredentials(
+    string? ClientId,
+    string? ClientSecret);
+
 /// <summary>
 /// Server-side configuration for read-only workflow context sources. <see cref="Config"/>
 /// values are exposed as <c>config.*</c> placeholders/parameters (keeps secrets out of the
@@ -148,6 +152,65 @@ public interface IWorkflowEngineService
     Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
+        ActorContext actor,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<string>? variables,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+    Task<UserTaskAssignmentAckDto?> AssignUserTaskAsync(
+        long taskId,
+        string? actorId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+    Task<UserTaskAssignmentAckDto?> UnassignUserTaskAsync(
+        long taskId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+    Task<PagedResult<ManagedUserTaskDto>?> ListDistributableUserTasksAsync(
+        string workflowKey,
+        TaskDistributionCredentials credentials,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<string>? variables,
+        bool includeVariables,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+    Task<UserTaskAssignmentAckDto?> AssignDistributedUserTaskAsync(
+        string workflowKey,
+        long taskId,
+        string? actorId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        TaskDistributionCredentials credentials,
+        CancellationToken cancellationToken);
+    Task<UserTaskAssignmentAckDto?> UnassignDistributedUserTaskAsync(
+        string workflowKey,
+        long taskId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        TaskDistributionCredentials credentials,
+        CancellationToken cancellationToken);
     Task<UserTaskActionAckDto?> TakeUserTaskFlowAsync(
         long taskId,
         int flowId,

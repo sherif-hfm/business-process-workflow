@@ -1,3 +1,4 @@
+
 - add Parallel Gateways
 - add quorum/complex gateway
 - async flow asyncAfter/asyncBefore
@@ -11,6 +12,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add assignment and reassignment task to user (done)
 - inhance ui to be like modern dashboard (done)
 - add variables latest values to GET /api/instances response (done)
 - in GET /api/instances endpoint add Node ID  and External ID to return (existing) 

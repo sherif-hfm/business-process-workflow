@@ -81,6 +81,29 @@ public sealed record UserTaskRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
 
+public sealed record ManagedUserTaskRecord(
+    long UserTaskId,
+    long InstanceId,
+    long TokenId,
+    long WorkflowDefinitionId,
+    string WorkflowKey,
+    string WorkflowName,
+    int WorkflowVersion,
+    string? BusinessKey,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    IReadOnlyList<string> NodeRoles,
+    bool RequiresClaim,
+    string? ClaimedBy,
+    string? Assignee,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    IReadOnlyDictionary<string, JsonElement>? Variables);
+
 public sealed record UserTaskWorkSummaryRecord(
     long InstanceId,
     bool IsMultiInstance,

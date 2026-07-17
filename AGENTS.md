@@ -441,6 +441,36 @@ Storage follows the hybrid design:
   Assignment matching is case-insensitive and is enforced by inbox, flow, claim,
   and task action endpoints. Existing collection multi-instance assignment is
   unchanged; assignee expressions are rejected on every multi-instance task.
+- **Manager-controlled task assignment.** A workflow definition may declare
+  top-level `taskAssignmentRoles`. An authenticated actor holding at least one
+  configured role can list every active work item for that workflow through the
+  task-management API and directly assign, reassign, or unassign it. This applies
+  to normal user tasks and active multi-instance children. Assigning snapshots a
+  case-insensitive actor id in `user_tasks.Assignee`, clears any claim, and makes
+  the item directly assigned; the manager does not need the task's node role.
+  Unassigning clears both assignee and claimant and restores the authored node's
+  `requiresClaim` behavior without re-evaluating an assignee expression or claim
+  inheritance. Mutations require the task's expected `UpdatedAt`; stale writes
+  return 409, while an exact desired-state retry is an unchanged 200 response.
+  Each real change writes a `taskAssignment` instance-history row with the
+  manager, previous/new ownership, and optional reason. A missing or empty
+  `taskAssignmentRoles` list disables management for that workflow version.
+- **External task distribution.** A workflow definition may declare top-level
+  `taskDistribution: { clientId, clientSecret }`. These values may be literals
+  or `${setting.*}` / `${config.*}` templates; literal secrets are retained in
+  the immutable definition JSON and should be avoided in production. The
+  anonymous `/api/task-distribution/workflows/{workflowKey}/tasks` API validates
+  `X-Client-Id` / `X-Client-Secret` against the current published default
+  definition, then lists or mutates active tasks from every version sharing that
+  stable workflow key. Credential templates resolve only against trusted
+  configuration/settings, never caller data, instance variables, or `sys.*`.
+  The external client needs neither `taskAssignmentRoles` nor node roles.
+  Assignment mutations reuse the manager transaction, stale-write protection,
+  desired-state retry behavior, and multi-instance ownership checks. Real
+  changes record the client id as `PerformedBy` and `authority=taskDistribution`
+  in the audit payload. Missing configuration disables this machine API for the
+  workflow family. Settings are freshly read during machine authentication so
+  credential rotation takes effect on the next request.
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
@@ -498,6 +528,23 @@ what the cross-version `workflowKey` instance search matches.
   Inbox role/assignment/claim filtering, counting, ordering, and paging all run
   in PostgreSQL. The service loads definitions only for the returned page to
   calculate outgoing-flow `CanAct`/`CanClaim` flags.
+- `UserTaskEndpoints` (`/api/user-tasks`):
+  `GET /manage?taskId=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&owner=&ownership=&var=&page=&pageSize=`
+  returns a role-scoped page of active work items for assignment managers;
+  `POST /{taskId}/assign` accepts `actorId`, `expectedUpdatedAt`, and an optional
+  `reason`; `POST /{taskId}/unassign` accepts `expectedUpdatedAt` and an optional
+  `reason`. Unauthorized workflow managers receive 403 and stale mutations
+  receive 409.
+- `TaskDistributionEndpoints`
+  (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
+  paged family-scoped list using the same task/instance/workflow-version,
+  business-key, node, owner, ownership, and repeated `var=` filters as task
+  management. `includeVariables=true` adds the latest instance variables only
+  for the bounded page; the property is otherwise omitted. `POST
+  /{taskId}/assign` and `POST /{taskId}/unassign` reuse the manager request and
+  acknowledgement DTOs. All three endpoints authenticate through
+  `X-Client-Id` / `X-Client-Secret`, return 401 for invalid credentials, 404 for
+  unknown or cross-family targets, and 409 for stale/inactive task conflicts.
 - `MultiInstanceExecutionEndpoints` (`/api/multi-instance-executions`):
   `GET /{executionId}/flows` returns the current actor's selectable parent-level
   interrupt flows for an active execution; `POST /{executionId}/flows/{flowId}`
@@ -567,9 +614,12 @@ what the cross-version `workflowKey` instance search matches.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
   workflow id, workflow key, node id, node external id, and comma-separated
   `name:value` variable filter boxes.
+- `/task-management` (`TaskManagement.razor`) - workflow-role-scoped manager
+  view for filtering active tasks and assigning, reassigning, or unassigning an
+  item with optimistic concurrency and an optional audit reason.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
-  and view variables and history.
+  and view variables and history, including task-assignment audit details.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
 

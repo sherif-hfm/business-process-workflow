@@ -16,6 +16,7 @@ public static class WorkflowModelMigrator
         model.Variables ??= [];
         model.CancelRoles ??= [];
         model.UnclaimRoles ??= [];
+        model.TaskAssignmentRoles = NormalizeRoles(model.TaskAssignmentRoles);
 
         foreach (var node in model.FlowNodes)
         {
@@ -141,6 +142,13 @@ public static class WorkflowModelMigrator
         seed = candidate + 1;
         return candidate;
     }
+
+    private static List<string> NormalizeRoles(IEnumerable<string>? roles) =>
+        (roles ?? [])
+        .Where(role => !string.IsNullOrWhiteSpace(role))
+        .Select(role => role.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
 
     /// <summary>
     /// Canonicalizes user-task defaults while preserving the behavior of older

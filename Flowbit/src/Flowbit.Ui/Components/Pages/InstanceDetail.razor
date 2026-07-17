@@ -286,7 +286,8 @@ else
                         <th scope="col">From</th>
                         <th scope="col">To</th>
                         <th scope="col">Flow</th>
-                        <th scope="col">Note</th>
+                        <th scope="col">Actor</th>
+                        <th scope="col">Details</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -297,7 +298,8 @@ else
                             <td>#@item.FromNodeId</td>
                             <td>#@item.ToNodeId</td>
                             <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
-                            <td>@item.Note</td>
+                            <td>@(item.PerformedBy ?? "-")</td>
+                            <td>@HistoryDetails(item)</td>
                         </tr>
                     }
                 </tbody>
@@ -458,6 +460,37 @@ else
         if (tasks.ClaimedCount > 0) parts.Add($"{tasks.ClaimedCount} claimed");
         if (tasks.AssignedCount > 0) parts.Add($"{tasks.AssignedCount} assigned");
         return string.Join(", ", parts);
+    }
+
+    private static string HistoryDetails(InstanceHistoryDto item)
+    {
+        if (!string.Equals(item.Note, "taskAssignment", StringComparison.Ordinal))
+        {
+            return item.Note ?? "-";
+        }
+
+        var operation = HistoryPayloadString(item, "operation") ?? "assignment";
+        var previous = HistoryPayloadString(item, "previousOwner") ?? "shared pool";
+        var current = HistoryPayloadString(item, "newOwner") ?? "shared pool";
+        var reason = HistoryPayloadString(item, "reason");
+        var summary = operation switch
+        {
+            UserTaskAssignmentOperations.Assigned => $"Assigned to {current}",
+            UserTaskAssignmentOperations.Reassigned => $"Reassigned from {previous} to {current}",
+            UserTaskAssignmentOperations.Unassigned => $"Released {previous} to the shared pool",
+            _ => $"Assignment changed from {previous} to {current}"
+        };
+        return string.IsNullOrWhiteSpace(reason) ? summary : $"{summary} — {reason}";
+    }
+
+    private static string? HistoryPayloadString(InstanceHistoryDto item, string name)
+    {
+        if (item.Payload is null || !item.Payload.TryGetValue(name, out var value)
+                                 || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
     }
 
     private async Task LoadAsync()

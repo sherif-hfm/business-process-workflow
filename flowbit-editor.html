@@ -922,7 +922,9 @@ function newModel() {
     flowNodes: [],
     sequenceFlows: [],
     cancelRoles: [],
-    unclaimRoles: []
+    unclaimRoles: [],
+    taskAssignmentRoles: [],
+    taskDistribution: null
   };
 }
 
@@ -1375,6 +1377,8 @@ function seedSample() {
     id: "purchase-request-approval",
     name: "Purchase Request Approval",
     initialEventId: 1,
+    taskAssignmentRoles: ["Manager"],
+    taskDistribution: null,
     variables: [
       { id: 1, name: "total", dataType: "number", isArray: false, required: false, defaultValue: 0, validation: "total >= 0" }
     ],
@@ -2123,6 +2127,7 @@ function renderInspector() {
 function addWorkflowRolesSection() {
   model.cancelRoles = model.cancelRoles || [];
   model.unclaimRoles = model.unclaimRoles || [];
+  model.taskAssignmentRoles = model.taskAssignmentRoles || [];
 
   const title = document.createElement("h3");
   title.textContent = "Permissions (Optional)";
@@ -2132,6 +2137,37 @@ function addWorkflowRolesSection() {
 
   rolesFieldGeneric(model, "cancelRoles", "Roles allowed to cancel instance", () => {});
   rolesFieldGeneric(model, "unclaimRoles", "Roles allowed to unclaim a task", () => {});
+  rolesFieldGeneric(model, "taskAssignmentRoles", "Roles allowed to manage task assignments", () => {});
+
+  const distributionToggle = variableCheckbox(
+    "Enable external task distributor",
+    !!model.taskDistribution,
+    enabled => {
+      model.taskDistribution = enabled
+        ? { clientId: "", clientSecret: "${setting.taskDistribution.clientSecret}" }
+        : null;
+      renderInspector();
+    });
+  distributionToggle.style.marginTop = "12px";
+  inspector.appendChild(distributionToggle);
+
+  if (model.taskDistribution) {
+    const distributionHint = document.createElement("p");
+    distributionHint.className = "empty-note";
+    distributionHint.textContent = "Machine API credentials for active tasks across every version of this workflow key. Values may be literal or use ${setting.*} / ${config.*}. Calls use X-Client-Id and X-Client-Secret.";
+    inspector.appendChild(distributionHint);
+    field("Distributor client id", "text", model.taskDistribution.clientId || "", value => {
+      model.taskDistribution.clientId = value;
+    });
+    field("Distributor client secret", "text", model.taskDistribution.clientSecret || "", value => {
+      model.taskDistribution.clientSecret = value;
+    });
+    const secretWarning = document.createElement("p");
+    secretWarning.className = "empty-note";
+    secretWarning.style.color = "#b45309";
+    secretWarning.textContent = "Warning: a literal secret is stored in every exported/versioned workflow definition. Prefer a ${setting.*} or ${config.*} reference.";
+    inspector.appendChild(secretWarning);
+  }
 }
 
 function addProcessVariablesSection() {
@@ -4397,6 +4433,14 @@ function validateModelForSave(candidate) {
 
   validateUniqueIds(nodes, "Flow node");
   validateUniqueIds(flows, "Sequence flow");
+  if (candidate && candidate.taskDistribution != null) {
+    if (!hasText(candidate.taskDistribution.clientId)) {
+      errors.push("Workflow taskDistribution must have a clientId when enabled.");
+    }
+    if (!hasText(candidate.taskDistribution.clientSecret)) {
+      errors.push("Workflow taskDistribution must have a clientSecret when enabled.");
+    }
+  }
   validateVariableNames(processVariables, "process variables");
   for (const node of nodes) validateVariableNames(node && node.variables, "flow node #" + String(node && node.id));
   for (const flow of flows) validateVariableNames(flow && flow.variables, "sequence flow #" + String(flow && flow.id));
@@ -4922,7 +4966,9 @@ function migrateLegacyToNew(obj) {
     flowNodes,
     sequenceFlows,
     cancelRoles: [],
-    unclaimRoles: []
+    unclaimRoles: [],
+    taskAssignmentRoles: [],
+    taskDistribution: null
   };
 }
 function loadFromObject(obj) {
@@ -4990,7 +5036,14 @@ function loadFromObject(obj) {
         cancelRemainingInstances: !!f.cancelRemainingInstances
       })),
       cancelRoles: normalizeRoles(obj.cancelRoles),
-      unclaimRoles: normalizeRoles(obj.unclaimRoles)
+      unclaimRoles: normalizeRoles(obj.unclaimRoles),
+      taskAssignmentRoles: normalizeRoles(obj.taskAssignmentRoles),
+      taskDistribution: obj.taskDistribution && typeof obj.taskDistribution === "object"
+        ? {
+            clientId: typeof obj.taskDistribution.clientId === "string" ? obj.taskDistribution.clientId : "",
+            clientSecret: typeof obj.taskDistribution.clientSecret === "string" ? obj.taskDistribution.clientSecret : ""
+          }
+        : null
     };
   } else {
     // Legacy phases/steps/actions document.

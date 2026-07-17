@@ -1,0 +1,306 @@
+@page "/task-management"
+@implements IDisposable
+@using System.Net
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>Task Assignments · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Task assignments"
+            Description="Assign, transfer, or release active work items for workflows you manage.">
+    <Actions>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="A test identity is required" Description="Set an identity with a configured task-assignment role to manage work items.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-label="Current assignment manager">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div><span class="data-subtitle mt-0">Managing as</span><strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong></div>
+            <div class="d-flex flex-wrap gap-2">
+                @if (Token.CurrentRoles.Count == 0) { <StatusBadge Status="neutral" Text="No roles" /> }
+                else { @foreach (var role in Token.CurrentRoles) { <StatusBadge Status="primary" Text="@role" /> } }
+            </div>
+        </div>
+    </section>
+
+    <section class="filter-panel" aria-labelledby="task-management-filter-heading">
+        <div class="section-heading mb-0">
+            <div><h2 id="task-management-filter-heading">Task filters</h2><p>Only active tasks from workflows granting one of your roles are returned.</p></div>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="() => filtersOpen = !filtersOpen" aria-expanded="@filtersOpen">
+                @(filtersOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
+            </button>
+        </div>
+        @if (filtersOpen)
+        {
+            <div class="filter-grid mt-3">
+                <div><label class="form-label" for="managed-task-id">Task ID</label><input id="managed-task-id" type="number" class="form-control" @bind="taskId" /></div>
+                <div><label class="form-label" for="managed-instance-id">Instance ID</label><input id="managed-instance-id" type="number" class="form-control" @bind="instanceId" /></div>
+                <div><label class="form-label" for="managed-workflow-id">Workflow version ID</label><input id="managed-workflow-id" type="number" class="form-control" @bind="workflowId" /></div>
+                <div><label class="form-label" for="managed-workflow-key">Workflow key</label><input id="managed-workflow-key" class="form-control" @bind="workflowKey" /></div>
+                <div><label class="form-label" for="managed-business-key">Business key</label><input id="managed-business-key" class="form-control" @bind="businessKey" /></div>
+                <div><label class="form-label" for="managed-node-id">Node ID</label><input id="managed-node-id" type="number" class="form-control" @bind="nodeId" /></div>
+                <div><label class="form-label" for="managed-node-external">Node external ID</label><input id="managed-node-external" class="form-control" @bind="nodeExternalId" /></div>
+                <div><label class="form-label" for="managed-owner">Owner actor ID</label><input id="managed-owner" class="form-control" @bind="owner" /></div>
+                <div>
+                    <label class="form-label" for="managed-ownership">Ownership</label>
+                    <select id="managed-ownership" class="form-select" @bind="ownership">
+                        <option value="">All</option>
+                        <option value="assigned">Assigned</option>
+                        <option value="claimed">Claimed</option>
+                        <option value="unassigned">Unassigned pool</option>
+                    </select>
+                </div>
+                <div class="filter-span-2"><label class="form-label" for="managed-variables">Variables</label><input id="managed-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+                <div class="filter-actions">
+                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
+                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                </div>
+            </div>
+        }
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="managed-task-results-heading">
+        <div class="section-heading">
+            <div><h2 id="managed-task-results-heading">Manageable tasks</h2><p>@(result is null ? "Loading active tasks…" : $"{result.TotalCount:N0} active tasks")</p></div>
+        </div>
+        @if (result is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (result.Items.Count == 0)
+        {
+            <EmptyState Icon="assignments" Title="No manageable tasks" Description="No active work items match your roles and filters." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th>Task</th><th>Workflow</th><th>Ownership</th><th>Required roles</th><th>Updated</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>
+                        @foreach (var item in result.Items)
+                        {
+                            <tr>
+                                <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
+                                <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@item.WorkflowVersion</span></td>
+                                <td><StatusBadge Status="@OwnershipTone(item.Ownership)" Text="@OwnershipLabel(item)" /><span class="data-subtitle">@(item.RequiresClaim ? "Claim required when pooled" : "Open when pooled")</span></td>
+                                <td>@if (item.NodeRoles.Count == 0) { <span>Any role</span> } else { @foreach (var role in item.NodeRoles) { <StatusBadge Status="neutral" Text="@role" /> } }</td>
+                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenAssign(item)">@(item.Ownership == UserTaskOwnershipKinds.Unassigned ? "Assign" : "Reassign")</button>
+                                        @if (item.Ownership != UserTaskOwnershipKinds.Unassigned)
+                                        {
+                                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenUnassign(item)">Unassign</button>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+@if (selectedTask is not null)
+{
+    <div class="assignment-backdrop" aria-hidden="true"></div>
+    <div class="assignment-dialog-shell" role="dialog" aria-modal="true" aria-labelledby="assignment-dialog-title">
+        <section class="assignment-dialog panel">
+            <div class="section-heading">
+                <div><span class="page-eyebrow">Task #@selectedTask.UserTaskId</span><h2 id="assignment-dialog-title">@(unassignMode ? "Unassign task" : selectedTask.Ownership == UserTaskOwnershipKinds.Unassigned ? "Assign task" : "Reassign task")</h2><p>@selectedTask.NodeName · Instance #@selectedTask.InstanceId</p></div>
+                <button class="btn-close" aria-label="Close" @onclick="CloseDialog" disabled="@submitting"></button>
+            </div>
+            <div class="summary-grid mb-3">
+                <div class="summary-item"><span>Current owner</span><strong>@(selectedTask.Owner ?? "Shared pool")</strong></div>
+                <div class="summary-item"><span>Ownership</span><strong>@selectedTask.Ownership</strong></div>
+            </div>
+            @if (!unassignMode)
+            {
+                <div class="mb-3"><label class="form-label" for="assignment-actor">New actor ID</label><input id="assignment-actor" class="form-control" maxlength="300" autocomplete="off" @bind="targetActor" /><div class="form-text">Must exactly match the canonical identity resolved from the target user’s JWT.</div></div>
+            }
+            <div class="mb-3"><label class="form-label" for="assignment-reason">Reason (optional)</label><textarea id="assignment-reason" class="form-control" rows="3" maxlength="1000" @bind="assignmentReason"></textarea></div>
+            <div class="alert alert-warning">Flowbit cannot verify that this actor exists or holds the required node and flow roles. A manager can correct or release the task later.</div>
+            @if (!string.IsNullOrWhiteSpace(dialogError)) { <div class="alert alert-danger" role="alert">@dialogError</div> }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-outline-secondary" @onclick="CloseDialog" disabled="@submitting">Cancel</button>
+                <button class="btn @(unassignMode ? "btn-warning" : "btn-primary")" @onclick="SubmitAssignmentAsync" disabled="@submitting">@(submitting ? "Saving…" : unassignMode ? "Unassign" : "Save assignment")</button>
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    private const int PageSize = 50;
+    private PagedResult<ManagedUserTaskDto>? result;
+    private ManagedUserTaskDto? selectedTask;
+    private long? taskId;
+    private long? instanceId;
+    private long? workflowId;
+    private int? nodeId;
+    private string? workflowKey;
+    private string? businessKey;
+    private string? nodeExternalId;
+    private string? owner;
+    private string? ownership;
+    private string? variableFilter;
+    private string? targetActor;
+    private string? assignmentReason;
+    private string? error;
+    private string? success;
+    private string? dialogError;
+    private bool filtersOpen;
+    private bool loading;
+    private bool submitting;
+    private bool unassignMode;
+    private int page = 1;
+
+    private int ActiveFilterCount => new object?[] { taskId, instanceId, workflowId, nodeId, workflowKey, businessKey, nodeExternalId, owner, ownership, variableFilter }
+        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
+    private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+    private bool HasNextPage => result is not null && page < TotalPages;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken) await LoadAsync();
+    }
+
+    private IReadOnlyList<string> ParseVariableFilter() => string.IsNullOrWhiteSpace(variableFilter)
+        ? []
+        : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private async Task LoadAsync()
+    {
+        if (!Token.HasToken) { result = null; return; }
+        try
+        {
+            loading = true;
+            error = null;
+            result = await Api.GetManagedUserTasksAsync(page, PageSize, taskId, instanceId, workflowId,
+                workflowKey, businessKey, nodeId, nodeExternalId, owner, ownership, ParseVariableFilter());
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { loading = false; }
+    }
+
+    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task ClearFiltersAsync()
+    {
+        taskId = instanceId = workflowId = null;
+        nodeId = null;
+        workflowKey = businessKey = nodeExternalId = owner = ownership = variableFilter = null;
+        page = 1;
+        await LoadAsync();
+    }
+    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
+    private async Task NextPageAsync() { if (HasNextPage) { page++; await LoadAsync(); } }
+
+    private void OpenAssign(ManagedUserTaskDto task)
+    {
+        selectedTask = task;
+        unassignMode = false;
+        targetActor = task.Owner;
+        assignmentReason = dialogError = null;
+    }
+
+    private void OpenUnassign(ManagedUserTaskDto task)
+    {
+        selectedTask = task;
+        unassignMode = true;
+        targetActor = null;
+        assignmentReason = dialogError = null;
+    }
+
+    private void CloseDialog()
+    {
+        if (submitting) return;
+        selectedTask = null;
+        dialogError = targetActor = assignmentReason = null;
+    }
+
+    private async Task SubmitAssignmentAsync()
+    {
+        if (selectedTask is null) return;
+        var task = selectedTask;
+        if (!unassignMode && string.IsNullOrWhiteSpace(targetActor))
+        {
+            dialogError = "A target actor ID is required.";
+            return;
+        }
+        try
+        {
+            submitting = true;
+            dialogError = null;
+            UserTaskAssignmentAckDto? ack;
+            if (unassignMode)
+            {
+                ack = await Api.UnassignUserTaskAsync(task.UserTaskId,
+                    new UnassignUserTaskRequest(task.UpdatedAt, assignmentReason));
+            }
+            else
+            {
+                ack = await Api.AssignUserTaskAsync(task.UserTaskId,
+                    new AssignUserTaskRequest(targetActor, task.UpdatedAt, assignmentReason));
+            }
+            success = ack?.Changed == true
+                ? $"Task #{task.UserTaskId} assignment updated."
+                : $"Task #{task.UserTaskId} already had the requested assignment.";
+            selectedTask = null;
+            await LoadAsync();
+            if (result is { Items.Count: 0 } && page > 1) { page--; await LoadAsync(); }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            dialogError = "This task changed. Review the refreshed assignment and try again.";
+            await LoadAsync();
+            selectedTask = result?.Items.FirstOrDefault(item => item.UserTaskId == task.UserTaskId);
+        }
+        catch (Exception ex) { dialogError = ex.Message; }
+        finally { submitting = false; }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () => { CloseDialog(); page = 1; await LoadAsync(); });
+    private static string OwnershipLabel(ManagedUserTaskDto task) => task.Ownership switch
+    {
+        UserTaskOwnershipKinds.Assigned => $"Assigned to {task.Owner}",
+        UserTaskOwnershipKinds.Claimed => $"Claimed by {task.Owner}",
+        _ => "Shared pool"
+    };
+    private static string OwnershipTone(string value) => value switch
+    {
+        UserTaskOwnershipKinds.Assigned => "primary",
+        UserTaskOwnershipKinds.Claimed => "warning",
+        _ => "neutral"
+    };
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

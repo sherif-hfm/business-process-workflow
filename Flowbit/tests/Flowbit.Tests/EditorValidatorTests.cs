@@ -19,6 +19,23 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_RequiresCompleteTaskDistributionCredentialsWhenEnabled()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = "${setting.taskDistribution.clientId}",
+            ClientSecret = "${setting.taskDistribution.clientSecret}"
+        };
+        Assert.Empty(Validate(model));
+
+        model.TaskDistribution.ClientSecret = "";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("taskDistribution", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("clientSecret", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validator_ReportsEnumIdentityAndResultConfigurationErrorsTogether()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");

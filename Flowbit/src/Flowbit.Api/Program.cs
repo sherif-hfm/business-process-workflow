@@ -88,14 +88,16 @@ try
                     identity provider. The two message endpoints
                     (`POST /api/instances/{id}/message` and `POST /api/workflows/{workflowKey}/message-start`)
                     are `AllowAnonymous` - they authenticate the caller against the node's
-                    configured client id/secret + required custom header, not the user JWT.
+                    configured client id/secret + required custom header, not the user JWT. The
+                    `/api/task-distribution` endpoints are also `AllowAnonymous` and authenticate
+                    with workflow-family `X-Client-Id` / `X-Client-Secret` headers.
 
                     ## Status codes
                     - 200 OK, 201 Created, 204 No Content for success
                     - 400 Bad Request for domain errors (WorkflowDomainException) - unpublished
                     workflow, missing variable, unavailable/forbidden flow, role/claim mismatch,
                     gateway with no match, service/script task failure with no error boundary
-                    - 401 Unauthorized for a client id/secret mismatch on the message endpoints
+                    - 401 Unauthorized for a client id/secret mismatch on machine endpoints
                     - 403 Forbidden for a missing required role on the workflow-definition endpoints
                     - 404 Not Found when a referenced instance or definition id does not exist
                     - 409 Conflict when a task or multi-instance execution was concurrently completed
@@ -118,6 +120,11 @@ try
                 {
                     Name = "Multi-Instance Executions",
                     Description = "Discover and take authorized parent-level interrupt actions for active multi-instance user tasks."
+                },
+                new()
+                {
+                    Name = "Task Distribution",
+                    Description = "List and assign workflow-family tasks using external distributor client credentials."
                 }
             };
 
@@ -230,6 +237,12 @@ try
             context.Response.StatusCode = StatusCodes.Status409Conflict;
             await context.Response.WriteAsJsonAsync(new { error = ex.Message });
         }
+        catch (WorkflowForbiddenException ex)
+        {
+            Log.Warning(ex, "Workflow forbidden: {Message}", ex.Message);
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+        }
         catch (WorkflowUnauthorizedException ex)
         {
             Log.Warning(ex, "Workflow unauthorized exception: {Message}", ex.Message);
@@ -280,6 +293,7 @@ try
     app.MapWorkflowDefinitionEndpoints();
     app.MapWorkflowInstanceEndpoints();
     app.MapUserTaskEndpoints();
+    app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
 
     app.Run();

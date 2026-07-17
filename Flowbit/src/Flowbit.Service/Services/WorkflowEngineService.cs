@@ -857,9 +857,9 @@ public sealed class WorkflowEngineService(
                 var user = NormalizeUser(actor.User);
                 if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
                     return [];
-                var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+                var ownedTaskId = await runtime.GetOwnedMultiInstanceItemIdAsync(
                     execution.Id, user, cancellationToken);
-                if (claimedTaskId is not null && claimedTaskId != task.Id)
+                if (ownedTaskId is not null && ownedTaskId != task.Id)
                     return [];
             }
             AddMultiInstanceContext(context, task, execution);
@@ -919,10 +919,10 @@ public sealed class WorkflowEngineService(
         {
             if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
                 throw new WorkflowConflictException("The actor has already completed an item in this multi-instance execution.");
-            var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+            var ownedTaskId = await runtime.GetOwnedMultiInstanceItemIdAsync(
                 execution.Id, user, cancellationToken);
-            if (claimedTaskId is not null && claimedTaskId != task.Id)
-                throw new WorkflowConflictException("The actor has already claimed another item in this multi-instance execution.");
+            if (ownedTaskId is not null && ownedTaskId != task.Id)
+                throw new WorkflowConflictException("The actor already owns another item in this multi-instance execution.");
         }
         if (!string.IsNullOrWhiteSpace(task.ClaimedBy)
             && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase))
@@ -979,6 +979,323 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return await GetUserTaskAsync(taskId, actor, cancellationToken);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
+        ActorContext actor,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<string>? variables,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        var normalizedOwnership = NormalizeTaskOwnershipFilter(ownership);
+
+        var paged = await runtime.ListManageableUserTasksAsync(
+            NormalizeRoles(actor.Roles),
+            taskId,
+            instanceId,
+            workflowId,
+            workflowKey,
+            businessKey,
+            nodeId,
+            nodeExternalId,
+            owner,
+            normalizedOwnership,
+            ParseVariableFilters(variables),
+            page,
+            pageSize,
+            cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>?> ListDistributableUserTasksAsync(
+        string workflowKey,
+        TaskDistributionCredentials credentials,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        IReadOnlyList<string>? variables,
+        bool includeVariables,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var authorization = await AuthenticateTaskDistributionAsync(
+            workflowKey, credentials, cancellationToken);
+        if (authorization is null)
+        {
+            return null;
+        }
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        var paged = await runtime.ListDistributableUserTasksAsync(
+            authorization.Workflow.WorkflowKey,
+            taskId,
+            instanceId,
+            workflowId,
+            businessKey,
+            nodeId,
+            nodeExternalId,
+            owner,
+            NormalizeTaskOwnershipFilter(ownership),
+            ParseVariableFilters(variables),
+            includeVariables,
+            page,
+            pageSize,
+            cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+    }
+
+    public Task<UserTaskAssignmentAckDto?> AssignUserTaskAsync(
+        long taskId,
+        string? actorId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        var target = NormalizeAssignmentTarget(actorId);
+        return SetUserTaskAssignmentAsync(
+            taskId, target, expectedUpdatedAt, reason, actor, cancellationToken);
+    }
+
+    public Task<UserTaskAssignmentAckDto?> UnassignUserTaskAsync(
+        long taskId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        ActorContext actor,
+        CancellationToken cancellationToken) =>
+        SetUserTaskAssignmentAsync(taskId, null, expectedUpdatedAt, reason, actor, cancellationToken);
+
+    public async Task<UserTaskAssignmentAckDto?> AssignDistributedUserTaskAsync(
+        string workflowKey,
+        long taskId,
+        string? actorId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        TaskDistributionCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        var authorization = await AuthenticateTaskDistributionAsync(
+            workflowKey, credentials, cancellationToken);
+        if (authorization is null)
+        {
+            return null;
+        }
+
+        return await SetUserTaskAssignmentAsync(
+            taskId,
+            NormalizeAssignmentTarget(actorId),
+            expectedUpdatedAt,
+            reason,
+            new ActorContext(
+                authorization.ClientId,
+                [],
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            cancellationToken,
+            authorization.Workflow.WorkflowKey,
+            false,
+            "taskDistribution");
+    }
+
+    public async Task<UserTaskAssignmentAckDto?> UnassignDistributedUserTaskAsync(
+        string workflowKey,
+        long taskId,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        TaskDistributionCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        var authorization = await AuthenticateTaskDistributionAsync(
+            workflowKey, credentials, cancellationToken);
+        if (authorization is null)
+        {
+            return null;
+        }
+
+        return await SetUserTaskAssignmentAsync(
+            taskId,
+            null,
+            expectedUpdatedAt,
+            reason,
+            new ActorContext(
+                authorization.ClientId,
+                [],
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            cancellationToken,
+            authorization.Workflow.WorkflowKey,
+            false,
+            "taskDistribution");
+    }
+
+    private async Task<UserTaskAssignmentAckDto?> SetUserTaskAssignmentAsync(
+        long taskId,
+        string? targetActor,
+        DateTimeOffset expectedUpdatedAt,
+        string? reason,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? requiredWorkflowKey = null,
+        bool requireManagerRole = true,
+        string? auditAuthority = null)
+    {
+        if (expectedUpdatedAt == default)
+            throw new WorkflowDomainException("expectedUpdatedAt is required.");
+        var normalizedReason = NormalizeAssignmentReason(reason);
+        var initialTask = await runtime.GetUserTaskAsync(taskId, false, cancellationToken);
+        if (initialTask is null) return null;
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(initialTask.InstanceId, false, cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
+        if (requiredWorkflowKey is not null
+            && !string.Equals(instance.WorkflowKey, requiredWorkflowKey, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+            throw new WorkflowConflictException("The workflow instance is no longer running.");
+
+        MultiInstanceExecutionRecord? execution = null;
+        if (initialTask.MultiInstanceExecutionId is long executionId)
+        {
+            execution = await runtime.GetMultiInstanceAsync(executionId, true, cancellationToken);
+            if (execution is null || execution.InstanceId != instance.Id
+                                  || execution.Status != MultiInstanceRecordStatuses.Active)
+                throw new WorkflowConflictException("The multi-instance execution has already closed.");
+            if (instance.ActiveTokenId != execution.TokenId || instance.CurrentStepId != execution.NodeId)
+                throw new WorkflowConflictException("The multi-instance execution is no longer the current workflow step.");
+        }
+
+        var task = await runtime.GetUserTaskAsync(taskId, true, cancellationToken);
+        if (task is null || task.InstanceId != instance.Id
+                         || task.MultiInstanceExecutionId != initialTask.MultiInstanceExecutionId
+                         || task.TokenId != instance.ActiveTokenId
+                         || task.NodeId != instance.CurrentStepId
+                         || task.Status != UserTaskRecordStatuses.Active)
+            throw new WorkflowConflictException("The user task is no longer active or current.");
+
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        if (requireManagerRole)
+        {
+            EnsureTaskAssignmentManager(workflow.Definition, actor);
+        }
+        var node = GetFlowNode(workflow.Definition, task.NodeId);
+        var (previousOwnership, previousOwner) = GetTaskOwnership(task);
+        var authoredRequiresClaim = node.RequiresClaim;
+        var desiredIsAssigned = targetActor is not null;
+        var alreadyDesired = desiredIsAssigned
+            ? task.Assignee is not null
+              && string.Equals(task.Assignee, targetActor, StringComparison.OrdinalIgnoreCase)
+              && task.ClaimedBy is null
+              && !task.RequiresClaim
+            : task.Assignee is null
+              && task.ClaimedBy is null
+              && task.RequiresClaim == authoredRequiresClaim;
+
+        if (alreadyDesired)
+        {
+            return new UserTaskAssignmentAckDto(
+                task.Id,
+                task.InstanceId,
+                UserTaskAssignmentOperations.Unchanged,
+                previousOwnership,
+                previousOwner,
+                previousOwnership,
+                previousOwner,
+                task.RequiresClaim,
+                false,
+                task.UpdatedAt);
+        }
+
+        if (task.UpdatedAt != expectedUpdatedAt)
+            throw new WorkflowConflictException("The user task assignment changed; refresh and try again.");
+
+        if (targetActor is not null && execution is { OnePerActor: true })
+        {
+            if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, targetActor, cancellationToken))
+                throw new WorkflowConflictException(
+                    "The target actor has already completed an item in this multi-instance execution.");
+            var ownedTaskId = await runtime.GetOwnedMultiInstanceItemIdAsync(
+                execution.Id, targetActor, cancellationToken);
+            if (ownedTaskId is not null && ownedTaskId != task.Id)
+                throw new WorkflowConflictException(
+                    "The target actor already owns another item in this multi-instance execution.");
+        }
+
+        var newRequiresClaim = targetActor is null && authoredRequiresClaim;
+        var updatedAt = await runtime.UpdateUserTaskAssignmentAsync(
+            task.Id, targetActor, newRequiresClaim, cancellationToken);
+        var currentOwnership = targetActor is null
+            ? UserTaskOwnershipKinds.Unassigned
+            : UserTaskOwnershipKinds.Assigned;
+        var operation = targetActor is null
+            ? UserTaskAssignmentOperations.Unassigned
+            : previousOwner is null
+              || string.Equals(previousOwner, targetActor, StringComparison.OrdinalIgnoreCase)
+                ? UserTaskAssignmentOperations.Assigned
+                : UserTaskAssignmentOperations.Reassigned;
+        var performedBy = auditAuthority is null
+            ? NormalizeUser(actor.User)
+            : actor.User ?? "anonymous";
+        var auditPayload = new Dictionary<string, JsonElement>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement(operation),
+            ["previousOwnership"] = JsonSerializer.SerializeToElement(previousOwnership),
+            ["previousOwner"] = JsonSerializer.SerializeToElement(previousOwner),
+            ["newOwnership"] = JsonSerializer.SerializeToElement(currentOwnership),
+            ["newOwner"] = JsonSerializer.SerializeToElement(targetActor),
+            ["previousRequiresClaim"] = JsonSerializer.SerializeToElement(task.RequiresClaim),
+            ["newRequiresClaim"] = JsonSerializer.SerializeToElement(newRequiresClaim),
+            ["reason"] = JsonSerializer.SerializeToElement(normalizedReason)
+        };
+        if (auditAuthority is not null)
+        {
+            auditPayload["authority"] = JsonSerializer.SerializeToElement(auditAuthority);
+        }
+        await runtime.AddUserTaskHistoryAsync(
+            instance.Id,
+            task.TokenId,
+            task.Id,
+            task.MultiInstanceExecutionId,
+            task.ItemIndex,
+            task.NodeId,
+            performedBy,
+            auditPayload,
+            "taskAssignment",
+            cancellationToken);
+        await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new UserTaskAssignmentAckDto(
+            task.Id,
+            task.InstanceId,
+            operation,
+            previousOwnership,
+            previousOwner,
+            currentOwnership,
+            targetActor,
+            newRequiresClaim,
+            true,
+            updatedAt);
     }
 
     public async Task<PagedResult<UserTaskDto>> ListUserTasksAsync(
@@ -1167,10 +1484,10 @@ public sealed class WorkflowEngineService(
         {
             if (await runtime.HasCompletedMultiInstanceItemAsync(execution.Id, user, cancellationToken))
                 throw new WorkflowConflictException("The actor has already completed an item in this multi-instance execution.");
-            var claimedTaskId = await runtime.GetClaimedMultiInstanceItemIdAsync(
+            var ownedTaskId = await runtime.GetOwnedMultiInstanceItemIdAsync(
                 execution.Id, user, cancellationToken);
-            if (claimedTaskId is not null && claimedTaskId != task.Id)
-                throw new WorkflowConflictException("The actor has already claimed another item in this multi-instance execution.");
+            if (ownedTaskId is not null && ownedTaskId != task.Id)
+                throw new WorkflowConflictException("The actor already owns another item in this multi-instance execution.");
         }
 
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
@@ -3203,6 +3520,58 @@ public sealed class WorkflowEngineService(
             task.Assignee, task.ItemIndex, task.ItemValue, task.SelectedFlowId, progress,
             task.CreatedAt, task.UpdatedAt, task.CompletedAt);
 
+    private static ManagedUserTaskDto ToManagedUserTaskDto(
+        ManagedUserTaskRecord task,
+        MultiInstanceProgressDto? progress)
+    {
+        var ownership = task.Assignee is not null
+            ? UserTaskOwnershipKinds.Assigned
+            : task.ClaimedBy is not null
+                ? UserTaskOwnershipKinds.Claimed
+                : UserTaskOwnershipKinds.Unassigned;
+        return new ManagedUserTaskDto(
+            task.UserTaskId,
+            task.InstanceId,
+            task.TokenId,
+            task.WorkflowDefinitionId,
+            task.WorkflowKey,
+            task.WorkflowName,
+            task.WorkflowVersion,
+            task.BusinessKey,
+            task.NodeId,
+            task.NodeName,
+            task.NodeExternalId,
+            task.NodeRoles,
+            task.RequiresClaim,
+            ownership,
+            task.Assignee ?? task.ClaimedBy,
+            task.MultiInstanceExecutionId,
+            task.ItemIndex,
+            task.ItemValue,
+            progress,
+            task.CreatedAt,
+            task.UpdatedAt,
+            task.Variables);
+    }
+
+    private async Task<PagedResult<ManagedUserTaskDto>> BuildManagedUserTaskPageAsync(
+        PagedResult<ManagedUserTaskRecord> paged,
+        CancellationToken cancellationToken)
+    {
+        var executionIds = paged.Items
+            .Where(item => item.MultiInstanceExecutionId is not null)
+            .Select(item => item.MultiInstanceExecutionId!.Value)
+            .Distinct()
+            .ToList();
+        var progress = await BuildProgressAsync(executionIds, cancellationToken);
+        var items = paged.Items.Select(item => ToManagedUserTaskDto(
+            item,
+            item.MultiInstanceExecutionId is long executionId
+                ? progress.GetValueOrDefault(executionId)
+                : null)).ToList();
+        return new PagedResult<ManagedUserTaskDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
+    }
+
     private async Task<MultiInstanceProgressDto?> BuildProgressAsync(long executionId, CancellationToken cancellationToken)
     {
         var progress = await BuildProgressAsync([executionId], cancellationToken);
@@ -3433,6 +3802,126 @@ public sealed class WorkflowEngineService(
             .Select(r => r.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+    private static void EnsureTaskAssignmentManager(WorkflowModel definition, ActorContext actor)
+    {
+        var actorRoles = NormalizeRoles(actor.Roles);
+        var allowedRoles = definition.TaskAssignmentRoles ?? [];
+        if (allowedRoles.Count == 0 || !allowedRoles.Any(actorRoles.Contains))
+        {
+            throw new WorkflowForbiddenException(
+                $"'{NormalizeUser(actor.User)}' is not allowed to manage task assignments for this workflow.");
+        }
+    }
+
+    private async Task<TaskDistributionAuthorization?> AuthenticateTaskDistributionAsync(
+        string workflowKey,
+        TaskDistributionCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(workflowKey))
+        {
+            throw new WorkflowDomainException("A workflow key is required.");
+        }
+
+        var workflow = await definitions.GetDefaultByWorkflowKeyAsync(
+            workflowKey, cancellationToken);
+        if (workflow is null)
+        {
+            return null;
+        }
+
+        var distribution = workflow.Definition.TaskDistribution;
+        var trustedContext = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        if (contextOptions.Config is { } config)
+        {
+            foreach (var pair in config)
+            {
+                trustedContext[$"config.{pair.Key}"] = JsonSerializer.SerializeToElement(pair.Value);
+            }
+        }
+
+        var currentSettings = await settings.LoadAllFreshAsync(cancellationToken);
+        foreach (var pair in currentSettings)
+        {
+            trustedContext[pair.Key] = pair.Value.Clone();
+        }
+
+        var expectedClientId = ServiceTaskTemplating.SubstituteScalar(
+            distribution?.ClientId, trustedContext);
+        var expectedClientSecret = ServiceTaskTemplating.SubstituteScalar(
+            distribution?.ClientSecret, trustedContext);
+        var valid = distribution is not null
+                    && expectedClientId.Length > 0
+                    && expectedClientId.Length <= UserTaskConstraints.MaxActorNameLength
+                    && expectedClientSecret.Length > 0
+                    && string.Equals(
+                        credentials.ClientId ?? string.Empty,
+                        expectedClientId,
+                        StringComparison.Ordinal)
+                    && ConstantTimeEquals(
+                        credentials.ClientSecret ?? string.Empty,
+                        expectedClientSecret);
+        if (!valid)
+        {
+            logger.LogWarning(
+                "Task distribution request for workflowKey {WorkflowKey} rejected for client '{ClientId}'.",
+                workflow.WorkflowKey,
+                credentials.ClientId);
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        return new TaskDistributionAuthorization(workflow, expectedClientId);
+    }
+
+    private static (string Ownership, string? Owner) GetTaskOwnership(UserTaskRecord task) =>
+        task.Assignee is not null
+            ? (UserTaskOwnershipKinds.Assigned, task.Assignee)
+            : task.ClaimedBy is not null
+                ? (UserTaskOwnershipKinds.Claimed, task.ClaimedBy)
+                : (UserTaskOwnershipKinds.Unassigned, null);
+
+    private static string? NormalizeAssignmentReason(string? reason)
+    {
+        var normalized = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        if (normalized?.Length > 1000)
+            throw new WorkflowDomainException("The assignment reason cannot exceed 1000 characters.");
+        return normalized;
+    }
+
+    private static string NormalizeAssignmentTarget(string? actorId)
+    {
+        var target = actorId?.Trim();
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            throw new WorkflowDomainException("A non-empty target actor ID is required.");
+        }
+
+        if (target.Length > UserTaskConstraints.MaxActorNameLength)
+        {
+            throw new WorkflowDomainException(
+                $"The target actor ID cannot exceed {UserTaskConstraints.MaxActorNameLength} characters.");
+        }
+
+        return target;
+    }
+
+    private static string? NormalizeTaskOwnershipFilter(string? ownership)
+    {
+        var normalized = string.IsNullOrWhiteSpace(ownership)
+            ? null
+            : ownership.Trim().ToLowerInvariant();
+        if (normalized is not null
+            && normalized is not (UserTaskOwnershipKinds.Assigned
+                or UserTaskOwnershipKinds.Claimed
+                or UserTaskOwnershipKinds.Unassigned))
+        {
+            throw new WorkflowDomainException(
+                $"Unsupported task ownership filter '{ownership}'. Use assigned, claimed, or unassigned.");
+        }
+
+        return normalized;
+    }
+
     // Candidate roles; an empty (or null) set means open to anyone. Enforced for
     // user-task nodes and for user-task sequence flows (the actor must hold at
     // least one listed role, case-insensitive). Null-tolerant so a hand-authored
@@ -3598,6 +4087,10 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement>? Values,
         string? BusinessKey,
         string? Uniqueness);
+
+    private sealed record TaskDistributionAuthorization(
+        WorkflowDefinitionRecord Workflow,
+        string ClientId);
 
     private sealed record TypedOutputRuntime(
         string Variable,

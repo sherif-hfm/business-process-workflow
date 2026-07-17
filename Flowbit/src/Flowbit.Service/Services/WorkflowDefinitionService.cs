@@ -165,6 +165,7 @@ public sealed class WorkflowDefinitionService(
 
         ValidateBusinessKeys(definition);
         ValidateIdempotency(definition);
+        ValidateTaskDistribution(definition);
 
         ValidateProcessVariables(definition.Variables);
 
@@ -463,6 +464,27 @@ public sealed class WorkflowDefinitionService(
                     $"{kind} #{node.Id} has an output mapping with no variable name.");
             }
 
+        }
+    }
+
+    private static void ValidateTaskDistribution(WorkflowModel definition)
+    {
+        var distribution = definition.TaskDistribution;
+        if (distribution is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(distribution.ClientId))
+        {
+            throw new WorkflowDomainException(
+                "Workflow taskDistribution must have a clientId when configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(distribution.ClientSecret))
+        {
+            throw new WorkflowDomainException(
+                "Workflow taskDistribution must have a clientSecret when configured.");
         }
     }
 

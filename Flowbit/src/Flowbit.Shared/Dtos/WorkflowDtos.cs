@@ -164,6 +164,67 @@ public sealed record UserTaskActionAckDto(
     MultiInstanceProgressDto? MultiInstance,
     DateTimeOffset UpdatedAt);
 
+public static class UserTaskOwnershipKinds
+{
+    public const string Assigned = "assigned";
+    public const string Claimed = "claimed";
+    public const string Unassigned = "unassigned";
+}
+
+public static class UserTaskAssignmentOperations
+{
+    public const string Assigned = "assigned";
+    public const string Reassigned = "reassigned";
+    public const string Unassigned = "unassigned";
+    public const string Unchanged = "unchanged";
+}
+
+public sealed record AssignUserTaskRequest(
+    string? ActorId,
+    DateTimeOffset ExpectedUpdatedAt,
+    string? Reason);
+
+public sealed record UnassignUserTaskRequest(
+    DateTimeOffset ExpectedUpdatedAt,
+    string? Reason);
+
+public sealed record ManagedUserTaskDto(
+    long UserTaskId,
+    long InstanceId,
+    long TokenId,
+    long WorkflowId,
+    string WorkflowKey,
+    string WorkflowName,
+    int WorkflowVersion,
+    string? BusinessKey,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    IReadOnlyList<string> NodeRoles,
+    bool RequiresClaim,
+    string Ownership,
+    string? Owner,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    MultiInstanceProgressDto? MultiInstance,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, JsonElement>? Variables);
+
+public sealed record UserTaskAssignmentAckDto(
+    long UserTaskId,
+    long InstanceId,
+    string Operation,
+    string PreviousOwnership,
+    string? PreviousOwner,
+    string CurrentOwnership,
+    string? CurrentOwner,
+    bool RequiresClaim,
+    bool Changed,
+    DateTimeOffset UpdatedAt);
+
 /// <summary>
 /// Represents a summary of a workflow instance.
 /// </summary>

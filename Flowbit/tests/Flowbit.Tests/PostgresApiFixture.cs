@@ -46,6 +46,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         SetEnvironment("Jwt__Issuer", ApiTestAuth.Issuer);
         SetEnvironment("Jwt__Audience", ApiTestAuth.Audience);
         SetEnvironment("Jwt__Key", ApiTestAuth.Key);
+        SetEnvironment("WorkflowContext__Config__taskDistributionClientId", "config-distributor");
+        SetEnvironment("WorkflowContext__Config__taskDistributionClientSecret", "config-distributor-secret");
 
         // Program reads the process-latched actor identity setting during startup,
         // so the schema must exist before WebApplicationFactory starts the host.

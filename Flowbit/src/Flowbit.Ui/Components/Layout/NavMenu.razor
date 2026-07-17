@@ -17,6 +17,10 @@
 
     <div class="nav-group">
         <div class="nav-label">Manage</div>
+        <NavLink class="nav-link" href="task-management" @onclick="OnNavigate">
+            <AppIcon Name="assignments" />
+            <span>Task assignments</span>
+        </NavLink>
         <NavLink class="nav-link" href="workflows" @onclick="OnNavigate">
             <AppIcon Name="workflows" />
             <span>Workflows</span>
