@@ -85,6 +85,16 @@ public sealed class WorkflowEngineService(
     {
         await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
+
+        var hasWorkflowId = workflowId.HasValue;
+        var hasWorkflowKey = !string.IsNullOrWhiteSpace(workflowKey);
+        if (hasWorkflowId == hasWorkflowKey)
+        {
+            logger.LogWarning(
+                "Start instance rejected: exactly one of WorkflowId or WorkflowKey must be specified.");
+            throw new WorkflowDomainException(
+                "Exactly one of WorkflowId or WorkflowKey must be specified to start an instance.");
+        }
         
         WorkflowDefinitionRecord workflow;
         if (workflowId.HasValue)
@@ -102,6 +112,13 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
         }
 
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        await definitions.LockFamilyForStartAsync(workflow.WorkflowKey, cancellationToken);
+        workflow = workflowId.HasValue
+            ? await GetPublishedWorkflowAsync(workflowId.Value, cancellationToken)
+            : await definitions.GetDefaultByWorkflowKeyAsync(workflowKey!, cancellationToken)
+                ?? throw new WorkflowDomainException($"No default workflow found for workflowKey '{workflowKey}'.");
+
         await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
 
         logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
@@ -116,11 +133,12 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException($"Flow node #{resolvedStartEventId} is not a start event.");
         }
 
+        EnsureEntryRuntimeContract(workflow.Definition, startEvent);
+
         EnsureRoleAllowed(startEvent, actor);
 
         var idempotency = ResolveIdempotencyInput(startEvent, requestHeaders);
 
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         if (idempotency is not null)
         {
             var reservation = await runtime.ReserveIdempotencyKeyAsync(
@@ -242,6 +260,11 @@ public sealed class WorkflowEngineService(
         // a webhook caller addresses the workflow without knowing per-version ids.
         var workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
             ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
+
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        await definitions.LockFamilyForStartAsync(workflow.WorkflowKey, cancellationToken);
+        workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
+            ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
         await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
 
         // Select the messageStartEvent: match the requested externalId when given;
@@ -268,6 +291,8 @@ public sealed class WorkflowEngineService(
 
             startEvent = startEvents[0];
         }
+
+        EnsureEntryRuntimeContract(definition, startEvent);
 
         logger.LogInformation("Starting workflow instance by message on workflowKey {WorkflowKey} using start node #{StartNodeId} ({StartNodeName})",
             workflowKey, startEvent.Id, startEvent.Name);
@@ -334,7 +359,6 @@ public sealed class WorkflowEngineService(
 
         var idempotency = ResolveIdempotencyInput(startEvent, message.Headers);
 
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         if (idempotency is not null)
         {
             var reservation = await runtime.ReserveIdempotencyKeyAsync(
@@ -2628,6 +2652,11 @@ public sealed class WorkflowEngineService(
     {
         var outgoing = OutgoingFlows(definition, node.Id);
 
+        if (BpmnFlowNodeTypes.IsEntry(node.Type))
+        {
+            EnsureEntryRuntimeContract(definition, node);
+        }
+
         if (BpmnFlowNodeTypes.IsGateway(node.Type))
         {
             logger.LogDebug("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
@@ -2670,6 +2699,56 @@ public sealed class WorkflowEngineService(
         }
 
         return outgoing[0];
+    }
+
+    private static void EnsureEntryRuntimeContract(WorkflowModel definition, FlowNodeModel entry)
+    {
+        var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+            ? "Message start event"
+            : "Start event";
+        var incoming = definition.SequenceFlows.Count(flow => flow.TargetRef == entry.Id);
+        var outgoing = definition.SequenceFlows.Where(flow => flow.SourceRef == entry.Id).ToList();
+
+        if (incoming != 0)
+        {
+            throw new WorkflowDomainException($"{kind} #{entry.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count != 1)
+        {
+            throw new WorkflowDomainException($"{kind} #{entry.Id} must have exactly one outgoing sequence flow.");
+        }
+
+        var flow = outgoing[0];
+        if (!flow.IsSelectable
+            || flow.IsDefault
+            || flow.CanActWithoutClaim
+            || flow.CancelRemainingInstances
+            || flow.Roles.Count > 0
+            || flow.Variables.Count > 0
+            || !string.IsNullOrWhiteSpace(flow.Condition)
+            || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+            || flow.CompletionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"The outgoing sequence flow from {kind.ToLowerInvariant()} #{entry.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+
+        var processNames = definition.Variables
+            .Select(variable => variable.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+            ? entry.Message?.OutputMappings.Select(mapping => mapping.Variable) ?? []
+            : entry.Variables.Select(variable => variable.Name);
+        var collision = entryNames
+            .Concat(entry.Idempotency is null ? [] : [entry.Idempotency.Variable])
+            .Concat(entry.BusinessKey is null ? [] : [entry.BusinessKey.Variable])
+            .FirstOrDefault(processNames.Contains);
+        if (collision is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{entry.Id} variable '{collision}' collides with a process variable; variable names are case-insensitive.");
+        }
     }
 
     private async Task<TaskExecutionOutcome> ExecuteServiceTaskAsync(
@@ -3175,6 +3254,7 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement> contextBase)
     {
         var resolved = ResolveVariables(variables, variableValues, contextBase);
+        ValidateVariableValues(variables, resolved);
         ValidateResolvedVariableRules(variables, resolved, contextBase);
         return resolved;
     }
@@ -3280,9 +3360,30 @@ public sealed class WorkflowEngineService(
 
     private static JsonElement CoerceDefault(JsonElement raw, VariableModel variable)
     {
-        // Arrays/objects and already-typed values are kept as authored; only a loosely
-        // typed string default for a number/boolean is parsed to the right JSON kind.
-        if (variable.IsArray || raw.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
+        if (variable.IsArray)
+        {
+            if (raw.ValueKind != JsonValueKind.Array)
+            {
+                return raw.Clone();
+            }
+
+            var array = new JsonArray();
+            foreach (var item in raw.EnumerateArray())
+            {
+                array.Add(JsonNode.Parse(CoerceDefaultScalar(item, variable.DataType).GetRawText()));
+            }
+
+            return JsonSerializer.SerializeToElement(array);
+        }
+
+        return CoerceDefaultScalar(raw, variable.DataType);
+    }
+
+    private static JsonElement CoerceDefaultScalar(JsonElement raw, string dataType)
+    {
+        // Already-typed values pass through. Loosely typed number/boolean defaults
+        // are accepted by the authoring contract and normalized to their JSON kind.
+        if (raw.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
         {
             return raw.Clone();
         }
@@ -3290,7 +3391,7 @@ public sealed class WorkflowEngineService(
         if (raw.ValueKind == JsonValueKind.String)
         {
             var text = raw.GetString();
-            switch (variable.DataType)
+            switch (dataType)
             {
                 case WorkflowVariableTypes.Number
                     when double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var number):
@@ -3368,13 +3469,8 @@ public sealed class WorkflowEngineService(
         long id,
         CancellationToken cancellationToken)
     {
-        var workflow = await GetWorkflowAsync(id, cancellationToken);
-        if (!workflow.IsPublished)
-        {
-            throw new WorkflowDomainException("Workflow must be published before instances can be started.");
-        }
-
-        return workflow;
+        return await definitions.GetPublishedAsync(id, cancellationToken)
+            ?? throw new WorkflowDomainException("Workflow must be published before instances can be started.");
     }
 
     private async Task EnsureBusinessKeyFamilyStartableAsync(
@@ -3948,11 +4044,33 @@ public sealed class WorkflowEngineService(
         IReadOnlyList<VariableModel> variables,
         Dictionary<string, JsonElement>? values)
     {
+        if (values is not null)
+        {
+            var duplicate = values.Keys
+                .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(group => group.Count() > 1)?.Key;
+            if (duplicate is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{duplicate}' was supplied more than once using different casing.");
+            }
+        }
+
         foreach (var variable in variables.Where(v => v.Required))
         {
             if (!TryGetValue(values, variable.Name, out var value) || IsEmpty(value))
             {
                 throw new WorkflowDomainException($"Required variable '{variable.Name}' is missing.");
+            }
+        }
+
+        foreach (var variable in variables)
+        {
+            if (TryGetValue(values, variable.Name, out var value)
+                && !TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
         }
     }

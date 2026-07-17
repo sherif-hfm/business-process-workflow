@@ -200,6 +200,57 @@ public sealed class EditorValidatorTests
             error.Contains("duplicated", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Validator_EnforcesWorkflowKeyInitialEventAndStartTopology()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.Id = string.Empty;
+        model.InitialEventId = 999;
+        var incoming = Clone(model.SequenceFlows.First(flow => flow.SourceRef == 2));
+        incoming.Id = 999;
+        incoming.TargetRef = 1;
+        model.SequenceFlows.Add(incoming);
+        model.SequenceFlows.Single(flow => flow.SourceRef == 1).Condition = "true";
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error => error.Contains("Workflow id is required", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("initialEventId", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("cannot have incoming", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("must be unconditional", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_EnforcesVariableDefaultsAndEntryProcessCollisions()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "VOTERS",
+            DataType = WorkflowVariableTypes.String
+        });
+        start.Variables.Add(new VariableModel
+        {
+            Id = 99,
+            Name = "score",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement("invalid")
+        });
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error => error.Contains("collides with a process variable", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("defaultValue", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("score", StringComparison.OrdinalIgnoreCase));
+
+        start.Variables[^1].DefaultValue = JsonSerializer.SerializeToElement(1);
+        start.Variables[^1].Required = true;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("cannot define a defaultValue", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static IReadOnlyList<string> Validate(WorkflowModel model)
     {
         var editorPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "flowbit-editor.html");

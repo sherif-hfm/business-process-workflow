@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{FD06A9DF-D8E4-466C-A0E1-C710EE598B17}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flowbit.Shared", "src\Flowbit.Shared\Flowbit.Shared.csproj", "{576FEC05-BD46-436E-8CDA-085008EADB5A}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flowbit.Service", "src\Flowbit.Service\Flowbit.Service.csproj", "{41DB5047-2E3B-4D30-9D2F-3AE5C5D44955}"
@@ -14,6 +16,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flowbit.Api", "src\Flowbit.Api\Flowbit.Api.csproj", "{746470A1-A3D5-490C-8655-9A12D2C7471C}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flowbit.Ui", "src\Flowbit.Ui\Flowbit.Ui.csproj", "{B9D40710-96B8-4C82-A409-CEA72B067CF5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flowbit.Tests", "tests\Flowbit.Tests\Flowbit.Tests.csproj", "{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -85,6 +89,18 @@ Global
 		{B9D40710-96B8-4C82-A409-CEA72B067CF5}.Release|x64.Build.0 = Release|Any CPU
 		{B9D40710-96B8-4C82-A409-CEA72B067CF5}.Release|x86.ActiveCfg = Release|Any CPU
 		{B9D40710-96B8-4C82-A409-CEA72B067CF5}.Release|x86.Build.0 = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|x64.Build.0 = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Debug|x86.Build.0 = Debug|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|x64.ActiveCfg = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|x64.Build.0 = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|x86.ActiveCfg = Release|Any CPU
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -95,5 +111,6 @@ Global
 		{70DD081C-73C0-4FD7-BEB1-03748EC08F26} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{746470A1-A3D5-490C-8655-9A12D2C7471C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{B9D40710-96B8-4C82-A409-CEA72B067CF5} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{D8B9C33A-A2F8-4639-AF35-7C6D7E603779} = {FD06A9DF-D8E4-466C-A0E1-C710EE598B17}
 	EndGlobalSection
 EndGlobal

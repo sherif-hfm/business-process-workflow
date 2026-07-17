@@ -29,6 +29,7 @@ public static class WorkflowInstanceEndpoints
 
         group.MapPost("/", StartInstance)
             .Produces<StartInstanceResultDto>(StatusCodes.Status201Created)
+            .Produces<InstanceDetailDto>(StatusCodes.Status201Created)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces<StartConflictDto>(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
@@ -101,11 +102,12 @@ public static class WorkflowInstanceEndpoints
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// Provide either <c>WorkflowId</c> (a specific version database id) or
-    /// <c>WorkflowKey</c> (the stable cross-version key - the latest published version is
-    /// resolved). <c>StartEventId</c> is optional and selects a non-default start event when
+    /// <c>WorkflowKey</c> (the stable cross-version key - its published default version is
+    /// resolved). Exactly one selector is required. <c>StartEventId</c> is optional and selects a non-default start event when
     /// the workflow defines more than one. <c>Variables</c> supplies the start event's
-    /// declared variables; required variables must be present and each is validated against
-    /// its NCalc <c>validation</c> rule.
+    /// declared variables; required variables must be present, supplied JSON values must
+    /// match their declared scalar/array types, and each is validated against its NCalc
+    /// <c>validation</c> rule.
     /// When the selected entry configures <c>idempotency</c>, its implicit string value must
     /// be supplied only through the configured HTTP header. The trimmed value is permanently
     /// unique for the stable workflow key across versions and start routes. A duplicate

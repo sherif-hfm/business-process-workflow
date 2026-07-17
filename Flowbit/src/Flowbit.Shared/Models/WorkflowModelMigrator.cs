@@ -25,23 +25,6 @@ public static class WorkflowModelMigrator
 
         NormalizeUserTaskDefaultFlows(model);
 
-        // After a type change (e.g. startEvent -> messageStartEvent) the
-        // initialEventId may still reference a node that is no longer a valid
-        // user start event. Fall back to the first remaining startEvent, or
-        // null when the workflow is message-started only.
-        if (model.InitialEventId is not null)
-        {
-            // Definitions are structurally validated after normalization. Use a
-            // tolerant lookup here so duplicate ids produce a domain validation
-            // error instead of an InvalidOperationException during migration.
-            var initialNode = model.FlowNodes.FirstOrDefault(n => n.Id == model.InitialEventId);
-            if (initialNode is null || !BpmnFlowNodeTypes.IsStart(initialNode.Type))
-            {
-                model.InitialEventId = model.FlowNodes
-                    .FirstOrDefault(n => BpmnFlowNodeTypes.IsStart(n.Type))
-                    ?.Id;
-            }
-        }
     }
 
     private static void ConvertLegacy(WorkflowModel model)
@@ -353,6 +336,12 @@ public static class WorkflowModelMigrator
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;
             node.Roles ??= [];
+            node.Service = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
             node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
@@ -382,6 +371,9 @@ public static class WorkflowModelMigrator
             node.Service = null;
             node.Assignments = [];
             node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
             node.Message ??= new MessageCatchModel();
             NormalizeMessageCatchMappings(node.Message.OutputMappings, processVariables);
         }
@@ -398,6 +390,9 @@ public static class WorkflowModelMigrator
             node.Service = null;
             node.Assignments = [];
             node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
             node.Message ??= new MessageCatchModel();
             NormalizeMessageStartMappings(node);
         }

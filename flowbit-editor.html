@@ -1077,6 +1077,12 @@ function applyTypeInvariants(node) {
     node.roles = normalizeRoles(node.roles);
     node.variables = node.variables || [];
     node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
     delete node.message;
   } else if (isBoundaryEventType(node.type)) {
     // A boundary event is attached to a service/script task; it carries only
@@ -1124,6 +1130,8 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
     node.message = normalizeMessage(node.message, true);
     normalizeLegacyMessageStartNode(node);
   } else if (isUserTaskType(node.type)) {
@@ -3952,6 +3960,9 @@ function connectionSourceProblem(node) {
 function connectionTargetProblem(node) {
   if (!node) return "Drop the connection on a target node.";
   if (isBoundaryEventType(node.type)) return "An error boundary event cannot have an incoming sequence flow.";
+  if (isStartEventType(node.type) || isMessageStartEventType(node.type)) {
+    return "A start event cannot have an incoming sequence flow.";
+  }
   return "";
 }
 
@@ -4401,6 +4412,13 @@ function validateModelForSave(candidate) {
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
   const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
 
+  const workflowKey = candidate && candidate.id != null ? String(candidate.id) : "";
+  if (!workflowKey.trim()) {
+    errors.push("Workflow id is required and is used as the stable workflow key.");
+  } else if (Array.from(workflowKey).length > 300) {
+    errors.push("Workflow id must contain at most 300 Unicode scalar values.");
+  }
+
   function validateUniqueIds(items, kind) {
     const seen = new Set();
     for (const item of items) {
@@ -4476,6 +4494,38 @@ function validateModelForSave(candidate) {
   const validTypedValue = (value, mapping) => mapping.isArray
     ? Array.isArray(value) && value.every(item => validTypedScalar(item, mapping.dataType))
     : validTypedScalar(value, mapping.dataType);
+
+  function validateVariableContracts(variables, owner, requireDefault) {
+    for (const variable of Array.isArray(variables) ? variables : []) {
+      if (!hasText(variable && variable.name)) continue;
+      const name = variable.name.trim();
+      if (!supportedVariableTypes.has(variable.dataType)) {
+        errors.push("Variable '" + name + "' on " + owner +
+          " has unsupported dataType '" + String(variable.dataType) + "'.");
+        continue;
+      }
+      const hasDefault = hasMappingDefault(variable.defaultValue);
+      if (requireDefault && !hasDefault) {
+        errors.push("Process variable '" + name + "' must have a defaultValue.");
+      }
+      if (!requireDefault && variable.required && hasDefault) {
+        errors.push("Required variable '" + name + "' on " + owner +
+          " cannot define a defaultValue.");
+      }
+      if (hasDefault && !validTypedValue(variable.defaultValue, variable)) {
+        errors.push("Variable '" + name + "' defaultValue on " + owner +
+          " does not match " + variable.dataType + (variable.isArray ? "[]" : "") + ".");
+      }
+    }
+  }
+
+  validateVariableContracts(processVariables, "process variables", true);
+  for (const node of nodes) {
+    validateVariableContracts(node && node.variables, "flow node #" + String(node && node.id), false);
+  }
+  for (const flow of flows) {
+    validateVariableContracts(flow && flow.variables, "sequence flow #" + String(flow && flow.id), false);
+  }
 
   function validateTypedOutputMappings(label, mappings, pathKind, enforceProcessContract) {
     const seenMappings = new Set();
@@ -4553,6 +4603,44 @@ function validateModelForSave(candidate) {
 
   const entries = nodes.filter(node => node &&
     (node.type === "startEvent" || node.type === "messageStartEvent"));
+  if (entries.length === 0) {
+    errors.push("Workflow must have at least one entry event (startEvent or messageStartEvent).");
+  }
+  if (candidate && candidate.initialEventId != null) {
+    const initial = nodes.find(node => node && node.id === candidate.initialEventId);
+    if (!initial || initial.type !== "startEvent") {
+      errors.push("Workflow initialEventId must reference an existing startEvent.");
+    }
+  }
+  for (const entry of entries) {
+    const label = (entry.type === "messageStartEvent" ? "Message start event #" : "Start event #") + entry.id;
+    const incoming = flows.filter(flow => flow && flow.targetRef === entry.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === entry.id);
+    if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else {
+      const flow = outgoing[0];
+      if (flow.isSelectable === false || !!flow.isDefault || !!flow.canActWithoutClaim ||
+          !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
+          countItems(flow.variables) > 0 || hasText(flow.condition) ||
+          hasText(flow.completionCondition) || flow.completionPriority != null) {
+        errors.push("The outgoing sequence flow from " + label.toLowerCase() +
+          " must be unconditional and cannot define action or multi-instance metadata.");
+      }
+    }
+
+    const entryNames = entry.type === "messageStartEvent"
+      ? ((entry.message && entry.message.outputMappings) || []).map(mapping => mapping && mapping.variable)
+      : (entry.variables || []).map(variable => variable && variable.name);
+    if (entry.idempotency) entryNames.push(entry.idempotency.variable);
+    if (entry.businessKey) entryNames.push(entry.businessKey.variable);
+    const collision = entryNames.find(name => hasText(name) && processByName.has(name.trim().toLowerCase()));
+    if (collision) {
+      errors.push("Entry event #" + entry.id + " variable '" + collision.trim() +
+        "' collides with a process variable; names are case-insensitive.");
+    }
+  }
   const reservedIdempotencyHeaders = new Set([
     "authorization", "proxy-authorization", "cookie", "host", "content-length",
     "content-type", "content-encoding", "transfer-encoding", "connection",

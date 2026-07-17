@@ -129,6 +129,131 @@ public sealed class DefinitionValidationTests
         Assert.Contains("case-insensitive", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task CreateAsync_RejectsMissingWorkflowKey(string workflowKey)
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.Id = workflowKey;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("workflow id", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsWorkflowKeyOverThreeHundredUnicodeScalars()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.Id = string.Concat(Enumerable.Repeat("😀", 301));
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("300 Unicode scalar", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsInvalidInitialEventInsteadOfSilentlyReplacingIt()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.InitialEventId = 999;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("initialEventId", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsIncomingOrConditionalStartFlows()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var incoming = Clone(model.SequenceFlows.First(flow => flow.SourceRef == 2));
+        incoming.Id = 999;
+        incoming.TargetRef = model.InitialEventId!.Value;
+        model.SequenceFlows.Add(incoming);
+
+        var incomingError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("cannot have incoming", incomingError.Message, StringComparison.OrdinalIgnoreCase);
+
+        model.SequenceFlows.Remove(incoming);
+        model.SequenceFlows.Single(flow => flow.SourceRef == model.InitialEventId).Condition = "true";
+        var conditionError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("must be unconditional", conditionError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsEntryProcessVariableCollision()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.FlowNodes.Single(node => node.Id == model.InitialEventId).Variables.Add(new VariableModel
+        {
+            Id = 99,
+            Name = "VOTERS",
+            DataType = WorkflowVariableTypes.String
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("collides with a process variable", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsInvalidAndRequiredDefaults()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var start = model.FlowNodes.Single(node => node.Id == model.InitialEventId);
+        start.Variables.Add(new VariableModel
+        {
+            Id = 98,
+            Name = "score",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement("not-a-number")
+        });
+
+        var invalidType = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("defaultValue", invalidType.Message, StringComparison.OrdinalIgnoreCase);
+
+        start.Variables[^1].DefaultValue = JsonSerializer.SerializeToElement(1);
+        start.Variables[^1].Required = true;
+        var requiredDefault = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("cannot define a defaultValue", requiredDefault.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_PreservesSourceWorkflowKeyAcrossRenameAndBodyIdChange()
+    {
+        var sourceModel = LoadModel("votes-users-list.json");
+        var service = CreateService(out var repository);
+        repository.Source = new WorkflowDefinitionRecord(
+            42,
+            sourceModel.Name,
+            sourceModel.Id,
+            3,
+            sourceModel,
+            true,
+            true,
+            DateTimeOffset.UtcNow);
+        var updated = Clone(sourceModel);
+        updated.Id = "different-family";
+        updated.Name = "Renamed workflow";
+
+        var created = await service.CreateNewVersionAsync(42, updated, false, CancellationToken.None);
+
+        Assert.NotNull(created);
+        Assert.Equal(sourceModel.Id, repository.Added!.WorkflowKey);
+        Assert.Equal(sourceModel.Id, repository.Added.Definition.Id);
+        Assert.Equal("Renamed workflow", repository.Added.Name);
+    }
+
     [Fact]
     public async Task CreateAsync_CanonicalizesAndAcceptsValidBusinessKey()
     {
@@ -707,6 +832,8 @@ public sealed class DefinitionValidationTests
 
         public WorkflowDefinitionRecord? Added { get; private set; }
 
+        public WorkflowDefinitionRecord? Source { get; set; }
+
         public Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<WorkflowDefinitionRecord>>([]);
 
@@ -716,6 +843,9 @@ public sealed class DefinitionValidationTests
             Task.FromResult<IReadOnlyList<WorkflowDefinitionRecord>>([]);
 
         public Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken) =>
+            Task.FromResult(Source?.Id == id ? Source : null);
+
+        public Task<WorkflowDefinitionRecord?> GetPublishedAsync(long id, CancellationToken cancellationToken) =>
             Task.FromResult<WorkflowDefinitionRecord?>(null);
 
         public Task<WorkflowDefinitionRecord?> GetDefaultByWorkflowKeyAsync(
@@ -723,12 +853,11 @@ public sealed class DefinitionValidationTests
             CancellationToken cancellationToken) =>
             Task.FromResult<WorkflowDefinitionRecord?>(null);
 
-        public Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken) =>
-            Task.FromResult(0);
+        public Task LockFamilyForStartAsync(string workflowKey, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
 
         public Task<WorkflowDefinitionRecord> AddAsync(
             string name,
-            int version,
             WorkflowModel definition,
             bool isPublished,
             CancellationToken cancellationToken)
@@ -737,7 +866,7 @@ public sealed class DefinitionValidationTests
                 1,
                 name,
                 definition.Id,
-                version,
+                1,
                 definition,
                 isPublished,
                 false,

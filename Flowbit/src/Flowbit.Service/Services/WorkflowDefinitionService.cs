@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -40,9 +41,8 @@ public sealed class WorkflowDefinitionService(
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
-        var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
-        var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
-        logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, version, publish, created.IsDefault);
+        var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
+        logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, created.Version, publish, created.IsDefault);
         return ToDetail(created);
     }
 
@@ -59,12 +59,12 @@ public sealed class WorkflowDefinitionService(
             return null;
         }
 
+        definition.Id = source.WorkflowKey;
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
-        var version = await definitions.GetLatestVersionAsync(name, cancellationToken) + 1;
-        var created = await definitions.AddAsync(name, version, definition, publish, cancellationToken);
-        logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, version, sourceWorkflowId, publish, created.IsDefault);
+        var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
+        logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, created.Version, sourceWorkflowId, publish, created.IsDefault);
         return ToDetail(created);
     }
 
@@ -126,6 +126,16 @@ public sealed class WorkflowDefinitionService(
 
     internal void ValidateDefinition(WorkflowModel definition)
     {
+        if (string.IsNullOrWhiteSpace(definition.Id))
+        {
+            throw new WorkflowDomainException("Workflow id is required and is used as the stable workflow key.");
+        }
+
+        if (definition.Id.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException("Workflow id must contain at most 300 Unicode scalar values.");
+        }
+
         if (string.IsNullOrWhiteSpace(definition.Name))
         {
             throw new WorkflowDomainException("Workflow name is required.");
@@ -168,6 +178,7 @@ public sealed class WorkflowDefinitionService(
         ValidateTaskDistribution(definition);
 
         ValidateProcessVariables(definition.Variables);
+        ValidateEntryProcessVariableCollisions(definition);
 
         var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
 
@@ -211,6 +222,11 @@ public sealed class WorkflowDefinitionService(
 
             var outgoing = definition.SequenceFlows.Where(f => f.SourceRef == node.Id).ToList();
             var incoming = definition.SequenceFlows.Where(f => f.TargetRef == node.Id).ToList();
+
+            if (BpmnFlowNodeTypes.IsEntry(node.Type))
+            {
+                ValidateEntryTopology(node, incoming, outgoing);
+            }
 
             if (outgoing.Any(f => !f.IsSelectable)
                 && (!BpmnFlowNodeTypes.IsUserTask(node.Type) || node.MultiInstance is null))
@@ -538,7 +554,11 @@ public sealed class WorkflowDefinitionService(
                     $"Message start event #{node.Id} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
         }
-        ValidateVariables(variables, $"message start event #{node.Id} output mappings");
+        ValidateVariables(
+            variables,
+            $"message start event #{node.Id} output mappings",
+            requireDefault: false,
+            allowRequiredDefault: true);
 
         if (!string.IsNullOrWhiteSpace(message.IdempotencyVariable))
         {
@@ -631,7 +651,11 @@ public sealed class WorkflowDefinitionService(
             }
         }
 
-        ValidateVariables(variables, $"{kind.ToLowerInvariant()} #{nodeId} output mappings");
+        ValidateVariables(
+            variables,
+            $"{kind.ToLowerInvariant()} #{nodeId} output mappings",
+            requireDefault: false,
+            allowRequiredDefault: true);
     }
 
     private sealed record TypedOutputDefinition(
@@ -1024,7 +1048,7 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
     {
-        ValidateVariables(variables, owner, requireDefault: false);
+        ValidateVariables(variables, owner, requireDefault: false, allowRequiredDefault: false);
     }
 
     // Process-level variables are computed (never user-supplied), so each one must
@@ -1032,13 +1056,74 @@ public sealed class WorkflowDefinitionService(
     // name/type/prefix/validation checks are reused via the requireDefault path.
     private static void ValidateProcessVariables(IEnumerable<VariableModel> variables)
     {
-        ValidateVariables(variables, "process variables", requireDefault: true);
+        ValidateVariables(variables, "process variables", requireDefault: true, allowRequiredDefault: false);
+    }
+
+    private static void ValidateEntryProcessVariableCollisions(WorkflowModel definition)
+    {
+        var processNames = definition.Variables
+            .Select(variable => variable.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
+        {
+            var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                ? entry.Message?.OutputMappings.Select(mapping => mapping.Variable) ?? []
+                : entry.Variables.Select(variable => variable.Name);
+
+            var reservedEntryNames = entryNames
+                .Concat(entry.Idempotency is null ? [] : [entry.Idempotency.Variable])
+                .Concat(entry.BusinessKey is null ? [] : [entry.BusinessKey.Variable]);
+
+            var collision = reservedEntryNames.FirstOrDefault(processNames.Contains);
+            if (collision is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} variable '{collision}' collides with a process variable; variable names are case-insensitive.");
+            }
+        }
+    }
+
+    private static void ValidateEntryTopology(
+        FlowNodeModel entry,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+            ? "Message start event"
+            : "Start event";
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException($"{kind} #{entry.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count != 1)
+        {
+            return;
+        }
+
+        var flow = outgoing.Single();
+        if (!flow.IsSelectable
+            || flow.IsDefault
+            || flow.CanActWithoutClaim
+            || flow.CancelRemainingInstances
+            || flow.Roles.Count > 0
+            || flow.Variables.Count > 0
+            || !string.IsNullOrWhiteSpace(flow.Condition)
+            || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+            || flow.CompletionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"The outgoing sequence flow from {kind.ToLowerInvariant()} #{entry.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
     }
 
     private static void ValidateVariables(
         IEnumerable<VariableModel> variables,
         string owner,
-        bool requireDefault)
+        bool requireDefault,
+        bool allowRequiredDefault)
     {
         var materialized = variables.ToList();
         var duplicateName = materialized
@@ -1088,6 +1173,25 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"Process variable '{variable.Name}' on {owner} must have a defaultValue.");
+            }
+
+            var defaultValue = variable.DefaultValue.GetValueOrDefault();
+            var hasDefault = variable.DefaultValue is not null
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (!requireDefault && !allowRequiredDefault && variable.Required && hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"Required variable '{variable.Name}' on {owner} cannot define a defaultValue.");
+            }
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    defaultValue,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' defaultValue on {owner} must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
 
             if (!string.IsNullOrWhiteSpace(variable.Validation)

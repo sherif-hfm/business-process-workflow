@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\Flowbit.Infrastructure\Flowbit.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Flowbit.Service\Flowbit.Service.csproj" />
     <ProjectReference Include="..\..\src\Flowbit.Shared\Flowbit.Shared.csproj" />
+    <ProjectReference Include="..\..\src\Flowbit.Ui\Flowbit.Ui.csproj" Aliases="FlowbitUi" />
   </ItemGroup>
 
   <ItemGroup>

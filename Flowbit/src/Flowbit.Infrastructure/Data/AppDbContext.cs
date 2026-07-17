@@ -42,7 +42,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.IsPublished);
             entity.Property(e => e.IsDefault);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => new { e.Name, e.Version }).IsUnique();
+            entity.HasIndex(e => new { e.WorkflowKey, e.Version }).IsUnique();
             // Supports the cross-version workflowKey instance search.
             entity.HasIndex(e => e.WorkflowKey);
             entity.HasIndex(e => e.Definition).HasMethod("gin");

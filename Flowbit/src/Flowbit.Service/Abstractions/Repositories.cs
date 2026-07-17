@@ -13,15 +13,16 @@ public interface IWorkflowDefinitionRepository
 
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
+    Task<WorkflowDefinitionRecord?> GetPublishedAsync(long id, CancellationToken cancellationToken);
+
     Task<WorkflowDefinitionRecord?> GetDefaultByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);
+
+    Task LockFamilyForStartAsync(string workflowKey, CancellationToken cancellationToken);
 
     Task<bool> IsBusinessKeyScopeActiveAsync(string workflowKey, CancellationToken cancellationToken);
 
-    Task<int> GetLatestVersionAsync(string name, CancellationToken cancellationToken);
-
     Task<WorkflowDefinitionRecord> AddAsync(
         string name,
-        int version,
         WorkflowModel definition,
         bool isPublished,
         CancellationToken cancellationToken);

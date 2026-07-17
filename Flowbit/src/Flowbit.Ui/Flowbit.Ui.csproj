@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Flowbit.Shared\Flowbit.Shared.csproj" />
+    <InternalsVisibleTo Include="Flowbit.Tests" />
   </ItemGroup>
 
   <ItemGroup>

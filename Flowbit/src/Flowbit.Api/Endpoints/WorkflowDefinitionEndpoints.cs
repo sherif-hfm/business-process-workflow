@@ -169,7 +169,7 @@ public static class WorkflowDefinitionEndpoints
     }
 
     /// <summary>
-    /// Creates a new workflow definition (Version 1).
+    /// Creates the next version in the workflow-key family.
     /// </summary>
     /// <param name="request">The definition details and whether to publish immediately.</param>
     /// <param name="service">The workflow definition service.</param>
@@ -177,7 +177,8 @@ public static class WorkflowDefinitionEndpoints
     /// <remarks>
     /// The <c>Definition</c> is the workflow JSON model produced by the visual editor
     /// (see <c>workflow.json</c> for an example). Validates the definition before
-    /// storing. Set <c>Publish</c> to make it immediately startable. A 400 is returned
+    /// storing. If the stable model id already exists, the new row receives the next
+    /// version in that family. Set <c>Publish</c> to make it immediately startable. A 400 is returned
     /// when the definition fails validation (missing entry, dangling sequence flow
     /// references, invalid NCalc expressions, etc.).
     /// </remarks>

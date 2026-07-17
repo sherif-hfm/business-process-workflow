@@ -168,6 +168,11 @@ else
             submitting = true;
             error = null;
             var startEvent = workflow.Definition.FlowNodes.Single(n => n.Id == selectedStartEventId);
+            if (startEvent.Idempotency is not null && string.IsNullOrWhiteSpace(idempotencyKey))
+            {
+                throw new FormatException(
+                    $"Header '{startEvent.Idempotency.HeaderName}' is required to start this workflow.");
+            }
             var variables = BuildPayload(startEvent.Variables);
             var instance = await Api.StartInstanceAsync(new StartInstanceRequest(
                 workflow.Id,
@@ -192,11 +197,14 @@ else
     }
 
     private static string InputHint(VariableModel variable) => variable.IsArray
-        ? "Comma-separated values"
+        ? variable.DataType == WorkflowVariableTypes.Json
+            ? "Enter a JSON array"
+            : "JSON array or comma-separated values"
         : variable.DataType switch
         {
             WorkflowVariableTypes.Number => "Enter a number",
             WorkflowVariableTypes.Boolean => "true or false",
+            WorkflowVariableTypes.Json => "Enter a JSON value",
             _ => $"Enter {variable.Name}"
         };
 
@@ -207,28 +215,21 @@ else
         {
             if (!inputs.TryGetValue(variable.Name, out var raw) || string.IsNullOrWhiteSpace(raw))
             {
+                if (variable.Required)
+                {
+                    throw new FormatException($"Required variable '{variable.Name}' is missing.");
+                }
                 continue;
             }
 
-            payload[variable.Name] = ToJsonElement(variable, raw);
+            if (!StartVariableInputParser.TryParse(variable, raw, out var value, out var parseError))
+            {
+                throw new FormatException(parseError);
+            }
+
+            payload[variable.Name] = value;
         }
 
         return payload;
-    }
-
-    private static JsonElement ToJsonElement(VariableModel variable, string raw)
-    {
-        if (variable.IsArray)
-        {
-            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            return JsonSerializer.SerializeToElement(values);
-        }
-
-        return variable.DataType switch
-        {
-            WorkflowVariableTypes.Number when decimal.TryParse(raw, out var number) => JsonSerializer.SerializeToElement(number),
-            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
-            _ => JsonSerializer.SerializeToElement(raw)
-        };
     }
 }
