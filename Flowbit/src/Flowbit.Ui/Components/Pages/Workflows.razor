@@ -1,4 +1,5 @@
 @page "/workflows"
+@using System.Text
 @using System.Text.Json
 @inject WorkflowApiClient Api
 @inject IJSRuntime JS
@@ -140,6 +141,7 @@
                                                     {
                                                         <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetDefaultAsync(v.Id)" disabled="@(!v.IsPublished || busyIds.Contains(v.Id))">Set default</button>
                                                     }
+                                                    <button class="btn btn-sm btn-outline-secondary" disabled="@busyIds.Contains(v.Id)" @onclick="() => DownloadAsync(v.Id)">Download JSON</button>
                                                     <button class="btn btn-sm btn-outline-danger" disabled="@busyIds.Contains(v.Id)" @onclick="() => DeleteAsync(v.Id)">Delete</button>
                                                 </div></td>
                                             </tr>
@@ -158,7 +160,8 @@
 @code {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
     };
 
     private IReadOnlyList<WorkflowSummaryDto>? workflows;
@@ -283,6 +286,43 @@
     }
 
     private Task SetDefaultAsync(long id) => RunVersionActionAsync(id, () => Api.SetDefaultWorkflowAsync(id));
+
+    private async Task DownloadAsync(long id)
+    {
+        try
+        {
+            busyIds.Add(id);
+            error = null;
+
+            var workflow = await Api.GetWorkflowAsync(id)
+                ?? throw new InvalidOperationException("Workflow version was not found.");
+            var json = JsonSerializer.Serialize(workflow.Definition, JsonOptions);
+            await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+            using var streamReference = new DotNetStreamReference(stream);
+
+            await JS.InvokeVoidAsync(
+                "flowbit.downloadFileFromStream",
+                DownloadFileName(workflow),
+                streamReference);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busyIds.Remove(id);
+        }
+    }
+
+    private static string DownloadFileName(WorkflowDetailDto workflow)
+    {
+        var safeKey = string.Concat(workflow.WorkflowKey.Select(character =>
+            char.IsLetterOrDigit(character) || character is '-' or '_' or '.' ? character : '-'))
+            .Trim('-', '.');
+
+        return $"{(string.IsNullOrWhiteSpace(safeKey) ? "workflow" : safeKey)}-v{workflow.Version}.json";
+    }
 
     private async Task DeleteAsync(long id)
     {

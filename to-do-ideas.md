@@ -1,4 +1,5 @@
 
+- add Exclusive Gateways conditions priority 
 - add Parallel Gateways
 - terminateEndEvent
 - add quorum/complex gateway
