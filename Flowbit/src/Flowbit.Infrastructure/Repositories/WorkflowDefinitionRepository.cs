@@ -62,6 +62,60 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         return result is null ? null : CloneRecord(result);
     }
 
+    public async Task<IReadOnlyDictionary<long, WorkflowDefinitionRecord>> GetManyAsync(
+        IReadOnlyCollection<long> ids,
+        CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            return new Dictionary<long, WorkflowDefinitionRecord>();
+        }
+
+        var distinctIds = ids.Distinct().ToArray();
+        var results = new Dictionary<long, WorkflowDefinitionRecord>(distinctIds.Length);
+        var missingIds = new List<long>(distinctIds.Length);
+
+        foreach (var id in distinctIds)
+        {
+            if (!cache.TryGetValue(KeyPrefix + id, out object? cached))
+            {
+                missingIds.Add(id);
+                continue;
+            }
+
+            if (cached is WorkflowDefinitionRecord record)
+            {
+                results.Add(id, CloneRecord(record));
+            }
+        }
+
+        if (missingIds.Count == 0)
+        {
+            return results;
+        }
+
+        var entities = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(definition => missingIds.Contains(definition.Id))
+            .ToListAsync(cancellationToken);
+        var recordsById = entities
+            .Select(ToRecord)
+            .ToDictionary(record => record.Id);
+
+        foreach (var id in missingIds)
+        {
+            if (!recordsById.TryGetValue(id, out var record))
+            {
+                cache.Set(KeyPrefix + id, NullSentinel, CacheOptions);
+                continue;
+            }
+
+            cache.Set(KeyPrefix + id, record, CacheOptions);
+            results.Add(id, CloneRecord(record));
+        }
+
+        return results;
+    }
+
     public async Task<WorkflowDefinitionRecord?> GetPublishedAsync(long id, CancellationToken cancellationToken)
     {
         var entity = await dbContext.WorkflowDefinitions.AsNoTracking()

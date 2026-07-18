@@ -1087,6 +1087,14 @@ public sealed class DefinitionValidationTests
         public Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken) =>
             Task.FromResult(Source?.Id == id ? Source : null);
 
+        public Task<IReadOnlyDictionary<long, WorkflowDefinitionRecord>> GetManyAsync(
+            IReadOnlyCollection<long> ids,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyDictionary<long, WorkflowDefinitionRecord>>(
+                Source is not null && ids.Contains(Source.Id)
+                    ? new Dictionary<long, WorkflowDefinitionRecord> { [Source.Id] = Source }
+                    : new Dictionary<long, WorkflowDefinitionRecord>());
+
         public Task<WorkflowDefinitionRecord?> GetPublishedAsync(long id, CancellationToken cancellationToken) =>
             Task.FromResult<WorkflowDefinitionRecord?>(null);
 

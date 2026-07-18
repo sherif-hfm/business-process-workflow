@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Flowbit.Infrastructure.Data;
@@ -125,6 +126,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var eligibleCte = $"""
             WITH eligible AS (
                 SELECT ut."Id",
+                       ut."InstanceId",
+                       ut."MultiInstanceExecutionId",
+                       ut."UpdatedAt",
                        ROW_NUMBER() OVER (
                            PARTITION BY CASE
                                WHEN COALESCE(mie."OnePerActor", FALSE) THEN mie."Id"
@@ -155,20 +159,138 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
+        // There cannot be a page when the authoritative eligible count is zero,
+        // so avoid issuing the projection query for an empty inbox.
+        if (totalCount == 0)
+        {
+            return new PagedResult<InstanceListItem>([], page, pageSize, totalCount);
+        }
+
         var skip = (page - 1) * pageSize;
         var pageArgs = new List<(string Name, object Value)>(args)
         {
+            ("pendingTask", UserTaskStatuses.Pending),
+            ("cancelledTask", UserTaskStatuses.Cancelled),
             ("take", pageSize),
             ("skip", skip)
         };
-        var tasks = await dbContext.UserTasks
-            .FromSqlRaw(
-                $"{eligibleCte} SELECT ut.* FROM eligible e JOIN user_tasks ut ON ut.\"Id\" = e.\"Id\" WHERE e.inbox_rank = 1 ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
+        var rows = await dbContext.Database
+            .SqlQueryRaw<InboxPageRow>(
+                $"""
+                {eligibleCte},
+                page_task_ids AS MATERIALIZED (
+                    SELECT e."Id", e."InstanceId", e."MultiInstanceExecutionId", e."UpdatedAt"
+                    FROM eligible e
+                    WHERE e.inbox_rank = 1
+                    ORDER BY e."UpdatedAt" DESC, e."Id" DESC
+                    LIMIT @take OFFSET @skip
+                ),
+                page_instances AS (
+                    SELECT DISTINCT page."InstanceId"
+                    FROM page_task_ids page
+                ),
+                latest_variables AS (
+                    SELECT DISTINCT ON (v."InstanceId", v."VariableName")
+                           v."InstanceId", v."VariableName", v."ValueJson"
+                    FROM instance_variables v
+                    JOIN page_instances page ON page."InstanceId" = v."InstanceId"
+                    ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
+                ),
+                variable_values AS (
+                    SELECT v."InstanceId",
+                           jsonb_object_agg(v."VariableName", v."ValueJson") AS "VariablesJson"
+                    FROM latest_variables v
+                    GROUP BY v."InstanceId"
+                ),
+                page_executions AS (
+                    SELECT DISTINCT page."MultiInstanceExecutionId" AS "ExecutionId"
+                    FROM page_task_ids page
+                    WHERE page."MultiInstanceExecutionId" IS NOT NULL
+                ),
+                mi_task_counts AS (
+                    SELECT task."MultiInstanceExecutionId" AS "ExecutionId",
+                           (COUNT(*) FILTER (WHERE task."Status" = @activeTask))::integer AS "ActiveCount",
+                           (COUNT(*) FILTER (WHERE task."Status" = @pendingTask))::integer AS "PendingCount",
+                           (COUNT(*) FILTER (WHERE task."Status" = @cancelledTask))::integer AS "CancelledCount"
+                    FROM user_tasks task
+                    JOIN page_executions page
+                      ON page."ExecutionId" = task."MultiInstanceExecutionId"
+                    GROUP BY task."MultiInstanceExecutionId"
+                ),
+                mi_flow_counts AS (
+                    SELECT flow."ExecutionId",
+                           jsonb_object_agg(
+                               flow."FlowId"::text,
+                               flow."CompletedCount"
+                               ORDER BY flow."FlowId") AS "FlowCountsJson"
+                    FROM multi_instance_flow_counts flow
+                    JOIN page_executions page ON page."ExecutionId" = flow."ExecutionId"
+                    GROUP BY flow."ExecutionId"
+                )
+                SELECT w."Id" AS "InstanceId",
+                       wd."Id" AS "WorkflowId",
+                       w."WorkflowDefinitionId" AS "WorkflowDefinitionId",
+                       wd."Name" AS "WorkflowName",
+                       wd."Version" AS "WorkflowVersion",
+                       w."BusinessKey" AS "BusinessKey",
+                       w."BusinessKeyUniqueness" AS "BusinessKeyUniqueness",
+                       token."Id" AS "TokenId",
+                       ut."Id" AS "UserTaskId",
+                       ut."MultiInstanceExecutionId" AS "MultiInstanceExecutionId",
+                       ut."ItemIndex" AS "ItemIndex",
+                       ut."ItemValueJson"::text AS "ItemValueJson",
+                       ut."Assignee" AS "Assignee",
+                       ut."NodeId" AS "CurrentNodeId",
+                       ut."NodeName" AS "CurrentNodeName",
+                       ut."NodeExternalId" AS "CurrentNodeExternalId",
+                       token."NodeType" AS "CurrentNodeType",
+                       ut."Roles" AS "CurrentNodeRoles",
+                       ut."RequiresClaim" AS "CurrentRequiresClaim",
+                       w."Status" AS "Status",
+                       ut."ClaimedBy" AS "ClaimedBy",
+                       w."StartedBy" AS "StartedBy",
+                       ut."CreatedAt" AS "CreatedAt",
+                       ut."UpdatedAt" AS "UpdatedAt",
+                       COALESCE(values."VariablesJson", jsonb_build_object())::text AS "VariablesJson",
+                       mie."Id" AS "MiId",
+                       mie."InstanceId" AS "MiInstanceId",
+                       mie."TokenId" AS "MiTokenId",
+                       mie."NodeId" AS "MiNodeId",
+                       mie."Mode" AS "MiMode",
+                       mie."Source" AS "MiSource",
+                       mie."OnePerActor" AS "MiOnePerActor",
+                       mie."ResultVariable" AS "MiResultVariable",
+                       mie."Status" AS "MiStatus",
+                       mie."TotalCount" AS "MiTotalCount",
+                       mie."CompletedCount" AS "MiCompletedCount",
+                       mie."CancelledCount" AS "MiCancelledCount",
+                       mie."WinningFlowId" AS "MiWinningFlowId",
+                       mie."CompletionReason" AS "MiCompletionReason",
+                       mie."CreatedAt" AS "MiCreatedAt",
+                       mie."UpdatedAt" AS "MiUpdatedAt",
+                       mie."CompletedAt" AS "MiCompletedAt",
+                       COALESCE(task_counts."ActiveCount", 0) AS "MiActiveTaskCount",
+                       COALESCE(task_counts."PendingCount", 0) AS "MiPendingTaskCount",
+                       COALESCE(task_counts."CancelledCount", 0) AS "MiCancelledTaskCount",
+                       COALESCE(flow_counts."FlowCountsJson", jsonb_build_object())::text AS "MiFlowCountsJson"
+                FROM page_task_ids page
+                JOIN user_tasks ut ON ut."Id" = page."Id"
+                JOIN workflow_instances w ON w."Id" = ut."InstanceId"
+                JOIN workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
+                JOIN execution_tokens token ON token."Id" = ut."TokenId"
+                LEFT JOIN variable_values values ON values."InstanceId" = w."Id"
+                LEFT JOIN multi_instance_executions mie
+                       ON mie."Id" = ut."MultiInstanceExecutionId"
+                LEFT JOIN mi_task_counts task_counts
+                       ON task_counts."ExecutionId" = mie."Id"
+                LEFT JOIN mi_flow_counts flow_counts
+                       ON flow_counts."ExecutionId" = mie."Id"
+                ORDER BY ut."UpdatedAt" DESC, ut."Id" DESC
+                """,
                 BuildParameters(pageArgs))
-            .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var items = await ToInboxListItemsAsync(tasks, cancellationToken);
+        var items = rows.Select(ToInboxListItem).ToList();
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
 
@@ -746,38 +868,175 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return token is null ? null : ToRecord(entity, token, task);
     }
 
-    private async Task<IReadOnlyList<InstanceListItem>> ToInboxListItemsAsync(
-        IReadOnlyList<UserTaskEntity> tasks,
-        CancellationToken cancellationToken)
+    private static InstanceListItem ToInboxListItem(InboxPageRow row)
     {
-        if (tasks.Count == 0) return [];
-        var instanceIds = tasks.Select(t => t.InstanceId).Distinct().ToList();
-        var instances = await dbContext.WorkflowInstances.AsNoTracking()
-            .Where(i => instanceIds.Contains(i.Id)).ToDictionaryAsync(i => i.Id, cancellationToken);
-        var definitionIds = instances.Values.Select(i => i.WorkflowDefinitionId).Distinct().ToList();
-        var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
-            .Where(d => definitionIds.Contains(d.Id))
-            .Select(d => new { d.Id, d.Name, d.Version })
-            .ToDictionaryAsync(d => d.Id, cancellationToken);
-        var tokenIds = tasks.Select(t => t.TokenId).Distinct().ToList();
-        var tokens = await dbContext.ExecutionTokens.AsNoTracking()
-            .Where(t => tokenIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, cancellationToken);
-        var variablesByInstance = await GetLatestVariableValuesAsync(instanceIds, cancellationToken);
-
-        return tasks.Select(task =>
+        MultiInstanceProgressRecord? progress = null;
+        if (row.MultiInstanceExecutionId is not null)
         {
-            var instance = instances[task.InstanceId];
-            var definition = definitions[instance.WorkflowDefinitionId];
-            var token = tokens[task.TokenId];
-            return new InstanceListItem(instance.Id, definition.Id, instance.WorkflowDefinitionId,
-                definition.Name, definition.Version, instance.BusinessKey, instance.BusinessKeyUniqueness,
-                token.Id, task.Id, task.MultiInstanceExecutionId,
-                task.ItemIndex, task.ItemValueJson?.RootElement.Clone(), task.Assignee, task.NodeId, task.NodeName,
-                task.NodeExternalId, token.NodeType, task.Roles, task.RequiresClaim, instance.Status,
-                task.ClaimedBy, instance.StartedBy, task.CreatedAt, task.UpdatedAt, null,
-                variablesByInstance.GetValueOrDefault(instance.Id)
-                ?? new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase));
-        }).ToList();
+            if (row.MiId is null
+                || row.MiInstanceId is null
+                || row.MiTokenId is null
+                || row.MiNodeId is null
+                || row.MiMode is null
+                || row.MiSource is null
+                || row.MiOnePerActor is null
+                || row.MiResultVariable is null
+                || row.MiStatus is null
+                || row.MiTotalCount is null
+                || row.MiCompletedCount is null
+                || row.MiCancelledCount is null
+                || row.MiCreatedAt is null
+                || row.MiUpdatedAt is null)
+            {
+                throw new InvalidOperationException(
+                    $"User task #{row.UserTaskId} references a missing multi-instance execution.");
+            }
+
+            var execution = new MultiInstanceExecutionRecord(
+                row.MiId.Value,
+                row.MiInstanceId.Value,
+                row.MiTokenId.Value,
+                row.MiNodeId.Value,
+                row.MiMode,
+                row.MiSource,
+                row.MiOnePerActor.Value,
+                row.MiResultVariable,
+                row.MiStatus,
+                row.MiTotalCount.Value,
+                row.MiCompletedCount.Value,
+                row.MiCancelledCount.Value,
+                row.MiWinningFlowId,
+                row.MiCompletionReason,
+                row.MiCreatedAt.Value,
+                row.MiUpdatedAt.Value,
+                row.MiCompletedAt);
+            progress = new MultiInstanceProgressRecord(
+                execution,
+                row.MiActiveTaskCount,
+                row.MiPendingTaskCount,
+                row.MiCancelledTaskCount,
+                ParseFlowCounts(row.MiFlowCountsJson));
+        }
+
+        return new InstanceListItem(
+            row.InstanceId,
+            row.WorkflowId,
+            row.WorkflowDefinitionId,
+            row.WorkflowName,
+            row.WorkflowVersion,
+            row.BusinessKey,
+            row.BusinessKeyUniqueness,
+            row.TokenId,
+            row.UserTaskId,
+            row.MultiInstanceExecutionId,
+            row.ItemIndex,
+            ParseJsonValue(row.ItemValueJson),
+            row.Assignee,
+            row.CurrentNodeId,
+            row.CurrentNodeName,
+            row.CurrentNodeExternalId,
+            row.CurrentNodeType,
+            row.CurrentNodeRoles,
+            row.CurrentRequiresClaim,
+            row.Status,
+            row.ClaimedBy,
+            row.StartedBy,
+            row.CreatedAt,
+            row.UpdatedAt,
+            null,
+            ParseVariables(row.VariablesJson),
+            progress);
+    }
+
+    private static JsonElement? ParseJsonValue(string? json)
+    {
+        if (json is null)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> ParseVariables(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var variables = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            variables[property.Name] = property.Value.Clone();
+        }
+
+        return variables;
+    }
+
+    private static IReadOnlyDictionary<int, int> ParseFlowCounts(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var counts = new Dictionary<int, int>();
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (int.TryParse(property.Name, out var flowId))
+            {
+                counts[flowId] = property.Value.GetInt32();
+            }
+        }
+
+        return counts;
+    }
+
+    // Unmapped EF Core raw-SQL result. JSONB aggregates are projected as text so
+    // the persistence boundary owns cloning JsonElement values and no JsonDocument
+    // lifetime escapes this repository.
+    private sealed class InboxPageRow
+    {
+        public long InstanceId { get; set; }
+        public long WorkflowId { get; set; }
+        public long WorkflowDefinitionId { get; set; }
+        public string WorkflowName { get; set; } = string.Empty;
+        public int WorkflowVersion { get; set; }
+        public string? BusinessKey { get; set; }
+        public string? BusinessKeyUniqueness { get; set; }
+        public long TokenId { get; set; }
+        public long UserTaskId { get; set; }
+        public long? MultiInstanceExecutionId { get; set; }
+        public int? ItemIndex { get; set; }
+        public string? ItemValueJson { get; set; }
+        public string? Assignee { get; set; }
+        public int CurrentNodeId { get; set; }
+        public string CurrentNodeName { get; set; } = string.Empty;
+        public string? CurrentNodeExternalId { get; set; }
+        public string CurrentNodeType { get; set; } = string.Empty;
+        public string[] CurrentNodeRoles { get; set; } = [];
+        public bool CurrentRequiresClaim { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string? ClaimedBy { get; set; }
+        public string? StartedBy { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+        public DateTimeOffset UpdatedAt { get; set; }
+        public string VariablesJson { get; set; } = string.Empty;
+        public long? MiId { get; set; }
+        public long? MiInstanceId { get; set; }
+        public long? MiTokenId { get; set; }
+        public int? MiNodeId { get; set; }
+        public string? MiMode { get; set; }
+        public string? MiSource { get; set; }
+        public bool? MiOnePerActor { get; set; }
+        public string? MiResultVariable { get; set; }
+        public string? MiStatus { get; set; }
+        public int? MiTotalCount { get; set; }
+        public int? MiCompletedCount { get; set; }
+        public int? MiCancelledCount { get; set; }
+        public int? MiWinningFlowId { get; set; }
+        public string? MiCompletionReason { get; set; }
+        public DateTimeOffset? MiCreatedAt { get; set; }
+        public DateTimeOffset? MiUpdatedAt { get; set; }
+        public DateTimeOffset? MiCompletedAt { get; set; }
+        public int MiActiveTaskCount { get; set; }
+        public int MiPendingTaskCount { get; set; }
+        public int MiCancelledTaskCount { get; set; }
+        public string MiFlowCountsJson { get; set; } = string.Empty;
     }
 
     private async Task<IReadOnlyList<ManagedUserTaskRecord>> ToManagedUserTaskRecordsAsync(

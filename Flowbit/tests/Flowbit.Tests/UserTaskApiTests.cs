@@ -547,13 +547,14 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task InboxQueryCountIsPageBoundedAndConditionFalseTasksRemainDisabled()
+    public async Task InboxProjectionUsesExactlyTwoQueriesAndPreservesPagingAndLatestVariables()
     {
         const int taskCount = 100;
         var model = CreateModel("inbox-query-budget", requiresClaim: true, condition: "amount > 5000");
         model.FlowNodes.Single(node => node.Id == 2).Roles = ["Worker"];
         model.SequenceFlows.Single(flow => flow.Id == 201).Roles = ["Worker"];
         var workflowId = await CreateWorkflowAsync(model);
+        long[] expectedInstanceIds;
 
         await using (var db = fixture.CreateDbContext())
         {
@@ -605,30 +606,140 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
                 SetBy = "starter",
                 SetAt = instance.CreatedAt
             }));
+            db.InstanceVariables.Add(new InstanceVariableEntity
+            {
+                InstanceId = instances[^1].Id,
+                VariableName = "amount",
+                ValueJson = JsonDocument.Parse("6000"),
+                SetBy = "latest-write",
+                SetAt = now.AddMinutes(1)
+            });
             await db.SaveChangesAsync();
+
+            expectedInstanceIds = instances
+                .OrderByDescending(instance => instance.UpdatedAt)
+                .ThenByDescending(instance => instance.Id)
+                .Select(instance => instance.Id)
+                .ToArray();
         }
 
         await GetInboxByWorkflowAsync(workflowId, 1, "worker", "Worker");
 
-        fixture.CommandCounter.Reset();
-        var one = await GetInboxByWorkflowAsync(workflowId, 1, "worker", "Worker");
-        var oneItemCommands = fixture.CommandCounter.ReaderCommands;
+        PagedResult<InboxItemDto>? firstFifty = null;
+        foreach (var pageSize in new[] { 1, 50, taskCount })
+        {
+            fixture.CommandCounter.Reset();
+            var page = await GetInboxByWorkflowAsync(workflowId, pageSize, "worker", "Worker");
 
-        fixture.CommandCounter.Reset();
-        var hundred = await GetInboxByWorkflowAsync(workflowId, taskCount, "worker", "Worker");
-        var hundredItemCommands = fixture.CommandCounter.ReaderCommands;
+            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(taskCount, page.TotalCount);
+            Assert.Equal(pageSize, page.Items.Count);
+            Assert.Equal(expectedInstanceIds.Take(pageSize).ToArray(),
+                page.Items.Select(item => item.InstanceId).ToArray());
+            firstFifty ??= pageSize == 50 ? page : null;
+        }
 
-        Assert.Equal(taskCount, one.TotalCount);
-        Assert.Single(one.Items);
-        Assert.Equal(taskCount, hundred.TotalCount);
-        Assert.Equal(taskCount, hundred.Items.Count);
-        Assert.All(hundred.Items, item =>
+        Assert.NotNull(firstFifty);
+        Assert.True(firstFifty.Items[0].CanClaim);
+        Assert.False(firstFifty.Items[0].CanAct);
+        Assert.All(firstFifty.Items.Skip(1), item =>
         {
             Assert.False(item.CanAct);
             Assert.False(item.CanClaim);
         });
-        Assert.Equal(oneItemCommands, hundredItemCommands);
-        Assert.InRange(hundredItemCommands, 1, 12);
+
+        fixture.CommandCounter.Reset();
+        var secondFifty = await GetInboxPageByWorkflowAsync(workflowId, 2, 50, "worker", "Worker");
+        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(taskCount, secondFifty.TotalCount);
+        Assert.Equal(expectedInstanceIds.Skip(50).ToArray(),
+            secondFifty.Items.Select(item => item.InstanceId).ToArray());
+        Assert.Empty(firstFifty.Items.Select(item => item.UserTaskId)
+            .Intersect(secondFifty.Items.Select(item => item.UserTaskId)));
+
+        fixture.CommandCounter.Reset();
+        var outOfRange = await GetInboxPageByWorkflowAsync(workflowId, 3, 50, "worker", "Worker");
+        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(taskCount, outOfRange.TotalCount);
+        Assert.Empty(outOfRange.Items);
+
+        fixture.CommandCounter.Reset();
+        var empty = await GetInboxAsync(long.MaxValue, "worker", "Worker");
+        Assert.Equal(1, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(0, empty.TotalCount);
+        Assert.Empty(empty.Items);
+    }
+
+    [Fact]
+    public async Task MultiInstanceInboxProjectionUsesExactlyTwoQueriesAndReturnsCorrectProgress()
+    {
+        const int totalCount = 101;
+        const int activeCount = totalCount - 1;
+        var model = DefinitionValidationTests.LoadModel("votes-cardinality-approve-reject.json");
+        var suffix = Guid.NewGuid().ToString("N");
+        model.Id = $"mi-inbox-query-budget-{suffix}";
+        model.Name = $"MI inbox query budget {suffix}";
+        model.FlowNodes.Single(node => node.Id == 2).MultiInstance!.OnePerActor = false;
+        var workflowId = await CreateWorkflowAsync(model);
+
+        using var startResponse = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances?detail=full",
+            new StartInstanceRequest(
+                workflowId,
+                null,
+                null,
+                new Dictionary<string, JsonElement>
+                {
+                    ["voters"] = JsonSerializer.SerializeToElement(totalCount)
+                }),
+            "manager",
+            ["Manager"]);
+        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
+        var review = await ReadAsync<InstanceDetailDto>(startResponse);
+
+        using var enterResponse = await SendAsync(
+            HttpMethod.Post,
+            $"/api/instances/{review.Id}/flows/204",
+            new TakeFlowRequest(null),
+            "manager",
+            ["Manager"]);
+        Assert.Equal(HttpStatusCode.OK, enterResponse.StatusCode);
+
+        var warm = await GetInboxByWorkflowAsync(workflowId, totalCount, "worker", "User");
+        Assert.Equal(totalCount, warm.TotalCount);
+        var completedTaskId = warm.Items[0].UserTaskId;
+        using var complete = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{completedTaskId}/flows/201",
+            new TakeFlowRequest(null),
+            "worker",
+            ["User"]);
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+
+        foreach (var pageSize in new[] { 1, 50, activeCount })
+        {
+            fixture.CommandCounter.Reset();
+            var page = await GetInboxByWorkflowAsync(workflowId, pageSize, "worker", "User");
+
+            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(activeCount, page.TotalCount);
+            Assert.Equal(pageSize, page.Items.Count);
+            Assert.Equal(pageSize, page.Items.Select(item => item.UserTaskId).Distinct().Count());
+            Assert.DoesNotContain(page.Items, item => item.UserTaskId == completedTaskId);
+            Assert.All(page.Items, item =>
+            {
+                Assert.True(item.CanAct);
+                Assert.Equal(item.MultiInstanceExecutionId, item.MultiInstance?.ExecutionId);
+                var progress = Assert.IsType<MultiInstanceProgressDto>(item.MultiInstance);
+                Assert.Equal(totalCount, progress.Total);
+                Assert.Equal(1, progress.Completed);
+                Assert.Equal(activeCount, progress.Active);
+                Assert.Equal(0, progress.Pending);
+                Assert.Equal(0, progress.Cancelled);
+                Assert.Equal(1, Assert.Single(progress.FlowCounts, count => count.FlowId == 201).Count);
+            });
+        }
     }
 
     [Fact]
@@ -796,11 +907,19 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
         long workflowId,
         int pageSize,
         string user,
+        params string[] roles) =>
+        await GetInboxPageByWorkflowAsync(workflowId, 1, pageSize, user, roles);
+
+    private async Task<PagedResult<InboxItemDto>> GetInboxPageByWorkflowAsync(
+        long workflowId,
+        int page,
+        int pageSize,
+        string user,
         params string[] roles)
     {
         using var response = await SendAsync(
             HttpMethod.Get,
-            $"/api/instances/inbox?workflowId={workflowId}&page=1&pageSize={pageSize}",
+            $"/api/instances/inbox?workflowId={workflowId}&page={page}&pageSize={pageSize}",
             user: user,
             roles: roles);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

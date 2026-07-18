@@ -549,17 +549,14 @@ public sealed class WorkflowEngineService(
         }
 
         var definitionIds = paged.Items.Select(c => c.WorkflowDefinitionId).Distinct().ToList();
-        var definitionsById = new Dictionary<long, WorkflowDefinitionRecord>(definitionIds.Count);
+        var definitionsById = await definitions.GetManyAsync(definitionIds, cancellationToken);
         foreach (var id in definitionIds)
         {
-            definitionsById[id] = await GetWorkflowAsync(id, cancellationToken);
+            if (!definitionsById.ContainsKey(id))
+            {
+                throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
+            }
         }
-
-        var executionIds = paged.Items.Where(row => row.MultiInstanceExecutionId is not null)
-            .Select(row => row.MultiInstanceExecutionId!.Value)
-            .Distinct()
-            .ToList();
-        var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
 
         var canActByTask = new Dictionary<long, bool>();
         var hasBypassClaimByTask = new Dictionary<long, bool>();
@@ -571,9 +568,7 @@ public sealed class WorkflowEngineService(
             var node = GetFlowNode(workflow.Definition, row.CurrentNodeId);
             var task = ToInboxUserTaskRecord(row);
             var instance = ToInboxInstanceRecord(row, workflow);
-            var execution = row.MultiInstanceExecutionId is long executionId
-                ? progressRecords.GetValueOrDefault(executionId)?.Execution
-                : null;
+            var execution = row.MultiInstanceProgress?.Execution;
             var eligible = GetEligibleUserTaskFlows(
                 instance, workflow, node, task, execution, actor,
                 row.Variables ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase));
@@ -581,9 +576,10 @@ public sealed class WorkflowEngineService(
             hasBypassClaimByTask[taskKey] = eligible.Any(flow => CanBypassClaim(flow, normalizedRoles));
         }
 
-        var progressByExecution = progressRecords.ToDictionary(
-            pair => pair.Key,
-            pair => ToProgress(pair.Value));
+        var progressByExecution = paged.Items
+            .Where(row => row.MultiInstanceProgress is not null)
+            .GroupBy(row => row.MultiInstanceProgress!.Execution.Id)
+            .ToDictionary(group => group.Key, group => ToProgress(group.First().MultiInstanceProgress!));
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null)).ToList();

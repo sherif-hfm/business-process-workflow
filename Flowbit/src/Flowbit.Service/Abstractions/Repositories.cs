@@ -13,6 +13,10 @@ public interface IWorkflowDefinitionRepository
 
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<long, WorkflowDefinitionRecord>> GetManyAsync(
+        IReadOnlyCollection<long> ids,
+        CancellationToken cancellationToken);
+
     Task<WorkflowDefinitionRecord?> GetPublishedAsync(long id, CancellationToken cancellationToken);
 
     Task<WorkflowDefinitionRecord?> GetDefaultByWorkflowKeyAsync(string workflowKey, CancellationToken cancellationToken);

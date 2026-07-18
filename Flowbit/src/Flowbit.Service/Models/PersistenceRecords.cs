@@ -153,7 +153,8 @@ public sealed record InstanceListItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     UserTaskWorkSummaryRecord? UserTasks,
-    IReadOnlyDictionary<string, JsonElement>? Variables);
+    IReadOnlyDictionary<string, JsonElement>? Variables,
+    MultiInstanceProgressRecord? MultiInstanceProgress = null);
 
 public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
 
