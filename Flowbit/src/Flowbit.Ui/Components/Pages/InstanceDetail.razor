@@ -174,23 +174,6 @@ else
     }
     <section id="actions" class="panel mb-3">
         <h2 class="h4">Available actions</h2>
-        @if (currentNode?.RequiresClaim == true && instance.Status == "running")
-        {
-            if (string.IsNullOrWhiteSpace(CurrentClaimedBy))
-            {
-                if (availableFlows.Any(f => !f.CanActWithoutClaim))
-                {
-                    <div class="alert alert-info">Claim this task before taking standard actions.</div>
-                }
-            }
-            else if (!CanTakeActions)
-            {
-                if (availableFlows.Any(f => !f.CanActWithoutClaim))
-                {
-                    <div class="alert alert-info">This task is claimed by <strong>@CurrentClaimedBy</strong>. Only they can take standard actions.</div>
-                }
-            }
-        }
         @if (instance.MultiInstance is not null)
         {
             <p>Personal work-item actions are available from the Inbox.</p>
@@ -343,31 +326,6 @@ else
             .ToList()
         ?? [];
 
-    private bool CanTakeActions
-    {
-        get
-        {
-            if (instance is null || instance.Status != "running")
-            {
-                return false;
-            }
-
-            var node = CurrentNode;
-            if (node is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
-            {
-                return false;
-            }
-
-            if (!node.RequiresClaim)
-            {
-                return true;
-            }
-
-            return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
-                && CurrentClaimedBy == ActingUser;
-        }
-    }
-
     private bool CanTakeFlow(SequenceFlowModel flow)
     {
         if (instance is null || instance.Status != "running")
@@ -381,13 +339,10 @@ else
             return false;
         }
 
-        if (!node.RequiresClaim || flow.CanActWithoutClaim)
-        {
-            return true;
-        }
-
-        return !string.IsNullOrWhiteSpace(CurrentClaimedBy)
-            && CurrentClaimedBy == ActingUser;
+        // Available flows are already filtered by task/flow roles, stored-state
+        // conditions, claim ownership, and role-scoped claim bypasses. The POST
+        // action repeats these checks to protect against stale page state.
+        return availableFlows.Any(candidate => candidate.Id == flow.Id);
     }
 
     private bool CanUnclaim

@@ -38,6 +38,7 @@ public sealed class WorkflowDefinitionService(
         bool publish,
         CancellationToken cancellationToken)
     {
+        ValidateAuthoredClaimBypassMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
@@ -60,6 +61,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         definition.Id = source.WorkflowKey;
+        ValidateAuthoredClaimBypassMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
@@ -200,9 +202,10 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Sequence flow #{flow.Id} has variables but its source node is not a user task.");
             }
 
-            if (flow.CanActWithoutClaim && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
+            if ((flow.CanActWithoutClaim || flow.CanActWithoutClaimRoles.Count > 0)
+                && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
             {
-                throw new WorkflowDomainException($"Sequence flow #{flow.Id} is marked to act without claim, but its source node is not a user task.");
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} defines claim-bypass metadata, but its source node is not a user task.");
             }
 
             ValidateVariables(flow.Variables ?? [], $"sequence flow #{flow.Id}");
@@ -480,6 +483,23 @@ public sealed class WorkflowDefinitionService(
                     $"{kind} #{node.Id} has an output mapping with no variable name.");
             }
 
+        }
+    }
+
+    private static void ValidateAuthoredClaimBypassMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (!flow.CanActWithoutClaim) continue;
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null) continue;
+            if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} is marked to act without claim, but its source node is not a user task.");
+            if (!flow.IsSelectable)
+                throw new WorkflowDomainException(
+                    $"Engine-only sequence flow #{flow.Id} cannot define claim-bypass metadata.");
         }
     }
 
@@ -848,7 +868,8 @@ public sealed class WorkflowDefinitionService(
         }
         var engineOnly = outcomes.Where(f => !f.IsSelectable).ToList();
         if (engineOnly.Any(f => f.Roles.Count > 0 || f.Variables.Count > 0
-                                || !string.IsNullOrWhiteSpace(f.Condition) || f.CanActWithoutClaim))
+                                || !string.IsNullOrWhiteSpace(f.Condition) || f.CanActWithoutClaim
+                                || f.CanActWithoutClaimRoles.Count > 0))
         {
             throw new WorkflowDomainException(
                 $"Engine-only flows from multi-instance user task #{node.Id} cannot define roles, action variables, condition, or canActWithoutClaim.");
@@ -1117,6 +1138,7 @@ public sealed class WorkflowDefinitionService(
         if (!flow.IsSelectable
             || flow.IsDefault
             || flow.CanActWithoutClaim
+            || flow.CanActWithoutClaimRoles.Count > 0
             || flow.CancelRemainingInstances
             || flow.Roles.Count > 0
             || flow.Variables.Count > 0

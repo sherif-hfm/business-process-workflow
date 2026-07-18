@@ -1213,6 +1213,7 @@ function migrateLegacyUserTaskDefaultFlows() {
         sourceRef: legacyDefault.sourceRef, targetRef: legacyDefault.targetRef,
         roles: [], variables: [], condition: null,
         isDefault: true, isSelectable: false, canActWithoutClaim: false,
+        canActWithoutClaimRoles: [],
         completionCondition: null, completionPriority: null, cancelRemainingInstances: false
       };
       model.sequenceFlows.push(fallback);
@@ -1225,10 +1226,16 @@ function applyFlowInvariants(flow) {
   const source = getNode(flow.sourceRef);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   const gateway = source && isGatewayType(source.type);
+  flow.canActWithoutClaimRoles = normalizeRoles(flow.canActWithoutClaimRoles);
   if (typeof flow.isSelectable !== "boolean") flow.isSelectable = true;
   if (!isUserTaskFlow || !source.multiInstance) flow.isSelectable = true;
   if (!isUserTaskFlow) {
     flow.roles = [];
+    flow.canActWithoutClaim = false;
+    flow.canActWithoutClaimRoles = [];
+  } else if (!source.requiresClaim || !flow.canActWithoutClaim) {
+    flow.canActWithoutClaim = false;
+    flow.canActWithoutClaimRoles = [];
   }
   if (gateway) {
     flow.variables = [];
@@ -1246,6 +1253,7 @@ function applyFlowInvariants(flow) {
       flow.variables = [];
       flow.condition = null;
       flow.canActWithoutClaim = false;
+      flow.canActWithoutClaimRoles = [];
       flow.completionCondition = null;
       flow.completionPriority = null;
       flow.cancelRemainingInstances = false;
@@ -1259,6 +1267,7 @@ function applyFlowInvariants(flow) {
       flow.variables = [];
       flow.condition = null;
       flow.canActWithoutClaim = false;
+      flow.canActWithoutClaimRoles = [];
     }
   } else {
     const wasDefault = flow.isDefault;
@@ -2312,6 +2321,7 @@ function renderNodeInspector() {
     inspector.appendChild(
       variableCheckbox("Requires claim", node.requiresClaim, checked => {
         node.requiresClaim = node.multiInstance?.source === "collection" ? false : checked;
+        outgoingFlows(node.id).forEach(applyFlowInvariants);
         renderInspector();
       })
     );
@@ -3418,6 +3428,7 @@ function renderFlowInspector() {
             flow.variables = [];
             flow.condition = null;
             flow.canActWithoutClaim = false;
+            flow.canActWithoutClaimRoles = [];
             flow.cancelRemainingInstances = false;
             flow.completionCondition = null;
             flow.completionPriority = null;
@@ -3437,6 +3448,7 @@ function renderFlowInspector() {
             flow.variables = [];
             flow.condition = null;
             flow.canActWithoutClaim = false;
+            flow.canActWithoutClaimRoles = [];
             flow.cancelRemainingInstances = false;
           }
           renderInspector();
@@ -3456,7 +3468,7 @@ function renderFlowInspector() {
         });
         const condHint = document.createElement("p");
         condHint.className = "empty-note";
-        condHint.textContent = 'NCalc expression evaluated at runtime. Leave empty to always show this action.';
+        condHint.textContent = 'Stored-state NCalc visibility rule, e.g. amount > 5000. The API hides the action and re-checks the same stored values when it is submitted. Values entered for this action cannot unlock it.';
         inspector.appendChild(condHint);
       } else {
         const engineHint = document.createElement("p");
@@ -3498,9 +3510,17 @@ function renderFlowInspector() {
         inspector.appendChild(
           variableCheckbox("Can act without claim", flow.canActWithoutClaim, checked => {
             flow.canActWithoutClaim = checked;
+            if (!checked) flow.canActWithoutClaimRoles = [];
             renderInspector();
           })
         );
+        if (flow.canActWithoutClaim) {
+          rolesFieldGeneric(flow, "canActWithoutClaimRoles", "Can act without claim roles", () => renderEdges());
+          const bypassRolesHint = document.createElement("p");
+          bypassRolesHint.className = "empty-note";
+          bypassRolesHint.textContent = 'These roles are required only when the actor does not own the claim. Task roles and action roles still apply. Empty = any otherwise-authorized actor.';
+          inspector.appendChild(bypassRolesHint);
+        }
       }
     }
   }
@@ -4331,6 +4351,7 @@ function assignNodeLane(nodeId) {
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
                  roles: [], variables: [], condition: null, isDefault: false, isSelectable: true, canActWithoutClaim: false,
+                 canActWithoutClaimRoles: [],
                  completionCondition: null, completionPriority: null, cancelRemainingInstances: false };
   model.sequenceFlows.push(flow);
   return flow;
@@ -4652,6 +4673,7 @@ function validateModelForSave(candidate) {
     } else {
       const flow = outgoing[0];
       if (flow.isSelectable === false || !!flow.isDefault || !!flow.canActWithoutClaim ||
+          countItems(flow.canActWithoutClaimRoles) > 0 ||
           !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
           countItems(flow.variables) > 0 || hasText(flow.condition) ||
           hasText(flow.completionCondition) || flow.completionPriority != null) {
@@ -4852,6 +4874,7 @@ function validateModelForSave(candidate) {
           countItems(fallback.variables) > 0 ||
           hasText(fallback.condition) ||
           !!fallback.canActWithoutClaim ||
+          countItems(fallback.canActWithoutClaimRoles) > 0 ||
           hasText(fallback.completionCondition) ||
           fallback.completionPriority != null ||
           !!fallback.cancelRemainingInstances) {
@@ -4886,7 +4909,8 @@ function validateModelForSave(candidate) {
           (countItems(flow.roles) > 0 ||
            countItems(flow.variables) > 0 ||
            hasText(flow.condition) ||
-           !!flow.canActWithoutClaim)) {
+           !!flow.canActWithoutClaim ||
+           countItems(flow.canActWithoutClaimRoles) > 0)) {
         errors.push(flowLabel(flow) +
           " is engine-only and cannot define roles, action variables, condition, or canActWithoutClaim.");
       }
@@ -5054,18 +5078,21 @@ function migrateLegacyToNew(obj) {
       }
       if (target != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
-                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false });
+                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false,
+                             canActWithoutClaimRoles: [] });
       }
     } else if (isAutomaticType(type)) {
       if (s.nextStepId != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
-                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false });
+                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false,
+                             canActWithoutClaimRoles: [] });
       }
     } else {
       for (const a of actions) {
         if (a.toStepId == null) continue;
         sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
-                             roles: a.roles, variables: a.variables, condition: null, isDefault: false, canActWithoutClaim: false });
+                             roles: a.roles, variables: a.variables, condition: null, isDefault: false, canActWithoutClaim: false,
+                             canActWithoutClaimRoles: [] });
       }
     }
 
@@ -5157,6 +5184,7 @@ function loadFromObject(obj) {
         isDefault: !!f.isDefault,
         isSelectable: f.isSelectable !== false,
         canActWithoutClaim: !!f.canActWithoutClaim,
+        canActWithoutClaimRoles: normalizeRoles(f.canActWithoutClaimRoles),
         completionCondition: (typeof f.completionCondition === "string" && f.completionCondition.trim()) ? f.completionCondition : null,
         completionPriority: Number.isInteger(f.completionPriority) ? f.completionPriority : null,
         cancelRemainingInstances: !!f.cancelRemainingInstances

@@ -1,5 +1,4 @@
 @page "/user-tasks/{TaskId:long}"
-@using System.Globalization
 @using System.Text.Json
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
@@ -55,11 +54,14 @@ else
             </div>
         }
 
-        @if (task.Status == "active" && task.Assignee is null && task.RequiresClaim)
+        @if (task.Status == "active" && (task.Capabilities.CanClaim || task.Capabilities.CanUnclaim))
         {
             <div class="d-flex flex-wrap gap-2 mt-3">
-                <button class="btn btn-outline-primary" @onclick="ClaimAsync" disabled="@busy">Claim task</button>
-                @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                @if (task.Capabilities.CanClaim)
+                {
+                    <button class="btn btn-outline-primary" @onclick="ClaimAsync" disabled="@busy">Claim task</button>
+                }
+                @if (task.Capabilities.CanUnclaim)
                 {
                     <button class="btn btn-outline-secondary" @onclick="UnclaimAsync" disabled="@busy">Unclaim</button>
                 }
@@ -106,8 +108,17 @@ else
     private readonly Dictionary<string, string?> inputs = [];
     private string? error;
     private bool busy;
+    private long loadedTaskId;
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedTaskId == TaskId) return;
+        loadedTaskId = TaskId;
+        task = null;
+        flows = [];
+        inputs.Clear();
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -127,11 +138,18 @@ else
             {
                 var text = GetInput(flow.Id, variable.Name);
                 if (string.IsNullOrWhiteSpace(text)) continue;
-                values[variable.Name] = ToJsonElement(variable, text);
+                if (!StartVariableInputParser.TryParse(variable, text, out var value, out var parseError))
+                    throw new FormatException(parseError);
+                values[variable.Name] = value;
             }
             var ack = await Api.TakeUserTaskFlowAsync(TaskId, flow.Id, new TakeFlowRequest(values));
-            if (ack is not null && ack.CurrentNodeId != task?.NodeId) Navigation.NavigateTo($"instances/{ack.InstanceId}");
-            else await LoadAsync();
+            if (ack is null)
+            {
+                await LoadAsync();
+                return;
+            }
+            Navigation.NavigateTo(
+                ack.InstanceStatus == "running" ? "inbox" : $"instances/{ack.InstanceId}");
         });
     }
 
@@ -146,27 +164,4 @@ else
     private void SetInput(int flowId, string name, string? value) => inputs[$"{flowId}:{name}"] = value;
     private static string Format(JsonElement? value) => value is null ? "" : value.Value.ValueKind == JsonValueKind.String ? value.Value.GetString() ?? "" : value.Value.GetRawText();
 
-    private static JsonElement ToJsonElement(VariableModel variable, string raw)
-    {
-        if (variable.IsArray)
-        {
-            if (raw.TrimStart().StartsWith('['))
-            {
-                using var document = JsonDocument.Parse(raw);
-                if (document.RootElement.ValueKind != JsonValueKind.Array) throw new FormatException($"Variable '{variable.Name}' must be a JSON array.");
-                return document.RootElement.Clone();
-            }
-
-            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            return JsonSerializer.SerializeToElement(values);
-        }
-
-        return variable.DataType switch
-        {
-            WorkflowVariableTypes.Number when decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var number) => JsonSerializer.SerializeToElement(number),
-            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
-            WorkflowVariableTypes.Json => JsonDocument.Parse(raw).RootElement.Clone(),
-            _ => JsonSerializer.SerializeToElement(raw)
-        };
-    }
 }

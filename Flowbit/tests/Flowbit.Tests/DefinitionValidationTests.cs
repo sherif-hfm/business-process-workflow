@@ -860,6 +860,74 @@ public sealed class DefinitionValidationTests
         await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
     }
 
+    [Fact]
+    public void Normalize_CanonicalizesClaimBypassAndAllRoleCollections()
+    {
+        var task = new FlowNodeModel
+        {
+            Id = 2,
+            Name = "Review",
+            Type = BpmnFlowNodeTypes.UserTask,
+            RequiresClaim = true,
+            Roles = null!,
+            Variables = null!
+        };
+        var flow = new SequenceFlowModel
+        {
+            Id = 201,
+            SourceRef = 2,
+            TargetRef = 3,
+            Roles = [" Reviewer ", "reviewer", "", "Approver"],
+            Variables = null!,
+            CanActWithoutClaim = true,
+            CanActWithoutClaimRoles = [" Supervisor ", "supervisor", ""]
+        };
+        var model = new WorkflowModel
+        {
+            Id = "normalize-bypass",
+            Name = "Normalize bypass",
+            FlowNodes = [task],
+            SequenceFlows = [flow],
+            CancelRoles = [" Admin ", "admin", ""],
+            UnclaimRoles = null!,
+            TaskAssignmentRoles = [" Manager ", "manager"]
+        };
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Empty(task.Roles);
+        Assert.Empty(task.Variables);
+        Assert.Equal(new[] { "Reviewer", "Approver" }, flow.Roles);
+        Assert.Equal(new[] { "Supervisor" }, flow.CanActWithoutClaimRoles);
+        Assert.Empty(flow.Variables);
+        Assert.Equal(new[] { "Admin" }, model.CancelRoles);
+        Assert.Empty(model.UnclaimRoles);
+        Assert.Equal(new[] { "Manager" }, model.TaskAssignmentRoles);
+
+        task.RequiresClaim = false;
+        WorkflowModelMigrator.Normalize(model);
+        Assert.False(flow.CanActWithoutClaim);
+        Assert.Empty(flow.CanActWithoutClaimRoles);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsClaimBypassOnNonUserAndEngineOnlyFlows()
+    {
+        var nonUser = CreateOutputMappingModel();
+        nonUser.SequenceFlows.Single(flow => flow.SourceRef == 1).CanActWithoutClaim = true;
+        var nonUserError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(nonUser, false, CancellationToken.None));
+        Assert.Contains("not a user task", nonUserError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var engineOnly = LoadModel("votes-users-list.json");
+        var fallback = engineOnly.SequenceFlows.Single(flow => !flow.IsSelectable);
+        fallback.CanActWithoutClaim = true;
+        fallback.CanActWithoutClaimRoles = ["Supervisor"];
+        var engineOnlyError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(engineOnly, false, CancellationToken.None));
+        Assert.Contains("engine-only", engineOnlyError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static WorkflowModel CreateMessageStartModel()
     {
         var model = LoadModel("votes-users-list.json");

@@ -158,3 +158,49 @@ The instance list also accepts `includeVariables=true`. Each returned summary
 then includes a `variables` object containing the latest JSON value for every
 variable name; instances without variables receive an empty object. The property
 is omitted, and no variable query runs, when the parameter is absent or false.
+
+## User tasks
+
+Each token resting on a `userTask` owns a persisted work item. Task-addressed routes are authoritative when an instance may have more than one active work item:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/user-tasks/{taskId}` | Read an authorized task, its completion metadata, and caller capabilities. |
+| `GET /api/user-tasks/{taskId}/flows` | List actions currently visible and executable by the caller. |
+| `POST /api/user-tasks/{taskId}/claim` | Claim an active shared-pool task. |
+| `POST /api/user-tasks/{taskId}/unclaim` | Release a claim as its owner or through a workflow `unclaimRoles` override. |
+| `POST /api/user-tasks/{taskId}/flows/{flowId}` | Execute a visible action with optional typed variables. |
+| `POST /api/user-tasks/{taskId}/assign` | Assign or reassign a task as a configured task-assignment manager. |
+| `POST /api/user-tasks/{taskId}/unassign` | Return a managed assignment to its authored pool behavior. |
+| `GET /api/user-tasks/manage` | Page through active tasks authorized by `taskAssignmentRoles`. |
+| `GET /api/instances/{instanceId}/user-tasks` | Page through the caller's authorized task history for one instance. |
+| `GET /api/instances/inbox` | List active work and caller-specific claim/action capabilities. |
+
+The older instance-addressed `/api/instances/{id}/claim`, `/unclaim`, `/flows`, and `/flows/{flowId}` routes delegate to the same task core. They return `409` when no single active task can be addressed safely.
+
+### Conditions are visibility and execution guards
+
+A condition on a sequence flow leaving a user task is evaluated against values already stored on the workflow instance. For example, `amount > 5000` makes the action visible only while the stored `amount` satisfies that expression. The action endpoint re-evaluates the same condition while holding the instance/task lock, before applying submitted action variables. A caller cannot reveal or execute a hidden flow by posting a new `amount` in that same action.
+
+Invalid or unresolved expressions evaluate to `false`. Task, flow, assignment, claim, and role checks still apply independently.
+
+Inbox membership, ordering, and `TotalCount` come entirely from the database page. Latest variables and multi-instance state are loaded in page-bounded batches, after which flow roles, bypass roles, and conditions refine only the returned task's visible actions and capabilities. If no action is available, the task remains in the page with `canAct=false` and `canClaim=false`; service evaluation never removes or reorders an inbox item.
+
+### Acting without a claim
+
+An action may set:
+
+```json
+{
+  "canActWithoutClaim": true,
+  "canActWithoutClaimRoles": ["Supervisor"]
+}
+```
+
+The bypass roles are additional to the user task's roles and the sequence flow's normal `roles`. They are checked only when the caller does not own the claim. Consequently, a normal claimant may take the action without a bypass role, while a supervisor may take it unclaimed or despite another actor's claim. An empty or missing `canActWithoutClaimRoles` list preserves the historical behavior: every otherwise-authorized actor may bypass. Claim bypass never overrides direct assignment.
+
+### Capabilities and completion metadata
+
+`UserTaskDto.capabilities` contains `claimedByMe`, `canClaim`, `canUnclaim`, and `canAct` for the current caller. The server derives these flags from active state, assignment, node and flow roles, stored conditions, claim ownership, bypass roles, and multi-instance ownership rules. Clients should render controls from these flags and still handle a locked re-check failure caused by concurrent activity.
+
+Completed tasks expose `selectedFlowId`, `completedBy`, `result`, and `completedAt`. Normal task action history is correlated with both `tokenId` and `userTaskId`. Cancelled tasks do not receive action outcome metadata.

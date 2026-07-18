@@ -132,6 +132,12 @@ public sealed record UserTaskWorkSummaryDto(
     string? SoleClaimedBy,
     string? SoleAssignee);
 
+public sealed record UserTaskCapabilitiesDto(
+    bool ClaimedByMe,
+    bool CanClaim,
+    bool CanUnclaim,
+    bool CanAct);
+
 public sealed record UserTaskDto(
     long Id,
     long InstanceId,
@@ -147,6 +153,9 @@ public sealed record UserTaskDto(
     int? ItemIndex,
     JsonElement? ItemValue,
     int? SelectedFlowId,
+    string? CompletedBy,
+    IReadOnlyDictionary<string, JsonElement>? Result,
+    UserTaskCapabilitiesDto Capabilities,
     MultiInstanceProgressDto? MultiInstance,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,

@@ -21,6 +21,12 @@ public sealed class InstanceDtoContractTests
         Assert.Contains(
             typeof(UserTaskDto).GetProperties(),
             property => property.Name == "ClaimedBy");
+        Assert.Contains(typeof(UserTaskDto).GetProperties(), property => property.Name == "CompletedBy");
+        Assert.Contains(typeof(UserTaskDto).GetProperties(), property => property.Name == "Result");
+        Assert.Contains(typeof(UserTaskDto).GetProperties(), property => property.Name == "Capabilities");
+        Assert.Equal(
+            new[] { "ClaimedByMe", "CanClaim", "CanUnclaim", "CanAct" },
+            typeof(UserTaskCapabilitiesDto).GetProperties().Select(property => property.Name));
 
         Assert.Contains(typeof(StartInstanceResultDto).GetProperties(), property => property.Name == "BusinessKey");
         Assert.Contains(typeof(InstanceSummaryDto).GetProperties(), property => property.Name == "BusinessKey");

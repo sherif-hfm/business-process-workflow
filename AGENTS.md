@@ -110,6 +110,11 @@ Storage follows the hybrid design:
   are projected from the latest execution token. Inbox reads query active
   `user_tasks` directly and apply claim/role predicates there, ordered by task
   `UpdatedAt DESC, Id DESC`; they do not infer work from `workflow_instances`.
+  Database membership, count, ordering, and paging remain authoritative. The
+  returned page batch-loads latest instance variables and multi-instance state;
+  flow roles, claim-bypass roles, and stored-state conditions then refine only
+  action visibility and `CanAct`/`CanClaim`. A task with no available action
+  stays in its SQL page disabled, and no per-task database reads are performed.
   Entering a user task creates an active work item, leaving completes it, and
   cancellation cancels it. Claim/unclaim updates the work item. The migration
   backfills one token and (where applicable) one active user task for existing
@@ -428,9 +433,14 @@ Storage follows the hybrid design:
   `GetAvailableFlowsAsync` hides a flow whose roles the actor doesn't hold, and
   `TakeFlowAsync` rejects an attempt with a `WorkflowDomainException`. This
   stacks on top of the task's own node roles and claim ownership. `userTask`
-  flows can also carry a `condition` (NCalc) and an `isDefault` flag: the engine
-  filters visible actions in `GetAvailableFlowsAsync` and re-checks the
-  condition before executing `TakeFlowAsync`.
+  flows can also carry a `condition` (NCalc): the engine filters visible actions
+  using values already stored on the instance and re-checks the same stored-state
+  guard under lock before applying submitted action variables. A flow with
+  `canActWithoutClaim=true` may additionally declare `canActWithoutClaimRoles`;
+  these roles stack with node/flow roles only when the caller does not own the
+  claim. Empty bypass roles preserve unrestricted bypass for otherwise-authorized
+  actors, including when another actor owns the claim. Direct assignment is never
+  bypassed.
 - **Direct user-task assignment.** A normal (non-multi-instance) `userTask` may
   carry an `assignee` NCalc expression. The expression is evaluated once when
   the work item is created against the latest instance variables plus the normal
@@ -1185,10 +1195,11 @@ when extending the model so new features stay close to BPMN terminology.
   `userTask` nodes and user-initiated `startEvent` nodes; an empty `roles` list
   means open to anyone. Sequence-flow `roles` are enforced at runtime for
   `userTask` flows (same semantics), stacking on top of the task's own node
-  roles and claim ownership; `userTask` flows can also carry a `condition`
-  (NCalc) and an `isDefault` flag that the engine evaluates at both list and
-  execution time. `requiresClaim` ownership is enforced on top of the role
-  check.
+  roles and claim ownership; `userTask` flow conditions are stored-state
+  visibility rules rechecked at execution time before submitted action values are
+  applied. `canActWithoutClaimRoles` optionally restricts which otherwise-authorized
+  actors can use a claim-bypass flow. `requiresClaim` ownership is enforced on top
+  of the role check unless that explicit bypass succeeds.
 
 ### If you add BPMN-aligned features later
 
@@ -1242,9 +1253,9 @@ when extending the model so new features stay close to BPMN terminology.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
   `isDefault` marker; the editor shows the condition/`default` beneath the edge
   and enforces a single default per gateway.
-- **User-task flows**: `userTask` outgoing flows may also carry a `condition` (NCalc)
-  and an `isDefault` marker; the editor shows both roles and condition/default beneath
-  the edge and enforces a single default per user task. Multi-instance flows may set
+- **User-task flows**: `userTask` outgoing flows may carry a stored-state `condition`
+  (NCalc), action roles, and optional claim-bypass roles; the editor shows these
+  controls beneath the edge. Multi-instance flows may set
   `isSelectable=false`; the editor marks these edges `engine-only`, the API never
   exposes or accepts them as user actions, and only completion/default routing may
   choose them.

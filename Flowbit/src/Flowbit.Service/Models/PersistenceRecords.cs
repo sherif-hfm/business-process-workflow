@@ -121,6 +121,10 @@ public sealed record MultiInstanceProgressRecord(
     int CancelledCount,
     IReadOnlyDictionary<int, int> FlowCounts);
 
+public sealed record MultiInstanceActorStateRecord(
+    bool HasCompleted,
+    long? OwnedTaskId);
+
 // Compatibility projection for the existing instance-oriented API. TokenId and
 // UserTaskId keep the persistence boundary ready for task/token-addressed APIs.
 public sealed record InstanceListItem(

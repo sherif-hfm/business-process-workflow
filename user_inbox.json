@@ -1,5 +1,5 @@
 {
-  "id": "101",
+  "id": "user_inbox",
   "name": "user inbox",
   "initialEventId": 1,
   "variables": [],
@@ -18,9 +18,8 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null,
-      "attachedToRef": null,
-      "errorVariable": null
+      "assignee": null,
+      "assignments": []
     },
     {
       "id": 2,
@@ -38,7 +37,8 @@
       "claimMode": "fromNode",
       "inheritClaimFromNodeId": 2,
       "variables": [],
-      "condition": "[sys.user]  = \"alice\" or [sys.user]  = \"alice2\" ",
+      "assignee": null,
+      "multiInstance": null,
       "attachedToRef": null,
       "errorVariable": null
     },
@@ -48,8 +48,8 @@
       "externalId": null,
       "type": "userTask",
       "laneId": null,
-      "x": 652,
-      "y": 120,
+      "x": 986,
+      "y": 128,
       "roles": [
         "Manager"
       ],
@@ -57,7 +57,8 @@
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null,
+      "assignee": null,
+      "multiInstance": null,
       "attachedToRef": null,
       "errorVariable": null
     },
@@ -67,16 +68,29 @@
       "externalId": null,
       "type": "endEvent",
       "laneId": null,
-      "x": 1036,
-      "y": 122,
+      "x": 1342,
+      "y": 137,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
       "inheritClaimFromNodeId": null,
       "variables": [],
-      "condition": null,
-      "attachedToRef": null,
-      "errorVariable": null
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 5,
+      "name": "Gateway",
+      "type": "exclusiveGateway",
+      "laneId": null,
+      "x": 686,
+      "y": 130,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null
     }
   ],
   "sequenceFlows": [
@@ -90,21 +104,34 @@
       "variables": [],
       "condition": null,
       "isDefault": false,
-      "canActWithoutClaim": false
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 102,
       "name": "confirm",
       "externalId": null,
       "sourceRef": 2,
-      "targetRef": 3,
+      "targetRef": 5,
       "roles": [
-        "User"
+        "User",
+        "Manager"
       ],
       "variables": [],
       "condition": null,
       "isDefault": false,
-      "canActWithoutClaim": false
+      "isSelectable": true,
+      "canActWithoutClaim": true,
+      "canActWithoutClaimRoles": [
+        "Manager"
+      ],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 103,
@@ -118,20 +145,44 @@
       "variables": [],
       "condition": null,
       "isDefault": false,
-      "canActWithoutClaim": false
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 104,
-      "name": "Manager Confirm",
-      "sourceRef": 2,
-      "targetRef": 4,
-      "roles": [
-        "Manager"
-      ],
+      "name": "not confirmed",
+      "sourceRef": 5,
+      "targetRef": 3,
+      "roles": [],
       "variables": [],
       "condition": null,
       "isDefault": false,
-      "canActWithoutClaim": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 105,
+      "name": "confirmed",
+      "sourceRef": 5,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     }
   ],
   "cancelRoles": [
@@ -139,5 +190,7 @@
   ],
   "unclaimRoles": [
     "Manager"
-  ]
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
 }

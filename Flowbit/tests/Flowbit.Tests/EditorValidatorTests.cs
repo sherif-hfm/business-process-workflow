@@ -69,6 +69,19 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_RejectsClaimBypassRolesOnAnEngineOnlyFlow()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        var fallback = model.SequenceFlows.Single(flow => !flow.IsSelectable);
+        fallback.CanActWithoutClaimRoles = ["Supervisor"];
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error =>
+            error.Contains("pure engine-only default", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validator_AcceptsValidBusinessKeyAndRejectsInvalidPolicy()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");

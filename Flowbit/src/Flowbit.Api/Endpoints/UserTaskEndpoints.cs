@@ -16,10 +16,26 @@ public static class UserTaskEndpoints
             .Produces<PagedResult<ManagedUserTaskDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized);
-        group.MapGet("/{taskId:long}", GetTask).Produces<UserTaskDto>().Produces(StatusCodes.Status404NotFound);
-        group.MapGet("/{taskId:long}/flows", GetFlows).Produces<IReadOnlyList<SequenceFlowModel>>();
-        group.MapPost("/{taskId:long}/claim", Claim).Produces<UserTaskDto>().Produces(StatusCodes.Status409Conflict);
-        group.MapPost("/{taskId:long}/unclaim", Unclaim).Produces<UserTaskDto>();
+        group.MapGet("/{taskId:long}", GetTask)
+            .Produces<UserTaskDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+        group.MapGet("/{taskId:long}/flows", GetFlows)
+            .Produces<IReadOnlyList<SequenceFlowModel>>()
+            .Produces(StatusCodes.Status401Unauthorized);
+        group.MapPost("/{taskId:long}/claim", Claim)
+            .Produces<UserTaskDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+        group.MapPost("/{taskId:long}/unclaim", Unclaim)
+            .Produces<UserTaskDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
         group.MapPost("/{taskId:long}/assign", Assign)
             .Produces<UserTaskAssignmentAckDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -37,6 +53,8 @@ public static class UserTaskEndpoints
         group.MapPost("/{taskId:long}/flows/{flowId:int}", TakeFlow)
             .Produces<UserTaskActionAckDto>()
             .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
         return app;
     }

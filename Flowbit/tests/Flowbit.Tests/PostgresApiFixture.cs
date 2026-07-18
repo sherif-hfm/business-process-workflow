@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -5,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -35,6 +37,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
 
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public HttpClient Client { get; private set; } = null!;
+    public ApiDbCommandCounter CommandCounter { get; } = new();
     public string ConnectionString => _postgres.GetConnectionString();
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
@@ -62,7 +65,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             await migrationDb.Database.MigrateAsync();
         }
 
-        Factory = new WorkflowApiFactory(_postgres.GetConnectionString());
+        Factory = new WorkflowApiFactory(_postgres.GetConnectionString(), CommandCounter);
         Client = Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
@@ -97,7 +100,9 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable(key, value);
     }
 
-    private sealed class WorkflowApiFactory(string connectionString) : WebApplicationFactory<Program>
+    private sealed class WorkflowApiFactory(
+        string connectionString,
+        ApiDbCommandCounter commandCounter) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -115,6 +120,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             });
             builder.ConfigureTestServices(services =>
             {
+                services.AddSingleton(commandCounter);
+                services.AddDbContext<AppDbContext>((_, options) => options.AddInterceptors(commandCounter));
                 services.AddAuthentication(options =>
                     {
                         options.DefaultAuthenticateScheme = TestAuthenticationHandler.SchemeName;
@@ -186,5 +193,24 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             return Task.FromResult(AuthenticateResult.Success(
                 new AuthenticationTicket(principal, SchemeName)));
         }
+    }
+}
+
+public sealed class ApiDbCommandCounter : DbCommandInterceptor
+{
+    private int _readerCommands;
+
+    public int ReaderCommands => Volatile.Read(ref _readerCommands);
+
+    public void Reset() => Interlocked.Exchange(ref _readerCommands, 0);
+
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _readerCommands);
+        return ValueTask.FromResult(result);
     }
 }

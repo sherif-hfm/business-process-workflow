@@ -706,6 +706,14 @@ public sealed class SequenceFlowModel
     public bool CanActWithoutClaim { get; set; }
 
     /// <summary>
+    /// Roles allowed to bypass this flow's claim requirement. These roles are
+    /// evaluated in addition to the task and flow roles. An empty list permits
+    /// every otherwise-authorized actor, preserving older definitions.
+    /// </summary>
+    [JsonPropertyName("canActWithoutClaimRoles")]
+    public List<string> CanActWithoutClaimRoles { get; set; } = [];
+
+    /// <summary>
     /// Aggregate NCalc condition evaluated after a multi-instance item completes.
     /// </summary>
     [JsonPropertyName("completionCondition")]

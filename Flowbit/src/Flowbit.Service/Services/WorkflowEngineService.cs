@@ -535,6 +535,7 @@ public sealed class WorkflowEngineService(
         int pageSize,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
         var variableFilters = ParseVariableFilters(variables);
@@ -554,42 +555,35 @@ public sealed class WorkflowEngineService(
             definitionsById[id] = await GetWorkflowAsync(id, cancellationToken);
         }
 
-        // The actor and definition version are stable for this request. Cache the
-        // outgoing-flow role/claim calculation per node instead of rescanning the
-        // full sequence-flow list for every inbox row (especially multi-instance rows).
-        var authorizationByNode = new Dictionary<(long DefinitionId, int NodeId), (bool HasRestrictedFlows, bool CanTakeAny, bool HasBypass)>();
-        var canActByTask = new Dictionary<long, bool>();
-        var hasBypassClaimByTask = new Dictionary<long, bool>();
-        foreach (var row in paged.Items)
-        {
-            var key = (row.WorkflowDefinitionId, row.CurrentNodeId);
-            if (!authorizationByNode.TryGetValue(key, out var authorization))
-            {
-                var definition = definitionsById[row.WorkflowDefinitionId].Definition;
-                var node = GetFlowNode(definition, row.CurrentNodeId);
-                authorization = (
-                    HasRoleRestrictedFlows(node, definition),
-                    CanTakeAnyFlow(node, definition, normalizedRoles),
-                    CanTakeAnyBypassClaimFlow(node, definition, normalizedRoles));
-                authorizationByNode[key] = authorization;
-            }
-
-            var taskKey = InboxAuthorizationKey(row);
-            if (authorization.HasRestrictedFlows)
-            {
-                canActByTask[taskKey] = authorization.CanTakeAny;
-            }
-            if (authorization.HasBypass)
-            {
-                hasBypassClaimByTask[taskKey] = true;
-            }
-        }
-
         var executionIds = paged.Items.Where(row => row.MultiInstanceExecutionId is not null)
             .Select(row => row.MultiInstanceExecutionId!.Value)
             .Distinct()
             .ToList();
-        var progressByExecution = await BuildProgressAsync(executionIds, cancellationToken);
+        var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
+
+        var canActByTask = new Dictionary<long, bool>();
+        var hasBypassClaimByTask = new Dictionary<long, bool>();
+        foreach (var row in paged.Items)
+        {
+            var taskKey = InboxAuthorizationKey(row);
+            if (row.UserTaskId is null) continue;
+            var workflow = definitionsById[row.WorkflowDefinitionId];
+            var node = GetFlowNode(workflow.Definition, row.CurrentNodeId);
+            var task = ToInboxUserTaskRecord(row);
+            var instance = ToInboxInstanceRecord(row, workflow);
+            var execution = row.MultiInstanceExecutionId is long executionId
+                ? progressRecords.GetValueOrDefault(executionId)?.Execution
+                : null;
+            var eligible = GetEligibleUserTaskFlows(
+                instance, workflow, node, task, execution, actor,
+                row.Variables ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase));
+            canActByTask[taskKey] = eligible.Count > 0;
+            hasBypassClaimByTask[taskKey] = eligible.Any(flow => CanBypassClaim(flow, normalizedRoles));
+        }
+
+        var progressByExecution = progressRecords.ToDictionary(
+            pair => pair.Key,
+            pair => ToProgress(pair.Value));
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null)).ToList();
@@ -597,6 +591,20 @@ public sealed class WorkflowEngineService(
     }
 
     private static long InboxAuthorizationKey(InstanceListItem row) => row.UserTaskId ?? row.Id;
+
+    private static WorkflowInstanceRecord ToInboxInstanceRecord(
+        InstanceListItem row,
+        WorkflowDefinitionRecord workflow) =>
+        new(row.Id, row.WorkflowDefinitionId, workflow.WorkflowKey, null, row.BusinessKey,
+            row.BusinessKeyUniqueness, row.TokenId, row.CurrentNodeId, row.UserTaskId,
+            row.Status, row.ClaimedBy, row.StartedBy, row.CreatedAt, row.UpdatedAt);
+
+    private static UserTaskRecord ToInboxUserTaskRecord(InstanceListItem row) =>
+        new(row.UserTaskId!.Value, row.Id, row.TokenId, row.CurrentNodeId, row.CurrentNodeName,
+            row.CurrentNodeExternalId, row.CurrentNodeRoles, row.CurrentRequiresClaim,
+            UserTaskRecordStatuses.Active, row.ClaimedBy, row.MultiInstanceExecutionId,
+            row.ItemIndex, row.ItemValue, row.Assignee, null, null, null,
+            row.CreatedAt, row.UpdatedAt, null);
 
     private static InboxItemDto ToInboxItem(
         InstanceListItem row,
@@ -626,12 +634,9 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        // When the returned page contains role-restricted flows, refine the action flags:
-        // the actor must additionally be able to take at least one outgoing flow.
-        // A task with role-restricted flows that all exclude the actor is visible
-        // but not actionable (and shouldn't be claimed, since it could never
-        // advance). Tasks without role-restricted flows are absent from the map
-        // and keep the historical node-only results above.
+        // Refine the flags with flow roles and stored-state conditions. A task
+        // with no currently visible action remains listed but cannot be claimed
+        // or acted on until its stored state makes an action visible.
         if (canActByTask is not null && canActByTask.TryGetValue(authorizationKey, out var canTakeAny))
         {
             if (!canTakeAny)
@@ -717,7 +722,7 @@ public sealed class WorkflowEngineService(
         return OutgoingFlows(workflow.Definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault
                         && RoleAllowed(f.Roles, actorRoles)
-                        && (!task.RequiresClaim || claimedByMe || f.CanActWithoutClaim)
+                        && (!task.RequiresClaim || claimedByMe || CanBypassClaim(f, actorRoles))
                         && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, evalCtx)))
             .ToList();
@@ -728,126 +733,29 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        await LoadSettingsAsync(cancellationToken);
         var preview = await runtime.GetInstanceAsync(id, cancellationToken);
-        if (preview is not null)
-        {
-            var previewWorkflow = await GetWorkflowAsync(preview.WorkflowDefinitionId, cancellationToken);
-            var previewNode = GetFlowNode(previewWorkflow.Definition, preview.CurrentStepId);
-            if (previewNode.MultiInstance is not null)
-            {
-                var tasks = await runtime.ListUserTasksAsync(id, UserTaskRecordStatuses.Active, cancellationToken);
-                if (tasks.Count != 1) throw new WorkflowConflictException("The instance has multiple active user tasks; use a task-addressed endpoint.");
-                await ClaimUserTaskAsync(tasks[0].Id, actor, cancellationToken);
-                return await BuildDetailAsync(id, cancellationToken);
-            }
-        }
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
-        if (instance is null)
-        {
-            logger.LogInformation("Claim instance {InstanceId}: instance not found.", id);
-            return null;
-        }
-
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        var task = instance.ActiveUserTaskId is long taskId
-            ? await runtime.GetUserTaskAsync(taskId, true, cancellationToken)
-            : null;
-        if (task?.Assignee is not null)
-        {
-            throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
-        }
-        if (instance.Status != WorkflowInstanceStatuses.Running || task is null || !task.RequiresClaim)
-        {
-            logger.LogWarning("Claim rejected on instance {InstanceId}: node #{NodeId} is not claimable (status={Status}, requiresClaim={RequiresClaim}).",
-                id, node.Id, instance.Status, task?.RequiresClaim ?? false);
-            throw new WorkflowDomainException("The current flow node cannot be claimed.");
-        }
-
-        EnsureRoleAllowed(node, actor);
-
-        var normalizedUser = NormalizeUser(actor.User);
-        if (!string.IsNullOrWhiteSpace(instance.ClaimedBy) && instance.ClaimedBy != normalizedUser)
-        {
-            logger.LogWarning("Claim rejected on instance {InstanceId}: node already claimed by '{ClaimedBy}', requested by '{User}'.",
-                id, instance.ClaimedBy, normalizedUser);
-            throw new WorkflowDomainException($"The current flow node is already claimed by '{instance.ClaimedBy}'.");
-        }
-
-        await runtime.UpdateInstanceAsync(
-            instance.Id,
-            instance.CurrentStepId,
-            instance.Status,
-            normalizedUser,
-            cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        logger.LogInformation("Instance {InstanceId} claimed by user '{User}' on node #{NodeId} ({NodeName}).",
-            id, normalizedUser, node.Id, node.Name);
-
+        if (preview is null) return null;
+        var tasks = await runtime.ListUserTasksAsync(id, UserTaskRecordStatuses.Active, cancellationToken);
+        if (tasks.Count != 1)
+            throw new WorkflowConflictException(
+                tasks.Count == 0
+                    ? "The instance does not have an active user task."
+                    : "The instance has multiple active user tasks; use a task-addressed endpoint.");
+        await ClaimUserTaskAsync(tasks[0].Id, actor, cancellationToken);
         return await BuildDetailAsync(id, cancellationToken);
     }
 
     public async Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken)
     {
         var preview = await runtime.GetInstanceAsync(id, cancellationToken);
-        if (preview is not null)
-        {
-            var previewWorkflow = await GetWorkflowAsync(preview.WorkflowDefinitionId, cancellationToken);
-            var previewNode = GetFlowNode(previewWorkflow.Definition, preview.CurrentStepId);
-            if (previewNode.MultiInstance is not null)
-            {
-                var tasks = await runtime.ListUserTasksAsync(id, UserTaskRecordStatuses.Active, cancellationToken);
-                if (tasks.Count != 1) throw new WorkflowConflictException("The instance has multiple active user tasks; use a task-addressed endpoint.");
-                await UnclaimUserTaskAsync(tasks[0].Id, actor, cancellationToken);
-                return await BuildDetailAsync(id, cancellationToken);
-            }
-        }
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
-        if (instance is null)
-        {
-            logger.LogInformation("Unclaim instance {InstanceId}: instance not found.", id);
-            return null;
-        }
-
-        var activeTask = instance.ActiveUserTaskId is long taskId
-            ? await runtime.GetUserTaskAsync(taskId, true, cancellationToken)
-            : null;
-        if (activeTask?.Assignee is not null)
-        {
-            throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
-        }
-
-        var normalizedUser = NormalizeUser(actor.User);
-        if (!string.IsNullOrWhiteSpace(instance.ClaimedBy))
-        {
-            var isClaimant = string.Equals(instance.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
-
-            var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-            var unclaimRoles = workflow.Definition.UnclaimRoles ?? [];
-
-            var actorRoles = NormalizeRoles(actor.Roles);
-            var hasUnclaimRole = unclaimRoles.Any(r => actorRoles.Contains(r));
-
-            if (!isClaimant && !hasUnclaimRole)
-            {
-                logger.LogWarning("Unclaim rejected on instance {InstanceId}: user '{User}' is not the claimant ('{ClaimedBy}') and lacks an unclaim role.",
-                    id, normalizedUser, instance.ClaimedBy);
-                throw new WorkflowDomainException($"Only the user who claimed the task ('{instance.ClaimedBy}') or users with unclaim permissions can unclaim this task.");
-            }
-        }
-
-        await runtime.UpdateInstanceAsync(instance.Id, instance.CurrentStepId, instance.Status, null, cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        logger.LogInformation("Instance {InstanceId} unclaimed by user '{User}' (previous claimant: '{PreviousClaimedBy}').",
-            id, normalizedUser, instance.ClaimedBy);
-
+        if (preview is null) return null;
+        var tasks = await runtime.ListUserTasksAsync(id, UserTaskRecordStatuses.Active, cancellationToken);
+        if (tasks.Count != 1)
+            throw new WorkflowConflictException(
+                tasks.Count == 0
+                    ? "The instance does not have an active user task."
+                    : "The instance has multiple active user tasks; use a task-addressed endpoint.");
+        await UnclaimUserTaskAsync(tasks[0].Id, actor, cancellationToken);
         return await BuildDetailAsync(id, cancellationToken);
     }
 
@@ -862,8 +770,16 @@ public sealed class WorkflowEngineService(
             ?? throw new WorkflowDomainException($"Workflow instance #{task.InstanceId} was not found.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, task.NodeId);
-        EnsureUserTaskActor(task, node, actor, requireActive: false);
-        return await BuildUserTaskDtoAsync(task, cancellationToken);
+        if (!CanUserTaskActor(task, node, actor)
+            && !(task.Status == UserTaskRecordStatuses.Active
+                 && task.Assignee is null
+                 && task.RequiresClaim
+                 && !string.IsNullOrWhiteSpace(task.ClaimedBy)
+                 && HasUnclaimOverrideRole(workflow.Definition, actor)))
+        {
+            throw new WorkflowDomainException("The actor is not assigned or authorized for this user task.");
+        }
+        return await BuildUserTaskDtoAsync(task, actor, cancellationToken);
     }
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(
@@ -905,7 +821,7 @@ public sealed class WorkflowEngineService(
                         && RoleAllowed(f.Roles, roles)
                         && (!task.RequiresClaim
                             || string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase)
-                            || f.CanActWithoutClaim)
+                            || CanBypassClaim(f, roles))
                         && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, context)))
             .ToList();
@@ -916,6 +832,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await LoadSettingsAsync(cancellationToken);
         var initialTask = await runtime.GetUserTaskAsync(taskId, false, cancellationToken);
         if (initialTask is null) return null;
 
@@ -939,11 +856,12 @@ public sealed class WorkflowEngineService(
         if (task is null || task.InstanceId != instance.Id
                          || task.MultiInstanceExecutionId != initialTask.MultiInstanceExecutionId
                          || task.TokenId != instance.ActiveTokenId
-                         || task.NodeId != instance.CurrentStepId)
+                         || task.NodeId != instance.CurrentStepId
+                         || task.Status != UserTaskRecordStatuses.Active)
             throw new WorkflowConflictException("The user task is no longer current.");
         if (task.Assignee is not null)
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
-        if (task.Status != UserTaskRecordStatuses.Active || !task.RequiresClaim)
+        if (!task.RequiresClaim)
             throw new WorkflowDomainException("The user task cannot be claimed.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, task.NodeId);
@@ -958,14 +876,25 @@ public sealed class WorkflowEngineService(
             if (ownedTaskId is not null && ownedTaskId != task.Id)
                 throw new WorkflowConflictException("The actor already owns another item in this multi-instance execution.");
         }
-        if (!string.IsNullOrWhiteSpace(task.ClaimedBy)
-            && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase))
-            throw new WorkflowConflictException($"The user task is already claimed by '{task.ClaimedBy}'.");
-        await runtime.UpdateUserTaskClaimAsync(taskId, user, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+        {
+            if (!string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase))
+                throw new WorkflowConflictException($"The user task is already claimed by '{task.ClaimedBy}'.");
+            return await BuildUserTaskDtoAsync(task, actor, cancellationToken);
+        }
+
+        var eligibleFlows = await GetEligibleUserTaskFlowsAsync(
+            instance, workflow, node, task, execution, actor, cancellationToken);
+        if (eligibleFlows.Count == 0)
+            throw new WorkflowDomainException(
+                "The actor has no currently visible action on this user task and cannot claim it.");
+
+        var updatedAt = await runtime.UpdateUserTaskClaimAsync(taskId, user, cancellationToken);
         await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return await GetUserTaskAsync(taskId, actor, cancellationToken);
+        return await BuildUserTaskDtoAsync(
+            task with { ClaimedBy = user, UpdatedAt = updatedAt }, actor, cancellationToken);
     }
 
     public async Task<UserTaskDto?> UnclaimUserTaskAsync(
@@ -1000,19 +929,29 @@ public sealed class WorkflowEngineService(
             throw new WorkflowConflictException("The user task is no longer current.");
         if (task.Assignee is not null)
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
+        if (!task.RequiresClaim)
+            throw new WorkflowDomainException("The user task does not use claim/unclaim.");
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var node = GetFlowNode(workflow.Definition, task.NodeId);
         var user = NormalizeUser(actor.User);
-        var roles = NormalizeRoles(actor.Roles);
-        var mayOverride = workflow.Definition.UnclaimRoles.Any(roles.Contains);
-        if (!string.IsNullOrWhiteSpace(task.ClaimedBy)
-            && !string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase)
+        var mayOverride = HasUnclaimOverrideRole(workflow.Definition, actor);
+        if (string.IsNullOrWhiteSpace(task.ClaimedBy))
+        {
+            if (!CanUserTaskActor(task, node, actor) && !mayOverride)
+                throw new WorkflowDomainException(
+                    "The actor is not authorized to unclaim this user task.");
+            return await BuildUserTaskDtoAsync(task, actor, cancellationToken);
+        }
+        if (!string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase)
             && !mayOverride)
             throw new WorkflowDomainException("Only the claimant or a configured unclaim role can unclaim this user task.");
-        await runtime.UpdateUserTaskClaimAsync(taskId, null, cancellationToken);
+
+        var updatedAt = await runtime.UpdateUserTaskClaimAsync(taskId, null, cancellationToken);
         await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return await GetUserTaskAsync(taskId, actor, cancellationToken);
+        return await BuildUserTaskDtoAsync(
+            task with { ClaimedBy = null, UpdatedAt = updatedAt }, actor, cancellationToken);
     }
 
     public async Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
@@ -1342,33 +1281,47 @@ public sealed class WorkflowEngineService(
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
-        var records = await runtime.ListUserTasksAsync(instanceId, status, cancellationToken);
         var instance = await runtime.GetInstanceAsync(instanceId, cancellationToken);
         if (instance is null) return new PagedResult<UserTaskDto>([], page, pageSize, 0);
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var visible = new List<UserTaskRecord>();
-        foreach (var task in records)
-        {
-            var node = GetFlowNode(workflow.Definition, task.NodeId);
-            if (CanUserTaskActor(task, node, actor))
-                visible.Add(task);
-        }
-        var pageRecords = visible.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        var paged = await runtime.ListUserTasksPageAsync(
+            instanceId,
+            status,
+            NormalizeUser(actor.User),
+            NormalizeRoles(actor.Roles),
+            page,
+            pageSize,
+            cancellationToken);
+        var pageRecords = paged.Items;
+        if (pageRecords.Count == 0)
+            return new PagedResult<UserTaskDto>([], page, pageSize, paged.TotalCount);
+        await LoadSettingsAsync(cancellationToken);
         var executionIds = pageRecords
             .Where(task => task.MultiInstanceExecutionId is not null)
             .Select(task => task.MultiInstanceExecutionId!.Value)
             .Distinct()
             .ToList();
-        var progressCache = await BuildProgressAsync(executionIds, cancellationToken);
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
+        var progressCache = progressRecords.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
+        var executionsById = progressRecords.ToDictionary(pair => pair.Key, pair => pair.Value.Execution);
+        var onePerActorIds = progressRecords.Values
+            .Where(progress => progress.Execution.OnePerActor)
+            .Select(progress => progress.Execution.Id)
+            .ToList();
+        var actorStates = await runtime.GetMultiInstanceActorStatesAsync(
+            onePerActorIds, NormalizeUser(actor.User), cancellationToken);
         var items = new List<UserTaskDto>(pageRecords.Count);
         foreach (var task in pageRecords)
         {
             var progress = task.MultiInstanceExecutionId is long executionId
                 ? progressCache.GetValueOrDefault(executionId)
                 : null;
-            items.Add(ToUserTaskDto(task, progress));
+            var capabilities = BuildUserTaskCapabilities(
+                task, actor, instance, workflow, stored, executionsById, actorStates);
+            items.Add(ToUserTaskDto(task, progress, capabilities));
         }
-        return new PagedResult<UserTaskDto>(items, page, pageSize, visible.Count);
+        return new PagedResult<UserTaskDto>(items, page, pageSize, paged.TotalCount);
     }
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetMultiInstanceInterruptFlowsAsync(
@@ -1444,15 +1397,17 @@ public sealed class WorkflowEngineService(
         if (!RoleAllowed(flow.Roles, roles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this interrupt action.");
 
-        ValidateVariableValues(flow.Variables, variableValues);
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var context = WithContext(stored, actor, instance, workflow.Definition, node);
-        AddMultiInstanceExecutionContext(context, execution);
-        var values = ResolveAndValidateVariables(flow.Variables, variableValues, context);
-        foreach (var pair in values) context[pair.Key] = pair.Value;
+        var storedContext = WithContext(stored, actor, instance, workflow.Definition, node);
+        AddMultiInstanceExecutionContext(storedContext, execution);
         if (!string.IsNullOrWhiteSpace(flow.Condition)
-            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context))
+            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, storedContext))
             throw new WorkflowDomainException("The selected interrupt action condition is not satisfied.");
+
+        ValidateVariableValues(flow.Variables, variableValues);
+        var values = ResolveAndValidateVariables(flow.Variables, variableValues, storedContext);
+        var context = new Dictionary<string, JsonElement>(storedContext, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in values) context[pair.Key] = pair.Value;
 
         foreach (var pair in values)
         {
@@ -1488,7 +1443,8 @@ public sealed class WorkflowEngineService(
         if (initialTask is null) return null;
         if (initialTask.MultiInstanceExecutionId is null)
         {
-            var detail = await TakeFlowAsync(initialTask.InstanceId, flowId, actor, variableValues, cancellationToken);
+            var detail = await TakeFlowCoreAsync(
+                initialTask.InstanceId, flowId, actor, variableValues, taskId, cancellationToken);
             if (detail is null) return null;
             return new UserTaskActionAckDto(taskId, detail.Id, UserTaskRecordStatuses.Completed, detail.Status,
                 flowId, detail.CurrentNodeId, detail.CurrentNodeName, detail.CurrentNodeExternalId, null, detail.UpdatedAt);
@@ -1534,19 +1490,19 @@ public sealed class WorkflowEngineService(
         var actorRoles = NormalizeRoles(actor.Roles);
         if (!RoleAllowed(flow.Roles, actorRoles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this action.");
-        if (task.RequiresClaim && !flow.CanActWithoutClaim
-            && !string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase))
-            throw new WorkflowDomainException("The user task must be claimed by the actor before taking this action.");
+        EnsureActionAllowedByClaim(task, flow, actor);
+
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var storedContext = WithContext(stored, actor, instance, workflow.Definition, node);
+        AddMultiInstanceContext(storedContext, task, execution);
+        if (!string.IsNullOrWhiteSpace(flow.Condition)
+            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, storedContext))
+            throw new WorkflowDomainException("The selected action condition is not satisfied.");
 
         ValidateVariableValues(flow.Variables, variableValues);
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var context = WithContext(stored, actor, instance, workflow.Definition, node);
-        AddMultiInstanceContext(context, task, execution);
-        var values = ResolveAndValidateVariables(flow.Variables, variableValues, context);
+        var values = ResolveAndValidateVariables(flow.Variables, variableValues, storedContext);
+        var context = new Dictionary<string, JsonElement>(storedContext, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in values) context[pair.Key] = pair.Value;
-        if (!string.IsNullOrWhiteSpace(flow.Condition)
-            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context))
-            throw new WorkflowDomainException("The selected action condition is not satisfied.");
 
         await runtime.CompleteMultiInstanceItemAsync(task.Id, flow.Id, user, values, cancellationToken);
         var updatedCompleted = execution.CompletedCount + 1;
@@ -1592,7 +1548,7 @@ public sealed class WorkflowEngineService(
                 await runtime.ActivateNextMultiInstanceItemAsync(execution.Id, cancellationToken);
             await runtime.AddMultiInstanceHistoryAsync(instance.Id, task.TokenId, task.Id, execution.Id,
                 task.ItemIndex ?? 0, flow.Id, node.Id, node.Id, user,
-                CloneDictionary(variableValues), "multiInstanceItem", cancellationToken);
+                CloneDictionary(values), "multiInstanceItem", cancellationToken);
             var activityAt = await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -1609,7 +1565,7 @@ public sealed class WorkflowEngineService(
             winning,
             reason!,
             actor,
-            variableValues,
+            values,
             context,
             task.Id,
             task.ItemIndex,
@@ -1681,11 +1637,20 @@ public sealed class WorkflowEngineService(
         return lockedInstance;
     }
 
-    public async Task<InstanceDetailDto?> TakeFlowAsync(
+    public Task<InstanceDetailDto?> TakeFlowAsync(
         long id,
         int flowId,
         ActorContext actor,
         Dictionary<string, JsonElement>? variableValues,
+        CancellationToken cancellationToken) =>
+        TakeFlowCoreAsync(id, flowId, actor, variableValues, null, cancellationToken);
+
+    private async Task<InstanceDetailDto?> TakeFlowCoreAsync(
+        long id,
+        int flowId,
+        ActorContext actor,
+        Dictionary<string, JsonElement>? variableValues,
+        long? expectedTaskId,
         CancellationToken cancellationToken)
     {
         await LoadSettingsAsync(cancellationToken);
@@ -1702,7 +1667,7 @@ public sealed class WorkflowEngineService(
                 return await BuildDetailAsync(id, cancellationToken);
             }
         }
-        var performedBy = actor.User;
+        string performedBy = NormalizeUser(actor.User);
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, true, cancellationToken);
         if (instance is null)
@@ -1742,7 +1707,8 @@ public sealed class WorkflowEngineService(
             || task.TokenId != instance.ActiveTokenId
             || task.NodeId != node.Id
             || task.MultiInstanceExecutionId is not null
-            || task.Status != UserTaskRecordStatuses.Active)
+            || task.Status != UserTaskRecordStatuses.Active
+            || expectedTaskId is not null && task.Id != expectedTaskId.Value)
             throw new WorkflowConflictException("The active user task is no longer current.");
         EnsureUserTaskActor(task, node, actor, requireActive: true);
 
@@ -1758,22 +1724,13 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
         }
-        EnsureActionAllowedByClaim(task, flow, performedBy);
+        EnsureActionAllowedByClaim(task, flow, actor);
 
-        ValidateVariableValues(flow.Variables, variableValues);
-
-        // Resolve templated defaults and run NCalc validation against the existing
-        // stored variables plus the final flow values, overlaid with context.
         var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var flowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
-        var flowValues = ResolveAndValidateVariables(flow.Variables, variableValues, flowContext);
-        foreach (var pair in flowValues)
-        {
-            flowContext[pair.Key] = pair.Value;
-        }
+        var storedFlowContext = WithContext(storedForValidation, actor, instance, workflow.Definition, node);
 
         if (!string.IsNullOrWhiteSpace(flow.Condition)
-            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, flowContext))
+            && !SequenceFlowConditionEvaluator.Evaluate(flow.Condition, storedFlowContext))
         {
             logger.LogWarning("Take flow {FlowId} ({FlowName}) rejected on instance {InstanceId}: flow condition '{Condition}' evaluated to false.",
                 flowId, flow.Name, id, flow.Condition);
@@ -1781,20 +1738,39 @@ public sealed class WorkflowEngineService(
                 $"Sequence flow '{flow.Name}' condition is not satisfied: '{flow.Condition}'.");
         }
 
+        ValidateVariableValues(flow.Variables, variableValues);
+
+        // Resolve defaults and validate submitted values against the stored-state
+        // context only after the action's visibility/guard condition has passed.
+        var flowValues = ResolveAndValidateVariables(flow.Variables, variableValues, storedFlowContext);
+        var flowContext = new Dictionary<string, JsonElement>(storedFlowContext, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in flowValues)
+        {
+            flowContext[pair.Key] = pair.Value;
+        }
+
+        await runtime.CompleteUserTaskAsync(
+            task.Id,
+            flow.Id,
+            performedBy ?? "anonymous",
+            flowValues,
+            cancellationToken);
+
         foreach (var pair in flowValues)
         {
             await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, performedBy, pair.Value, cancellationToken);
         }
 
-        var payload = CloneDictionary(variableValues);
-        await runtime.AddHistoryAsync(
+        var payload = CloneDictionary(flowValues) ?? [];
+        await runtime.AddUserTaskActionHistoryAsync(
             instance.Id,
+            task.TokenId,
+            task.Id,
             flow.Id,
             node.Id,
             flow.TargetRef,
-            performedBy,
+            performedBy ?? "anonymous",
             payload,
-            null,
             cancellationToken);
 
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
@@ -2736,6 +2712,7 @@ public sealed class WorkflowEngineService(
         if (!flow.IsSelectable
             || flow.IsDefault
             || flow.CanActWithoutClaim
+            || flow.CanActWithoutClaimRoles.Count > 0
             || flow.CancelRemainingInstances
             || flow.Roles.Count > 0
             || flow.Variables.Count > 0
@@ -3216,13 +3193,17 @@ public sealed class WorkflowEngineService(
     // spoofed by a stored variable. The result is for evaluation only and is
     // never persisted.
     private Dictionary<string, JsonElement> WithContext(
-        Dictionary<string, JsonElement> stored,
+        IReadOnlyDictionary<string, JsonElement> stored,
         ActorContext actor,
         WorkflowInstanceRecord instance,
         WorkflowModel definition,
         FlowNodeModel currentNode)
     {
-        var merged = new Dictionary<string, JsonElement>(stored, StringComparer.OrdinalIgnoreCase);
+        var merged = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in stored)
+        {
+            merged[pair.Key] = pair.Value;
+        }
         foreach (var pair in BuildContextMap(actor, instance, definition, currentNode))
         {
             merged[pair.Key] = pair.Value;
@@ -3694,19 +3675,154 @@ public sealed class WorkflowEngineService(
             row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks),
             row.Variables);
 
-    private async Task<UserTaskDto?> BuildUserTaskDtoAsync(UserTaskRecord task, CancellationToken cancellationToken)
+    private async Task<UserTaskDto> BuildUserTaskDtoAsync(
+        UserTaskRecord task,
+        ActorContext actor,
+        CancellationToken cancellationToken)
     {
         var progress = task.MultiInstanceExecutionId is long executionId
             ? await BuildProgressAsync(executionId, cancellationToken)
             : null;
-        return ToUserTaskDto(task, progress);
+        var capabilities = await BuildUserTaskCapabilitiesAsync(task, actor, cancellationToken);
+        return ToUserTaskDto(task, progress, capabilities);
     }
 
-    private static UserTaskDto ToUserTaskDto(UserTaskRecord task, MultiInstanceProgressDto? progress) =>
+    private static UserTaskDto ToUserTaskDto(
+        UserTaskRecord task,
+        MultiInstanceProgressDto? progress,
+        UserTaskCapabilitiesDto capabilities) =>
         new(task.Id, task.InstanceId, task.TokenId, task.NodeId, task.NodeName,
             task.NodeExternalId, task.Roles, task.RequiresClaim, task.Status, task.ClaimedBy,
-            task.Assignee, task.ItemIndex, task.ItemValue, task.SelectedFlowId, progress,
+            task.Assignee, task.ItemIndex, task.ItemValue, task.SelectedFlowId, task.CompletedBy,
+            task.Result, capabilities, progress,
             task.CreatedAt, task.UpdatedAt, task.CompletedAt);
+
+    private async Task<UserTaskCapabilitiesDto> BuildUserTaskCapabilitiesAsync(
+        UserTaskRecord task,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        var user = NormalizeUser(actor.User);
+        var claimedByMe = string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase);
+        if (task.Status != UserTaskRecordStatuses.Active)
+            return new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+
+        await LoadSettingsAsync(cancellationToken);
+        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken);
+        if (instance is null || instance.Status != WorkflowInstanceStatuses.Running
+                             || instance.ActiveTokenId != task.TokenId
+                             || instance.CurrentStepId != task.NodeId)
+            return new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+
+        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var executionsById = new Dictionary<long, MultiInstanceExecutionRecord>();
+        IReadOnlyDictionary<long, MultiInstanceActorStateRecord> actorStates =
+            new Dictionary<long, MultiInstanceActorStateRecord>();
+        if (task.MultiInstanceExecutionId is long executionId)
+        {
+            var execution = await runtime.GetMultiInstanceAsync(executionId, false, cancellationToken);
+            if (execution is not null)
+            {
+                executionsById[execution.Id] = execution;
+                if (execution.OnePerActor)
+                {
+                    actorStates = await runtime.GetMultiInstanceActorStatesAsync(
+                        [execution.Id], user, cancellationToken);
+                }
+            }
+        }
+
+        return BuildUserTaskCapabilities(
+            task, actor, instance, workflow, stored, executionsById, actorStates);
+    }
+
+    private UserTaskCapabilitiesDto BuildUserTaskCapabilities(
+        UserTaskRecord task,
+        ActorContext actor,
+        WorkflowInstanceRecord instance,
+        WorkflowDefinitionRecord workflow,
+        IReadOnlyDictionary<string, JsonElement> stored,
+        IReadOnlyDictionary<long, MultiInstanceExecutionRecord> executionsById,
+        IReadOnlyDictionary<long, MultiInstanceActorStateRecord> actorStates)
+    {
+        var user = NormalizeUser(actor.User);
+        var claimedByMe = string.Equals(task.ClaimedBy, user, StringComparison.OrdinalIgnoreCase);
+        if (task.Status != UserTaskRecordStatuses.Active
+            || instance.Status != WorkflowInstanceStatuses.Running
+            || instance.ActiveTokenId != task.TokenId
+            || instance.CurrentStepId != task.NodeId)
+            return new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+
+        var node = GetFlowNode(workflow.Definition, task.NodeId);
+        var canUnclaim = task.Assignee is null
+                         && task.RequiresClaim
+                         && !string.IsNullOrWhiteSpace(task.ClaimedBy)
+                         && (claimedByMe || HasUnclaimOverrideRole(workflow.Definition, actor));
+        if (!CanUserTaskActor(task, node, actor))
+            return new UserTaskCapabilitiesDto(claimedByMe, false, canUnclaim, false);
+
+        MultiInstanceExecutionRecord? execution = null;
+        if (task.MultiInstanceExecutionId is long executionId)
+        {
+            execution = executionsById.GetValueOrDefault(executionId);
+            if (execution is null || execution.Status != MultiInstanceRecordStatuses.Active
+                                  || execution.TokenId != task.TokenId
+                                  || execution.NodeId != task.NodeId)
+                return new UserTaskCapabilitiesDto(claimedByMe, false, canUnclaim, false);
+            if (execution.OnePerActor)
+            {
+                var actorState = actorStates.GetValueOrDefault(execution.Id);
+                if (actorState?.HasCompleted == true
+                    || (actorState?.OwnedTaskId is long ownedTaskId && ownedTaskId != task.Id))
+                    return new UserTaskCapabilitiesDto(claimedByMe, false, canUnclaim, false);
+            }
+        }
+
+        var roles = NormalizeRoles(actor.Roles);
+        var eligible = GetEligibleUserTaskFlows(
+            instance, workflow, node, task, execution, actor, stored);
+        var canClaim = task.Assignee is null
+                       && task.RequiresClaim
+                       && string.IsNullOrWhiteSpace(task.ClaimedBy)
+                       && eligible.Count > 0;
+        var canAct = eligible.Any(flow =>
+            !task.RequiresClaim || claimedByMe || CanBypassClaim(flow, roles));
+        return new UserTaskCapabilitiesDto(claimedByMe, canClaim, canUnclaim, canAct);
+    }
+
+    private async Task<IReadOnlyList<SequenceFlowModel>> GetEligibleUserTaskFlowsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowDefinitionRecord workflow,
+        FlowNodeModel node,
+        UserTaskRecord task,
+        MultiInstanceExecutionRecord? execution,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        return GetEligibleUserTaskFlows(instance, workflow, node, task, execution, actor, stored);
+    }
+
+    private IReadOnlyList<SequenceFlowModel> GetEligibleUserTaskFlows(
+        WorkflowInstanceRecord instance,
+        WorkflowDefinitionRecord workflow,
+        FlowNodeModel node,
+        UserTaskRecord task,
+        MultiInstanceExecutionRecord? execution,
+        ActorContext actor,
+        IReadOnlyDictionary<string, JsonElement> stored)
+    {
+        var context = WithContext(stored, actor, instance, workflow.Definition, node);
+        if (execution is not null) AddMultiInstanceContext(context, task, execution);
+        var roles = NormalizeRoles(actor.Roles);
+        return OutgoingFlows(workflow.Definition, node.Id)
+            .Where(flow => flow.IsSelectable && !flow.IsDefault
+                           && RoleAllowed(flow.Roles, roles)
+                           && (string.IsNullOrWhiteSpace(flow.Condition)
+                               || SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context)))
+            .ToList();
+    }
 
     private static ManagedUserTaskDto ToManagedUserTaskDto(
         ManagedUserTaskRecord task,
@@ -3935,21 +4051,6 @@ public sealed class WorkflowEngineService(
     private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.SourceRef == nodeId).ToList();
 
-    // True when a userTask has any role-restricted selectable outgoing flow.
-    // The inbox uses this to refine CanAct/CanClaim for the current SQL page.
-    private static bool HasRoleRestrictedFlows(FlowNodeModel node, WorkflowModel definition) =>
-        BpmnFlowNodeTypes.IsUserTask(node.Type)
-        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
-                                                       && f.Roles is { Count: > 0 });
-
-    // True when the actor can take at least one outgoing flow of a userTask: a
-    // flow whose roles the actor holds (empty/null roles = open to anyone). The
-    // node's own roles and the claim are checked elsewhere; this only reflects
-    // flow-level role gating.
-    private static bool CanTakeAnyFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
-        OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
-                                                    && RoleAllowed(f.Roles, actorRoles));
-
     private static IReadOnlyList<SequenceFlowModel> IncomingFlows(WorkflowModel definition, int nodeId) =>
         definition.SequenceFlows.Where(f => f.TargetRef == nodeId).ToList();
 
@@ -3964,9 +4065,11 @@ public sealed class WorkflowEngineService(
     private static void EnsureActionAllowedByClaim(
         UserTaskRecord task,
         SequenceFlowModel flow,
-        string? performedBy)
+        ActorContext actor)
     {
-        if (!task.RequiresClaim || flow.CanActWithoutClaim)
+        if (!task.RequiresClaim
+            || string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase)
+            || CanBypassClaim(flow, NormalizeRoles(actor.Roles)))
         {
             return;
         }
@@ -3976,17 +4079,20 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("The current flow node must be claimed before taking a sequence flow.");
         }
 
-        if (!string.Equals(task.ClaimedBy, NormalizeUser(performedBy), StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase))
         {
             throw new WorkflowDomainException($"Only '{task.ClaimedBy}' can act on this flow node.");
         }
     }
 
-    private static bool CanTakeAnyBypassClaimFlow(FlowNodeModel node, WorkflowModel definition, IReadOnlySet<string> actorRoles) =>
-        BpmnFlowNodeTypes.IsUserTask(node.Type)
-        && OutgoingFlows(definition, node.Id).Any(f => f.IsSelectable && !f.IsDefault
-                                                       && f.CanActWithoutClaim
-                                                       && RoleAllowed(f.Roles, actorRoles));
+    private static bool CanBypassClaim(SequenceFlowModel flow, IReadOnlySet<string> actorRoles) =>
+        flow.CanActWithoutClaim && RoleAllowed(flow.CanActWithoutClaimRoles, actorRoles);
+
+    private static bool HasUnclaimOverrideRole(WorkflowModel definition, ActorContext actor)
+    {
+        var roles = NormalizeRoles(actor.Roles);
+        return definition.UnclaimRoles.Any(roles.Contains);
+    }
 
     private static string NormalizeUser(string? user) =>
         string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();

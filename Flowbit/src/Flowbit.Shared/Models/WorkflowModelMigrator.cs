@@ -4,6 +4,11 @@ public static class WorkflowModelMigrator
 {
     public static void Normalize(WorkflowModel model)
     {
+        model.Variables ??= [];
+        model.Lanes ??= [];
+        model.FlowNodes ??= [];
+        model.SequenceFlows ??= [];
+
         if (model.FlowNodes.Count == 0 && model.LegacySteps is { Count: > 0 })
         {
             ConvertLegacy(model);
@@ -13,14 +18,35 @@ public static class WorkflowModelMigrator
         model.LegacyPhases = null;
         model.LegacySteps = null;
 
-        model.Variables ??= [];
-        model.CancelRoles ??= [];
-        model.UnclaimRoles ??= [];
+        model.CancelRoles = NormalizeRoles(model.CancelRoles);
+        model.UnclaimRoles = NormalizeRoles(model.UnclaimRoles);
         model.TaskAssignmentRoles = NormalizeRoles(model.TaskAssignmentRoles);
 
         foreach (var node in model.FlowNodes)
         {
             ApplyNodeInvariants(node, model.Variables);
+        }
+
+        foreach (var flow in model.SequenceFlows)
+        {
+            flow.Roles = NormalizeRoles(flow.Roles);
+            flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
+            flow.Variables ??= [];
+
+            if (!flow.CanActWithoutClaim)
+            {
+                flow.CanActWithoutClaimRoles = [];
+                continue;
+            }
+
+            var source = model.FlowNodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is not null
+                && BpmnFlowNodeTypes.IsUserTask(source.Type)
+                && !source.RequiresClaim)
+            {
+                flow.CanActWithoutClaim = false;
+                flow.CanActWithoutClaimRoles = [];
+            }
         }
 
         NormalizeUserTaskDefaultFlows(model);
@@ -201,6 +227,7 @@ public static class WorkflowModelMigrator
                 fallback.Variables = [];
                 fallback.Condition = null;
                 fallback.CanActWithoutClaim = false;
+                fallback.CanActWithoutClaimRoles = [];
                 fallback.CompletionCondition = null;
                 fallback.CompletionPriority = null;
                 fallback.CancelRemainingInstances = false;
@@ -248,6 +275,10 @@ public static class WorkflowModelMigrator
         FlowNodeModel node,
         IReadOnlyList<VariableModel> processVariables)
     {
+        node.Roles = NormalizeRoles(node.Roles);
+        node.Variables ??= [];
+        node.Assignments ??= [];
+
         if (!BpmnFlowNodeTypes.IsEntry(node.Type))
         {
             node.BusinessKey = null;

@@ -31,6 +31,7 @@ public sealed class StartVariableInputParserTests
     [InlineData(WorkflowVariableTypes.Number, "1,2.5", JsonValueKind.Number)]
     [InlineData(WorkflowVariableTypes.Boolean, "true,false", JsonValueKind.True)]
     [InlineData(WorkflowVariableTypes.Date, "2026-07-17,2026-07-18", JsonValueKind.String)]
+    [InlineData(WorkflowVariableTypes.DateTime, "2026-07-17T14:30:00Z,2026-07-18T09:00:00+03:00", JsonValueKind.String)]
     public void TryParse_ParsesCommaSeparatedTypedArrays(
         string dataType,
         string raw,
@@ -70,7 +71,10 @@ public sealed class StartVariableInputParserTests
     [InlineData(WorkflowVariableTypes.Number, false, "twelve")]
     [InlineData(WorkflowVariableTypes.Boolean, false, "yes")]
     [InlineData(WorkflowVariableTypes.Date, false, "17/07/2026")]
+    [InlineData(WorkflowVariableTypes.Date, false, "2026-02-30")]
     [InlineData(WorkflowVariableTypes.DateTime, false, "2026-07-17")]
+    [InlineData(WorkflowVariableTypes.DateTime, true, "[\"2026-07-17\"]")]
+    [InlineData(WorkflowVariableTypes.Json, false, "{invalid")]
     [InlineData(WorkflowVariableTypes.Number, true, "[1,\"2\"]")]
     [InlineData(WorkflowVariableTypes.Json, true, "one,two")]
     public void TryParse_RejectsValuesThatDoNotMatchTheDeclaration(

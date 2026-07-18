@@ -1066,6 +1066,103 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task ParentInterruptConditionUsesStoredStateAndCannotBeUnlockedByItsOwnPayload()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "interrupt-stored-condition");
+        var processAmount = new VariableModel
+        {
+            Id = 60,
+            Name = "amount",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement(0)
+        };
+        var actionAmount = new VariableModel
+        {
+            Id = 60,
+            Name = "amount",
+            DataType = WorkflowVariableTypes.Number,
+            Required = true
+        };
+        model.Variables.Add(processAmount);
+        model.SequenceFlows.Single(flow => flow.Id == 204).Variables.Add(Clone(actionAmount));
+
+        var interrupt = model.SequenceFlows.Single(flow => flow.Id == 203);
+        interrupt.Condition = "amount > 5000";
+        interrupt.Variables = [Clone(actionAmount)];
+
+        var workflowId = await CreateWorkflowAsync(model);
+        var blockedReview = await StartAtReviewAsync(workflowId);
+        using var enterBlocked = await SendAsync(
+            HttpMethod.Post,
+            $"/api/instances/{blockedReview.Id}/flows/204",
+            new TakeFlowRequest(new Dictionary<string, JsonElement>
+            {
+                ["amount"] = JsonSerializer.SerializeToElement(4000)
+            }));
+        Assert.Equal(HttpStatusCode.OK, enterBlocked.StatusCode);
+        var blocked = await ReadAsync<InstanceDetailDto>(enterBlocked);
+        Assert.NotNull(blocked.MultiInstance);
+
+        using (var hidden = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/multi-instance-executions/{blocked.MultiInstance!.ExecutionId}/flows"))
+        {
+            Assert.Equal(HttpStatusCode.OK, hidden.StatusCode);
+            Assert.Empty(await ReadAsync<List<SequenceFlowModel>>(hidden));
+        }
+
+        using (var rejected = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/multi-instance-executions/{blocked.MultiInstance!.ExecutionId}/flows/203",
+                   new TakeFlowRequest(new Dictionary<string, JsonElement>
+                   {
+                       ["amount"] = JsonSerializer.SerializeToElement(6000)
+                   })))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        }
+
+        var unchanged = await GetInstanceAsync(blocked.Id);
+        Assert.Equal(2, unchanged.CurrentNodeId);
+        Assert.Equal("active", unchanged.MultiInstance?.Status);
+        Assert.Equal(4000, unchanged.Variables.Last(variable => variable.VariableName == "amount").Value.GetInt32());
+        Assert.DoesNotContain(unchanged.Variables, variable => variable.SourceFlowId == 203);
+
+        var allowedReview = await StartAtReviewAsync(workflowId);
+        using var enterAllowed = await SendAsync(
+            HttpMethod.Post,
+            $"/api/instances/{allowedReview.Id}/flows/204",
+            new TakeFlowRequest(new Dictionary<string, JsonElement>
+            {
+                ["amount"] = JsonSerializer.SerializeToElement(6000)
+            }));
+        Assert.Equal(HttpStatusCode.OK, enterAllowed.StatusCode);
+        var allowed = await ReadAsync<InstanceDetailDto>(enterAllowed);
+        Assert.NotNull(allowed.MultiInstance);
+        using (var visible = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/multi-instance-executions/{allowed.MultiInstance!.ExecutionId}/flows"))
+        {
+            Assert.Equal(HttpStatusCode.OK, visible.StatusCode);
+            Assert.Contains(await ReadAsync<List<SequenceFlowModel>>(visible), flow => flow.Id == 203);
+        }
+
+        using var accepted = await SendAsync(
+            HttpMethod.Post,
+            $"/api/multi-instance-executions/{allowed.MultiInstance!.ExecutionId}/flows/203",
+            new TakeFlowRequest(new Dictionary<string, JsonElement>
+            {
+                ["amount"] = JsonSerializer.SerializeToElement(7000)
+            }));
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        var detail = await ReadAsync<InstanceDetailDto>(accepted);
+        Assert.Equal(5, detail.CurrentNodeId);
+        var stored = detail.Variables.Last(variable => variable.VariableName == "amount");
+        Assert.Equal(7000, stored.Value.GetInt32());
+        Assert.Equal(203, stored.SourceFlowId);
+    }
+
+    [Fact]
     public async Task CardinalityDefault_EnteringErrorEndEventFaultsAndClosesAllWork()
     {
         var model = LoadUniqueModel("votes-cardinality-approve-reject.json", "error-end-default");
