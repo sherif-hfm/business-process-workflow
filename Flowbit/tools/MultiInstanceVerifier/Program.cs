@@ -14,7 +14,10 @@ var model = Clone(loadedModel);
 WorkflowModelMigrator.Normalize(model);
 
 var validator = new WorkflowDefinitionService(
-    null!, new ParseOnlyScriptEvaluator(), NullLogger<WorkflowDefinitionService>.Instance);
+    null!,
+    new ParseOnlyScriptEvaluator(),
+    new ServiceTaskOptions(),
+    NullLogger<WorkflowDefinitionService>.Instance);
 var validate = typeof(WorkflowDefinitionService).GetMethod(
     "ValidateDefinition", BindingFlags.Instance | BindingFlags.NonPublic)
     ?? throw new InvalidOperationException("ValidateDefinition was not found.");

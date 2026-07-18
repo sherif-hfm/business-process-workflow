@@ -2856,16 +2856,102 @@ public sealed class WorkflowEngineService(
         var service = node.Service
             ?? throw new WorkflowDomainException($"Service task #{node.Id} has no service configuration.");
 
-        var url = ServiceTaskTemplating.SubstituteScalar(service.Url, variables);
-        var headers = service.Headers
-            .Select(h => new ServiceTaskHeader(h.Name, ServiceTaskTemplating.SubstituteScalar(h.Value, variables)))
-            .ToList();
+        if (!string.Equals(service.Type, ServiceConnectorTypes.Rest, StringComparison.Ordinal))
+        {
+            return await FailServiceTaskBeforeInvocationAsync(
+                instance.Id,
+                node.Id,
+                actor.User,
+                service,
+                storedOverlay,
+                $"Service task #{node.Id} has unsupported connector type '{service.Type ?? "null"}'.",
+                cancellationToken);
+        }
+
+        return await ExecuteRestServiceTaskAsync(
+            instance,
+            node,
+            definition,
+            actor,
+            service,
+            variables,
+            storedOverlay,
+            cancellationToken);
+    }
+
+    private async Task<TaskExecutionOutcome> ExecuteRestServiceTaskAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel node,
+        WorkflowModel definition,
+        ActorContext actor,
+        ServiceTaskModel service,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        Dictionary<string, JsonElement> storedOverlay,
+        CancellationToken cancellationToken)
+    {
+        if (!ServiceTaskTemplating.TrySubstituteScalarStrict(
+                service.Url,
+                variables,
+                out var url,
+                out var missingUrlVariable))
+        {
+            return await FailServiceTaskBeforeInvocationAsync(
+                instance.Id,
+                node.Id,
+                actor.User,
+                service,
+                storedOverlay,
+                $"Service task #{node.Id} URL references missing variable '{missingUrlVariable}'.",
+                cancellationToken);
+        }
+
+        var headers = new List<ServiceTaskHeader>(service.Headers.Count);
+        foreach (var header in service.Headers)
+        {
+            if (!ServiceTaskTemplating.TrySubstituteScalarStrict(
+                    header.Value,
+                    variables,
+                    out var value,
+                    out var missingHeaderVariable))
+            {
+                return await FailServiceTaskBeforeInvocationAsync(
+                    instance.Id,
+                    node.Id,
+                    actor.User,
+                    service,
+                    storedOverlay,
+                    $"Service task #{node.Id} header '{header.Name}' references missing variable '{missingHeaderVariable}'.",
+                    cancellationToken);
+            }
+
+            headers.Add(new ServiceTaskHeader(header.Name, value));
+        }
+
         var body = string.IsNullOrEmpty(service.Body)
             ? null
             : ServiceTaskTemplating.SubstituteJson(service.Body, variables);
 
+        if (body is not null && IsJsonRequest(headers))
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(body);
+            }
+            catch (JsonException)
+            {
+                return await FailServiceTaskBeforeInvocationAsync(
+                    instance.Id,
+                    node.Id,
+                    actor.User,
+                    service,
+                    storedOverlay,
+                    $"Service task #{node.Id} rendered body is not valid JSON.",
+                    cancellationToken);
+            }
+        }
+
         var request = new ServiceTaskRequest(service.Method, url, headers, body, service.TimeoutSeconds);
-        logger.LogInformation("Service task #{NodeId} on instance {InstanceId}: invoking {Method} {Url}", node.Id, instance.Id, service.Method, url);
+        logger.LogInformation("Service task #{NodeId} on instance {InstanceId}: invoking REST method {Method}.", node.Id, instance.Id, service.Method);
         var result = await serviceTaskInvoker.InvokeAsync(request, cancellationToken);
 
         var performedBy = actor.User;
@@ -2910,7 +2996,44 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
-        return TaskExecutionOutcome.Fail($"Service task #{node.Id} call to '{url}' failed ({reason}).");
+        return TaskExecutionOutcome.Fail($"Service task #{node.Id} REST call failed ({reason}).");
+    }
+
+    private static bool IsJsonRequest(IReadOnlyList<ServiceTaskHeader> headers)
+    {
+        var contentType = headers.FirstOrDefault(header =>
+            string.Equals(header.Name, "Content-Type", StringComparison.OrdinalIgnoreCase))?.Value;
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return true;
+        }
+
+        var mediaType = contentType.Split(';', 2)[0].Trim();
+        return string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
+            || mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<TaskExecutionOutcome> FailServiceTaskBeforeInvocationAsync(
+        long instanceId,
+        int nodeId,
+        string? setBy,
+        ServiceTaskModel service,
+        Dictionary<string, JsonElement> storedOverlay,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        // Preflight configuration/template failures have no HTTP response, so
+        // expose status 0 consistently when an attached boundary catches them.
+        await WriteStatusVariableAsync(
+            instanceId,
+            nodeId,
+            setBy,
+            service,
+            0,
+            storedOverlay,
+            cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return TaskExecutionOutcome.Fail(reason);
     }
 
     // Stages and validates every service response mapping before writing any of
@@ -2943,7 +3066,11 @@ public sealed class WorkflowEngineService(
         }
         catch (JsonException ex)
         {
-            logger.LogWarning(ex, "Failed to parse HTTP service task response body as JSON. Body: {Body}", result.Body);
+            logger.LogWarning(
+                "Service task #{NodeId} received an invalid JSON response ({ExceptionType}).",
+                nodeId,
+                ex.GetType().Name);
+            return $"Service task #{nodeId} response body was not valid JSON.";
         }
 
         try

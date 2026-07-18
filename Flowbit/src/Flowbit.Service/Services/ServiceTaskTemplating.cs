@@ -42,6 +42,40 @@ public static partial class ServiceTaskTemplating
         });
     }
 
+    /// <summary>
+    /// Substitutes a scalar template while reporting the first missing placeholder.
+    /// Service-task URLs and headers use this strict form so a typo cannot silently
+    /// turn into an empty destination segment or credential.
+    /// </summary>
+    public static bool TrySubstituteScalarStrict(
+        string? template,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        out string result,
+        out string? missingVariable)
+    {
+        missingVariable = null;
+        if (string.IsNullOrEmpty(template))
+        {
+            result = template ?? string.Empty;
+            return true;
+        }
+
+        string? firstMissingVariable = null;
+        result = PlaceholderRegex().Replace(template, match =>
+        {
+            var name = match.Groups[1].Value;
+            if (variables.TryGetValue(name, out var value))
+            {
+                return ToScalarText(value);
+            }
+
+            firstMissingVariable ??= name;
+            return string.Empty;
+        });
+        missingVariable = firstMissingVariable;
+        return missingVariable is null;
+    }
+
     public static string? SubstituteJson(
         string? template,
         IReadOnlyDictionary<string, JsonElement> variables)

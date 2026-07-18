@@ -208,7 +208,9 @@ Storage follows the hybrid design:
   A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
   `gateway`, `boundary`, `error`, or `message` note.
-- **Service tasks** call an external REST endpoint during the pass-through hop
+- **Service tasks** select a connector through `service.type`; `rest` is the only
+  connector implemented today, while the explicit discriminator keeps the model
+  and editor dropdown extensible. REST calls run during the pass-through hop
   (`IServiceTaskInvoker` / `HttpServiceTaskInvoker`, a typed `HttpClient`). The
   URL, header values, and JSON body are built by substituting `${var}`
   placeholders from instance variables (`ServiceTaskTemplating`); on a `2xx`
@@ -218,11 +220,16 @@ Storage follows the hybrid design:
   A target matching a process variable must use its type/array contract and runs
   both validations; undeclared targets are created by the mapping. No output is
   written until every mapping succeeds. The call is synchronous inside
-  the locked transaction with a bounded `timeoutSeconds` and **no retries**; on a
+  the locked transaction with a bounded `timeoutSeconds` and **no retries**. The
+  deployment-wide `WorkflowServiceTasks.MaxTimeoutSeconds` caps authored timeouts,
+  `MaxResponseBodyBytes` bounds buffered responses, and the typed client's global
+  timeout is disabled so the node timeout is authoritative. Missing URL/header
+  placeholders fail strictly; missing body placeholders retain the permissive
+  empty-string/`null` behavior. On a
   non-2xx/timeout/network failure the engine looks up an attached
   `errorBoundaryEvent` (see Error events). If one exists the token routes out the
   boundary's single error flow (and an optional `statusVariable` still receives
-  the HTTP status, 0 on transport error, so the error path can branch); if none
+  the HTTP status, 0 before a response exists, so the error path can branch); if none
   is attached the transition fails with a `WorkflowDomainException` (rollback +
   400). Definitions are validated (`ValidateDefinition`) for a URL, allowed
   method, positive timeout, and complete output mappings.
@@ -988,18 +995,21 @@ Process variables differ from start/flow variables in a few respects:
   is selected), separate from the per-node / per-flow variable editors.
 
 ### ServiceTaskConfig
-The REST configuration on a `serviceTask` flow node (`flowNode.service`).
+The connector configuration on a `serviceTask` flow node (`flowNode.service`).
+The editor currently offers only REST, but persists the connector discriminator
+so additional protocols can be added without changing the node shape.
 
 ```jsonc
 {
+  "type": "rest",              // connector type; REST is the only supported value today
   "method": "POST",            // GET | POST | PUT | PATCH | DELETE
   "url": "https://api.example.com/credit/${customerId}", // ${var} templated
   "headers": [                 // ${var} templated values
     { "name": "Authorization", "value": "Bearer ${apiToken}" }
   ],
   "body": "{ \"amount\": ${amount} }", // JSON template; ${var} -> variable's JSON value
-  "timeoutSeconds": 30,        // per-call timeout (no retries)
-  "statusVariable": "creditStatus", // optional; receives the HTTP status (0 on transport error)
+  "timeoutSeconds": 30,        // per-call timeout (no retries; deployment-capped)
+  "statusVariable": "creditStatus", // optional; receives the HTTP status (0 before a response exists)
   "outputMappings": [          // typed response field -> instance variable (applied on 2xx)
     { "variable": "creditScore", "path": "score", "dataType": "number", "isArray": false, "required": true, "defaultValue": null, "validation": "creditScore >= 0" },
     { "variable": "approved", "path": "decision.approved", "dataType": "boolean", "isArray": false, "required": false, "defaultValue": false, "validation": null }
@@ -1023,13 +1033,15 @@ boundary's error flow instead of failing the transition. The legacy `onError`
 field has been removed (old values load tolerantly and are ignored).
 
 In `url` and header values a `${var}` placeholder becomes the variable's scalar
-text. In `body` substitution is quote-aware: a placeholder inside a JSON string
+text and a missing variable fails the task before an outbound request is sent.
+In `body` substitution is quote-aware: a placeholder inside a JSON string
 literal becomes the variable's escaped scalar text with no added quotes (so
 `"message": "Hi ${sys.user}"` -> `"message": "Hi alice"`), while a placeholder in
 a bare value position becomes the variable's JSON representation (so
 `"amount": ${amount}` stays an unquoted number). A missing variable is an empty
 string inside a string and `null` in a bare position. Output `path` is dotted
-(`a.b.c`), with numeric segments indexing into arrays (`items.0.id`).
+(`a.b.c`), with numeric segments indexing into arrays (`items.0.id`). Response
+bodies are read only up to `WorkflowServiceTasks.MaxResponseBodyBytes`.
 
 ### MessageCatchConfig
 The delivery configuration on an `intermediateMessageCatchEvent` or

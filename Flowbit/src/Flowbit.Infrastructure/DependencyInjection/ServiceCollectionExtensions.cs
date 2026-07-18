@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Http;
@@ -27,6 +28,7 @@ public static class ServiceCollectionExtensions
         var dataSource = dataSourceBuilder.Build();
 
         services.AddSingleton(dataSource);
+        services.TryAddSingleton(new ServiceTaskOptions());
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
         services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
@@ -35,7 +37,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IEngineSettingsRepository, EngineSettingsRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
-        services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>();
+        services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>(client =>
+            client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IScriptEvaluator, JintScriptEvaluator>();
 
         return services;

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
@@ -12,6 +13,7 @@ namespace Flowbit.Service.Services;
 public sealed class WorkflowDefinitionService(
     IWorkflowDefinitionRepository definitions,
     IScriptEvaluator scriptEvaluator,
+    ServiceTaskOptions serviceTaskOptions,
     ILogger<WorkflowDefinitionService> logger)
     : IWorkflowDefinitionService
 {
@@ -392,16 +394,27 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
-    private static void ValidateServiceTask(
+    private void ValidateServiceTask(
         FlowNodeModel node,
         IReadOnlyList<VariableModel> processVariables)
     {
         var service = node.Service
             ?? throw new WorkflowDomainException($"Service task #{node.Id} must have a service configuration.");
 
+        if (!string.Equals(service.Type, ServiceConnectorTypes.Rest, StringComparison.Ordinal))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} has an unsupported connector type '{service.Type ?? "null"}'.");
+        }
+
         if (string.IsNullOrWhiteSpace(service.Url))
         {
             throw new WorkflowDomainException($"Service task #{node.Id} must have a URL.");
+        }
+
+        if (!service.Url.Contains("${", StringComparison.Ordinal))
+        {
+            ValidateRestUri(service.Url, $"Service task #{node.Id} URL");
         }
 
         var allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -414,16 +427,47 @@ public sealed class WorkflowDefinitionService(
                 $"Service task #{node.Id} has an unsupported HTTP method '{service.Method}'.");
         }
 
-        if (service.TimeoutSeconds <= 0)
+        if (service.TimeoutSeconds <= 0 || service.TimeoutSeconds > serviceTaskOptions.MaxTimeoutSeconds)
         {
-            throw new WorkflowDomainException($"Service task #{node.Id} timeout must be greater than zero.");
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} timeout must be between 1 and {serviceTaskOptions.MaxTimeoutSeconds} seconds.");
         }
 
         foreach (var header in service.Headers)
         {
+            if (header is null)
+            {
+                throw new WorkflowDomainException($"Service task #{node.Id} has a null header entry.");
+            }
+
             if (string.IsNullOrWhiteSpace(header.Name))
             {
                 throw new WorkflowDomainException($"Service task #{node.Id} has a header with no name.");
+            }
+
+            ValidateRestHeader(node.Id, header);
+        }
+
+        if (service.OutputMappings.Any(mapping => mapping is null))
+        {
+            throw new WorkflowDomainException($"Service task #{node.Id} has a null output mapping entry.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(service.StatusVariable))
+        {
+            ValidateRuntimeOutputTarget(
+                service.StatusVariable,
+                WorkflowVariableTypes.Number,
+                processVariables,
+                $"Service task #{node.Id} statusVariable");
+
+            if (service.OutputMappings.Any(mapping => string.Equals(
+                    mapping.Variable,
+                    service.StatusVariable,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new WorkflowDomainException(
+                    $"Service task #{node.Id} statusVariable '{service.StatusVariable}' cannot also be an output mapping target.");
             }
         }
 
@@ -535,6 +579,83 @@ public sealed class WorkflowDefinitionService(
             "Message catch event",
             node.Message!.OutputMappings.Select(ToTypedOutputDefinition),
             processVariables);
+    }
+
+    private static void ValidateRestUri(string value, string owner)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new WorkflowDomainException(
+                $"{owner} must be an absolute HTTP(S) URL without embedded credentials or a fragment.");
+        }
+    }
+
+    private static void ValidateRestHeader(int nodeId, ServiceHeaderModel header)
+    {
+        var name = header.Name.Trim();
+        if (name.Length > 300 || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} header name '{header.Name}' is not a valid HTTP field name.");
+        }
+
+        var forbidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Host", "Content-Length", "Transfer-Encoding", "Connection", "TE", "Trailer", "Upgrade"
+        };
+        if (forbidden.Contains(name))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} cannot set request-framing header '{name}'.");
+        }
+
+
+        if (header.Value is not null && (header.Value.Contains('\r') || header.Value.Contains('\n')))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} header '{name}' cannot contain line breaks.");
+        }
+
+        if (string.Equals(name, "Content-Type", StringComparison.OrdinalIgnoreCase)
+            && header.Value?.Contains("${", StringComparison.Ordinal) != true
+            && !MediaTypeHeaderValue.TryParse(header.Value, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} has an invalid Content-Type header value.");
+        }
+    }
+
+    private static void ValidateRuntimeOutputTarget(
+        string target,
+        string expectedDataType,
+        IReadOnlyList<VariableModel> processVariables,
+        string owner)
+    {
+        if (string.IsNullOrWhiteSpace(target) || target.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException($"{owner} must be a nonblank variable name of at most 300 characters.");
+        }
+
+        if (target.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("setting.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("mi.", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkflowDomainException($"{owner} '{target}' uses a reserved context prefix.");
+        }
+
+        var processVariable = processVariables.FirstOrDefault(variable =>
+            string.Equals(variable.Name, target, StringComparison.OrdinalIgnoreCase));
+        if (processVariable is not null
+            && (!string.Equals(processVariable.DataType, expectedDataType, StringComparison.Ordinal)
+                || processVariable.IsArray))
+        {
+            throw new WorkflowDomainException(
+                $"{owner} '{target}' must target a scalar {expectedDataType} process variable.");
+        }
     }
 
     // A messageStartEvent's typed output mappings are its start-variable
@@ -724,6 +845,26 @@ public sealed class WorkflowDefinitionService(
         {
             throw new WorkflowDomainException(
                 $"Host node #{host.Id} has {siblings} error boundary events; at most one is allowed.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.ErrorVariable))
+        {
+            ValidateRuntimeOutputTarget(
+                node.ErrorVariable,
+                WorkflowVariableTypes.String,
+                definition.Variables,
+                $"Error boundary event #{node.Id} errorVariable");
+
+            if (host.Service is { } service
+                && (string.Equals(service.StatusVariable, node.ErrorVariable, StringComparison.OrdinalIgnoreCase)
+                    || service.OutputMappings.Any(mapping => mapping is not null && string.Equals(
+                        mapping.Variable,
+                        node.ErrorVariable,
+                        StringComparison.OrdinalIgnoreCase))))
+            {
+                throw new WorkflowDomainException(
+                    $"Error boundary event #{node.Id} errorVariable '{node.ErrorVariable}' collides with a host service output target.");
+            }
         }
     }
 
@@ -1187,6 +1328,12 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Variable name is required on {owner}.");
             }
 
+            if (variable.Name.EnumerateRunes().Count() > 300)
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} must contain at most 300 characters.");
+            }
+
             if (variable.Name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
                 || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
                 || variable.Name.StartsWith("setting.", StringComparison.OrdinalIgnoreCase)
@@ -1325,6 +1472,12 @@ public sealed class WorkflowDefinitionService(
 
             foreach (var mapping in node.Service?.OutputMappings ?? [])
             {
+                if (mapping is null)
+                {
+                    // The service-task validator reports a precise domain error.
+                    continue;
+                }
+
                 Check(mapping.Validation, false,
                     $"Service task #{node.Id} output mapping '{mapping.Variable}' validation");
             }

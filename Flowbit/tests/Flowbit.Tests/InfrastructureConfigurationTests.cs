@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Flowbit.Infrastructure.DependencyInjection;
+using Flowbit.Service.Abstractions;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -35,6 +36,21 @@ public sealed class InfrastructureConfigurationTests
 
         var dataSource = provider.GetRequiredService<NpgsqlDataSource>();
         Assert.Equal("legacy_fallback", new NpgsqlConnectionStringBuilder(dataSource.ConnectionString).Database);
+    }
+
+    [Fact]
+    public void AddInfrastructure_DisablesHttpClientGlobalTimeoutForNodeLevelTimeouts()
+    {
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Flowbit"] = ConnectionString("flowbit_primary")
+        });
+        using var provider = BuildProvider(configuration);
+        var clientFactory = provider.GetRequiredService<IHttpClientFactory>();
+
+        using var client = clientFactory.CreateClient(nameof(IServiceTaskInvoker));
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
     }
 
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>

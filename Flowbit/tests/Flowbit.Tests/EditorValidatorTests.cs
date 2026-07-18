@@ -214,6 +214,92 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void ServiceTaskInspector_ExposesExtensibleConnectorDropdownWithRestSelected()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Connector type", html, StringComparison.Ordinal);
+        Assert.Contains("{ value: SERVICE_CONNECTOR_TYPE.REST, label: \"REST\" }", html, StringComparison.Ordinal);
+        Assert.Contains("type: SERVICE_CONNECTOR_TYPE.REST", html, StringComparison.Ordinal);
+        Assert.Contains("{ value: NODE_TYPE.SERVICE_TASK, label: \"Service Task\" }", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("label: \"Service Task (REST)\"", html, StringComparison.Ordinal);
+        Assert.Contains("delete node.attachedToRef;", html, StringComparison.Ordinal);
+        Assert.Contains("delete node.errorVariable;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validator_DefaultsMissingLegacyConnectorAndRejectsUnsupportedConnector()
+    {
+        var model = DefinitionValidationTests.CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.Type = null;
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains("unsupported connector type", StringComparison.OrdinalIgnoreCase));
+
+        service.Type = "soap";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("unsupported connector type", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_RejectsInvalidRestTransportConfiguration()
+    {
+        var model = DefinitionValidationTests.CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.Url = "ftp://tests.local/work";
+        service.Method = "TRACE";
+        service.TimeoutSeconds = 0;
+        service.Headers =
+        [
+            new ServiceHeaderModel { Name = "Bad Header", Value = "value" },
+            new ServiceHeaderModel { Name = "Content-Length", Value = "10" },
+            new ServiceHeaderModel { Name = "Content-Type", Value = "invalid" }
+        ];
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error => error.Contains("absolute HTTP(S)", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("unsupported HTTP method", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("positive integer", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("header name", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("request-framing", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("Content-Type", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_AcceptsTemplatedRestContentTypeForRuntimeValidation()
+    {
+        var model = DefinitionValidationTests.CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Headers =
+            [new ServiceHeaderModel { Name = "Content-Type", Value = "${contentType}" }];
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_RejectsServiceOutputTargetCollisionsAndWrongProcessTypes()
+    {
+        var model = DefinitionValidationTests.CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.StatusVariable = "decision";
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains("scalar number", StringComparison.OrdinalIgnoreCase));
+
+        service.StatusVariable = "httpStatus";
+        service.OutputMappings.Add(new ServiceOutputMappingModel
+        {
+            Variable = "HTTPSTATUS",
+            Path = "status",
+            DataType = WorkflowVariableTypes.Number,
+            IsArray = false
+        });
+        Assert.Contains(Validate(model), error =>
+            error.Contains("cannot also be an output mapping", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validator_EnforcesWorkflowKeyInitialEventAndStartTopology()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");

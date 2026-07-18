@@ -326,6 +326,7 @@ public static class WorkflowModelMigrator
             node.InheritClaimFromNodeId = null;
             node.Roles = [];
             node.Variables = [];
+            node.Service = null;
             node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -337,8 +338,31 @@ public static class WorkflowModelMigrator
             node.Roles = [];
             node.Variables = [];
             node.Service ??= new ServiceTaskModel();
+            if (node.Service.Type is not null)
+            {
+                node.Service.Type = CanonicalizeKnown(
+                    node.Service.Type,
+                    ServiceConnectorTypes.Rest);
+            }
+            node.Service.Headers ??= [];
+            node.Service.OutputMappings ??= [];
+            node.Service.StatusVariable = string.IsNullOrWhiteSpace(node.Service.StatusVariable)
+                ? null
+                : node.Service.StatusVariable.Trim();
+            foreach (var header in node.Service.Headers)
+            {
+                if (header is not null)
+                {
+                    header.Name = header.Name?.Trim()!;
+                }
+            }
             NormalizeServiceOutputMappings(node.Service.OutputMappings, processVariables);
             node.Assignments = [];
+            node.ScriptFormat = ScriptFormats.NCalc;
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
             node.Message = null;
         }
         else if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
@@ -448,6 +472,7 @@ public static class WorkflowModelMigrator
                 node.InheritClaimFromNodeId = null;
             }
 
+            node.Service = null;
             node.Message = null;
 
             if (node.MultiInstance is not null)
@@ -474,6 +499,13 @@ public static class WorkflowModelMigrator
                     node.MultiInstance.CollectionVariable = null;
                 }
             }
+        }
+
+        if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+        {
+            node.ErrorVariable = string.IsNullOrWhiteSpace(node.ErrorVariable)
+                ? null
+                : node.ErrorVariable.Trim();
         }
     }
 
@@ -594,6 +626,11 @@ public static class WorkflowModelMigrator
     {
         foreach (var mapping in mappings)
         {
+            if (mapping is null)
+            {
+                continue;
+            }
+
             NormalizeTypedOutputMapping(
                 mapping.Variable,
                 value => mapping.Variable = value,

@@ -750,6 +750,83 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         Assert.Empty((await ListWorkflowInstancesAsync(processModel.Id)).Items);
     }
 
+    [Theory]
+    [InlineData("url", "missing variable 'missingServiceHost'")]
+    [InlineData("header", "missing variable 'missingToken'")]
+    [InlineData("body", "rendered body is not valid JSON")]
+    public async Task ServicePreflightFailuresRouteToBoundaryWithStatusZero(
+        string failureKind,
+        string expectedError)
+    {
+        var model = CreateTypedServiceModel(
+            "preflight-" + failureKind,
+            "typed-output-success",
+            withBoundary: true);
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.OutputMappings = [];
+        switch (failureKind)
+        {
+            case "url":
+                service.Url = "https://${missingServiceHost}/work";
+                break;
+            case "header":
+                service.Headers =
+                [
+                    new ServiceHeaderModel
+                    {
+                        Name = "Authorization",
+                        Value = "Bearer ${missingToken}"
+                    }
+                ];
+                break;
+            case "body":
+                service.Method = "POST";
+                service.Body = "{\"incomplete\":";
+                break;
+        }
+
+        var workflowId = await CreateWorkflowAsync(model);
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(workflowId, null, null, null));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        Assert.Equal(5, acknowledgement.CurrentNodeId);
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+        Assert.Equal(0, detail.Variables.Last(variable =>
+            variable.VariableName == "serviceStatus").Value.GetInt32());
+        Assert.Contains(
+            expectedError,
+            detail.Variables.Last(variable => variable.VariableName == "serviceError").Value.GetString(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ServiceNonSuccessResponsePreservesActualStatusOnBoundaryPath()
+    {
+        var model = CreateTypedServiceModel("not-found", "unconfigured-response", withBoundary: true);
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type))
+            .Service!.OutputMappings = [];
+        var workflowId = await CreateWorkflowAsync(model);
+
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(workflowId, null, null, null));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+        Assert.Equal(404, detail.Variables.Last(variable =>
+            variable.VariableName == "serviceStatus").Value.GetInt32());
+        Assert.Contains(
+            "No deterministic test response configured",
+            detail.Variables.Last(variable => variable.VariableName == "serviceError").Value.GetString(),
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ServiceAndMessageMappingsRespectNullableProcessTargetsAndRequiredOutputs()
     {

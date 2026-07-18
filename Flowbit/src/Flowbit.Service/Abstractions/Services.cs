@@ -39,6 +39,20 @@ public sealed class WorkflowContextOptions
     public List<string> AllowedClaims { get; set; } = [];
 }
 
+/// <summary>
+/// Transport limits for REST service tasks. Node-level timeouts remain part of
+/// the immutable workflow definition, while these values provide deployment-wide
+/// upper bounds for calls performed inside workflow transactions.
+/// </summary>
+public sealed class ServiceTaskOptions
+{
+    public const string SectionName = "WorkflowServiceTasks";
+
+    public int MaxTimeoutSeconds { get; set; } = 300;
+
+    public int MaxResponseBodyBytes { get; set; } = 1_048_576;
+}
+
 public interface IWorkflowDefinitionService
 {
     Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken);
@@ -296,9 +310,10 @@ public sealed record ServiceTaskHeader(string Name, string Value);
 
 /// <summary>
 /// Outcome of a service-task REST call. <see cref="Completed"/> is false for
-/// transport failures (timeout / network), in which case <see cref="StatusCode"/>
-/// is 0. A completed call still reports its real <see cref="StatusCode"/> even
-/// when it is not a 2xx.
+/// transport/configuration failures and bounded-response failures. The status is
+/// 0 when no response was received, or the actual HTTP status when response
+/// headers arrived before a bounded read failed. A completed call reports its
+/// real <see cref="StatusCode"/> even when it is not a 2xx.
 /// </summary>
 public sealed record ServiceTaskResult(
     bool Completed,

@@ -675,7 +675,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.END_EVENT, label: "End Event" },
   { value: NODE_TYPE.USER_TASK, label: "User Task" },
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
-  { value: NODE_TYPE.SERVICE_TASK, label: "Service Task (REST)" },
+  { value: NODE_TYPE.SERVICE_TASK, label: "Service Task" },
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
@@ -733,8 +733,12 @@ function normalizeMultiInstanceForLoad(source) {
   };
 }
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const SERVICE_CONNECTOR_TYPE = { REST: "rest" };
+const SERVICE_CONNECTOR_TYPE_OPTIONS = [
+  { value: SERVICE_CONNECTOR_TYPE.REST, label: "REST" }
+];
 function defaultService() {
-  return { method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
+  return { type: SERVICE_CONNECTOR_TYPE.REST, method: "GET", url: "", headers: [], body: "", timeoutSeconds: 30, statusVariable: "", outputMappings: [] };
 }
 function normalizeTypedOutputMapping(source, processVariables = [], preserveMissingType = false) {
   const mapping = source && typeof source === "object" ? source : {};
@@ -760,14 +764,27 @@ function normalizeTypedOutputMapping(source, processVariables = [], preserveMiss
 function normalizeService(service, processVariables = []) {
   const base = defaultService();
   if (!service || typeof service !== "object") return base;
+  const hasOwn = key => Object.prototype.hasOwnProperty.call(service, key);
+  const rawType = hasOwn("type") ? service.type : base.type;
+  const rawMethod = hasOwn("method") ? service.method : base.method;
+  const rawTimeout = hasOwn("timeoutSeconds") ? service.timeoutSeconds : base.timeoutSeconds;
+  const normalizedMethod = typeof rawMethod === "string" && HTTP_METHODS.includes(rawMethod.toUpperCase())
+    ? rawMethod.toUpperCase()
+    : rawMethod;
+  const normalizedTimeout = Number.isFinite(+rawTimeout) && +rawTimeout > 0
+    ? Math.round(+rawTimeout)
+    : rawTimeout;
   return {
-    method: HTTP_METHODS.includes((service.method || "").toUpperCase()) ? service.method.toUpperCase() : base.method,
+    type: typeof rawType === "string"
+      ? canonicalizeKnownValue(rawType, [SERVICE_CONNECTOR_TYPE.REST], rawType)
+      : rawType,
+    method: normalizedMethod,
     url: typeof service.url === "string" ? service.url : "",
     headers: Array.isArray(service.headers)
       ? service.headers.map(h => ({ name: h && h.name ? String(h.name) : "", value: h && h.value != null ? String(h.value) : "" }))
       : [],
     body: typeof service.body === "string" ? service.body : "",
-    timeoutSeconds: Number.isFinite(+service.timeoutSeconds) && +service.timeoutSeconds > 0 ? Math.round(+service.timeoutSeconds) : base.timeoutSeconds,
+    timeoutSeconds: normalizedTimeout,
     statusVariable: typeof service.statusVariable === "string" ? service.statusVariable : "",
     outputMappings: Array.isArray(service.outputMappings)
       ? service.outputMappings.map(mapping => normalizeTypedOutputMapping(mapping, processVariables))
@@ -1048,6 +1065,7 @@ function applyTypeInvariants(node) {
     node.roles = [];
     node.variables = [];
     node.assignee = null;
+    delete node.service;
     delete node.message;
   } else if (isServiceTaskType(node.type)) {
     node.requiresClaim = false;
@@ -1060,6 +1078,8 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
     delete node.message;
   } else if (isScriptTaskType(node.type)) {
     node.requiresClaim = false;
@@ -1148,6 +1168,7 @@ function applyTypeInvariants(node) {
       ? node.assignee.trim() : null;
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
     if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+    delete node.service;
     delete node.message;
     if (node.multiInstance) {
       node.assignee = null;
@@ -2596,8 +2617,26 @@ function renderServiceSection(node) {
   node.service = normalizeService(node.service, model.variables);
   const service = node.service;
 
+  const connectorTitle = document.createElement("h2");
+  connectorTitle.textContent = "Connector";
+  connectorTitle.style.marginTop = "16px";
+  inspector.appendChild(connectorTitle);
+
+  selectField("Connector type", SERVICE_CONNECTOR_TYPE_OPTIONS, service.type, value => {
+    service.type = value;
+    renderInspector();
+  });
+
+  if (service.type !== SERVICE_CONNECTOR_TYPE.REST) {
+    const unsupported = document.createElement("p");
+    unsupported.className = "empty-note";
+    unsupported.textContent = "Select a supported connector type to configure this Service Task.";
+    inspector.appendChild(unsupported);
+    return;
+  }
+
   const title = document.createElement("h2");
-  title.textContent = "Service call";
+  title.textContent = "REST call";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
 
@@ -4823,13 +4862,101 @@ function validateModelForSave(candidate) {
     return seenMappings;
   }
 
+  function validateRuntimeOutputTarget(label, rawName, expectedType) {
+    if (!hasText(rawName)) return;
+    const name = rawName.trim();
+    if (Array.from(name).length > 300) {
+      errors.push(label + " must contain at most 300 characters.");
+    }
+    if (/^(sys|config|setting|mi)\./i.test(name)) {
+      errors.push(label + " '" + name + "' uses a reserved context prefix.");
+    }
+    const processVariable = processByName.get(name.toLowerCase());
+    if (processVariable &&
+        (processVariable.dataType !== expectedType || !!processVariable.isArray)) {
+      errors.push(label + " '" + name + "' must target a scalar " + expectedType + " process variable.");
+    }
+  }
+
   for (const node of nodes.filter(candidate => candidate && candidate.type === "serviceTask")) {
     const service = node.service && typeof node.service === "object" ? node.service : {};
-    validateTypedOutputMappings(
+    const label = "Service task #" + String(node.id);
+    const hasConnectorType = Object.prototype.hasOwnProperty.call(service, "type");
+    const connectorType = hasConnectorType ? service.type : "rest";
+    if (connectorType !== "rest") {
+      errors.push(label + " has an unsupported connector type '" + String(connectorType) + "'.");
+    }
+    if (!hasText(service.url)) {
+      errors.push(label + " must have a URL.");
+    } else if (!service.url.includes("${")) {
+      const parsed = /^(https?):\/\/([^/?#]+)(?:[/?][^#]*)?$/i.exec(service.url);
+      if (!parsed || parsed[2].includes("@") || /\s/.test(service.url)) {
+        errors.push(label + " URL must be absolute HTTP(S) without embedded credentials or a fragment.");
+      }
+    }
+    if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(service.method || "").toUpperCase())) {
+      errors.push(label + " has an unsupported HTTP method '" + String(service.method) + "'.");
+    }
+    if (!Number.isInteger(+service.timeoutSeconds) || +service.timeoutSeconds <= 0) {
+      errors.push(label + " timeout must be a positive integer.");
+    }
+    const forbiddenHeaders = new Set([
+      "host", "content-length", "transfer-encoding", "connection", "te", "trailer", "upgrade"
+    ]);
+    for (const header of Array.isArray(service.headers) ? service.headers : []) {
+      if (!header || !hasText(header.name)) {
+        errors.push(label + " has a header with no name.");
+        continue;
+      }
+      const headerName = header.name.trim();
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(headerName)) {
+        errors.push(label + " header name '" + header.name + "' is invalid.");
+      } else if (forbiddenHeaders.has(headerName.toLowerCase())) {
+        errors.push(label + " cannot set request-framing header '" + headerName + "'.");
+      }
+      if (/[\r\n]/.test(String(header.value || ""))) {
+        errors.push(label + " header '" + headerName + "' cannot contain line breaks.");
+      }
+      if (headerName.toLowerCase() === "content-type" &&
+          !String(header.value || "").includes("${") &&
+          !/^\s*[^\s/;]+\/[^\s;]+(?:\s*;.*)?$/.test(String(header.value || ""))) {
+        errors.push(label + " has an invalid Content-Type header value.");
+      }
+    }
+    if (flows.filter(flow => flow && flow.sourceRef === node.id).length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    }
+
+    const outputTargets = validateTypedOutputMappings(
       "Service task #" + String(node.id),
       service.outputMappings,
       "response",
       true);
+    if (hasText(service.statusVariable)) {
+      validateRuntimeOutputTarget(label + " statusVariable", service.statusVariable, "number");
+      if (outputTargets.has(service.statusVariable.trim().toLowerCase())) {
+        errors.push(label + " statusVariable cannot also be an output mapping target.");
+      }
+    }
+  }
+
+  for (const node of nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent")) {
+    if (!hasText(node.errorVariable)) continue;
+    const label = "Error boundary event #" + String(node.id);
+    validateRuntimeOutputTarget(label + " errorVariable", node.errorVariable, "string");
+    const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
+    const hostService = host && host.type === "serviceTask" && host.service;
+    if (hostService) {
+      const errorName = node.errorVariable.trim().toLowerCase();
+      const collidesWithStatus = hasText(hostService.statusVariable) &&
+        hostService.statusVariable.trim().toLowerCase() === errorName;
+      const collidesWithOutput = (Array.isArray(hostService.outputMappings) ? hostService.outputMappings : [])
+        .some(mapping => mapping && hasText(mapping.variable) &&
+          mapping.variable.trim().toLowerCase() === errorName);
+      if (collidesWithStatus || collidesWithOutput) {
+        errors.push(label + " errorVariable collides with a host service output target.");
+      }
+    }
   }
 
   for (const node of nodes.filter(candidate => candidate && candidate.type === "intermediateMessageCatchEvent")) {

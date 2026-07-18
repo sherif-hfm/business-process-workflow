@@ -22,12 +22,15 @@ internal static class TypedOutputValueValidator
         if (isArray)
         {
             return value.ValueKind == JsonValueKind.Array
-                && value.EnumerateArray().All(item =>
-                    IsScalarValid(item, dataType)
-                    || IsTemplatedString(item));
+                && value.EnumerateArray().All(item => IsValidAuthoredScalar(item, dataType));
         }
 
-        if (IsValid(value, dataType, false) || IsTemplatedString(value))
+        return IsValidAuthoredScalar(value, dataType);
+    }
+
+    private static bool IsValidAuthoredScalar(JsonElement value, string dataType)
+    {
+        if (IsScalarValid(value, dataType) || IsTemplatedString(value))
         {
             return true;
         }

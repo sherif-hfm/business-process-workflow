@@ -28,6 +28,9 @@ public sealed class DefinitionValidationTests
                 yield return new object[] { owner, value.Type, false, value.Scalar };
                 yield return new object[] { owner, value.Type, true, value.Array };
             }
+
+            yield return new object[] { owner, WorkflowVariableTypes.Number, true, "[\"1\",\"2.5\"]" };
+            yield return new object[] { owner, WorkflowVariableTypes.Boolean, true, "[\"true\",\"false\"]" };
         }
     }
 
@@ -747,6 +750,238 @@ public sealed class DefinitionValidationTests
             savedCatch.OutputMappings.Single(mapping => mapping.Variable == "rawMessage").DataType);
     }
 
+    [Fact]
+    public async Task CreateAsync_DefaultsLegacyServiceConnectorAndCanonicalizesRestCasing()
+    {
+        var legacy = CreateOutputMappingModel();
+        var legacyService = legacy.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        Assert.Equal(ServiceConnectorTypes.Rest, legacyService.Type);
+
+        legacyService.Type = "REST";
+        await CreateService(out var repository).CreateAsync(legacy, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes
+            .Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        Assert.Equal(ServiceConnectorTypes.Rest, saved.Type);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("soap")]
+    public async Task CreateAsync_RejectsMissingOrUnsupportedServiceConnector(string? connectorType)
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Type = connectorType;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("unsupported connector type", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("relative/path")]
+    [InlineData("ftp://tests.local/work")]
+    [InlineData("https://user:password@tests.local/work")]
+    [InlineData("https://tests.local/work#fragment")]
+    public async Task CreateAsync_RejectsUnsafeLiteralServiceUrls(string url)
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Url = url;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("absolute HTTP(S)", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsTemplatedServiceUrlForRuntimeResolution()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Url =
+            "${serviceBaseUrl}/work";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AllowsHttpServiceUrlWithoutAHostAllowlist()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Url =
+            "http://internal-service.local/work";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("Bad Header")]
+    [InlineData("Host")]
+    [InlineData("Content-Length")]
+    public async Task CreateAsync_RejectsInvalidOrFramingServiceHeaders(string name)
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Headers =
+            [new ServiceHeaderModel { Name = name, Value = "value" }];
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsServiceHeaderLineBreaks()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Headers =
+            [new ServiceHeaderModel { Name = "X-Test", Value = "safe\r\nInjected: true" }];
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("line breaks", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsInvalidServiceContentType()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Headers =
+            [new ServiceHeaderModel { Name = "Content-Type", Value = "not a media type" }];
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("Content-Type", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsTemplatedServiceContentTypeForRuntimeValidation()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.Headers =
+            [new ServiceHeaderModel { Name = "Content-Type", Value = "${contentType}" }];
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_EnforcesConfiguredMaximumServiceTimeout()
+    {
+        var model = CreateOutputMappingModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!.TimeoutSeconds = 11;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, new ServiceTaskOptions { MaxTimeoutSeconds = 10 }).CreateAsync(
+                model,
+                false,
+                CancellationToken.None));
+
+        Assert.Contains("between 1 and 10", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ValidatesStatusVariableContractAndMappingCollision()
+    {
+        var model = CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.StatusVariable = "decision";
+
+        var typeError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("scalar number", typeError.Message, StringComparison.OrdinalIgnoreCase);
+
+        service.StatusVariable = "httpStatus";
+        service.OutputMappings.Add(new ServiceOutputMappingModel
+        {
+            Variable = "HTTPSTATUS",
+            Path = "status",
+            DataType = WorkflowVariableTypes.Number,
+            IsArray = false
+        });
+        var collision = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("cannot also be an output mapping", collision.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_CoalescesNullServiceCollectionsAndRejectsNullEntriesCleanly()
+    {
+        var model = CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.Headers = null!;
+        service.OutputMappings = null!;
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+
+        model = CreateOutputMappingModel();
+        service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.Headers = [null!];
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("null header", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        model = CreateOutputMappingModel();
+        service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.OutputMappings = [null!];
+        error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("null output mapping", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Normalize_ServiceTaskClearsStaleConfigurationFromOtherNodeTypes()
+    {
+        var model = CreateOutputMappingModel();
+        var node = model.FlowNodes.Single(candidate => BpmnFlowNodeTypes.IsServiceTask(candidate.Type));
+        node.ScriptFormat = ScriptFormats.JavaScript;
+        node.Script = "execution.setVariable('secret', true);";
+        node.Assignments = [new AssignmentModel { Variable = "secret", Expression = "true" }];
+        node.AssigneeExpression = "'alice'";
+        node.AttachedToRef = 99;
+        node.ErrorVariable = "staleError";
+        node.Message = new MessageCatchModel { ClientSecret = "stale-secret" };
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(ScriptFormats.NCalc, node.ScriptFormat);
+        Assert.Null(node.Script);
+        Assert.Empty(node.Assignments);
+        Assert.Null(node.AssigneeExpression);
+        Assert.Null(node.AttachedToRef);
+        Assert.Null(node.ErrorVariable);
+        Assert.Null(node.Message);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsBoundaryErrorVariableCollisionWithServiceOutputs()
+    {
+        var model = CreateOutputMappingModel();
+        var service = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)).Service!;
+        service.StatusVariable = "sharedResult";
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 5,
+            Name = "Service error",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = 2,
+            ErrorVariable = "SHAREDRESULT"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 501,
+            Name = "Handle service error",
+            SourceRef = 5,
+            TargetRef = 4
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("collides with a host service output target", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("service", "duplicate")]
     [InlineData("service", "path")]
@@ -1195,12 +1430,15 @@ public sealed class DefinitionValidationTests
         ]
     };
 
-    private static WorkflowDefinitionService CreateService(out CapturingDefinitionRepository repository)
+    private static WorkflowDefinitionService CreateService(
+        out CapturingDefinitionRepository repository,
+        ServiceTaskOptions? options = null)
     {
         repository = new CapturingDefinitionRepository();
         return new WorkflowDefinitionService(
             repository,
             new ParseOnlyScriptEvaluator(),
+            options ?? new ServiceTaskOptions(),
             NullLogger<WorkflowDefinitionService>.Instance);
     }
 

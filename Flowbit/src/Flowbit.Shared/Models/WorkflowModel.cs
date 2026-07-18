@@ -390,6 +390,13 @@ public sealed class AssignmentModel
 public sealed class ServiceTaskModel
 {
     /// <summary>
+    /// The connector implementation used by this service task. Existing definitions
+    /// that omit the discriminator are normalized to <c>rest</c>.
+    /// </summary>
+    [JsonPropertyName("type")]
+    public string? Type { get; set; } = ServiceConnectorTypes.Rest;
+
+    /// <summary>
     /// The HTTP method to use (e.g. GET, POST, PUT).
     /// </summary>
     [JsonPropertyName("method")]
@@ -505,6 +512,14 @@ public sealed class ServiceOutputMappingModel
     [JsonPropertyName("validation")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Validation { get; set; }
+}
+
+/// <summary>
+/// Canonical connector discriminators supported by service tasks.
+/// </summary>
+public static class ServiceConnectorTypes
+{
+    public const string Rest = "rest";
 }
 
 /// <summary>

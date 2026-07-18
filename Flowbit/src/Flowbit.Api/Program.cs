@@ -202,6 +202,21 @@ try
         .Get<ScriptOptions>() ?? new ScriptOptions();
     builder.Services.AddSingleton(scriptOptions);
 
+    var serviceTaskOptions = builder.Configuration
+        .GetSection(ServiceTaskOptions.SectionName)
+        .Get<ServiceTaskOptions>() ?? new ServiceTaskOptions();
+    if (serviceTaskOptions.MaxTimeoutSeconds <= 0)
+    {
+        throw new InvalidOperationException(
+            $"{ServiceTaskOptions.SectionName}:MaxTimeoutSeconds must be greater than zero.");
+    }
+    if (serviceTaskOptions.MaxResponseBodyBytes <= 0)
+    {
+        throw new InvalidOperationException(
+            $"{ServiceTaskOptions.SectionName}:MaxResponseBodyBytes must be greater than zero.");
+    }
+    builder.Services.AddSingleton(serviceTaskOptions);
+
     builder.Services
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
