@@ -79,10 +79,10 @@ else
     </section>
 
     <nav class="status-tabs" aria-label="Instance sections">
-        <a class="status-tab active text-decoration-none" href="#actions">Actions</a>
-        @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results">Multi-instance results</a> }
-        <a class="status-tab text-decoration-none" href="#variables">Variables</a>
-        <a class="status-tab text-decoration-none" href="#history">History</a>
+        <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
+        @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
+        <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
+        <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
 
     @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0)
@@ -306,6 +306,9 @@ else
     private bool interruptSubmitting;
 
     private string ActingUser => NormalizeUser(Token.CurrentUser);
+
+    private ValueTask ScrollToSectionAsync(string sectionId) =>
+        JS.InvokeVoidAsync("flowbit.scrollToSection", sectionId);
 
     // Instance DTOs intentionally do not own a claim. For the legacy
     // instance-addressed controls, the grouped work summary identifies the

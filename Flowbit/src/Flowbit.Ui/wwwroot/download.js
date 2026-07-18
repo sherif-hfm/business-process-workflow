@@ -1,5 +1,23 @@
 window.flowbit = window.flowbit || {};
 
+window.flowbit.scrollToSection = (sectionId) => {
+    const section = document.getElementById(sectionId);
+    if (!section) {
+        return;
+    }
+
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    section.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "start"
+    });
+
+    const hash = `#${sectionId}`;
+    if (window.location.hash !== hash) {
+        window.history.pushState(null, "", hash);
+    }
+};
+
 window.flowbit.downloadFileFromStream = async (fileName, contentStreamReference) => {
     const arrayBuffer = await contentStreamReference.arrayBuffer();
     const blob = new Blob([arrayBuffer], { type: "application/json;charset=utf-8" });
