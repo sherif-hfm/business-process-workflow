@@ -26,6 +26,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
 
+    public DbSet<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences => Set<SequenceFlowOccurrenceEntity>();
+
+    public DbSet<SequenceFlowSummaryEntity> SequenceFlowSummaries => Set<SequenceFlowSummaryEntity>();
+
     public DbSet<WorkflowSettingEntity> WorkflowSettings => Set<WorkflowSettingEntity>();
 
     public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
@@ -207,6 +211,48 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.Execution)
                 .WithMany(e => e.FlowCounts)
                 .HasForeignKey(e => e.ExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SequenceFlowOccurrenceEntity>(entity =>
+        {
+            entity.ToTable("sequence_flow_occurrences", table =>
+                table.HasCheckConstraint(
+                    "CK_sequence_flow_occurrences_action_or_traversal",
+                    "\"IsAction\" OR \"IsTraversal\""));
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.User).HasMaxLength(300);
+            entity.Property(e => e.UserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.ValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId, e.Id })
+                .IsDescending(false, false, true);
+            entity.HasIndex(e => e.UserTaskId)
+                .IsUnique()
+                .HasFilter("\"UserTaskId\" IS NOT NULL AND \"IsAction\"");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.SequenceFlowOccurrences)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SequenceFlowSummaryEntity>(entity =>
+        {
+            entity.ToTable("sequence_flow_summaries");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.LastActionUser).HasMaxLength(300);
+            entity.Property(e => e.LastActionUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.LastActionKind).HasMaxLength(32);
+            entity.Property(e => e.LastActionValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastTraversalUser).HasMaxLength(300);
+            entity.Property(e => e.LastTraversalUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.LastTraversalKind).HasMaxLength(32);
+            entity.Property(e => e.LastTraversalValuesJson).HasColumnType("jsonb");
+            entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId }).IsUnique();
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.SequenceFlowSummaries)
+                .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

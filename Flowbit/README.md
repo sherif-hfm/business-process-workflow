@@ -19,7 +19,8 @@
 - Workflow definitions are versioned JSONB snapshots in `workflow_definitions`.
 - Runtime state is normalized in `workflow_instances`, `execution_tokens`,
   `user_tasks`, `multi_instance_executions`, `multi_instance_flow_counts`,
-  `instance_variables`, and `instance_history`.
+  `instance_variables`, `instance_history`, `sequence_flow_occurrences`, and
+  `sequence_flow_summaries`.
 - Runtime mutations use one lock order: instance, multi-instance execution, then
   user tasks. Stale competing actions return 409 instead of advancing twice.
 - Instance summary/detail projections include grouped active, pending, claimed,
@@ -32,6 +33,56 @@
   distributor across every active version of the stable workflow key. Credential
   values may be literal or `${setting.*}` / `${config.*}` references; prefer
   references because literal secrets are visible in versioned definition JSON.
+
+## Instance-wide flow evidence (`FlowInfo`)
+
+Definitions can query fixed-size, instance-lifetime summaries for a sequence
+flow. NCalc uses a literal flow id and property path:
+
+```text
+FlowInfo(201, 'actions.count')
+Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')
+FlowInfo(201, 'traversals.last.kind')
+FlowInfo(201, 'all')
+```
+
+Supported paths are `all`; `actions.count`; `actions.last.user`, `userRoles`,
+`occurredAt`, `kind`, or `values`; and the equivalent `traversals.*` paths.
+`all` returns this shape (an unused known flow has zero counts and null `last`
+values):
+
+```json
+{
+  "flowId": 201,
+  "actions": { "count": 1, "last": { "user": "alice", "userRoles": ["Manager"], "occurredAt": "...", "kind": "userTaskAction", "values": {} } },
+  "traversals": { "count": 1, "last": { "user": "alice", "userRoles": ["Manager"], "occurredAt": "...", "kind": "userTaskAction", "values": {} } }
+}
+```
+
+JavaScript script tasks use the same read-only shape through
+`execution.getFlowInfo(201)`, for example
+`execution.getFlowInfo(201).actions.last.userRoles`.
+
+`actions` count explicit actor selections; `traversals` count token movement.
+A normal user-task selection and a parent multi-instance interrupt are both; a
+multi-instance child vote is action-only; its aggregate winner/default is
+traversal-only; and automatic routing is traversal-only. The last evidence
+snapshots the validated actor and all their roles at action time, so a directly
+following gateway can route on the role of the user who selected the flow.
+
+`FlowInfo` is allowed only in exclusive-gateway conditions, multi-instance
+completion conditions, NCalc script assignments, and JavaScript script tasks.
+It is not available in user-action visibility conditions, assignee/cardinality
+expressions, or variable/output/header validation. `CountFlow` and `PercentFlow`
+are unchanged and remain scoped to the current multi-instance execution.
+
+Each recorded event appends to the audit ledger and transactionally updates one
+summary row per instance/flow. Runtime expressions load summaries once and do
+not scan or load detailed history, so evaluation cost does not grow with loops
+or multi-instance fan-out. Definitions that do not reference `FlowInfo` skip the
+summary query and write no occurrence or summary rows. The additive migration
+does not backfill or guess old events; existing instances expose only evidence
+recorded after deployment.
 
 ## Run Locally
 

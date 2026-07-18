@@ -13,6 +13,8 @@ namespace Flowbit.Infrastructure.Repositories;
 
 public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflowRuntimeRepository
 {
+    private readonly HashSet<long> loadedSequenceFlowSummaryInstances = [];
+
     public async Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
         string workflowKey,
@@ -1967,6 +1969,94 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
+    public async Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        await dbContext.SequenceFlowSummaries
+            .Where(summary => summary.InstanceId == instanceId)
+            .ToListAsync(cancellationToken);
+        loadedSequenceFlowSummaryInstances.Add(instanceId);
+
+        // Read through Local so summaries staged earlier in the caller's transaction
+        // are visible even before SaveChanges assigns their database ids.
+        return dbContext.SequenceFlowSummaries.Local
+            .Where(summary => summary.InstanceId == instanceId)
+            .ToDictionary(summary => summary.SequenceFlowId, ToRecord);
+    }
+
+    public async Task<SequenceFlowSummaryRecord> AppendSequenceFlowOccurrenceAsync(
+        SequenceFlowOccurrenceWriteRecord occurrence,
+        CancellationToken cancellationToken)
+    {
+        if (!occurrence.IsAction && !occurrence.IsTraversal)
+        {
+            throw new ArgumentException(
+                "A sequence-flow occurrence must be an action, a traversal, or both.",
+                nameof(occurrence));
+        }
+
+        dbContext.SequenceFlowOccurrences.Add(new SequenceFlowOccurrenceEntity
+        {
+            InstanceId = occurrence.InstanceId,
+            SequenceFlowId = occurrence.SequenceFlowId,
+            SourceNodeId = occurrence.SourceNodeId,
+            TargetNodeId = occurrence.TargetNodeId,
+            TokenId = occurrence.TokenId,
+            UserTaskId = occurrence.UserTaskId,
+            MultiInstanceExecutionId = occurrence.MultiInstanceExecutionId,
+            ItemIndex = occurrence.ItemIndex,
+            Kind = occurrence.Kind,
+            IsAction = occurrence.IsAction,
+            IsTraversal = occurrence.IsTraversal,
+            User = occurrence.User,
+            UserRoles = occurrence.UserRoles.ToList(),
+            ValuesJson = JsonMapping.ToJsonDocument(occurrence.Values),
+            OccurredAt = occurrence.OccurredAt
+        });
+
+        var summary = dbContext.SequenceFlowSummaries.Local.SingleOrDefault(candidate =>
+            candidate.InstanceId == occurrence.InstanceId
+            && candidate.SequenceFlowId == occurrence.SequenceFlowId);
+        if (summary is null && !loadedSequenceFlowSummaryInstances.Contains(occurrence.InstanceId))
+        {
+            summary = await dbContext.SequenceFlowSummaries.SingleOrDefaultAsync(candidate =>
+                candidate.InstanceId == occurrence.InstanceId
+                && candidate.SequenceFlowId == occurrence.SequenceFlowId, cancellationToken);
+        }
+        if (summary is null)
+        {
+            summary = new SequenceFlowSummaryEntity
+            {
+                InstanceId = occurrence.InstanceId,
+                SequenceFlowId = occurrence.SequenceFlowId
+            };
+            dbContext.SequenceFlowSummaries.Add(summary);
+        }
+
+        if (occurrence.IsAction)
+        {
+            summary.ActionCount = checked(summary.ActionCount + 1);
+            summary.LastActionUser = occurrence.User;
+            summary.LastActionUserRoles = occurrence.UserRoles.ToList();
+            summary.LastActionOccurredAt = occurrence.OccurredAt;
+            summary.LastActionKind = occurrence.Kind;
+            summary.LastActionValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+        }
+
+        if (occurrence.IsTraversal)
+        {
+            summary.TraversalCount = checked(summary.TraversalCount + 1);
+            summary.LastTraversalUser = occurrence.User;
+            summary.LastTraversalUserRoles = occurrence.UserRoles.ToList();
+            summary.LastTraversalOccurredAt = occurrence.OccurredAt;
+            summary.LastTraversalKind = occurrence.Kind;
+            summary.LastTraversalValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+        }
+
+        return ToRecord(summary);
+    }
+
     public async Task<IdempotencyReservationRecord> ReserveIdempotencyKeyAsync(
         string workflowKey,
         string idempotencyKey,
@@ -2192,4 +2282,38 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             JsonMapping.ToDictionary(entity.Payload),
             entity.Note,
             entity.PerformedAt);
+
+    private static SequenceFlowSummaryRecord ToRecord(SequenceFlowSummaryEntity entity) =>
+        new(
+            entity.InstanceId,
+            entity.SequenceFlowId,
+            entity.ActionCount,
+            ToEvidence(
+                entity.LastActionUser,
+                entity.LastActionUserRoles,
+                entity.LastActionOccurredAt,
+                entity.LastActionKind,
+                entity.LastActionValuesJson),
+            entity.TraversalCount,
+            ToEvidence(
+                entity.LastTraversalUser,
+                entity.LastTraversalUserRoles,
+                entity.LastTraversalOccurredAt,
+                entity.LastTraversalKind,
+                entity.LastTraversalValuesJson));
+
+    private static SequenceFlowEvidenceRecord? ToEvidence(
+        string? user,
+        IReadOnlyList<string> userRoles,
+        DateTimeOffset? occurredAt,
+        string? kind,
+        JsonDocument? valuesJson) =>
+        occurredAt is null || kind is null
+            ? null
+            : new SequenceFlowEvidenceRecord(
+                user,
+                userRoles.ToList(),
+                occurredAt.Value,
+                kind,
+                JsonMapping.ToDictionary(valuesJson));
 }

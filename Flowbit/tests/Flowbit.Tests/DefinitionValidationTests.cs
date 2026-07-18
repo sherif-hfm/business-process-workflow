@@ -1035,6 +1035,166 @@ public sealed class DefinitionValidationTests
         };
     }
 
+    [Fact]
+    public async Task CreateAsync_AllowsFlowInfoInExclusiveGatewayCondition()
+    {
+        var model = BuildGatewayFlowInfoModel();
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AllowsFlowInfoInMultiInstanceCompletionCondition()
+    {
+        var model = LoadModel("votes-users-list.json");
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionCondition =
+            "CountFlow(201) >= requiredApprovals and FlowInfo(201, 'actions.count') >= 0";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AllowsFlowInfoInNCalcScriptAssignment()
+    {
+        var model = BuildScriptFlowInfoModel();
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("FlowInfo(999, 'actions.count') > 0", "unknown sequence flow")]
+    [InlineData("FlowInfo(201, 'actions.latest.user') == 'alice'", "not supported")]
+    [InlineData("FlowInfo(201) > 0", "exactly two arguments")]
+    [InlineData("FlowInfo(flowId, 'actions.count') > 0", "literal integer flow id")]
+    [InlineData("FlowInfo(201, path) > 0", "literal property path")]
+    [InlineData("FlowInfo(201, 'actions.count', 'extra') > 0", "exactly two arguments")]
+    public async Task CreateAsync_RejectsInvalidFlowInfoArguments(
+        string condition,
+        string expectedMessage)
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.SequenceFlows.Single(flow => flow.Id == 301).Condition = condition;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(expectedMessage, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("userTaskCondition")]
+    [InlineData("assignee")]
+    [InlineData("variableValidation")]
+    [InlineData("gatewayDefault")]
+    public async Task CreateAsync_RejectsFlowInfoOutsideSupportedContexts(string context)
+    {
+        var model = BuildGatewayFlowInfoModel();
+        var expression = "FlowInfo(201, 'actions.count') > 0";
+
+        switch (context)
+        {
+            case "userTaskCondition":
+                model.SequenceFlows.Single(flow => flow.Id == 201).Condition = expression;
+                break;
+            case "assignee":
+                model.FlowNodes.Single(node => node.Id == 2).AssigneeExpression =
+                    "FlowInfo(201, 'actions.last.user')";
+                break;
+            case "variableValidation":
+                model.Variables.Add(new VariableModel
+                {
+                    Id = 1,
+                    Name = "routeCount",
+                    DataType = WorkflowVariableTypes.Number,
+                    DefaultValue = JsonSerializer.SerializeToElement(0),
+                    Validation = expression
+                });
+                break;
+            case "gatewayDefault":
+                model.SequenceFlows.Single(flow => flow.Id == 302).Condition = expression;
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("not available", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static WorkflowModel BuildGatewayFlowInfoModel() => new()
+    {
+        Id = "flow-info-gateway",
+        Name = "FlowInfo gateway",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 2, Name = "Confirm", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 3, Name = "Route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+            new FlowNodeModel { Id = 4, Name = "Manager end", Type = BpmnFlowNodeTypes.EndEvent },
+            new FlowNodeModel { Id = 5, Name = "User end", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, Name = "Confirm", SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel
+            {
+                Id = 301,
+                Name = "Manager",
+                SourceRef = 3,
+                TargetRef = 4,
+                Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"
+            },
+            new SequenceFlowModel
+            {
+                Id = 302,
+                Name = "User",
+                SourceRef = 3,
+                TargetRef = 5,
+                IsDefault = true
+            }
+        ]
+    };
+
+    private static WorkflowModel BuildScriptFlowInfoModel() => new()
+    {
+        Id = "flow-info-script",
+        Name = "FlowInfo script",
+        InitialEventId = 1,
+        Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "audit",
+                DataType = WorkflowVariableTypes.Json,
+                DefaultValue = JsonSerializer.SerializeToElement(new { })
+            }
+        ],
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Capture audit",
+                Type = BpmnFlowNodeTypes.ScriptTask,
+                ScriptFormat = ScriptFormats.NCalc,
+                Assignments =
+                [
+                    new AssignmentModel { Variable = "audit", Expression = "FlowInfo(101, 'all')" }
+                ]
+            },
+            new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, Name = "To script", SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, Name = "Done", SourceRef = 2, TargetRef = 3 }
+        ]
+    };
+
     private static WorkflowDefinitionService CreateService(out CapturingDefinitionRepository repository)
     {
         repository = new CapturingDefinitionRepository();

@@ -131,6 +131,11 @@ public sealed class JintScriptEvaluator(ScriptOptions options, ILogger<JintScrip
             return result;
         }
 
+        public object GetFlowInfo(int flowId) =>
+            JsonToClr(context.GetFlowInfo(flowId).ToJsonElement())
+            ?? throw new WorkflowDomainException(
+                $"Sequence flow #{flowId} could not be represented for the script context.");
+
         public void SetVariable(string name, object? value) =>
             context.SetVariable(name, ClrToJson(value));
 

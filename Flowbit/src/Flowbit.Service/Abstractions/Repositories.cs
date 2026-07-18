@@ -304,6 +304,14 @@ public interface IWorkflowRuntimeRepository
         long instanceId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<SequenceFlowSummaryRecord> AppendSequenceFlowOccurrenceAsync(
+        SequenceFlowOccurrenceWriteRecord occurrence,
+        CancellationToken cancellationToken);
+
     Task<IdempotencyReservationRecord> ReserveIdempotencyKeyAsync(
         string workflowKey,
         string idempotencyKey,

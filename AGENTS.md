@@ -92,9 +92,10 @@ Storage follows the hybrid design:
   versions of a workflow, so it acts as a stable cross-version key for instance
   search (see the workflow key search below).
 - Runtime state is normalized in `workflow_instances`, `execution_tokens`,
-  `user_tasks`, `instance_variables`, and `instance_history`. An instance row owns
-  lifecycle status and timestamps but no longer stores a single current step or
-  claim. `execution_tokens` own execution position and its node snapshot;
+  `user_tasks`, `instance_variables`, `instance_history`,
+  `sequence_flow_occurrences`, and `sequence_flow_summaries`. An instance row
+  owns lifecycle status and timestamps but no longer stores a single current
+  step or claim. `execution_tokens` own execution position and its node snapshot;
   `user_tasks` are work items created when a token rests on a `userTask` and own
   roles, claim requirements, claimant, and task lifecycle timestamps. The current
   engine preserves one active execution token per instance; a multi-instance user
@@ -167,6 +168,32 @@ Storage follows the hybrid design:
   lookup. Cardinality is range/integrality checked before casting, and collection
   enumeration stops immediately above `Workflow.MultiInstance.MaxInstances`;
   collection usernames share the 300-character assignee limit.
+- **Instance-wide flow evidence (`FlowInfo`).** Definitions may inspect a
+  sequence flow's lifetime summary with NCalc `FlowInfo(flowId, 'path')`; both
+  arguments must be literals and the flow id must exist. Canonical paths are
+  `all`; `actions.count`; `actions.last.user`, `userRoles`, `occurredAt`, `kind`,
+  or `values`; and the equivalent `traversals.*` paths. `all` and JavaScript
+  `execution.getFlowInfo(flowId)` return
+  `{ flowId, actions: { count, last }, traversals: { count, last } }`; each
+  non-null `last` contains `user`, `userRoles`, `occurredAt`, `kind`, and
+  flow-local `values`. Known unused flows return zero/null summaries.
+  `actions` are explicit actor selections, while `traversals` are token movement:
+  a normal user-task action and parent MI interrupt are both; an MI child vote is
+  action-only; the aggregate outcome/default is traversal-only; and automatic
+  routing is traversal-only. Evidence snapshots the validated actor and all roles
+  at action time, and staged evidence is visible to a downstream gateway/script
+  in the same transaction. `FlowInfo` is allowed only in exclusive-gateway and
+  MI completion conditions, NCalc script assignments, and JavaScript scripts;
+  user-action visibility, assignee/cardinality, and variable/output/header
+  validation expressions reject it. Existing `CountFlow`/`PercentFlow` semantics
+  remain current-MI-execution scoped.
+  For definitions using the feature, each event appends an audit occurrence and
+  upserts a fixed-size instance/flow summary in the locked transaction. Runtime
+  evaluation loads summaries once rather than scanning detailed history, so its
+  read cost does not grow with loops or MI fan-out. Definitions without a
+  `FlowInfo` reference skip the summary query and write no evidence rows. The
+  additive migration has no historical backfill: existing instances expose only
+  post-deployment evidence.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state. Mutations
   use a consistent instance -> multi-instance execution -> user-task lock order.
@@ -206,10 +233,11 @@ Storage follows the hybrid design:
     within the same node.
   - `javascript`: the `script` body runs in a sandboxed Jint `Engine` (no
     `AllowClr()` - no filesystem/network/reflection) with a single bound
-    `execution` host object: `execution.getVariable(name)`,
-    `execution.setVariable(name, value)`, `execution.getVariables()`,
-    `execution.hasVariable(name)`. A script reads its own writes within the same
-    execution (an in-memory overlay, same as the ncalc path). Execution is bounded
+     `execution` host object: `execution.getVariable(name)`,
+     `execution.setVariable(name, value)`, `execution.getVariables()`,
+     `execution.hasVariable(name)`, `execution.getFlowInfo(flowId)`. A script reads
+     its own writes within the same execution (an in-memory overlay, same as the
+     ncalc path). Execution is bounded
     by `ScriptOptions` (`WorkflowScript` config section: `TimeoutSeconds`,
     `MaxStatements`, `MemoryBytes`, defaults 5s / 100,000 / 8 MB), enforced both by
     Jint's own execution constraints and a hard wall-clock
@@ -762,6 +790,9 @@ access) with a single bound `execution` host object:
   variables (property access, e.g. `vars.amount`).
 - `execution.hasVariable(name)` - existence check. It returns `true` for a
   persisted nullable variable whose current value is JSON `null`.
+- `execution.getFlowInfo(flowId)` - returns the read-only instance-lifetime flow
+  summary described above; for example,
+  `execution.getFlowInfo(201).actions.last.userRoles`.
 - A script reads its own writes within the same execution (an in-memory overlay),
   so `execution.getVariable('tax')` after `setVariable('tax', ...)` sees the new
   value even before it is persisted.

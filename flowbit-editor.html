@@ -2414,7 +2414,7 @@ function renderNodeInspector() {
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
       miHint.className = "empty-note";
-      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), [mi.total], [mi.completed], and [mi.remaining]. One task per actor requires that many distinct eligible users.";
+      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), FlowInfo(id, 'path'), [mi.total], [mi.completed], and [mi.remaining]. FlowInfo reads instance-lifetime action/traversal summaries; CountFlow and PercentFlow remain scoped to this multi-instance execution. One task per actor requires that many distinct eligible users.";
       inspector.appendChild(miHint);
     }
   }
@@ -2943,7 +2943,7 @@ function renderAssignmentsSection(node) {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Sets process variables during the pass-through hop. Each expression is NCalc and may read other variables (including earlier assignments in this same list) and sys.*/config.* context (use [sys.user] bracket syntax for dotted names). Evaluated in order, coerced to the target's data type.";
+  hint.textContent = "Sets process variables during the pass-through hop. Each expression is NCalc and may read other variables (including earlier assignments in this same list), sys.*/config.* context (use [sys.user] bracket syntax for dotted names), and instance-lifetime flow summaries such as FlowInfo(201, 'actions.last.userRoles'). Evaluated in order, coerced to the target's data type.";
   inspector.appendChild(hint);
 
   const declared = (model.variables || []).filter(v => v.name && v.name.trim());
@@ -2976,7 +2976,7 @@ function renderAssignmentsSection(node) {
     const exprInput = document.createElement("input");
     exprInput.type = "text";
     exprInput.value = assignment.expression;
-    exprInput.placeholder = "e.g. amount * 1.1, retryCount + 1, [sys.now]";
+    exprInput.placeholder = "e.g. amount * 1.1, FlowInfo(201, 'actions.last.user')";
     exprInput.oninput = () => { assignment.expression = exprInput.value; };
     exprField.appendChild(exprInput);
     box.appendChild(exprField);
@@ -3006,7 +3006,8 @@ function renderJavaScriptSection(node) {
   hint.innerHTML = "Runs in a sandboxed JavaScript engine (Jint) with a bound <code>execution</code> object " +
     "- no filesystem/network/CLR access. <code>execution.getVariable(name)</code>, " +
     "<code>execution.setVariable(name, value)</code>, <code>execution.getVariables()</code>, " +
-    "<code>execution.hasVariable(name)</code>. <b>setVariable</b> targets must be declared process " +
+    "<code>execution.hasVariable(name)</code>, and " +
+    "<code>execution.getFlowInfo(201).actions.last.userRoles</code>. <b>setVariable</b> targets must be declared process " +
     "variables (declared under the Workflow panel); the value is coerced to the declared data type " +
     "and its validation rule re-checked. Bounded by a timeout/statement/memory limit.";
   inspector.appendChild(hint);
@@ -3403,7 +3404,7 @@ function renderFlowInspector() {
     });
     const condHint = document.createElement("p");
     condHint.className = "empty-note";
-    condHint.textContent = 'NCalc expression, e.g. amount > 1000 and region == \'EU\', or a bare variable like approved. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern). Leave empty for the default flow.';
+    condHint.textContent = 'NCalc expression, e.g. amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\') to route by the actor who last selected flow #201. FlowInfo reads instance-lifetime action/traversal summaries. Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern). Leave empty for the default flow.';
     inspector.appendChild(condHint);
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
@@ -3502,7 +3503,7 @@ function renderFlowInspector() {
           const timing = source.multiInstance.completionEvaluation === "afterAll"
             ? "Evaluated only after all items complete."
             : "Evaluated after each item completes.";
-          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or PercentFlow(201) >= 60.`;
+          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager'). CountFlow/PercentFlow use this multi-instance execution; FlowInfo uses instance-lifetime summaries.`;
           inspector.appendChild(completionHint);
         }
       }
@@ -4455,6 +4456,204 @@ function validateModelForSave(candidate) {
   const nodeLabel = node => "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
   const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
+  const flowInfoPaths = new Set([
+    "all",
+    "actions.count",
+    "actions.last.user",
+    "actions.last.userroles",
+    "actions.last.occurredat",
+    "actions.last.kind",
+    "actions.last.values",
+    "traversals.count",
+    "traversals.last.user",
+    "traversals.last.userroles",
+    "traversals.last.occurredat",
+    "traversals.last.kind",
+    "traversals.last.values"
+  ]);
+  const knownFlowIds = new Set(
+    flows.filter(flow => Number.isInteger(flow && flow.id)).map(flow => flow.id));
+
+  function splitFlowInfoArguments(source) {
+    const args = [];
+    let start = 0;
+    let depth = 0;
+    let quote = null;
+    for (let index = 0; index < source.length; index++) {
+      const ch = source[index];
+      if (quote) {
+        if (ch === "\\") {
+          index++;
+        } else if (ch === quote) {
+          // NCalc accepts doubled quote characters inside string literals.
+          if (source[index + 1] === quote) index++;
+          else quote = null;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+      } else if (ch === "(") {
+        depth++;
+      } else if (ch === ")") {
+        depth--;
+      } else if (ch === "," && depth === 0) {
+        args.push(source.slice(start, index).trim());
+        start = index + 1;
+      }
+    }
+    args.push(source.slice(start).trim());
+    return args;
+  }
+
+  function isInsideQuotedExpressionText(source, targetIndex) {
+    let quote = null;
+    for (let index = 0; index < targetIndex; index++) {
+      const ch = source[index];
+      if (quote) {
+        if (ch === "\\") {
+          index++;
+        } else if (ch === quote) {
+          if (source[index + 1] === quote) index++;
+          else quote = null;
+        }
+      } else if (ch === "'" || ch === '"') {
+        quote = ch;
+      }
+    }
+    return quote !== null;
+  }
+
+  function validateFlowInfoExpression(expression, owner, allowed) {
+    if (!hasText(expression)) return;
+    const helperPattern = /\bFlowInfo\b/gi;
+    let match;
+    let unsupportedReported = false;
+    while ((match = helperPattern.exec(expression)) !== null) {
+      // Match the server-side semantic inspector: a word that merely appears
+      // inside an NCalc string literal is data, not a FlowInfo function call.
+      if (isInsideQuotedExpressionText(expression, match.index)) continue;
+
+      if (!allowed && !unsupportedReported) {
+        errors.push(owner +
+          " cannot use FlowInfo; it is supported only in exclusive-gateway conditions, " +
+          "multi-instance completion conditions, and NCalc script assignments.");
+        unsupportedReported = true;
+      }
+
+      let open = match.index + match[0].length;
+      while (/\s/.test(expression[open] || "")) open++;
+      if (expression[open] !== "(") {
+        errors.push(owner +
+          " has an invalid FlowInfo call; expected FlowInfo(<literal flow id>, '<supported path>').");
+        continue;
+      }
+
+      let close = -1;
+      let depth = 0;
+      let quote = null;
+      for (let index = open; index < expression.length; index++) {
+        const ch = expression[index];
+        if (quote) {
+          if (ch === "\\") {
+            index++;
+          } else if (ch === quote) {
+            if (expression[index + 1] === quote) index++;
+            else quote = null;
+          }
+          continue;
+        }
+        if (ch === "'" || ch === '"') {
+          quote = ch;
+        } else if (ch === "(") {
+          depth++;
+        } else if (ch === ")") {
+          depth--;
+          if (depth === 0) {
+            close = index;
+            break;
+          }
+        }
+      }
+
+      if (close < 0) {
+        errors.push(owner +
+          " has an invalid FlowInfo call; expected FlowInfo(<literal flow id>, '<supported path>').");
+        break;
+      }
+
+      const args = splitFlowInfoArguments(expression.slice(open + 1, close));
+      const idLiteral = args.length === 2 ? args[0].match(/^\d+$/) : null;
+      const pathLiteral = args.length === 2 ? args[1].match(/^(['"])([\s\S]*)\1$/) : null;
+      if (!idLiteral || !pathLiteral) {
+        errors.push(owner +
+          " has an invalid FlowInfo call; exactly two literal arguments are required: " +
+          "FlowInfo(<flow id>, '<path>').");
+      } else {
+        const flowId = Number(args[0]);
+        const path = pathLiteral[2];
+        if (!Number.isInteger(flowId) || !knownFlowIds.has(flowId)) {
+          errors.push(owner + " FlowInfo references unknown sequence flow #" + args[0] + ".");
+        }
+        if (!flowInfoPaths.has(path.toLowerCase())) {
+          errors.push(owner + " FlowInfo path '" + path + "' is not supported.");
+        }
+      }
+      helperPattern.lastIndex = close + 1;
+    }
+  }
+
+  function validateFlowInfoUsage() {
+    const validateVariables = (variables, owner) => {
+      for (const variable of Array.isArray(variables) ? variables : []) {
+        validateFlowInfoExpression(
+          variable && variable.validation,
+          "Validation for variable '" + String(variable && variable.name || "") + "' on " + owner,
+          false);
+      }
+    };
+
+    validateVariables(processVariables, "process variables");
+    for (const node of nodes) {
+      const label = "Flow node #" + String(node && node.id);
+      validateVariables(node && node.variables, label);
+      validateFlowInfoExpression(node && node.assignee, label + " assignee expression", false);
+      validateFlowInfoExpression(
+        node && node.multiInstance && node.multiInstance.cardinalityExpression,
+        label + " cardinality expression",
+        false);
+
+      const serviceMappings = node && node.service && node.service.outputMappings;
+      for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
+        validateFlowInfoExpression(mapping && mapping.validation,
+          label + " service output validation", false);
+      }
+      const message = node && node.message;
+      validateFlowInfoExpression(message && message.headerValidation,
+        label + " message header validation", false);
+      for (const mapping of Array.isArray(message && message.outputMappings) ? message.outputMappings : []) {
+        validateFlowInfoExpression(mapping && mapping.validation,
+          label + " message output validation", false);
+      }
+
+      const isNCalcScript = node && node.type === "scriptTask" && node.scriptFormat !== "javascript";
+      for (const assignment of Array.isArray(node && node.assignments) ? node.assignments : []) {
+        validateFlowInfoExpression(assignment && assignment.expression,
+          label + " NCalc assignment", isNCalcScript);
+      }
+    }
+
+    const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+    for (const flow of flows) {
+      const label = flowLabel(flow);
+      const source = nodesById.get(flow && flow.sourceRef);
+      validateVariables(flow && flow.variables, label);
+      validateFlowInfoExpression(flow && flow.condition, label + " condition",
+        !!source && source.type === "exclusiveGateway");
+      validateFlowInfoExpression(flow && flow.completionCondition, label + " completionCondition",
+        !!source && source.type === "userTask" && !!source.multiInstance);
+    }
+  }
 
   const workflowKey = candidate && candidate.id != null ? String(candidate.id) : "";
   if (!workflowKey.trim()) {
@@ -4506,6 +4705,7 @@ function validateModelForSave(candidate) {
   validateVariableNames(processVariables, "process variables");
   for (const node of nodes) validateVariableNames(node && node.variables, "flow node #" + String(node && node.id));
   for (const flow of flows) validateVariableNames(flow && flow.variables, "sequence flow #" + String(flow && flow.id));
+  validateFlowInfoUsage();
 
   const processByName = new Map();
   for (const variable of processVariables) {

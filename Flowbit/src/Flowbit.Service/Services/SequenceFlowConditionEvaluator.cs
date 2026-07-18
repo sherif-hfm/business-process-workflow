@@ -2,6 +2,7 @@ using System.Collections;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Flowbit.Service.Models;
 using NCalc;
 using NCalc.Exceptions;
 using NCalc.Handlers;
@@ -49,7 +50,27 @@ public static class SequenceFlowConditionEvaluator
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
 
-    public static bool Evaluate(string? condition, IReadOnlyDictionary<string, JsonElement> variables)
+    private static readonly HashSet<string> SupportedFlowInfoPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "actions.count",
+        "actions.last.user",
+        "actions.last.userRoles",
+        "actions.last.occurredAt",
+        "actions.last.kind",
+        "actions.last.values",
+        "traversals.count",
+        "traversals.last.user",
+        "traversals.last.userRoles",
+        "traversals.last.occurredAt",
+        "traversals.last.kind",
+        "traversals.last.values",
+        "all"
+    };
+
+    public static bool Evaluate(
+        string? condition,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        SequenceFlowInfoSnapshot? flowInfo = null)
     {
         var expression = Normalize(condition);
         if (expression is null)
@@ -59,7 +80,7 @@ public static class SequenceFlowConditionEvaluator
 
         try
         {
-            var ncalc = CreateExpression(expression, variables);
+            var ncalc = CreateExpression(expression, variables, flowInfo: flowInfo);
             return IsTruthy(ncalc.Evaluate());
         }
         catch (NCalcException)
@@ -84,7 +105,8 @@ public static class SequenceFlowConditionEvaluator
         string? condition,
         IReadOnlyDictionary<string, JsonElement> variables,
         IReadOnlyDictionary<int, int> flowCounts,
-        int totalCount)
+        int totalCount,
+        SequenceFlowInfoSnapshot? flowInfo = null)
     {
         var expression = Normalize(condition);
         if (expression is null)
@@ -94,7 +116,7 @@ public static class SequenceFlowConditionEvaluator
 
         try
         {
-            var ncalc = CreateExpression(expression, variables, flowCounts, totalCount);
+            var ncalc = CreateExpression(expression, variables, flowCounts, totalCount, flowInfo);
             return IsTruthy(ncalc.Evaluate());
         }
         catch (NCalcException)
@@ -146,7 +168,8 @@ public static class SequenceFlowConditionEvaluator
     public static object? EvaluateValue(
         string? expression,
         IReadOnlyDictionary<string, JsonElement> variables,
-        bool preserveComplexTypes = false)
+        bool preserveComplexTypes = false,
+        SequenceFlowInfoSnapshot? flowInfo = null)
     {
         var text = Normalize(expression);
         if (text is null)
@@ -156,7 +179,11 @@ public static class SequenceFlowConditionEvaluator
 
         try
         {
-            var ncalc = CreateExpression(text, variables, preserveComplexTypes: preserveComplexTypes);
+            var ncalc = CreateExpression(
+                text,
+                variables,
+                preserveComplexTypes: preserveComplexTypes,
+                flowInfo: flowInfo);
             return ncalc.Evaluate();
         }
         catch (NCalcException ex)
@@ -188,6 +215,7 @@ public static class SequenceFlowConditionEvaluator
         IReadOnlyDictionary<string, JsonElement>? variables,
         IReadOnlyDictionary<int, int>? flowCounts = null,
         int totalCount = 0,
+        SequenceFlowInfoSnapshot? flowInfo = null,
         bool preserveComplexTypes = false)
     {
         var ncalc = new Expression(expression, Options);
@@ -202,10 +230,114 @@ public static class SequenceFlowConditionEvaluator
             {
                 return;
             }
+            if (flowInfo is not null && TryEvaluateFlowInfoFunction(name, args, flowInfo))
+            {
+                return;
+            }
             EvaluateCustomFunction(name, args);
         };
         return ncalc;
     }
+
+    private static bool TryEvaluateFlowInfoFunction(
+        string name,
+        FunctionEventArgs args,
+        SequenceFlowInfoSnapshot flowInfo)
+    {
+        if (!name.Equals("FlowInfo", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (args.Parameters.Count != 2)
+        {
+            return false;
+        }
+
+        var rawFlowId = args.Parameters.Evaluate(0);
+        if (!int.TryParse(
+                Convert.ToString(rawFlowId, CultureInfo.InvariantCulture),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var flowId))
+        {
+            return false;
+        }
+
+        var path = Convert.ToString(args.Parameters.Evaluate(1), CultureInfo.InvariantCulture);
+        if (string.IsNullOrWhiteSpace(path) || !SupportedFlowInfoPaths.Contains(path))
+        {
+            return false;
+        }
+
+        if (!flowInfo.TryGetSummary(flowId, out var summary))
+        {
+            throw new InvalidOperationException(
+                $"FlowInfo references sequence flow #{flowId}, which is not part of this workflow definition.");
+        }
+
+        args.Result = ResolveFlowInfoPath(summary, path);
+        return true;
+    }
+
+    private static object? ResolveFlowInfoPath(SequenceFlowRuntimeSummary summary, string path)
+    {
+        if (path.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            return summary.ToJsonElement();
+        }
+
+        var view = path.StartsWith("actions.", StringComparison.OrdinalIgnoreCase)
+            ? summary.Actions
+            : summary.Traversals;
+
+        if (path.EndsWith(".count", StringComparison.OrdinalIgnoreCase))
+        {
+            return view.Count;
+        }
+
+        var last = view.Last;
+        if (last is null)
+        {
+            return null;
+        }
+
+        if (path.EndsWith(".user", StringComparison.OrdinalIgnoreCase)) return last.User;
+        if (path.EndsWith(".userRoles", StringComparison.OrdinalIgnoreCase)) return last.UserRoles;
+        if (path.EndsWith(".occurredAt", StringComparison.OrdinalIgnoreCase))
+        {
+            return last.OccurredAt.ToString("O", CultureInfo.InvariantCulture);
+        }
+        if (path.EndsWith(".kind", StringComparison.OrdinalIgnoreCase)) return last.Kind;
+        if (path.EndsWith(".values", StringComparison.OrdinalIgnoreCase)) return last.Values?.Clone();
+
+        return null;
+    }
+
+    /// <summary>
+    /// Fast, case-insensitive detection used to avoid loading and maintaining
+    /// FlowInfo state for definitions that do not reference the function.
+    /// Text inside quoted string literals is ignored.
+    /// </summary>
+    public static bool ContainsFlowInfoReference(string? expression) =>
+        FlowInfoExpressionInspector.ContainsReference(Normalize(expression));
+
+    /// <summary>
+    /// Performs the semantic checks that NCalc's grammar parser cannot: FlowInfo
+    /// must be legal in the expression's context and must receive a literal known
+    /// flow id and a literal supported property path.
+    /// </summary>
+    public static bool TryValidateFlowInfoReferences(
+        string? expression,
+        IReadOnlySet<int> knownFlowIds,
+        bool allowed,
+        out string? error) =>
+        FlowInfoExpressionInspector.TryValidate(
+            Normalize(expression),
+            knownFlowIds,
+            allowed,
+            SupportedFlowInfoPaths,
+            out error);
 
     private static bool TryEvaluateMultiInstanceFunction(
         string name,
@@ -411,4 +543,258 @@ public static class SequenceFlowConditionEvaluator
         IEnumerable enumerable and not string => enumerable.Cast<object?>().Any(),
         _ => true
     };
+}
+
+internal static class FlowInfoExpressionInspector
+{
+    public static bool ContainsReference(string? expression)
+    {
+        if (string.IsNullOrEmpty(expression))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < expression.Length;)
+        {
+            if (IsQuote(expression[index]))
+            {
+                SkipQuoted(expression, ref index);
+                continue;
+            }
+
+            if (!IsIdentifierStart(expression[index]))
+            {
+                index++;
+                continue;
+            }
+
+            var start = index++;
+            while (index < expression.Length && IsIdentifierPart(expression[index])) index++;
+            if (!expression.AsSpan(start, index - start).Equals("FlowInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var next = SkipWhitespace(expression, index);
+            if (next < expression.Length && expression[next] == '(')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool TryValidate(
+        string? expression,
+        IReadOnlySet<int> knownFlowIds,
+        bool allowed,
+        IReadOnlySet<string> supportedPaths,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(knownFlowIds);
+        ArgumentNullException.ThrowIfNull(supportedPaths);
+
+        error = null;
+        if (string.IsNullOrEmpty(expression))
+        {
+            return true;
+        }
+
+        for (var index = 0; index < expression.Length;)
+        {
+            if (IsQuote(expression[index]))
+            {
+                SkipQuoted(expression, ref index);
+                continue;
+            }
+
+            if (!IsIdentifierStart(expression[index]))
+            {
+                index++;
+                continue;
+            }
+
+            var identifierStart = index++;
+            while (index < expression.Length && IsIdentifierPart(expression[index])) index++;
+            if (!expression.AsSpan(identifierStart, index - identifierStart)
+                    .Equals("FlowInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var openParenthesis = SkipWhitespace(expression, index);
+            if (openParenthesis >= expression.Length || expression[openParenthesis] != '(')
+            {
+                continue;
+            }
+
+            if (!allowed)
+            {
+                error = "FlowInfo is not available in this expression context.";
+                return false;
+            }
+
+            if (!TryReadArguments(expression, openParenthesis, out var arguments, out var closeParenthesis))
+            {
+                error = "FlowInfo has an unterminated argument list.";
+                return false;
+            }
+
+            if (arguments.Count != 2)
+            {
+                error = "FlowInfo requires exactly two arguments: a literal flow id and a literal property path.";
+                return false;
+            }
+
+            var flowIdText = arguments[0].Trim();
+            if (!int.TryParse(
+                    flowIdText,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var flowId)
+                || !IsIntegerLiteral(flowIdText))
+            {
+                error = "FlowInfo's first argument must be a literal integer flow id.";
+                return false;
+            }
+
+            if (!knownFlowIds.Contains(flowId))
+            {
+                error = $"FlowInfo references unknown sequence flow #{flowId}.";
+                return false;
+            }
+
+            if (!TryReadStringLiteral(arguments[1].Trim(), out var path))
+            {
+                error = "FlowInfo's second argument must be a literal property path string.";
+                return false;
+            }
+
+            if (!supportedPaths.Contains(path))
+            {
+                error = $"FlowInfo property path '{path}' is not supported.";
+                return false;
+            }
+
+            index = closeParenthesis + 1;
+        }
+
+        return true;
+    }
+
+    private static bool TryReadArguments(
+        string expression,
+        int openParenthesis,
+        out List<string> arguments,
+        out int closeParenthesis)
+    {
+        arguments = [];
+        closeParenthesis = -1;
+        var argumentStart = openParenthesis + 1;
+        var depth = 0;
+
+        for (var index = argumentStart; index < expression.Length; index++)
+        {
+            if (IsQuote(expression[index]))
+            {
+                SkipQuoted(expression, ref index);
+                index--;
+                continue;
+            }
+
+            switch (expression[index])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')' when depth > 0:
+                    depth--;
+                    break;
+                case ')' when depth == 0:
+                    arguments.Add(expression[argumentStart..index]);
+                    closeParenthesis = index;
+                    return true;
+                case ',' when depth == 0:
+                    arguments.Add(expression[argumentStart..index]);
+                    argumentStart = index + 1;
+                    break;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadStringLiteral(string value, out string result)
+    {
+        result = string.Empty;
+        if (value.Length < 2 || !IsQuote(value[0]) || value[^1] != value[0])
+        {
+            return false;
+        }
+
+        // Supported property paths contain only letters and dots, so escape
+        // sequences or embedded quotes cannot be part of a valid literal.
+        var content = value[1..^1];
+        if (content.IndexOf(value[0]) >= 0 || content.IndexOf('\\') >= 0)
+        {
+            return false;
+        }
+
+        result = content;
+        return true;
+    }
+
+    private static bool IsIntegerLiteral(string value)
+    {
+        if (value.Length == 0) return false;
+        var index = value[0] is '+' or '-' ? 1 : 0;
+        if (index == value.Length) return false;
+        for (; index < value.Length; index++)
+        {
+            if (!char.IsAsciiDigit(value[index])) return false;
+        }
+        return true;
+    }
+
+    private static void SkipQuoted(string expression, ref int index)
+    {
+        var quote = expression[index++];
+        while (index < expression.Length)
+        {
+            if (expression[index] == '\\')
+            {
+                index = Math.Min(index + 2, expression.Length);
+                continue;
+            }
+
+            if (expression[index] != quote)
+            {
+                index++;
+                continue;
+            }
+
+            // Accept doubled quotes as an escaped quote while scanning. NCalc's
+            // grammar validation remains authoritative for whether that spelling
+            // is legal in an actual expression.
+            if (index + 1 < expression.Length && expression[index + 1] == quote)
+            {
+                index += 2;
+                continue;
+            }
+
+            index++;
+            return;
+        }
+    }
+
+    private static int SkipWhitespace(string expression, int index)
+    {
+        while (index < expression.Length && char.IsWhiteSpace(expression[index])) index++;
+        return index;
+    }
+
+    private static bool IsQuote(char value) => value is '\'' or '"';
+    private static bool IsIdentifierStart(char value) => char.IsLetter(value) || value == '_';
+    private static bool IsIdentifierPart(char value) => char.IsLetterOrDigit(value) || value == '_';
 }

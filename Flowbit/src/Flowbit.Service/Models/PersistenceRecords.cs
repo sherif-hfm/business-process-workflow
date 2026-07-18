@@ -187,6 +187,38 @@ public sealed record InstanceHistoryRecord(
     string? Note,
     DateTimeOffset PerformedAt);
 
+public sealed record SequenceFlowOccurrenceWriteRecord(
+    long InstanceId,
+    int SequenceFlowId,
+    int SourceNodeId,
+    int TargetNodeId,
+    long? TokenId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    string Kind,
+    bool IsAction,
+    bool IsTraversal,
+    string? User,
+    IReadOnlyList<string> UserRoles,
+    Dictionary<string, JsonElement>? Values,
+    DateTimeOffset OccurredAt);
+
+public sealed record SequenceFlowEvidenceRecord(
+    string? User,
+    IReadOnlyList<string> UserRoles,
+    DateTimeOffset OccurredAt,
+    string Kind,
+    Dictionary<string, JsonElement>? Values);
+
+public sealed record SequenceFlowSummaryRecord(
+    long InstanceId,
+    int SequenceFlowId,
+    long ActionCount,
+    SequenceFlowEvidenceRecord? LastAction,
+    long TraversalCount,
+    SequenceFlowEvidenceRecord? LastTraversal);
+
 public sealed record EngineSettingRecord(
     long Id,
     string? Namespace,

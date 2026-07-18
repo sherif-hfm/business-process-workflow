@@ -33,4 +33,8 @@ public sealed class WorkflowInstanceEntity
     public List<UserTaskEntity> UserTasks { get; set; } = [];
 
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
+
+    public List<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences { get; set; } = [];
+
+    public List<SequenceFlowSummaryEntity> SequenceFlowSummaries { get; set; } = [];
 }

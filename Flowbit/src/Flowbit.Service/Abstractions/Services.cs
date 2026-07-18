@@ -337,6 +337,13 @@ public interface IScriptContext
     IReadOnlyDictionary<string, JsonElement> GetVariables();
 
     /// <summary>
+    /// Returns the fixed-size, instance-lifetime action/traversal summary for a
+    /// sequence flow. A known flow that has not been used returns an empty
+    /// summary; an id outside the current definition is rejected.
+    /// </summary>
+    SequenceFlowRuntimeSummary GetFlowInfo(int flowId);
+
+    /// <summary>
     /// Stages a write for a declared process variable. <paramref name="rawValue"/>
     /// is the JS value marshalled to JSON as-is (untyped); the context coerces it
     /// to the target variable's declared dataType. Throws

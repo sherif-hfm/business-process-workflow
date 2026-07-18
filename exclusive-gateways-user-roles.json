@@ -1,0 +1,232 @@
+{
+  "id": "exclusive-gateways-user-roles",
+  "name": "exclusive-gateways-user-roles",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "start",
+      "externalId": null,
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 2,
+      "name": "user-confirm",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 284,
+      "y": 120,
+      "roles": [
+        "User",
+        "Manager"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fromNode",
+      "inheritClaimFromNodeId": 2,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "manager-confirm",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 986,
+      "y": 128,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 4,
+      "name": "end",
+      "externalId": null,
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1342,
+      "y": 137,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 5,
+      "name": "Gateway",
+      "externalId": null,
+      "type": "exclusiveGateway",
+      "laneId": null,
+      "x": 686,
+      "y": 130,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 6,
+      "name": "Error",
+      "type": "errorEndEvent",
+      "laneId": null,
+      "x": 1111,
+      "y": 346,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 102,
+      "name": "confirm",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [
+        "User",
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": true,
+      "canActWithoutClaimRoles": [
+        "Manager"
+      ],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 103,
+      "name": "confirm",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 104,
+      "name": "not confirmed",
+      "externalId": null,
+      "sourceRef": 5,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": "!Contains(FlowInfo(102, 'actions.last.userRoles'), 'Manager')",
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 105,
+      "name": "confirmed",
+      "externalId": null,
+      "sourceRef": 5,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": "Contains(FlowInfo(102, 'actions.last.userRoles'), 'Manager')",
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 106,
+      "name": "",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "Manager"
+  ],
+  "unclaimRoles": [
+    "Manager"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -241,7 +242,10 @@ public sealed class WorkflowEngineService(
 
         // Flush variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, workflow.Definition, cancellationToken);
+        instance = await ResolvePassThroughAsync(
+            instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -473,7 +477,10 @@ public sealed class WorkflowEngineService(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, definition, actor, cancellationToken);
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, definition, cancellationToken);
+        instance = await ResolvePassThroughAsync(
+            instance, definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1410,6 +1417,9 @@ public sealed class WorkflowEngineService(
             await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, actor.User, pair.Value, cancellationToken);
         }
 
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, workflow.Definition, cancellationToken);
+
         await CloseAndAdvanceMultiInstanceAsync(
             execution,
             instance,
@@ -1418,10 +1428,12 @@ public sealed class WorkflowEngineService(
             flow,
             "interrupt",
             actor,
-            variableValues,
+            values,
             context,
             null,
             null,
+            flowInfo,
+            true,
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return await BuildDetailAsync(instance.Id, cancellationToken);
@@ -1500,7 +1512,23 @@ public sealed class WorkflowEngineService(
         var context = new Dictionary<string, JsonElement>(storedContext, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in values) context[pair.Key] = pair.Value;
 
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, workflow.Definition, cancellationToken);
         await runtime.CompleteMultiInstanceItemAsync(task.Id, flow.Id, user, values, cancellationToken);
+        await RecordSequenceFlowOccurrenceAsync(
+            flowInfo,
+            instance.Id,
+            task.TokenId,
+            task.Id,
+            execution.Id,
+            task.ItemIndex,
+            flow,
+            "multiInstanceItem",
+            isAction: true,
+            isTraversal: false,
+            actor: actor,
+            values: values,
+            cancellationToken: cancellationToken);
         var updatedCompleted = execution.CompletedCount + 1;
         var counts = (await runtime.ListMultiInstanceFlowCountsAsync(execution.Id, cancellationToken))
             .ToDictionary(p => p.Key, p => p.Value);
@@ -1527,7 +1555,7 @@ public sealed class WorkflowEngineService(
                                 && !string.IsNullOrWhiteSpace(f.CompletionCondition))
                     .OrderBy(f => f.CompletionPriority)
                     .FirstOrDefault(f => SequenceFlowConditionEvaluator.EvaluateCompletion(
-                        f.CompletionCondition, context, counts, execution.TotalCount));
+                        f.CompletionCondition, context, counts, execution.TotalCount, flowInfo));
             }
             if (winning is not null) reason = "condition";
             else if (allItemsCompleted)
@@ -1565,6 +1593,8 @@ public sealed class WorkflowEngineService(
             context,
             task.Id,
             task.ItemIndex,
+            flowInfo,
+            false,
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -1587,9 +1617,25 @@ public sealed class WorkflowEngineService(
         Dictionary<string, JsonElement> context,
         long? userTaskId,
         int? itemIndex,
+        SequenceFlowInfoSnapshot? flowInfo,
+        bool directParentInterrupt,
         CancellationToken cancellationToken)
     {
         var user = NormalizeUser(actor.User);
+        await RecordSequenceFlowOccurrenceAsync(
+            flowInfo,
+            instance.Id,
+            execution.TokenId,
+            userTaskId,
+            execution.Id,
+            itemIndex,
+            winning,
+            directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome",
+            isAction: directParentInterrupt,
+            isTraversal: true,
+            actor: actor,
+            values: directParentInterrupt ? variableValues : null,
+            cancellationToken: cancellationToken);
         await runtime.CloseMultiInstanceAsync(execution.Id, winning.Id, reason, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var result = await BuildMultiInstanceResultAsync(execution.Id, cancellationToken);
@@ -1626,7 +1672,8 @@ public sealed class WorkflowEngineService(
             null,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        lockedInstance = await ResolvePassThroughAsync(lockedInstance, workflow.Definition, actor, cancellationToken);
+        lockedInstance = await ResolvePassThroughAsync(
+            lockedInstance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(lockedInstance, workflow.Definition, actor, cancellationToken);
         lockedInstance = await ApplyClaimInheritanceAsync(lockedInstance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1745,12 +1792,28 @@ public sealed class WorkflowEngineService(
             flowContext[pair.Key] = pair.Value;
         }
 
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, workflow.Definition, cancellationToken);
         await runtime.CompleteUserTaskAsync(
             task.Id,
             flow.Id,
             performedBy ?? "anonymous",
             flowValues,
             cancellationToken);
+        await RecordSequenceFlowOccurrenceAsync(
+            flowInfo,
+            instance.Id,
+            task.TokenId,
+            task.Id,
+            null,
+            null,
+            flow,
+            "userTaskAction",
+            isAction: true,
+            isTraversal: true,
+            actor: actor,
+            values: flowValues,
+            cancellationToken: cancellationToken);
 
         foreach (var pair in flowValues)
         {
@@ -1789,7 +1852,8 @@ public sealed class WorkflowEngineService(
             cancellationToken);
         // Flush captured variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
+        instance = await ResolvePassThroughAsync(
+            instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
@@ -1931,6 +1995,23 @@ public sealed class WorkflowEngineService(
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
         var nextStatus = StatusForTargetNode(nextNode);
 
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id, workflow.Definition, cancellationToken);
+        await RecordSequenceFlowOccurrenceAsync(
+            flowInfo,
+            instance.Id,
+            instance.ActiveTokenId,
+            null,
+            null,
+            null,
+            flow,
+            "messageCatch",
+            isAction: false,
+            isTraversal: true,
+            actor: actor,
+            values: null,
+            cancellationToken: cancellationToken);
+
         await runtime.AddHistoryAsync(
             instance.Id,
             null,
@@ -1958,7 +2039,8 @@ public sealed class WorkflowEngineService(
             cancellationToken);
         // Flush mapped variables so pass-through gateways can read them within this transaction.
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        instance = await ResolvePassThroughAsync(instance, workflow.Definition, actor, cancellationToken);
+        instance = await ResolvePassThroughAsync(
+            instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
@@ -2330,6 +2412,7 @@ public sealed class WorkflowEngineService(
         WorkflowInstanceRecord instance,
         WorkflowModel definition,
         ActorContext actor,
+        SequenceFlowInfoSnapshot? flowInfo,
         CancellationToken cancellationToken)
     {
         var performedBy = actor.User;
@@ -2374,7 +2457,15 @@ public sealed class WorkflowEngineService(
             }
             else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
             {
-                outcome = await ExecuteScriptTaskAsync(instance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
+                outcome = await ExecuteScriptTaskAsync(
+                    instance,
+                    currentNode,
+                    definition,
+                    actor,
+                    variables,
+                    storedOverlay,
+                    flowInfo,
+                    cancellationToken);
                 // The overlay was updated in-place by ExecuteScriptTaskAsync; rebuild
                 // the context so the outgoing-flow selector and the next hop see writes.
                 variables = WithContext(storedOverlay, actor, instance, definition, currentNode);
@@ -2431,9 +2522,24 @@ public sealed class WorkflowEngineService(
                 continue;
             }
 
-            var flow = SelectPassThroughFlow(definition, currentNode, variables);
+            var flow = SelectPassThroughFlow(definition, currentNode, variables, flowInfo);
             var nextNode = GetFlowNode(definition, flow.TargetRef);
             var nextStatus = StatusForTargetNode(nextNode);
+
+            await RecordSequenceFlowOccurrenceAsync(
+                flowInfo,
+                instance.Id,
+                instance.ActiveTokenId,
+                null,
+                null,
+                null,
+                flow,
+                SequenceFlowTraversalKind(currentNode.Type),
+                isAction: false,
+                isTraversal: true,
+                actor: actor,
+                values: null,
+                cancellationToken: cancellationToken);
 
             var note = currentNode.Type switch
             {
@@ -2633,7 +2739,8 @@ public sealed class WorkflowEngineService(
     private SequenceFlowModel SelectPassThroughFlow(
         WorkflowModel definition,
         FlowNodeModel node,
-        IReadOnlyDictionary<string, JsonElement> variables)
+        IReadOnlyDictionary<string, JsonElement> variables,
+        SequenceFlowInfoSnapshot? flowInfo)
     {
         var outgoing = OutgoingFlows(definition, node.Id);
 
@@ -2648,7 +2755,7 @@ public sealed class WorkflowEngineService(
             var match = outgoing.FirstOrDefault(f =>
                 !f.IsDefault
                 && !string.IsNullOrWhiteSpace(f.Condition)
-                && SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables));
+                && SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables, flowInfo));
             if (match is not null)
             {
                 logger.LogDebug("Exclusive gateway #{NodeId} evaluated flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.Id, match.Name, match.Condition);
@@ -2908,6 +3015,7 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         IReadOnlyDictionary<string, JsonElement> variables,
         Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
         CancellationToken cancellationToken)
     {
         var byName = definition.Variables
@@ -2926,7 +3034,7 @@ public sealed class WorkflowEngineService(
                     return TaskExecutionOutcome.Ok();
                 }
 
-                var context = new EngineScriptContext(overlay, byName, writes);
+                var context = new EngineScriptContext(overlay, byName, writes, flowInfo);
                 var result = scriptEvaluator.Evaluate(node.Script, context, cancellationToken);
                 if (!result.Success)
                 {
@@ -2954,7 +3062,10 @@ public sealed class WorkflowEngineService(
                             $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
                     }
 
-                    var result = SequenceFlowConditionEvaluator.EvaluateValue(assignment.Expression, overlay);
+                    var result = SequenceFlowConditionEvaluator.EvaluateValue(
+                        assignment.Expression,
+                        overlay,
+                        flowInfo: flowInfo);
                     var coerced = CoerceScriptValue(result, target);
                     overlay[target.Name!] = coerced;
                     writes.Add((target, coerced));
@@ -3023,13 +3134,31 @@ public sealed class WorkflowEngineService(
     private sealed class EngineScriptContext(
         Dictionary<string, JsonElement> overlay,
         IReadOnlyDictionary<string, VariableModel> declared,
-        List<(VariableModel Target, JsonElement Value)> writes) : IScriptContext
+        List<(VariableModel Target, JsonElement Value)> writes,
+        SequenceFlowInfoSnapshot? flowInfo) : IScriptContext
     {
         public bool TryGetVariable(string name, out JsonElement value) => overlay.TryGetValue(name, out value);
 
         public bool HasVariable(string name) => overlay.ContainsKey(name);
 
         public IReadOnlyDictionary<string, JsonElement> GetVariables() => overlay;
+
+        public SequenceFlowRuntimeSummary GetFlowInfo(int flowId)
+        {
+            if (flowInfo is null)
+            {
+                throw new WorkflowDomainException(
+                    "execution.getFlowInfo is not available because this workflow definition does not use FlowInfo.");
+            }
+
+            if (!flowInfo.TryGetSummary(flowId, out var summary))
+            {
+                throw new WorkflowDomainException(
+                    $"execution.getFlowInfo references unknown sequence flow #{flowId}.");
+            }
+
+            return summary;
+        }
 
         public void SetVariable(string name, JsonElement rawValue)
         {
@@ -3070,7 +3199,8 @@ public sealed class WorkflowEngineService(
     // declared by the target variable. number/boolean/string are strict; date and
     // datetime keep the authored text. A scalar assigned to a declared array
     // variable is wrapped in a single-element array; an already array-shaped result
-    // (a genuine JS array) has each element coerced to the declared element type.
+    // (a genuine JS array or a list returned by FlowInfo) has each element coerced
+    // to the declared element type.
     private static JsonElement CoerceScriptValue(object? result, VariableModel variable)
     {
         if (result is null)
@@ -3093,10 +3223,23 @@ public sealed class WorkflowEngineService(
 
                 coerced = JsonSerializer.SerializeToElement(items);
             }
+            else if (result is IEnumerable enumerable
+                     && result is not string
+                     && result is not IDictionary)
+            {
+                var items = new List<object?>();
+                foreach (var item in enumerable)
+                {
+                    var raw = item is JsonElement element ? JsonElementToObject(element) : item;
+                    items.Add(CoerceScriptScalar(raw, variable.DataType));
+                }
+
+                coerced = JsonSerializer.SerializeToElement(items);
+            }
             else
             {
-                // A scalar result (NCalc never produces arrays) is wrapped so a
-                // declared array variable still receives a single-element value.
+                // A scalar result is wrapped so a declared array variable still
+                // receives a single-element value.
                 coerced = JsonSerializer.SerializeToElement(
                     new[] { CoerceScriptScalar(result, variable.DataType) });
             }
@@ -4057,6 +4200,243 @@ public sealed class WorkflowEngineService(
     private static FlowNodeModel? FindErrorBoundary(WorkflowModel definition, int hostNodeId) =>
         definition.FlowNodes.FirstOrDefault(n =>
             BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == hostNodeId);
+
+    // FlowInfo is opt-in per definition. Definitions that never reference it keep
+    // the historical hot path: no summary query and no occurrence/summary writes.
+    // JavaScript detection recognizes the documented direct execution API while
+    // ignoring comments and quoted text, avoiding accidental permanent ledger
+    // writes for scripts that merely mention getFlowInfo in documentation/data.
+    private static bool DefinitionUsesSequenceFlowInfo(WorkflowModel definition)
+    {
+        var gatewayIds = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsGateway(node.Type))
+            .Select(node => node.Id)
+            .ToHashSet();
+
+        if (definition.SequenceFlows.Any(flow =>
+                SequenceFlowConditionEvaluator.ContainsFlowInfoReference(flow.CompletionCondition)
+                || (gatewayIds.Contains(flow.SourceRef)
+                    && SequenceFlowConditionEvaluator.ContainsFlowInfoReference(flow.Condition))))
+        {
+            return true;
+        }
+
+        return definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsScriptTask(node.Type))
+            .Any(node =>
+                node.Assignments.Any(assignment =>
+                    SequenceFlowConditionEvaluator.ContainsFlowInfoReference(assignment.Expression))
+                || (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal)
+                    && ContainsJavaScriptFlowInfoReference(node.Script)));
+    }
+
+    private static bool ContainsJavaScriptFlowInfoReference(string? script)
+    {
+        if (string.IsNullOrWhiteSpace(script))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < script.Length;)
+        {
+            if (script[index] is '\'' or '"' or '`')
+            {
+                SkipJavaScriptQuotedText(script, ref index);
+                continue;
+            }
+
+            if (script[index] == '/' && index + 1 < script.Length)
+            {
+                if (script[index + 1] == '/')
+                {
+                    index += 2;
+                    while (index < script.Length && script[index] is not ('\r' or '\n')) index++;
+                    continue;
+                }
+
+                if (script[index + 1] == '*')
+                {
+                    index += 2;
+                    while (index + 1 < script.Length
+                           && !(script[index] == '*' && script[index + 1] == '/')) index++;
+                    index = Math.Min(index + 2, script.Length);
+                    continue;
+                }
+            }
+
+            if (!IsJavaScriptIdentifierStart(script[index]))
+            {
+                index++;
+                continue;
+            }
+
+            var identifierStart = index++;
+            while (index < script.Length && IsJavaScriptIdentifierPart(script[index])) index++;
+            if (!script.AsSpan(identifierStart, index - identifierStart)
+                    .Equals("execution", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            index = SkipJavaScriptWhitespace(script, index);
+            if (index >= script.Length || script[index] != '.')
+            {
+                continue;
+            }
+
+            index = SkipJavaScriptWhitespace(script, index + 1);
+            var memberStart = index;
+            if (index >= script.Length || !IsJavaScriptIdentifierStart(script[index]))
+            {
+                continue;
+            }
+
+            index++;
+            while (index < script.Length && IsJavaScriptIdentifierPart(script[index])) index++;
+            if (!script.AsSpan(memberStart, index - memberStart)
+                    .Equals("getFlowInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            index = SkipJavaScriptWhitespace(script, index);
+            if (index < script.Length && script[index] == '(')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void SkipJavaScriptQuotedText(string script, ref int index)
+    {
+        var quote = script[index++];
+        while (index < script.Length)
+        {
+            if (script[index] == '\\')
+            {
+                index = Math.Min(index + 2, script.Length);
+                continue;
+            }
+
+            if (script[index++] == quote)
+            {
+                return;
+            }
+        }
+    }
+
+    private static int SkipJavaScriptWhitespace(string script, int index)
+    {
+        while (index < script.Length && char.IsWhiteSpace(script[index])) index++;
+        return index;
+    }
+
+    private static bool IsJavaScriptIdentifierStart(char value) =>
+        char.IsLetter(value) || value is '_' or '$';
+
+    private static bool IsJavaScriptIdentifierPart(char value) =>
+        char.IsLetterOrDigit(value) || value is '_' or '$';
+
+    private async Task<SequenceFlowInfoSnapshot?> LoadSequenceFlowInfoAsync(
+        long instanceId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        if (!DefinitionUsesSequenceFlowInfo(definition))
+        {
+            return null;
+        }
+
+        var stored = await runtime.ListSequenceFlowSummariesAsync(instanceId, cancellationToken);
+        return new SequenceFlowInfoSnapshot(
+            definition.SequenceFlows.Select(flow => flow.Id),
+            stored.Values.Select(ToRuntimeSequenceFlowSummary));
+    }
+
+    private async Task RecordSequenceFlowOccurrenceAsync(
+        SequenceFlowInfoSnapshot? flowInfo,
+        long instanceId,
+        long? tokenId,
+        long? userTaskId,
+        long? multiInstanceExecutionId,
+        int? itemIndex,
+        SequenceFlowModel flow,
+        string kind,
+        bool isAction,
+        bool isTraversal,
+        ActorContext actor,
+        Dictionary<string, JsonElement>? values,
+        CancellationToken cancellationToken)
+    {
+        if (flowInfo is null)
+        {
+            return;
+        }
+
+        var roles = NormalizeRoles(actor.Roles)
+            .OrderBy(role => role, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(role => role, StringComparer.Ordinal)
+            .ToList();
+        var updated = await runtime.AppendSequenceFlowOccurrenceAsync(
+            new SequenceFlowOccurrenceWriteRecord(
+                instanceId,
+                flow.Id,
+                flow.SourceRef,
+                flow.TargetRef,
+                tokenId,
+                userTaskId,
+                multiInstanceExecutionId,
+                itemIndex,
+                kind,
+                isAction,
+                isTraversal,
+                NormalizeUser(actor.User),
+                roles,
+                CloneDictionary(values),
+                timeProvider.GetUtcNow()),
+            cancellationToken);
+
+        // Keep subsequent gateway/script evaluation in this transaction coherent
+        // with the staged database write, including before SaveChanges is called.
+        flowInfo.SetSummary(ToRuntimeSequenceFlowSummary(updated));
+    }
+
+    private static SequenceFlowRuntimeSummary ToRuntimeSequenceFlowSummary(
+        SequenceFlowSummaryRecord summary) =>
+        new(
+            summary.SequenceFlowId,
+            new SequenceFlowRuntimeView(
+                summary.ActionCount,
+                ToRuntimeSequenceFlowEvidence(summary.LastAction)),
+            new SequenceFlowRuntimeView(
+                summary.TraversalCount,
+                ToRuntimeSequenceFlowEvidence(summary.LastTraversal)));
+
+    private static SequenceFlowLastOccurrence? ToRuntimeSequenceFlowEvidence(
+        SequenceFlowEvidenceRecord? evidence) =>
+        evidence is null
+            ? null
+            : new SequenceFlowLastOccurrence(
+                evidence.User,
+                evidence.UserRoles,
+                evidence.OccurredAt,
+                evidence.Kind,
+                evidence.Values is null
+                    ? null
+                    : JsonSerializer.SerializeToElement(evidence.Values));
+
+    private static string SequenceFlowTraversalKind(string nodeType) => nodeType switch
+    {
+        var type when BpmnFlowNodeTypes.IsStart(type) => "start",
+        var type when BpmnFlowNodeTypes.IsMessageStart(type) => "messageStart",
+        var type when BpmnFlowNodeTypes.IsGateway(type) => "gateway",
+        var type when BpmnFlowNodeTypes.IsServiceTask(type) => "serviceTask",
+        var type when BpmnFlowNodeTypes.IsScriptTask(type) => "scriptTask",
+        var type when BpmnFlowNodeTypes.IsErrorBoundary(type) => "errorBoundary",
+        _ => "automaticTask"
+    };
 
     private static void EnsureActionAllowedByClaim(
         UserTaskRecord task,

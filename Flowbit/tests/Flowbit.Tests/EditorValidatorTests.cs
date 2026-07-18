@@ -448,6 +448,130 @@ public sealed class EditorValidatorTests
             error.Contains("only for process variables", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Validator_AcceptsFlowInfoInGatewayCompletionAndNCalcScriptExpressions()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionCondition =
+            "CountFlow(201) >= requiredApprovals and FlowInfo(201, 'actions.count') >= 1";
+
+        var route = new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Route by confirmer",
+            Type = BpmnFlowNodeTypes.ExclusiveGateway
+        };
+        var audit = new FlowNodeModel
+        {
+            Id = 7,
+            Name = "Capture flow evidence",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = ScriptFormats.NCalc,
+            Assignments =
+            [
+                new AssignmentModel
+                {
+                    Variable = "voteResults",
+                    Expression = "FlowInfo(201, 'all')"
+                }
+            ]
+        };
+        model.FlowNodes.Add(route);
+        model.FlowNodes.Add(audit);
+
+        model.SequenceFlows.Single(flow => flow.Id == 204).TargetRef = route.Id;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 206,
+            Name = "Manager route",
+            SourceRef = route.Id,
+            TargetRef = audit.Id,
+            Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 207,
+            Name = "Continue",
+            SourceRef = audit.Id,
+            TargetRef = 2
+        });
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_RejectsInvalidFlowInfoSignatureIdAndPath()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionCondition =
+            "FlowInfo(201) or FlowInfo(flowId, 'actions.count') or " +
+            "FlowInfo(999, 'actions.count') or FlowInfo(201, 'actions.users')";
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error =>
+            error.Contains("exactly two literal arguments", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("unknown sequence flow #999", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("path 'actions.users' is not supported", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_RejectsFlowInfoInUnsupportedNCalcContexts()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.Variables.Single(variable => variable.Name == "requiredApprovals").Validation =
+            "FlowInfo(201, 'actions.count') > 0";
+        model.FlowNodes.Single(node => node.Id == 5).AssigneeExpression =
+            "FlowInfo(201, 'actions.last.user')";
+        model.SequenceFlows.Single(flow => flow.Id == 204).Condition =
+            "FlowInfo(201, 'traversals.count') > 0";
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error =>
+            error.Contains("Validation for variable 'requiredApprovals'", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("cannot use FlowInfo", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("assignee expression", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("cannot use FlowInfo", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("Sequence flow #204 condition", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("cannot use FlowInfo", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_IgnoresFlowInfoTextInsideStringLiterals()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.Variables.Single(variable => variable.Name == "requiredApprovals").Validation =
+            "label == 'FlowInfo(201, ''actions.count'')'";
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_AcceptsFlowInfoPathsCaseInsensitivelyLikeTheRuntime()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionCondition =
+            "Contains(FlowInfo(201, 'AcTiOnS.LaSt.UsErRoLeS'), 'Manager')";
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void EditorHints_ShowFlowInfoForEachSupportedAuthoringSurface()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')", html, StringComparison.Ordinal);
+        Assert.Contains("FlowInfo(201, 'actions.last.userRoles')", html, StringComparison.Ordinal);
+        Assert.Contains("execution.getFlowInfo(201).actions.last.userRoles", html, StringComparison.Ordinal);
+        Assert.Contains("CountFlow/PercentFlow use this multi-instance execution", html, StringComparison.Ordinal);
+    }
+
     private static IReadOnlyList<string> Validate(WorkflowModel model)
     {
         var html = ReadEditorSource();

@@ -149,6 +149,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         ValidateUniqueIdentifiers(definition);
+        ValidateFlowInfoUsage(definition);
 
         // initialEventId is optional: a workflow whose only entry is a
         // messageStartEvent (system-started) has no user-facing default start.
@@ -1256,6 +1257,92 @@ public sealed class WorkflowDefinitionService(
         if (duplicateFlowId is not null)
         {
             throw new WorkflowDomainException($"Sequence flow id #{duplicateFlowId} is duplicated.");
+        }
+    }
+
+    /// <summary>
+    /// FlowInfo reads persisted instance history, so it is deliberately limited
+    /// to routing and script contexts where that history is transactionally
+    /// available. NCalc's parser accepts unknown functions and cannot enforce
+    /// literal arguments, therefore these checks are semantic and definition-wide.
+    /// </summary>
+    private static void ValidateFlowInfoUsage(WorkflowModel definition)
+    {
+        var knownFlowIds = definition.SequenceFlows.Select(flow => flow.Id).ToHashSet();
+        var nodesById = definition.FlowNodes.ToDictionary(node => node.Id);
+
+        void Check(string? expression, bool allowed, string owner)
+        {
+            if (!SequenceFlowConditionEvaluator.TryValidateFlowInfoReferences(
+                    expression,
+                    knownFlowIds,
+                    allowed,
+                    out var error))
+            {
+                throw new WorkflowDomainException($"{owner} has invalid FlowInfo usage: {error}");
+            }
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            nodesById.TryGetValue(flow.SourceRef, out var source);
+            Check(
+                flow.Condition,
+                source is not null && BpmnFlowNodeTypes.IsGateway(source.Type) && !flow.IsDefault,
+                $"Sequence flow #{flow.Id} condition");
+            Check(
+                flow.CompletionCondition,
+                source is not null
+                && BpmnFlowNodeTypes.IsUserTask(source.Type)
+                && source.MultiInstance is not null
+                && !flow.IsDefault
+                && !flow.CancelRemainingInstances,
+                $"Sequence flow #{flow.Id} completionCondition");
+
+            foreach (var variable in flow.Variables)
+            {
+                Check(variable.Validation, false, $"Variable '{variable.Name}' on sequence flow #{flow.Id}");
+            }
+        }
+
+        foreach (var variable in definition.Variables)
+        {
+            Check(variable.Validation, false, $"Process variable '{variable.Name}'");
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            Check(node.AssigneeExpression, false, $"User task #{node.Id} assignee expression");
+            Check(node.MultiInstance?.CardinalityExpression, false,
+                $"User task #{node.Id} cardinalityExpression");
+            Check(node.Message?.HeaderValidation, false,
+                $"Flow node #{node.Id} headerValidation");
+
+            foreach (var variable in node.Variables)
+            {
+                Check(variable.Validation, false, $"Variable '{variable.Name}' on flow node #{node.Id}");
+            }
+
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                Check(mapping.Validation, false,
+                    $"Service task #{node.Id} output mapping '{mapping.Variable}' validation");
+            }
+
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                Check(mapping.Validation, false,
+                    $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
+            }
+
+            foreach (var assignment in node.Assignments)
+            {
+                Check(
+                    assignment.Expression,
+                    BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                    && string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.Ordinal),
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+            }
         }
     }
 
