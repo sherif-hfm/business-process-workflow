@@ -114,10 +114,13 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
         Assert.False(await db.SequenceFlowSummaries.AnyAsync(row => row.InstanceId == started.Id));
     }
 
-    [Fact]
-    public async Task JavaScriptOnlyGetFlowInfo_EnablesTrackingAndReadsThePriorAction()
+    [Theory]
+    [InlineData("execution.getFlowInfo(201)")]
+    [InlineData("execution['getFlowInfo'](201)")]
+    [InlineData("alias['getFlowInfo'](201)")]
+    public async Task JavaScriptFlowInfoCapability_TracksEvidenceForSupportedAccessPatterns(string access)
     {
-        var workflowId = await CreateWorkflowAsync(CreateJavaScriptOnlyFlowInfoModel());
+        var workflowId = await CreateWorkflowAsync(CreateJavaScriptOnlyFlowInfoModel(access));
         var started = await StartAsync(workflowId);
         var task = await GetSingleActiveTaskAsync(started.Id, "reviewer", "User");
 
@@ -317,6 +320,7 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                     Name = "Capture confirmer",
                     Type = BpmnFlowNodeTypes.ScriptTask,
                     ScriptFormat = ScriptFormats.JavaScript,
+                    UsesFlowInfo = true,
                     Script = "const info = execution.getFlowInfo(201); " +
                              "execution.setVariable('confirmedBy', info.actions.last.user); " +
                              "execution.setVariable('confirmedRoles', info.actions.last.userRoles);"
@@ -384,6 +388,7 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                     Name = "Quoted documentation",
                     Type = BpmnFlowNodeTypes.ScriptTask,
                     ScriptFormat = ScriptFormats.JavaScript,
+                    UsesFlowInfo = false,
                     Script = "execution.setVariable('note', 'execution.getFlowInfo(201)');"
                 },
                 new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
@@ -397,7 +402,7 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
         };
     }
 
-    private static WorkflowModel CreateJavaScriptOnlyFlowInfoModel()
+    private static WorkflowModel CreateJavaScriptOnlyFlowInfoModel(string access)
     {
         var suffix = Guid.NewGuid().ToString("N");
         return new WorkflowModel
@@ -431,7 +436,8 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                     Name = "Read evidence",
                     Type = BpmnFlowNodeTypes.ScriptTask,
                     ScriptFormat = ScriptFormats.JavaScript,
-                    Script = "const info = execution.getFlowInfo(201); " +
+                    UsesFlowInfo = true,
+                    Script = "const alias = execution; const info = " + access + "; " +
                              "execution.setVariable('observedUser', info.actions.last.user);"
                 },
                 new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }

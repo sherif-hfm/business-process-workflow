@@ -279,6 +279,11 @@ public static class WorkflowModelMigrator
         node.Variables ??= [];
         node.Assignments ??= [];
 
+        if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
+        {
+            node.UsesFlowInfo = null;
+        }
+
         if (!BpmnFlowNodeTypes.IsEntry(node.Type))
         {
             node.BusinessKey = null;
@@ -378,6 +383,10 @@ public static class WorkflowModelMigrator
             node.Variables = [];
             node.Service = null;
             node.Message = null;
+            node.ScriptFormat = CanonicalizeKnown(
+                node.ScriptFormat,
+                ScriptFormats.NCalc,
+                ScriptFormats.JavaScript);
             if (node.ScriptFormat != ScriptFormats.JavaScript)
             {
                 node.ScriptFormat = ScriptFormats.NCalc;
@@ -385,10 +394,12 @@ public static class WorkflowModelMigrator
 
             if (node.ScriptFormat == ScriptFormats.JavaScript)
             {
+                node.UsesFlowInfo ??= JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script);
                 node.Assignments = [];
             }
             else
             {
+                node.UsesFlowInfo = false;
                 node.Assignments ??= [];
                 node.Script = null;
             }

@@ -321,6 +321,16 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Script { get; set; }
 
+    /// <summary>
+    /// Whether a JavaScript script task may read instance-wide sequence-flow
+    /// evidence through <c>execution.getFlowInfo</c>. Null is retained only while
+    /// loading older definitions so the migrator can infer the historical direct
+    /// call shape; normalized definitions always carry an explicit value.
+    /// </summary>
+    [JsonPropertyName("usesFlowInfo")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? UsesFlowInfo { get; set; }
+
     // Normal userTask only: optional NCalc expression evaluated once when the
     // work item is created. A successful string result is snapshotted as the
     // runtime assignee; an unresolved/invalid result leaves the task unassigned.
@@ -364,6 +374,123 @@ public static class ScriptFormats
 {
     public const string NCalc = "ncalc";
     public const string JavaScript = "javascript";
+}
+
+/// <summary>
+/// Compatibility detector for the documented direct JavaScript FlowInfo call.
+/// Runtime opt-in uses <see cref="FlowNodeModel.UsesFlowInfo"/>; this scanner is
+/// deliberately limited to migration and authoring diagnostics.
+/// </summary>
+public static class JavaScriptFlowInfoUsage
+{
+    public static bool ContainsDirectCall(string? script)
+    {
+        if (string.IsNullOrWhiteSpace(script))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < script.Length;)
+        {
+            if (script[index] is '\'' or '"' or '`')
+            {
+                SkipQuotedText(script, ref index);
+                continue;
+            }
+
+            if (script[index] == '/' && index + 1 < script.Length)
+            {
+                if (script[index + 1] == '/')
+                {
+                    index += 2;
+                    while (index < script.Length && script[index] is not ('\r' or '\n')) index++;
+                    continue;
+                }
+
+                if (script[index + 1] == '*')
+                {
+                    index += 2;
+                    while (index + 1 < script.Length
+                           && !(script[index] == '*' && script[index + 1] == '/')) index++;
+                    index = Math.Min(index + 2, script.Length);
+                    continue;
+                }
+            }
+
+            if (!IsIdentifierStart(script[index]))
+            {
+                index++;
+                continue;
+            }
+
+            var identifierStart = index++;
+            while (index < script.Length && IsIdentifierPart(script[index])) index++;
+            if (!script.AsSpan(identifierStart, index - identifierStart)
+                    .Equals("execution", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            index = SkipWhitespace(script, index);
+            if (index >= script.Length || script[index] != '.')
+            {
+                continue;
+            }
+
+            index = SkipWhitespace(script, index + 1);
+            var memberStart = index;
+            if (index >= script.Length || !IsIdentifierStart(script[index]))
+            {
+                continue;
+            }
+
+            index++;
+            while (index < script.Length && IsIdentifierPart(script[index])) index++;
+            if (!script.AsSpan(memberStart, index - memberStart)
+                    .Equals("getFlowInfo", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            index = SkipWhitespace(script, index);
+            if (index < script.Length && script[index] == '(')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void SkipQuotedText(string script, ref int index)
+    {
+        var quote = script[index++];
+        while (index < script.Length)
+        {
+            if (script[index] == '\\')
+            {
+                index = Math.Min(index + 2, script.Length);
+                continue;
+            }
+
+            if (script[index++] == quote)
+            {
+                return;
+            }
+        }
+    }
+
+    private static int SkipWhitespace(string script, int index)
+    {
+        while (index < script.Length && char.IsWhiteSpace(script[index])) index++;
+        return index;
+    }
+
+    private static bool IsIdentifierStart(char value) =>
+        char.IsLetter(value) || value is '_' or '$';
+
+    private static bool IsIdentifierPart(char value) =>
+        char.IsLetterOrDigit(value) || value is '_' or '$';
 }
 
 /// <summary>

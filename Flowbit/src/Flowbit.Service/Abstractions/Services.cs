@@ -371,7 +371,8 @@ public interface IScriptContext
 /// <summary>
 /// Outcome of running a scriptTask JavaScript body. <see cref="Success"/> is false
 /// for a script error, a parse failure, or an execution-constraint violation
-/// (timeout / memory / statement limit); <see cref="Error"/> then carries a
+/// (timeout, memory, statements, recursion, regex, array, or value-bridge limit);
+/// <see cref="Error"/> then carries a
 /// human-readable reason that the engine wraps in a <c>WorkflowDomainException</c>
 /// (rolling back the transition).
 /// </summary>
@@ -393,7 +394,7 @@ public sealed class ScriptOptions
 {
     public const string SectionName = "WorkflowScript";
 
-    /// <summary>Wall-clock timeout for a single script execution.</summary>
+    /// <summary>Elapsed-time guard for a single script execution.</summary>
     public int TimeoutSeconds { get; set; } = 5;
 
     /// <summary>Maximum number of JS statements a single execution may run.</summary>
@@ -401,6 +402,55 @@ public sealed class ScriptOptions
 
     /// <summary>Maximum bytes a single execution may allocate.</summary>
     public long MemoryBytes { get; set; } = 8_000_000;
+
+    /// <summary>Maximum nested JavaScript function-call depth.</summary>
+    public int MaxRecursionDepth { get; set; } = 128;
+
+    /// <summary>Maximum Jint execution-stack depth.</summary>
+    public int MaxExecutionStackCount { get; set; } = 256;
+
+    /// <summary>Maximum duration of one regular-expression operation.</summary>
+    public int RegexTimeoutMilliseconds { get; set; } = 1_000;
+
+    /// <summary>Maximum length of a JavaScript array.</summary>
+    public uint MaxArraySize { get; set; } = 10_000;
+
+    /// <summary>Maximum nesting depth accepted by the JavaScript/JSON bridge.</summary>
+    public int MaxValueDepth { get; set; } = 32;
+
+    /// <summary>Maximum total array elements and object properties per bridged value.</summary>
+    public int MaxValueItems { get; set; } = 10_000;
+
+    /// <summary>Maximum UTF-8 JSON size accepted by the JavaScript/JSON bridge.</summary>
+    public int MaxValueBytes { get; set; } = 1_048_576;
+
+    /// <summary>Validates configured limits and their cross-field constraints.</summary>
+    public void Validate()
+    {
+        static void Range(bool valid, string name, string range)
+        {
+            if (!valid)
+            {
+                throw new InvalidOperationException(
+                    $"{SectionName}:{name} must be {range}.");
+            }
+        }
+
+        Range(TimeoutSeconds is >= 1 and <= 30, nameof(TimeoutSeconds), "between 1 and 30");
+        Range(MaxStatements is >= 1 and <= 1_000_000, nameof(MaxStatements), "between 1 and 1000000");
+        Range(MemoryBytes is >= 1_048_576 and <= 67_108_864, nameof(MemoryBytes), "between 1048576 and 67108864");
+        Range(MaxRecursionDepth is >= 1 and <= 512, nameof(MaxRecursionDepth), "between 1 and 512");
+        Range(MaxExecutionStackCount is >= 1 and <= 2_048, nameof(MaxExecutionStackCount), "between 1 and 2048");
+        Range(MaxExecutionStackCount >= MaxRecursionDepth, nameof(MaxExecutionStackCount), $"at least {nameof(MaxRecursionDepth)}");
+        Range(RegexTimeoutMilliseconds is >= 1 and <= 5_000, nameof(RegexTimeoutMilliseconds), "between 1 and 5000");
+        Range(RegexTimeoutMilliseconds <= TimeoutSeconds * 1_000, nameof(RegexTimeoutMilliseconds), $"no greater than {nameof(TimeoutSeconds)} in milliseconds");
+        Range(MaxArraySize is >= 1 and <= 100_000, nameof(MaxArraySize), "between 1 and 100000");
+        Range(MaxValueDepth is >= 1 and <= 64, nameof(MaxValueDepth), "between 1 and 64");
+        Range(MaxValueItems is >= 1 and <= 100_000, nameof(MaxValueItems), "between 1 and 100000");
+        Range(MaxValueItems <= MaxArraySize, nameof(MaxValueItems), $"no greater than {nameof(MaxArraySize)}");
+        Range(MaxValueBytes is >= 1 and <= 8_388_608, nameof(MaxValueBytes), "between 1 and 8388608");
+        Range(MaxValueBytes <= MemoryBytes, nameof(MaxValueBytes), $"no greater than {nameof(MemoryBytes)}");
+    }
 }
 
 /// <summary>

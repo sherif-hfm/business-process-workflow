@@ -41,6 +41,7 @@ public sealed class WorkflowDefinitionService(
         CancellationToken cancellationToken)
     {
         ValidateAuthoredClaimBypassMetadata(definition);
+        ValidateAuthoredScriptTaskMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
@@ -64,6 +65,7 @@ public sealed class WorkflowDefinitionService(
 
         definition.Id = source.WorkflowKey;
         ValidateAuthoredClaimBypassMetadata(definition);
+        ValidateAuthoredScriptTaskMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
@@ -286,6 +288,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
             {
+                ValidateScriptTaskOutgoingFlow(node, outgoing);
                 ValidateScriptTask(node, definition);
             }
 
@@ -545,6 +548,121 @@ public sealed class WorkflowDefinitionService(
             if (!flow.IsSelectable)
                 throw new WorkflowDomainException(
                     $"Engine-only sequence flow #{flow.Id} cannot define claim-bypass metadata.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects malformed authored Script Task payloads before the tolerant model
+    /// migrator can discard inactive fields or canonicalize an unknown format.
+    /// Persisted legacy definitions still use the tolerant normalization path.
+    /// </summary>
+    private static void ValidateAuthoredScriptTaskMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
+            {
+                if (node.UsesFlowInfo == true)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} enables usesFlowInfo but is not a script task.");
+                }
+
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(node.ScriptFormat))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} must have scriptFormat 'ncalc' or 'javascript'.");
+            }
+
+            var isNCalc = string.Equals(
+                node.ScriptFormat,
+                ScriptFormats.NCalc,
+                StringComparison.OrdinalIgnoreCase);
+            var isJavaScript = string.Equals(
+                node.ScriptFormat,
+                ScriptFormats.JavaScript,
+                StringComparison.OrdinalIgnoreCase);
+            if (!isNCalc && !isJavaScript)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an unsupported scriptFormat '{node.ScriptFormat}'.");
+            }
+
+            if (isJavaScript)
+            {
+                if (node.Assignments is { Count: > 0 })
+                {
+                    throw new WorkflowDomainException(
+                        $"Script task #{node.Id} uses scriptFormat 'javascript' and must not have assignments.");
+                }
+
+                if (string.IsNullOrWhiteSpace(node.Script))
+                {
+                    throw new WorkflowDomainException($"Script task #{node.Id} must have a script body.");
+                }
+
+                if (node.UsesFlowInfo == false
+                    && JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script))
+                {
+                    throw new WorkflowDomainException(
+                        $"Script task #{node.Id} calls execution.getFlowInfo but usesFlowInfo is false.");
+                }
+
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(node.Script))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc' and must not have a script body.");
+            }
+
+            if (node.UsesFlowInfo == true)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc'; usesFlowInfo applies only to JavaScript.");
+            }
+
+            if (node.Assignments is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc' and must have an assignments array.");
+            }
+
+            if (node.Assignments.Any(assignment => assignment is null))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has a null assignment entry.");
+            }
+        }
+    }
+
+    private static void ValidateScriptTaskOutgoingFlow(
+        FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (outgoing.Count != 1)
+        {
+            return;
+        }
+
+        var flow = outgoing[0];
+        if (!flow.IsSelectable
+            || flow.IsDefault
+            || !string.IsNullOrWhiteSpace(flow.Condition)
+            || flow.Roles.Count > 0
+            || flow.Variables.Count > 0
+            || flow.CanActWithoutClaim
+            || flow.CanActWithoutClaimRoles.Count > 0
+            || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+            || flow.CompletionPriority is not null
+            || flow.CancelRemainingInstances)
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
     }
 
@@ -1490,6 +1608,12 @@ public sealed class WorkflowDefinitionService(
 
             foreach (var assignment in node.Assignments)
             {
+                if (assignment is null)
+                {
+                    // The Script Task validator reports a precise domain error.
+                    continue;
+                }
+
                 Check(
                     assignment.Expression,
                     BpmnFlowNodeTypes.IsScriptTask(node.Type)
@@ -1534,6 +1658,13 @@ public sealed class WorkflowDefinitionService(
                     $"Script task #{node.Id} has an invalid JavaScript body: {error}");
             }
 
+            if (node.UsesFlowInfo != true
+                && JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} calls execution.getFlowInfo but usesFlowInfo is false.");
+            }
+
             return;
         }
 
@@ -1550,6 +1681,12 @@ public sealed class WorkflowDefinitionService(
 
         foreach (var assignment in node.Assignments)
         {
+            if (assignment is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has a null assignment entry.");
+            }
+
             if (string.IsNullOrWhiteSpace(assignment.Variable))
             {
                 throw new WorkflowDomainException(

@@ -220,6 +220,111 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
         }
     }
 
+    [Theory]
+    [InlineData(ScriptFormats.NCalc)]
+    [InlineData(ScriptFormats.JavaScript)]
+    public async Task Start_ScriptTaskWritesUseRunningOverlayAndPersistAuditMetadata(string scriptFormat)
+    {
+        var model = CreateModel("script-overlay-" + scriptFormat);
+        model.Variables =
+        [
+            Variable(1, "first", WorkflowVariableTypes.Number,
+                defaultValue: JsonSerializer.SerializeToElement(0)),
+            Variable(2, "second", WorkflowVariableTypes.Number,
+                defaultValue: JsonSerializer.SerializeToElement(0))
+        ];
+        InsertScriptTask(model, new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Calculate",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = scriptFormat,
+            UsesFlowInfo = scriptFormat == ScriptFormats.JavaScript ? false : null,
+            Script = scriptFormat == ScriptFormats.JavaScript
+                ? "execution.setVariable('first', 10); " +
+                  "execution.setVariable('second', execution.getVariable('first') + 5);"
+                : null,
+            Assignments = scriptFormat == ScriptFormats.NCalc
+                ?
+                [
+                    new AssignmentModel { Variable = "first", Expression = "10" },
+                    new AssignmentModel { Variable = "second", Expression = "first + 5" }
+                ]
+                : []
+        });
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var response = await StartAsync(new StartInstanceRequest(workflow.Id, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+
+        var first = detail.Variables.Last(variable => variable.VariableName == "first");
+        var second = detail.Variables.Last(variable => variable.VariableName == "second");
+        Assert.Equal(10, first.Value.GetInt32());
+        Assert.Equal(15, second.Value.GetInt32());
+        Assert.Equal(4, first.SourceFlowId);
+        Assert.Equal(4, second.SourceFlowId);
+        Assert.Equal("starter", first.SetBy);
+        Assert.Equal("starter", second.SetBy);
+        Assert.Contains(detail.History, entry =>
+            entry.Note == "script" && entry.FromNodeId == 4 && entry.ToNodeId == 2);
+    }
+
+    [Theory]
+    [InlineData(ScriptFormats.NCalc)]
+    [InlineData(ScriptFormats.JavaScript)]
+    public async Task Start_ScriptTaskOutputIsVisibleToDownstreamGateway(string scriptFormat)
+    {
+        var model = CreateScriptGatewayModel(scriptFormat);
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var response = await StartAsync(new StartInstanceRequest(workflow.Id, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        Assert.Equal("completed", acknowledgement.Status);
+
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+        Assert.Equal(4, detail.CurrentNodeId);
+        Assert.Equal(42, detail.Variables.Last(variable => variable.VariableName == "result").Value.GetInt32());
+        Assert.Contains(detail.History, entry => entry.Note == "script" && entry.FromNodeId == 2);
+        Assert.Contains(detail.History, entry => entry.Note == "gateway" && entry.FromNodeId == 3 && entry.ToNodeId == 4);
+    }
+
+    [Fact]
+    public async Task Start_NCalcFailureAfterStagedWriteRollsBackTheInstance()
+    {
+        var model = CreateModel("ncalc-staged-rollback");
+        model.Variables =
+        [
+            Variable(1, "first", WorkflowVariableTypes.Number,
+                defaultValue: JsonSerializer.SerializeToElement(0)),
+            Variable(2, "second", WorkflowVariableTypes.Number,
+                defaultValue: JsonSerializer.SerializeToElement(0))
+        ];
+        InsertScriptTask(model, new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Fail after staging",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = ScriptFormats.NCalc,
+            Assignments =
+            [
+                new AssignmentModel { Variable = "first", Expression = "10" },
+                new AssignmentModel { Variable = "second", Expression = "'not a number'" }
+            ]
+        });
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var response = await StartAsync(new StartInstanceRequest(workflow.Id, null, null, null));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("second", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
+        await using var db = fixture.CreateDbContext();
+        Assert.False(await db.WorkflowInstances.AnyAsync(instance =>
+            instance.WorkflowDefinitionId == workflow.Id));
+    }
+
     [Fact]
     public async Task Start_EnforcesRoleExplicitEntryAndClaimInheritanceSemantics()
     {
@@ -431,6 +536,64 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
             [
                 new SequenceFlowModel { Id = 10, Name = "", SourceRef = 1, TargetRef = 2 },
                 new SequenceFlowModel { Id = 20, Name = "Complete", SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateScriptGatewayModel(string scriptFormat)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "script-gateway-" + scriptFormat + "-" + suffix,
+            Name = "Script gateway " + scriptFormat + " " + suffix,
+            InitialEventId = 1,
+            Variables =
+            [
+                Variable(1, "result", WorkflowVariableTypes.Number,
+                    defaultValue: JsonSerializer.SerializeToElement(0))
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Calculate",
+                    Type = BpmnFlowNodeTypes.ScriptTask,
+                    ScriptFormat = scriptFormat,
+                    UsesFlowInfo = scriptFormat == ScriptFormats.JavaScript ? false : null,
+                    Script = scriptFormat == ScriptFormats.JavaScript
+                        ? "execution.setVariable('result', 42);"
+                        : null,
+                    Assignments = scriptFormat == ScriptFormats.NCalc
+                        ? [new AssignmentModel { Variable = "result", Expression = "42" }]
+                        : []
+                },
+                new FlowNodeModel { Id = 3, Name = "Route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+                new FlowNodeModel { Id = 4, Name = "Correct", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Incorrect", Type = BpmnFlowNodeTypes.ErrorEndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Run", SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, Name = "Evaluate", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel
+                {
+                    Id = 301,
+                    Name = "Expected",
+                    SourceRef = 3,
+                    TargetRef = 4,
+                    Condition = "result == 42"
+                },
+                new SequenceFlowModel
+                {
+                    Id = 302,
+                    Name = "Fallback",
+                    SourceRef = 3,
+                    TargetRef = 5,
+                    IsDefault = true
+                }
             ]
         };
     }

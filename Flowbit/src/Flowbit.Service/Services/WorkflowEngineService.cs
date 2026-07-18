@@ -3158,7 +3158,8 @@ public sealed class WorkflowEngineService(
             {
                 if (string.IsNullOrWhiteSpace(node.Script))
                 {
-                    return TaskExecutionOutcome.Ok();
+                    return TaskExecutionOutcome.Fail(
+                        $"Script task #{node.Id} failed: the JavaScript body is missing.");
                 }
 
                 var context = new EngineScriptContext(overlay, byName, writes, flowInfo);
@@ -3178,6 +3179,12 @@ public sealed class WorkflowEngineService(
 
                 foreach (var assignment in node.Assignments)
                 {
+                    if (assignment is null)
+                    {
+                        throw new WorkflowDomainException(
+                            $"Script task #{node.Id} has a null assignment entry.");
+                    }
+
                     if (string.IsNullOrWhiteSpace(assignment.Variable))
                     {
                         throw new WorkflowDomainException($"Script task #{node.Id} has an assignment with no variable name.");
@@ -4330,9 +4337,7 @@ public sealed class WorkflowEngineService(
 
     // FlowInfo is opt-in per definition. Definitions that never reference it keep
     // the historical hot path: no summary query and no occurrence/summary writes.
-    // JavaScript detection recognizes the documented direct execution API while
-    // ignoring comments and quoted text, avoiding accidental permanent ledger
-    // writes for scripts that merely mention getFlowInfo in documentation/data.
+    // NCalc remains expression-driven; JavaScript uses an explicit capability flag.
     private static bool DefinitionUsesSequenceFlowInfo(WorkflowModel definition)
     {
         var gatewayIds = definition.FlowNodes
@@ -4351,120 +4356,11 @@ public sealed class WorkflowEngineService(
         return definition.FlowNodes
             .Where(node => BpmnFlowNodeTypes.IsScriptTask(node.Type))
             .Any(node =>
-                node.Assignments.Any(assignment =>
-                    SequenceFlowConditionEvaluator.ContainsFlowInfoReference(assignment.Expression))
+                node.Assignments.Any(assignment => assignment is not null
+                    && SequenceFlowConditionEvaluator.ContainsFlowInfoReference(assignment.Expression))
                 || (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal)
-                    && ContainsJavaScriptFlowInfoReference(node.Script)));
+                    && node.UsesFlowInfo == true));
     }
-
-    private static bool ContainsJavaScriptFlowInfoReference(string? script)
-    {
-        if (string.IsNullOrWhiteSpace(script))
-        {
-            return false;
-        }
-
-        for (var index = 0; index < script.Length;)
-        {
-            if (script[index] is '\'' or '"' or '`')
-            {
-                SkipJavaScriptQuotedText(script, ref index);
-                continue;
-            }
-
-            if (script[index] == '/' && index + 1 < script.Length)
-            {
-                if (script[index + 1] == '/')
-                {
-                    index += 2;
-                    while (index < script.Length && script[index] is not ('\r' or '\n')) index++;
-                    continue;
-                }
-
-                if (script[index + 1] == '*')
-                {
-                    index += 2;
-                    while (index + 1 < script.Length
-                           && !(script[index] == '*' && script[index + 1] == '/')) index++;
-                    index = Math.Min(index + 2, script.Length);
-                    continue;
-                }
-            }
-
-            if (!IsJavaScriptIdentifierStart(script[index]))
-            {
-                index++;
-                continue;
-            }
-
-            var identifierStart = index++;
-            while (index < script.Length && IsJavaScriptIdentifierPart(script[index])) index++;
-            if (!script.AsSpan(identifierStart, index - identifierStart)
-                    .Equals("execution", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            index = SkipJavaScriptWhitespace(script, index);
-            if (index >= script.Length || script[index] != '.')
-            {
-                continue;
-            }
-
-            index = SkipJavaScriptWhitespace(script, index + 1);
-            var memberStart = index;
-            if (index >= script.Length || !IsJavaScriptIdentifierStart(script[index]))
-            {
-                continue;
-            }
-
-            index++;
-            while (index < script.Length && IsJavaScriptIdentifierPart(script[index])) index++;
-            if (!script.AsSpan(memberStart, index - memberStart)
-                    .Equals("getFlowInfo", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            index = SkipJavaScriptWhitespace(script, index);
-            if (index < script.Length && script[index] == '(')
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static void SkipJavaScriptQuotedText(string script, ref int index)
-    {
-        var quote = script[index++];
-        while (index < script.Length)
-        {
-            if (script[index] == '\\')
-            {
-                index = Math.Min(index + 2, script.Length);
-                continue;
-            }
-
-            if (script[index++] == quote)
-            {
-                return;
-            }
-        }
-    }
-
-    private static int SkipJavaScriptWhitespace(string script, int index)
-    {
-        while (index < script.Length && char.IsWhiteSpace(script[index])) index++;
-        return index;
-    }
-
-    private static bool IsJavaScriptIdentifierStart(char value) =>
-        char.IsLetter(value) || value is '_' or '$';
-
-    private static bool IsJavaScriptIdentifierPart(char value) =>
-        char.IsLetterOrDigit(value) || value is '_' or '$';
 
     private async Task<SequenceFlowInfoSnapshot?> LoadSequenceFlowInfoAsync(
         long instanceId,

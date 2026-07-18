@@ -256,6 +256,14 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         Assert.Contains(detail.Variables, variable =>
             variable.VariableName == "caughtError"
             && !string.IsNullOrWhiteSpace(variable.Value.GetString()));
+        if (hostType == BpmnFlowNodeTypes.ScriptTask)
+        {
+            var caughtError = detail.Variables.Last(variable => variable.VariableName == "caughtError");
+            Assert.Contains("terminal boundary failure", caughtError.Value.GetString(), StringComparison.OrdinalIgnoreCase);
+            var staged = Assert.Single(detail.Variables, variable => variable.VariableName == "staged");
+            Assert.Equal("initial", staged.Value.GetString());
+            Assert.Null(staged.SourceFlowId);
+        }
 
         await using var db = fixture.CreateDbContext();
         var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == detail.Id);
@@ -424,7 +432,9 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         else
         {
             host.ScriptFormat = ScriptFormats.JavaScript;
-            host.Script = "throw new Error('terminal boundary failure');";
+            host.UsesFlowInfo = false;
+            host.Script = "execution.setVariable('staged', 'must roll back'); " +
+                          "throw new Error('terminal boundary failure');";
         }
 
         return new WorkflowModel
@@ -432,6 +442,18 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
             Id = "terminal-boundary-" + suffix,
             Name = "Terminal boundary " + suffix,
             InitialEventId = 1,
+            Variables = hostType == BpmnFlowNodeTypes.ScriptTask
+                ?
+                [
+                    new VariableModel
+                    {
+                        Id = 1,
+                        Name = "staged",
+                        DataType = WorkflowVariableTypes.String,
+                        DefaultValue = JsonSerializer.SerializeToElement("initial")
+                    }
+                ]
+                : [],
             FlowNodes =
             [
                 new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },

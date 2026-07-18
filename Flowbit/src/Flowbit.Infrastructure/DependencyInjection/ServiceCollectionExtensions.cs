@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(dataSource);
         services.TryAddSingleton(new ServiceTaskOptions());
+        services.TryAddSingleton(new ScriptOptions());
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
         services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();

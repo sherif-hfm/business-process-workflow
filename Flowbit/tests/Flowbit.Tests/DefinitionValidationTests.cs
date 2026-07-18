@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using Flowbit.Infrastructure.Scripting;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
@@ -1356,6 +1357,192 @@ public sealed class DefinitionValidationTests
         Assert.Contains("not available", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("NCaLc", ScriptFormats.NCalc)]
+    [InlineData("JaVaScRiPt", ScriptFormats.JavaScript)]
+    public async Task CreateAsync_CanonicalizesKnownScriptFormatsWithoutDiscardingLogic(
+        string authoredFormat,
+        string expectedFormat)
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = authoredFormat;
+        if (string.Equals(expectedFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
+        {
+            node.Assignments = [];
+            node.Script = "execution.setVariable('audit', { ok: true });";
+            node.UsesFlowInfo = false;
+        }
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(candidate => candidate.Id == 2);
+        Assert.Equal(expectedFormat, saved.ScriptFormat);
+        if (expectedFormat == ScriptFormats.JavaScript)
+        {
+            Assert.Contains("setVariable", saved.Script, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Single(saved.Assignments);
+        }
+    }
+
+    [Theory]
+    [InlineData("unknownFormat")]
+    [InlineData("nullFormat")]
+    [InlineData("mixedJavaScript")]
+    [InlineData("mixedNCalc")]
+    [InlineData("nullAssignments")]
+    [InlineData("nullAssignmentEntry")]
+    public async Task CreateAsync_RejectsMalformedAuthoredScriptPayloadBeforeNormalization(string scenario)
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        switch (scenario)
+        {
+            case "unknownFormat":
+                node.ScriptFormat = "python";
+                break;
+            case "nullFormat":
+                node.ScriptFormat = null!;
+                break;
+            case "mixedJavaScript":
+                node.ScriptFormat = ScriptFormats.JavaScript;
+                node.Script = "execution.setVariable('audit', {});";
+                break;
+            case "mixedNCalc":
+                node.Script = "execution.setVariable('audit', {});";
+                break;
+            case "nullAssignments":
+                node.Assignments = null!;
+                break;
+            case "nullAssignmentEntry":
+                node.Assignments = [null!];
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+    }
+
+    [Fact]
+    public async Task CreateAsync_UsesRealStrictJavaScriptParserAtAuthorTime()
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = ScriptFormats.JavaScript;
+        node.Assignments = [];
+        node.Script = "with ({ value: 1 }) { execution.setVariable('audit', value); }";
+        node.UsesFlowInfo = false;
+        var evaluator = new JintScriptEvaluator(
+            new ScriptOptions(),
+            NullLogger<JintScriptEvaluator>.Instance);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, scriptEvaluator: evaluator)
+                .CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("invalid JavaScript", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("blankTarget")]
+    [InlineData("undeclaredTarget")]
+    [InlineData("blankExpression")]
+    [InlineData("invalidExpression")]
+    public async Task CreateAsync_RejectsInvalidNCalcAssignments(string scenario)
+    {
+        var model = BuildScriptFlowInfoModel();
+        var assignment = model.FlowNodes.Single(candidate => candidate.Id == 2).Assignments.Single();
+        switch (scenario)
+        {
+            case "blankTarget": assignment.Variable = " "; break;
+            case "undeclaredTarget": assignment.Variable = "missing"; break;
+            case "blankExpression": assignment.Expression = " "; break;
+            case "invalidExpression": assignment.Expression = "("; break;
+        }
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("condition")]
+    [InlineData("roles")]
+    [InlineData("variables")]
+    [InlineData("default")]
+    [InlineData("engineOnly")]
+    [InlineData("claimBypass")]
+    [InlineData("completion")]
+    public async Task CreateAsync_RejectsIgnoredMetadataOnScriptTaskOutgoingFlow(string scenario)
+    {
+        var model = BuildScriptFlowInfoModel();
+        var flow = model.SequenceFlows.Single(candidate => candidate.SourceRef == 2);
+        switch (scenario)
+        {
+            case "condition": flow.Condition = "true"; break;
+            case "roles": flow.Roles = ["admin"]; break;
+            case "variables": flow.Variables = [new VariableModel { Id = 2, Name = "input" }]; break;
+            case "default": flow.IsDefault = true; break;
+            case "engineOnly": flow.IsSelectable = false; break;
+            case "claimBypass": flow.CanActWithoutClaim = true; break;
+            case "completion": flow.CompletionPriority = 1; break;
+        }
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_InfersLegacyDirectJavaScriptFlowInfoAndPersistsExplicitFlag()
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = ScriptFormats.JavaScript;
+        node.Assignments = [];
+        node.Script = "execution.setVariable('audit', execution.getFlowInfo(101));";
+        node.UsesFlowInfo = null;
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        Assert.True(repository.Added!.Definition.FlowNodes.Single(candidate => candidate.Id == 2).UsesFlowInfo);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsDirectJavaScriptFlowInfoWhenExplicitlyDisabled()
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = ScriptFormats.JavaScript;
+        node.Assignments = [];
+        node.Script = "execution.setVariable('audit', execution.getFlowInfo(101));";
+        node.UsesFlowInfo = false;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("usesFlowInfo is false", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Normalize_RemainsTolerantForLegacyUnknownScriptFormat()
+    {
+        var model = BuildScriptFlowInfoModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = "legacy-custom";
+        node.Script = "legacy body";
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(ScriptFormats.NCalc, node.ScriptFormat);
+        Assert.Null(node.Script);
+        Assert.False(node.UsesFlowInfo);
+    }
+
     private static WorkflowModel BuildGatewayFlowInfoModel() => new()
     {
         Id = "flow-info-gateway",
@@ -1432,12 +1619,13 @@ public sealed class DefinitionValidationTests
 
     private static WorkflowDefinitionService CreateService(
         out CapturingDefinitionRepository repository,
-        ServiceTaskOptions? options = null)
+        ServiceTaskOptions? options = null,
+        IScriptEvaluator? scriptEvaluator = null)
     {
         repository = new CapturingDefinitionRepository();
         return new WorkflowDefinitionService(
             repository,
-            new ParseOnlyScriptEvaluator(),
+            scriptEvaluator ?? new ParseOnlyScriptEvaluator(),
             options ?? new ServiceTaskOptions(),
             NullLogger<WorkflowDefinitionService>.Instance);
     }

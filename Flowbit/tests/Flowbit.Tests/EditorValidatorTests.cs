@@ -658,6 +658,131 @@ public sealed class EditorValidatorTests
         Assert.Contains("CountFlow/PercentFlow use this multi-instance execution", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Validator_AcceptsCanonicalNCalcAndJavaScriptScriptTasks()
+    {
+        var ncalc = BuildScriptTaskModel();
+        Assert.Empty(Validate(ncalc));
+
+        var javascript = BuildScriptTaskModel();
+        var node = javascript.FlowNodes.Single(candidate => candidate.Id == 2);
+        node.ScriptFormat = ScriptFormats.JavaScript;
+        node.Assignments = [];
+        node.Script = "execution.setVariable('result', 42);";
+        node.UsesFlowInfo = false;
+        Assert.Empty(Validate(javascript));
+    }
+
+    [Theory]
+    [InlineData("unknownFormat")]
+    [InlineData("mixedJavaScript")]
+    [InlineData("missingJavaScriptBody")]
+    [InlineData("missingFlag")]
+    [InlineData("disabledDirectFlowInfo")]
+    [InlineData("undeclaredAssignment")]
+    [InlineData("blankExpression")]
+    [InlineData("ncalcFlowInfoFlag")]
+    [InlineData("conditionalExit")]
+    [InlineData("roleExit")]
+    public void Validator_RejectsMalformedScriptTaskAuthoring(string scenario)
+    {
+        var model = BuildScriptTaskModel();
+        var node = model.FlowNodes.Single(candidate => candidate.Id == 2);
+        var flow = model.SequenceFlows.Single(candidate => candidate.SourceRef == 2);
+        switch (scenario)
+        {
+            case "unknownFormat":
+                node.ScriptFormat = "python";
+                break;
+            case "mixedJavaScript":
+                node.ScriptFormat = ScriptFormats.JavaScript;
+                node.Script = "execution.setVariable('result', 1);";
+                node.UsesFlowInfo = false;
+                break;
+            case "missingJavaScriptBody":
+                node.ScriptFormat = ScriptFormats.JavaScript;
+                node.Assignments = [];
+                node.Script = " ";
+                node.UsesFlowInfo = false;
+                break;
+            case "missingFlag":
+                node.ScriptFormat = ScriptFormats.JavaScript;
+                node.Assignments = [];
+                node.Script = "execution.setVariable('result', 1);";
+                node.UsesFlowInfo = null;
+                break;
+            case "disabledDirectFlowInfo":
+                node.ScriptFormat = ScriptFormats.JavaScript;
+                node.Assignments = [];
+                node.Script = "execution.setVariable('result', execution.getFlowInfo(101).actions.count);";
+                node.UsesFlowInfo = false;
+                break;
+            case "undeclaredAssignment":
+                node.Assignments.Single().Variable = "missing";
+                break;
+            case "blankExpression":
+                node.Assignments.Single().Expression = " ";
+                break;
+            case "ncalcFlowInfoFlag":
+                node.UsesFlowInfo = true;
+                break;
+            case "conditionalExit":
+                flow.Condition = "result > 0";
+                break;
+            case "roleExit":
+                flow.Roles = ["admin"];
+                break;
+        }
+
+        Assert.NotEmpty(Validate(model));
+    }
+
+    [Fact]
+    public void Editor_ExposesExplicitJavaScriptFlowInfoCapability()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Enable instance-wide FlowInfo evidence", html, StringComparison.Ordinal);
+        Assert.Contains("usesFlowInfo", html, StringComparison.Ordinal);
+        Assert.Contains("Dynamic <code>eval</code>/<code>Function</code> compilation is disabled", html, StringComparison.Ordinal);
+    }
+
+    private static WorkflowModel BuildScriptTaskModel() => new()
+    {
+        Id = "editor-script-task",
+        Name = "Editor script task",
+        InitialEventId = 1,
+        Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "result",
+                DataType = WorkflowVariableTypes.Number,
+                DefaultValue = JsonSerializer.SerializeToElement(0)
+            }
+        ],
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Calculate",
+                Type = BpmnFlowNodeTypes.ScriptTask,
+                ScriptFormat = ScriptFormats.NCalc,
+                Assignments = [new AssignmentModel { Variable = "result", Expression = "40 + 2" }],
+                UsesFlowInfo = false
+            },
+            new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+        ]
+    };
+
     private static IReadOnlyList<string> Validate(WorkflowModel model)
     {
         var html = ReadEditorSource();

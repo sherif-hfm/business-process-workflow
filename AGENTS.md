@@ -242,15 +242,18 @@ Storage follows the hybrid design:
     `AllowClr()` - no filesystem/network/reflection) with a single bound
      `execution` host object: `execution.getVariable(name)`,
      `execution.setVariable(name, value)`, `execution.getVariables()`,
-     `execution.hasVariable(name)`, `execution.getFlowInfo(flowId)`. A script reads
-     its own writes within the same execution (an in-memory overlay, same as the
-     ncalc path). Execution is bounded
-    by `ScriptOptions` (`WorkflowScript` config section: `TimeoutSeconds`,
-    `MaxStatements`, `MemoryBytes`, defaults 5s / 100,000 / 8 MB), enforced both by
-    Jint's own execution constraints and a hard wall-clock
-    `CancellationTokenSource.CancelAfter` backstop (a few Jint built-ins bulk-process
-    in a single CLR call that bypasses per-step constraint checks -
-    [sebastienros/jint#2486](https://github.com/sebastienros/jint/issues/2486)).
+     `execution.hasVariable(name)`, `execution.getFlowInfo(flowId)`. JavaScript
+     definitions explicitly opt into the last capability with `usesFlowInfo=true`;
+     older definitions with a direct `execution.getFlowInfo(...)` call are inferred
+     during compatibility normalization. A script reads its own writes within the
+     same execution (an in-memory overlay, same as the ncalc path). Dynamic
+     `eval`/`Function` compilation is disabled and both author-time parsing and
+     runtime execution use strict mode. `ScriptOptions` (`WorkflowScript`) bounds
+     elapsed time, statements, memory, recursion, execution stack, regex duration,
+     array size, and the depth/item/UTF-8 size of values crossing the JavaScript/JSON
+     bridge. Caller cancellation is propagated instead of being converted into a
+     task failure. These in-process Jint constraints are cooperative safeguards for
+     trusted workflow administrators, not an out-of-process hostile-code boundary.
   In both modes, every write is coerced to the target's declared `dataType`/
   `isArray` (`CoerceScriptValue`) and must target a **declared process variable**
   (`model.variables`) - an undeclared `setVariable`/assignment target throws

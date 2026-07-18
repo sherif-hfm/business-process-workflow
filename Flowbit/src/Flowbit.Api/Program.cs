@@ -196,10 +196,11 @@ try
     builder.Services.AddSingleton(actorIdentityConfiguration);
     builder.Services.AddSingleton<IActorContextResolver, ActorContextResolver>();
 
-    // scriptTask JavaScript execution limits (Jint sandbox: timeout / statements / memory).
+    // Script Task JavaScript execution and JSON-bridge limits.
     var scriptOptions = builder.Configuration
         .GetSection(ScriptOptions.SectionName)
         .Get<ScriptOptions>() ?? new ScriptOptions();
+    scriptOptions.Validate();
     builder.Services.AddSingleton(scriptOptions);
 
     var serviceTaskOptions = builder.Configuration
