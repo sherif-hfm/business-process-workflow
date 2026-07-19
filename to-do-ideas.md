@@ -1,5 +1,5 @@
 
-- add Exclusive Gateways conditions priority 
+
 - add Parallel Gateways
 - terminateEndEvent
 - add quorum/complex gateway
@@ -15,6 +15,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add Exclusive Gateways conditions priority (done)
 - add assignment and reassignment task to user (done)
 - inhance ui to be like modern dashboard (done)
 - add variables latest values to GET /api/instances response (done)

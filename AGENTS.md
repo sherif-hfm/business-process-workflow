@@ -58,7 +58,9 @@ Everything lives in `flowbit-editor.html`. The key pieces:
 - **Seed data**: `seedSample()` builds the "Purchase Request Approval" example
   (including an exclusive gateway).
 
-There are no automated tests. Validation is manual, in-browser.
+The editor is dependency-free at runtime. Its save validator and selected editor
+helpers are covered by the `Flowbit/tests/Flowbit.Tests` test project; visual and
+pointer interactions still require manual in-browser validation.
 
 ---
 
@@ -207,7 +209,9 @@ Storage follows the hybrid design:
   `intermediateMessageCatchEvent`, or terminates on an `endEvent`/`errorEndEvent`.
   A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
-  `gateway`, `boundary`, `error`, or `message` note.
+  `gateway`, `boundary`, `error`, or `message` note. Gateway history also stores
+  the selected sequence-flow id; automatic gateway rows are excluded from
+  previous-actor claim inheritance even though that audit id is populated.
 - **Service tasks** select a connector through `service.type`; `rest` is the only
   connector implemented today, while the explicit discriminator keeps the model
   and editor dropdown extensible. REST calls run during the pass-through hop
@@ -266,15 +270,22 @@ Storage follows the hybrid design:
   (`JintScriptEvaluator` in the infrastructure layer) also parse-checks a
   `javascript` body at author time (`Engine.PrepareScript`, no execution) via
   `ValidateDefinition`.
-- **Exclusive gateways** evaluate outgoing flows: the first flow whose
-  `condition` is true wins; otherwise the `isDefault` flow is taken; if neither
-  matches the transition fails. Conditions are evaluated by
+- **Exclusive gateways** evaluate non-default outgoing flows in ascending
+  positive `conditionPriority`; the first flow whose `condition` is true wins,
+  otherwise the required `isDefault` flow is taken. New and updated definitions
+  require exactly one default, a nonblank condition and unique positive priority
+  on every other outgoing flow, and at least two outgoing flows. Older immutable
+  definitions with no authored priorities derive `1..n` from their existing
+  `sequenceFlows` array order; older definitions without a default remain
+  executable and fail at runtime only when no condition matches. Conditions are evaluated by
   `SequenceFlowConditionEvaluator` using [NCalc](https://github.com/ncalc/ncalc):
   instance variables are exposed as parameters and the full NCalc grammar is
   supported (comparisons `== != < <= > >=`, boolean `and`/`or`, arithmetic,
   parentheses, quoted string literals). String comparisons are case-insensitive;
   the result is coerced to a boolean so a bare variable name still works as a
-  truthiness check (non-zero numbers / non-empty strings are truthy). An optional
+  truthiness check (finite non-zero numbers / nonblank strings are truthy;
+  non-finite numeric results are false). Large finite numbers do not overflow
+  truthiness conversion. An optional
   `${ ... }` wrapper is stripped, and invalid or unresolvable expressions
   evaluate to `false`. Conditions are also parse-checked when a definition is
   created/updated. Beyond NCalc's built-ins (`Min`, `Max`, `if`, `in`, math
@@ -283,8 +294,9 @@ Storage follows the hybrid design:
   parse-checking agree): `Length(s)` / `Len(s)`, `IsNullOrEmpty(s)`,
   `IsNullOrWhiteSpace(s)`, `Contains(s, sub)`, `StartsWith(s, prefix)`,
   `EndsWith(s, suffix)`, `Lower(s)`, `Upper(s)`, `Trim(s)`, and
-  `IsMatch(s, pattern)` (regex match, case-insensitive, bounded execution time as
-  a ReDoS guard). Substring/regex matching is case-insensitive. These helpers work
+  `IsMatch(s, pattern)` (regex match, case-insensitive and culture-invariant,
+  with bounded execution time as a ReDoS guard). Substring/regex matching is
+  case-insensitive. These helpers work
   anywhere NCalc runs (gateway/flow conditions, assignee expressions, and
   variable `validation` rules). A
   helper called with too few arguments (or a mistyped name) is treated as unknown;
@@ -834,9 +846,12 @@ Node kinds and their outgoing-flow rules:
   re-checked after the writes; a failure rolls back the transition. The first
   automatic node type that carries authored data (`assignments`/`script`), so
   `ApplyNodeInvariants` has a dedicated case that preserves them.
-- **`exclusiveGateway`**: routing node; diamond on canvas. Two or more outgoing
-  flows with `condition`s plus one `isDefault`; the engine picks the first
-  matching condition, else the default. No user interaction.
+- **`exclusiveGateway`**: routing node; diamond on canvas. It may have several
+  incoming paths and requires two or more outgoing flows: every non-default flow
+  has a `condition` and unique positive `conditionPriority`, plus exactly one
+  `isDefault` fallback. The engine evaluates lower priorities first. This is a
+  merge-then-split XOR; a pure one-outgoing merge is intentionally unsupported.
+  No user interaction.
 - **`endEvent`**: terminal; thick-ring circle. No outgoing flows.
 - **`errorEndEvent`**: terminal; thick-ring circle with an error glyph. No
   outgoing flows. Entering it ends the instance with the `Faulted` status
@@ -896,6 +911,7 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "roles": [ "Manager" ],      // userTask flow: enforced at runtime (empty = anyone)
   "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
   "condition": "amount > 1000",// userTask / exclusiveGateway flow only (nullable)
+  "conditionPriority": 1,      // exclusiveGateway non-default only; lower runs first
   "isDefault": false,          // userTask / exclusiveGateway default flow
   "isSelectable": true         // multi-instance user action; false = engine-only
 }
@@ -1196,7 +1212,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
-| `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; routes to the first outgoing flow whose condition matches, else the default flow. |
+| `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; permits multiple incoming paths and routes by ascending condition priority, else the required default flow. Requires at least two outgoing flows, so a pure merge is not modeled. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
 | `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
@@ -1204,6 +1220,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
+| `sequenceFlow.conditionPriority` | Engine extension | Unique positive evaluation order for non-default exclusive-gateway flows; lower values run first. Legacy all-missing values derive from JSON array order. |
 | `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
 | `sequenceFlow.isSelectable` | Engine extension | On a multi-instance user-task flow, `false` makes the route engine-only: not a user action, but still eligible for aggregate completion/default routing. Defaults to `true`. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
@@ -1296,9 +1313,11 @@ when extending the model so new features stay close to BPMN terminology.
   unconditional outgoing flow, drawn as a solid (non-dashed) edge since the node
   rests (it is not pass-through). The engine advances down it on message
   delivery, logged with a `message` history note.
-- **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` or the
-  `isDefault` marker; the editor shows the condition/`default` beneath the edge
-  and enforces a single default per gateway.
+- **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` plus
+  unique positive `conditionPriority`, or the required `isDefault` marker. The
+  editor shows priority/default metadata beneath the edge and enforces exactly
+  one default per gateway. Several paths may enter the same gateway; it then
+  evaluates the same outgoing decision for whichever path arrived.
 - **User-task flows**: `userTask` outgoing flows may carry a stored-state `condition`
   (NCalc), action roles, and optional claim-bypass roles; the editor shows these
   controls beneath the edge. Multi-instance flows may set

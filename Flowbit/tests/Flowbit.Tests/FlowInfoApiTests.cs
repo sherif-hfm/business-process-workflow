@@ -345,7 +345,8 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                     Name = "Manager",
                     SourceRef = 3,
                     TargetRef = 4,
-                    Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"
+                    Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')",
+                    ConditionPriority = 1
                 },
                 new SequenceFlowModel
                 {

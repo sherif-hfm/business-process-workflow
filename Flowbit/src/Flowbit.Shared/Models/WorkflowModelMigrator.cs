@@ -49,6 +49,7 @@ public static class WorkflowModelMigrator
             }
         }
 
+        NormalizeExclusiveGatewayPriorities(model);
         NormalizeUserTaskDefaultFlows(model);
 
     }
@@ -150,6 +151,31 @@ public static class WorkflowModelMigrator
         var candidate = Math.Max(seed, max + 1);
         seed = candidate + 1;
         return candidate;
+    }
+
+    /// <summary>
+    /// Older definitions use sequenceFlows array order as the exclusive-gateway
+    /// evaluation order. Materialize that order only when every conditional flow
+    /// on the gateway omits the new priority. Partially authored priorities are
+    /// deliberately left untouched so definition validation can reject them.
+    /// </summary>
+    private static void NormalizeExclusiveGatewayPriorities(WorkflowModel model)
+    {
+        foreach (var gateway in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsGateway(node.Type)))
+        {
+            var conditional = model.SequenceFlows
+                .Where(flow => flow.SourceRef == gateway.Id && !flow.IsDefault)
+                .ToList();
+            if (conditional.Count == 0 || conditional.Any(flow => flow.ConditionPriority is not null))
+            {
+                continue;
+            }
+
+            for (var index = 0; index < conditional.Count; index++)
+            {
+                conditional[index].ConditionPriority = index + 1;
+            }
+        }
     }
 
     private static List<string> NormalizeRoles(IEnumerable<string>? roles) =>

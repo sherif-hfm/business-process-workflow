@@ -9,6 +9,55 @@ namespace Flowbit.Tests;
 public sealed class EditorValidatorTests
 {
     [Fact]
+    public void EditorJavaScript_ParsesSuccessfully()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(html, @"<script>(?<code>[\s\S]*?)</script>");
+        Assert.True(match.Success, "The editor script was not found.");
+
+        var exception = Record.Exception(() => Engine.PrepareScript(match.Groups["code"].Value));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void GatewayPriorityNormalization_DerivesOnlyAllMissingLegacyPriorities()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"function nextConditionPriority[\s\S]*?(?=function migrateLegacyUserTaskDefaultFlows)");
+        Assert.True(match.Success, "The gateway-priority normalization helpers were not found.");
+
+        var engine = new Engine();
+        engine.Execute("""
+            function isGatewayType(type) { return type === 'exclusiveGateway'; }
+            function outgoingFlows(sourceId) { return model.sequenceFlows.filter(flow => flow.sourceRef === sourceId); }
+            let model = {
+              flowNodes: [{ id: 3, type: 'exclusiveGateway' }],
+              sequenceFlows: [
+                { id: 301, sourceRef: 3, isDefault: false, conditionPriority: null },
+                { id: 302, sourceRef: 3, isDefault: false, conditionPriority: null },
+                { id: 303, sourceRef: 3, isDefault: true, conditionPriority: null }
+              ]
+            };
+            """);
+        engine.Execute(match.Value);
+        using var derived = JsonDocument.Parse(engine.Evaluate(
+            "normalizeExclusiveGatewayPriorities(); JSON.stringify(model.sequenceFlows);").AsString());
+        Assert.Equal(1, derived.RootElement[0].GetProperty("conditionPriority").GetInt32());
+        Assert.Equal(2, derived.RootElement[1].GetProperty("conditionPriority").GetInt32());
+        Assert.Equal(JsonValueKind.Null, derived.RootElement[2].GetProperty("conditionPriority").ValueKind);
+
+        engine.Execute("model.sequenceFlows[0].conditionPriority = 7; model.sequenceFlows[1].conditionPriority = null;");
+        using var partial = JsonDocument.Parse(engine.Evaluate(
+            "normalizeExclusiveGatewayPriorities(); JSON.stringify(model.sequenceFlows);").AsString());
+        Assert.Equal(7, partial.RootElement[0].GetProperty("conditionPriority").GetInt32());
+        Assert.Equal(JsonValueKind.Null, partial.RootElement[1].GetProperty("conditionPriority").ValueKind);
+        Assert.Equal(8, engine.Evaluate("nextConditionPriority(3)").AsNumber());
+    }
+
+    [Fact]
     public void Validator_AcceptsCanonicalMultiInstanceFixture()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
@@ -572,7 +621,16 @@ public sealed class EditorValidatorTests
             Name = "Manager route",
             SourceRef = route.Id,
             TargetRef = audit.Id,
-            Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"
+            Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')",
+            ConditionPriority = 1
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 208,
+            Name = "Default route",
+            SourceRef = route.Id,
+            TargetRef = audit.Id,
+            IsDefault = true
         });
         model.SequenceFlows.Add(new SequenceFlowModel
         {
@@ -780,6 +838,114 @@ public sealed class EditorValidatorTests
         [
             new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
             new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+        ]
+    };
+
+    [Fact]
+    public void Validator_AcceptsExclusiveGatewayWithSeveralIncomingPathsAndOrderedFallback()
+    {
+        var model = CreateExclusiveGatewayModel();
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Alternative incoming",
+            Type = BpmnFlowNodeTypes.Task
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 601,
+            SourceRef = 6,
+            TargetRef = 3
+        });
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_RejectsExclusiveGatewayWithoutExactlyOneDefaultOrTwoOutputs()
+    {
+        var noDefault = CreateExclusiveGatewayModel();
+        var formerDefault = noDefault.SequenceFlows.Single(flow => flow.Id == 302);
+        formerDefault.IsDefault = false;
+        formerDefault.Condition = "false";
+        formerDefault.ConditionPriority = 2;
+        Assert.Contains(Validate(noDefault), error =>
+            error.Contains("exactly one default", StringComparison.OrdinalIgnoreCase));
+
+        var pureMerge = CreateExclusiveGatewayModel();
+        pureMerge.SequenceFlows.RemoveAll(flow => flow.Id == 301);
+        Assert.Contains(Validate(pureMerge), error =>
+            error.Contains("at least two outgoing", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_RejectsMissingInvalidAndDuplicateGatewayBranchMetadata()
+    {
+        var missing = CreateExclusiveGatewayModel();
+        missing.SequenceFlows.Single(flow => flow.Id == 301).Condition = null;
+        missing.SequenceFlows.Single(flow => flow.Id == 301).ConditionPriority = null;
+        var missingErrors = Validate(missing);
+        Assert.Contains(missingErrors, error => error.Contains("must define a condition", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(missingErrors, error => error.Contains("positive integer conditionPriority", StringComparison.OrdinalIgnoreCase));
+
+        var duplicate = CreateExclusiveGatewayModel();
+        duplicate.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 303,
+            SourceRef = 3,
+            TargetRef = 4,
+            Condition = "true",
+            ConditionPriority = 1
+        });
+        Assert.Contains(Validate(duplicate), error =>
+            error.Contains("duplicate conditionPriority", StringComparison.OrdinalIgnoreCase));
+
+        var defaultMetadata = CreateExclusiveGatewayModel();
+        defaultMetadata.SequenceFlows.Single(flow => flow.Id == 302).ConditionPriority = 2;
+        Assert.Contains(Validate(defaultMetadata), error =>
+            error.Contains("cannot define a condition or conditionPriority", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_RejectsIgnoredGatewayMetadataAndPriorityOnOtherNodeTypes()
+    {
+        var gatewayMetadata = CreateExclusiveGatewayModel();
+        gatewayMetadata.SequenceFlows.Single(flow => flow.Id == 301).Roles = ["Manager"];
+        Assert.Contains(Validate(gatewayMetadata), error =>
+            error.Contains("user-action or multi-instance metadata", StringComparison.OrdinalIgnoreCase));
+
+        var nonGatewayPriority = CreateExclusiveGatewayModel();
+        nonGatewayPriority.SequenceFlows.Single(flow => flow.Id == 101).ConditionPriority = 9;
+        Assert.Contains(Validate(nonGatewayPriority), error =>
+            error.Contains("only when leaving an exclusive gateway", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static WorkflowModel CreateExclusiveGatewayModel() => new()
+    {
+        Id = "editor-exclusive-gateway",
+        Name = "Editor exclusive gateway",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 2, Name = "Prepare", Type = BpmnFlowNodeTypes.Task },
+            new FlowNodeModel { Id = 3, Name = "Route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+            new FlowNodeModel { Id = 4, Name = "Matched", Type = BpmnFlowNodeTypes.EndEvent },
+            new FlowNodeModel { Id = 5, Name = "Fallback", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel
+            {
+                Id = 301,
+                SourceRef = 3,
+                TargetRef = 4,
+                Condition = "true",
+                ConditionPriority = 1
+            },
+            new SequenceFlowModel { Id = 302, SourceRef = 3, TargetRef = 5, IsDefault = true }
         ]
     };
 

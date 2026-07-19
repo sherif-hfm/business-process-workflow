@@ -2557,7 +2557,7 @@ public sealed class WorkflowEngineService(
 
             await runtime.AddHistoryAsync(
                 instance.Id,
-                null,
+                BpmnFlowNodeTypes.IsGateway(currentNode.Type) ? flow.Id : null,
                 currentNode.Id,
                 nextNode.Id,
                 performedBy,
@@ -2710,10 +2710,12 @@ public sealed class WorkflowEngineService(
         }
 
         var history = await runtime.ListHistoryAsync(instance.Id, cancellationToken);
-        // A user action is a history row with ActionId != null and PerformedBy set;
-        // service/gateway/automatic pass-through hops log ActionId == null.
+        // SequenceFlowId/ActionId is also populated for gateway audit rows, so
+        // user-action detection must explicitly exclude automatic pass-through
+        // notes. Null-note legacy user actions and multi-instance actor notes remain
+        // eligible for claim inheritance.
         var userActions = history
-            .Where(h => h.ActionId != null && !string.IsNullOrWhiteSpace(h.PerformedBy));
+            .Where(IsActorActionHistory);
 
         if (node.ClaimMode == ClaimModes.FromNode)
         {
@@ -2736,6 +2738,20 @@ public sealed class WorkflowEngineService(
         return instance with { ClaimedBy = claimant, UpdatedAt = DateTimeOffset.UtcNow };
     }
 
+    private static bool IsActorActionHistory(InstanceHistoryRecord history) =>
+        history.ActionId is not null
+        && !string.IsNullOrWhiteSpace(history.PerformedBy)
+        && history.Note is not (
+            "start" or
+            "messageStart" or
+            "automatic" or
+            "service" or
+            "script" or
+            "gateway" or
+            "boundary" or
+            "error" or
+            "message");
+
     private SequenceFlowModel SelectPassThroughFlow(
         WorkflowModel definition,
         FlowNodeModel node,
@@ -2752,13 +2768,14 @@ public sealed class WorkflowEngineService(
         if (BpmnFlowNodeTypes.IsGateway(node.Type))
         {
             logger.LogDebug("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
-            var match = outgoing.FirstOrDefault(f =>
-                !f.IsDefault
-                && !string.IsNullOrWhiteSpace(f.Condition)
-                && SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables, flowInfo));
+            var match = outgoing
+                .Where(f => !f.IsDefault && !string.IsNullOrWhiteSpace(f.Condition))
+                .OrderBy(f => f.ConditionPriority ?? int.MaxValue)
+                .FirstOrDefault(f =>
+                    SequenceFlowConditionEvaluator.Evaluate(f.Condition, variables, flowInfo));
             if (match is not null)
             {
-                logger.LogDebug("Exclusive gateway #{NodeId} evaluated flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.Id, match.Name, match.Condition);
+                logger.LogDebug("Exclusive gateway #{NodeId} evaluated priority {Priority} flow {FlowId} ({FlowName}) condition '{Condition}' as True", node.Id, match.ConditionPriority, match.Id, match.Name, match.Condition);
                 return match;
             }
 

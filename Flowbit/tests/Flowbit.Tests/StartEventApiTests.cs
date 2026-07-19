@@ -288,7 +288,89 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
         Assert.Equal(4, detail.CurrentNodeId);
         Assert.Equal(42, detail.Variables.Last(variable => variable.VariableName == "result").Value.GetInt32());
         Assert.Contains(detail.History, entry => entry.Note == "script" && entry.FromNodeId == 2);
-        Assert.Contains(detail.History, entry => entry.Note == "gateway" && entry.FromNodeId == 3 && entry.ToNodeId == 4);
+        Assert.Contains(detail.History, entry => entry.Note == "gateway" && entry.FromNodeId == 3 &&
+            entry.ToNodeId == 4 && entry.SequenceFlowId == 301);
+    }
+
+    [Fact]
+    public async Task Start_ExclusiveGatewayUsesPriorityAcceptsSeveralIncomingPathsAndRecordsFlow()
+    {
+        var model = CreateMultiEntryGatewayModel();
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var firstResponse = await StartAsync(
+            new StartInstanceRequest(workflow.Id, null, null, null));
+        using var secondResponse = await StartAsync(
+            new StartInstanceRequest(workflow.Id, null, 2, null));
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, secondResponse.StatusCode);
+
+        var first = await ReadAsync<StartInstanceResultDto>(firstResponse);
+        var second = await ReadAsync<StartInstanceResultDto>(secondResponse);
+        foreach (var started in new[] { first, second })
+        {
+            Assert.Equal("completed", started.Status);
+            Assert.Equal(5, started.CurrentNodeId);
+            var detail = await GetInstanceAsync(started.Id);
+            var gatewayHistory = Assert.Single(detail.History, entry => entry.Note == "gateway");
+            Assert.Equal(3, gatewayHistory.FromNodeId);
+            Assert.Equal(5, gatewayHistory.ToNodeId);
+            Assert.Equal(302, gatewayHistory.SequenceFlowId);
+        }
+    }
+
+    [Fact]
+    public async Task Start_GatewayHistoryDoesNotBecomePreviousActorForClaimInheritance()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var model = new WorkflowModel
+        {
+            Id = "gateway-claim-history-" + suffix,
+            Name = "Gateway claim history " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Review",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    RequiresClaim = true,
+                    ClaimMode = ClaimModes.Previous
+                },
+                new FlowNodeModel { Id = 4, Name = "Fallback", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel
+                {
+                    Id = 201,
+                    SourceRef = 2,
+                    TargetRef = 3,
+                    Condition = "true",
+                    ConditionPriority = 1
+                },
+                new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 4, IsDefault = true },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 5, Name = "Complete" }
+            ]
+        };
+        var workflow = await CreateWorkflowAsync(model, true);
+
+        using var response = await StartAsync(
+            new StartInstanceRequest(workflow.Id, null, null, null),
+            user: "gateway-starter");
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var acknowledgement = await ReadAsync<StartInstanceResultDto>(response);
+        var detail = await GetInstanceAsync(acknowledgement.Id);
+        Assert.Contains(detail.History, row => row.Note == "gateway" && row.SequenceFlowId == 201);
+
+        await using var db = fixture.CreateDbContext();
+        var task = await db.UserTasks.SingleAsync(item => item.InstanceId == acknowledgement.Id);
+        Assert.Null(task.ClaimedBy);
     }
 
     [Fact]
@@ -584,7 +666,8 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
                     Name = "Expected",
                     SourceRef = 3,
                     TargetRef = 4,
-                    Condition = "result == 42"
+                    Condition = "result == 42",
+                    ConditionPriority = 1
                 },
                 new SequenceFlowModel
                 {
@@ -592,6 +675,57 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
                     Name = "Fallback",
                     SourceRef = 3,
                     TargetRef = 5,
+                    IsDefault = true
+                }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateMultiEntryGatewayModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "multi-entry-gateway-" + suffix,
+            Name = "Multi-entry gateway " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Primary start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Alternative start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 3, Name = "Shared route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+                new FlowNodeModel { Id = 4, Name = "Later priority", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Earlier priority", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 6, Name = "Fallback", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 3 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel
+                {
+                    Id = 301,
+                    Name = "Listed first but evaluated second",
+                    SourceRef = 3,
+                    TargetRef = 4,
+                    Condition = "true",
+                    ConditionPriority = 20
+                },
+                new SequenceFlowModel
+                {
+                    Id = 302,
+                    Name = "Evaluated first",
+                    SourceRef = 3,
+                    TargetRef = 5,
+                    Condition = "true",
+                    ConditionPriority = 10
+                },
+                new SequenceFlowModel
+                {
+                    Id = 303,
+                    Name = "Fallback",
+                    SourceRef = 3,
+                    TargetRef = 6,
                     IsDefault = true
                 }
             ]

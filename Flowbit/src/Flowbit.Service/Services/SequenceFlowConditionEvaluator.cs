@@ -21,8 +21,8 @@ namespace Flowbit.Service.Services;
 ///
 /// Instance variables are exposed as NCalc parameters (case-insensitive names).
 /// String comparisons are case-insensitive to match the historical behaviour.
-/// The result is coerced to a boolean (non-zero numbers and non-empty strings
-/// are truthy), so a bare variable name still works as a truthiness check.
+/// The result is coerced to a boolean (finite non-zero numbers and nonblank
+/// strings are truthy), so a bare variable name still works as a truthiness check.
 /// An optional "${ ... }" wrapper is stripped for backward compatibility.
 /// Invalid or unresolvable expressions evaluate to <c>false</c>.
 ///
@@ -37,7 +37,7 @@ namespace Flowbit.Service.Services;
 ///   - <c>StartsWith(s, prefix)</c>, <c>EndsWith(s, suffix)</c>
 ///   - <c>Lower(s)</c>, <c>Upper(s)</c>, <c>Trim(s)</c>
 ///   - <c>IsMatch(s, pattern)</c> - regular-expression match (case-insensitive,
-///     bounded execution time)
+///     culture-invariant, bounded execution time)
 /// Substring and regex matching are case-insensitive. Array variables are exposed
 /// as native lists so the collection helpers work directly on them. A helper called
 /// with too few arguments is treated as unknown (the expression evaluates to
@@ -95,6 +95,10 @@ public static class SequenceFlowConditionEvaluator
         {
             return false;
         }
+        catch (ArithmeticException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -128,6 +132,10 @@ public static class SequenceFlowConditionEvaluator
             return false;
         }
         catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (ArithmeticException)
         {
             return false;
         }
@@ -479,7 +487,11 @@ public static class SequenceFlowConditionEvaluator
     {
         try
         {
-            return Regex.IsMatch(input, pattern, RegexOptions.IgnoreCase, RegexTimeout);
+            return Regex.IsMatch(
+                input,
+                pattern,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                RegexTimeout);
         }
         catch (ArgumentException)
         {
@@ -539,7 +551,10 @@ public static class SequenceFlowConditionEvaluator
         bool b => b,
         string s => !string.IsNullOrWhiteSpace(s),
         sbyte or byte or short or ushort or int or uint or long or ulong
-            or float or double or decimal => Convert.ToDecimal(value, CultureInfo.InvariantCulture) != 0,
+            => Convert.ToDecimal(value, CultureInfo.InvariantCulture) != 0,
+        float f => float.IsFinite(f) && f != 0,
+        double d => double.IsFinite(d) && d != 0,
+        decimal d => d != 0,
         IEnumerable enumerable and not string => enumerable.Cast<object?>().Any(),
         _ => true
     };

@@ -190,6 +190,7 @@
       "roles": [],
       "variables": [],
       "condition": "amount > 1000",
+      "conditionPriority": 1,
       "isDefault": false
     },
     {

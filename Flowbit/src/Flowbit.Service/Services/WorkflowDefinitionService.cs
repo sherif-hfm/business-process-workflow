@@ -42,6 +42,7 @@ public sealed class WorkflowDefinitionService(
     {
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
+        ValidateAuthoredExclusiveGatewayMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
@@ -66,6 +67,7 @@ public sealed class WorkflowDefinitionService(
         definition.Id = source.WorkflowKey;
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
+        ValidateAuthoredExclusiveGatewayMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
@@ -369,26 +371,61 @@ public sealed class WorkflowDefinitionService(
                 }
 
                 var gatewayDefaultCount = outgoing.Count(f => f.IsDefault);
-                if (gatewayDefaultCount > 1)
+                if (gatewayDefaultCount != 1)
                 {
                     throw new WorkflowDomainException(
-                        $"Exclusive gateway #{node.Id} has {gatewayDefaultCount} default flows; at most one allowed.");
+                        $"Exclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {gatewayDefaultCount}.");
                 }
 
-                var hasDefault = outgoing.Any(f => f.IsDefault);
-                var conditioned = outgoing.Where(f => !f.IsDefault).All(f => !string.IsNullOrWhiteSpace(f.Condition));
-                if (!hasDefault && !conditioned)
+                var defaultFlow = outgoing.Single(f => f.IsDefault);
+                if (!string.IsNullOrWhiteSpace(defaultFlow.Condition)
+                    || defaultFlow.ConditionPriority is not null)
                 {
                     throw new WorkflowDomainException(
-                        $"Exclusive gateway #{node.Id} must have a default flow or a condition on every non-default flow.");
+                        $"Default sequence flow #{defaultFlow.Id} from exclusive gateway #{node.Id} cannot define a condition or conditionPriority.");
                 }
 
-                foreach (var flow in outgoing.Where(f => !f.IsDefault && !string.IsNullOrWhiteSpace(f.Condition)))
+                var conditionalFlows = outgoing.Where(f => !f.IsDefault).ToList();
+                if (conditionalFlows.Any(f => string.IsNullOrWhiteSpace(f.Condition)))
+                {
+                    throw new WorkflowDomainException(
+                        $"Every non-default sequence flow from exclusive gateway #{node.Id} must define a condition.");
+                }
+
+                if (conditionalFlows.Any(f => f.ConditionPriority is null or <= 0))
+                {
+                    throw new WorkflowDomainException(
+                        $"Every non-default sequence flow from exclusive gateway #{node.Id} must define a positive conditionPriority.");
+                }
+
+                var duplicatePriority = conditionalFlows
+                    .GroupBy(f => f.ConditionPriority!.Value)
+                    .FirstOrDefault(group => group.Count() > 1)?.Key;
+                if (duplicatePriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Exclusive gateway #{node.Id} has duplicate conditionPriority {duplicatePriority}.");
+                }
+
+                foreach (var flow in conditionalFlows)
                 {
                     if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
                     {
                         throw new WorkflowDomainException(
                             $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+                    }
+
+                    if (flow.Roles.Count > 0
+                        || flow.Variables.Count > 0
+                        || !flow.IsSelectable
+                        || flow.CanActWithoutClaim
+                        || flow.CanActWithoutClaimRoles.Count > 0
+                        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+                        || flow.CompletionPriority is not null
+                        || flow.CancelRemainingInstances)
+                    {
+                        throw new WorkflowDomainException(
+                            $"Sequence flow #{flow.Id} from exclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
                     }
                 }
             }
@@ -548,6 +585,56 @@ public sealed class WorkflowDefinitionService(
             if (!flow.IsSelectable)
                 throw new WorkflowDomainException(
                     $"Engine-only sequence flow #{flow.Id} cannot define claim-bypass metadata.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects gateway metadata that the tolerant migrator may otherwise clear.
+    /// Existing persisted definitions still normalize without this authored-input
+    /// check, while create/update requests receive an actionable validation error.
+    /// </summary>
+    private static void ValidateAuthoredExclusiveGatewayMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            var isGateway = source is not null && BpmnFlowNodeTypes.IsGateway(source.Type);
+            if (!isGateway)
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} defines conditionPriority but its source node is not an exclusive gateway.");
+                }
+                continue;
+            }
+
+            if (flow.IsDefault
+                && (!string.IsNullOrWhiteSpace(flow.Condition) || flow.ConditionPriority is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Default sequence flow #{flow.Id} from exclusive gateway #{source!.Id} cannot define a condition or conditionPriority.");
+            }
+
+            if (!flow.IsDefault && flow.ConditionPriority is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Non-default sequence flow #{flow.Id} from exclusive gateway #{source!.Id} must explicitly define a positive conditionPriority.");
+            }
+
+            if (flow.Roles is { Count: > 0 }
+                || flow.Variables is { Count: > 0 }
+                || !flow.IsSelectable
+                || flow.CanActWithoutClaim
+                || flow.CanActWithoutClaimRoles is { Count: > 0 }
+                || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+                || flow.CompletionPriority is not null
+                || flow.CancelRemainingInstances)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from exclusive gateway #{source!.Id} cannot define user-action or multi-instance metadata.");
+            }
         }
     }
 

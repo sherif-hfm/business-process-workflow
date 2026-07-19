@@ -1258,6 +1258,18 @@ function nextCompletionPriority(flows) {
   return flows.reduce((max, flow) => Number.isInteger(flow.completionPriority) && flow.completionPriority > 0
     ? Math.max(max, flow.completionPriority) : max, 0) + 1;
 }
+function nextConditionPriority(sourceId) {
+  return outgoingFlows(sourceId).reduce((max, flow) =>
+    !flow.isDefault && Number.isInteger(flow.conditionPriority) && flow.conditionPriority > 0
+      ? Math.max(max, flow.conditionPriority) : max, 0) + 1;
+}
+function normalizeExclusiveGatewayPriorities() {
+  for (const node of model.flowNodes.filter(node => isGatewayType(node.type))) {
+    const conditional = outgoingFlows(node.id).filter(flow => !flow.isDefault);
+    if (!conditional.length || conditional.some(flow => flow.conditionPriority != null)) continue;
+    conditional.forEach((flow, index) => { flow.conditionPriority = index + 1; });
+  }
+}
 function migrateLegacyUserTaskDefaultFlows() {
   let flowIdSeed = model.sequenceFlows.reduce((max, flow) => Math.max(max, flow.id), 0) + 1;
   for (const node of model.flowNodes.filter(node => isUserTaskType(node.type))) {
@@ -1285,7 +1297,7 @@ function migrateLegacyUserTaskDefaultFlows() {
       const fallback = {
         id: flowIdSeed++, name: "", externalId: null,
         sourceRef: legacyDefault.sourceRef, targetRef: legacyDefault.targetRef,
-        roles: [], variables: [], condition: null,
+        roles: [], variables: [], condition: null, conditionPriority: null,
         isDefault: true, isSelectable: false, canActWithoutClaim: false,
         canActWithoutClaimRoles: [],
         completionCondition: null, completionPriority: null, cancelRemainingInstances: false
@@ -1313,7 +1325,16 @@ function applyFlowInvariants(flow) {
   }
   if (gateway) {
     flow.variables = [];
+    flow.isSelectable = true;
+    flow.completionCondition = null;
+    flow.completionPriority = null;
+    flow.cancelRemainingInstances = false;
+    if (flow.isDefault) {
+      flow.condition = null;
+      flow.conditionPriority = null;
+    }
   } else if (!isUserTaskFlow) {
+    flow.conditionPriority = null;
     flow.variables = [];
     flow.condition = null;
     flow.isDefault = false;
@@ -1321,6 +1342,7 @@ function applyFlowInvariants(flow) {
     flow.completionPriority = null;
     flow.cancelRemainingInstances = false;
   } else if (source.multiInstance) {
+    flow.conditionPriority = null;
     if (flow.isDefault) {
       flow.isSelectable = false;
       flow.roles = [];
@@ -1344,6 +1366,7 @@ function applyFlowInvariants(flow) {
       flow.canActWithoutClaimRoles = [];
     }
   } else {
+    flow.conditionPriority = null;
     const wasDefault = flow.isDefault;
     flow.isDefault = false;
     flow.isSelectable = true;
@@ -1511,8 +1534,8 @@ function seedSample() {
       { id: 202, name: "Reject", sourceRef: 2, targetRef: 6, roles: ["Manager"], variables: [
           { id: 1, name: "rejectReason", dataType: "string", isArray: false, required: true }
         ], condition: null, isDefault: false },
-      { id: 301, name: "High amount", sourceRef: 3, targetRef: 4, roles: [], variables: [], condition: "total > 1100", isDefault: false },
-      { id: 302, name: "Low amount", sourceRef: 3, targetRef: 5, roles: [], variables: [], condition: null, isDefault: true },
+      { id: 301, name: "High amount", sourceRef: 3, targetRef: 4, roles: [], variables: [], condition: "total > 1100", conditionPriority: 1, isDefault: false },
+      { id: 302, name: "Low amount", sourceRef: 3, targetRef: 5, roles: [], variables: [], condition: null, conditionPriority: null, isDefault: true },
       { id: 401, name: "Approve", sourceRef: 4, targetRef: 5, roles: ["Finance"], variables: [], condition: null, isDefault: false },
       { id: 402, name: "Reject", sourceRef: 4, targetRef: 6, roles: ["Finance"], variables: [], condition: null, isDefault: false }
     ]
@@ -1609,6 +1632,7 @@ function pullPointToward(point, toward, distance) {
 function render() {
   wfNameInput.value = model.name || "";
   model.flowNodes.forEach(applyTypeInvariants);
+  normalizeExclusiveGatewayPriorities();
   model.sequenceFlows.forEach(applyFlowInvariants);
   renderLanes();
   renderEdges();
@@ -1735,6 +1759,9 @@ function flowLabelInfo(flow, source) {
   if (flow.cancelRemainingInstances) metadata.push("interrupt");
   if (roles.length) metadata.push(roles.join(", "));
   if (flow.isDefault) metadata.push("default");
+  else if (isGatewayType(source.type) && Number.isInteger(flow.conditionPriority)) {
+    metadata.push(`priority ${flow.conditionPriority}`);
+  }
   const hasCondition = typeof flow.condition === "string" && flow.condition.trim() !== "";
   const metaFull = metadata.join(" · ");
   const metaDisplay = truncateText(metaFull, 46);
@@ -3499,26 +3526,45 @@ function renderFlowInspector() {
               flow.targetRef, v => { flow.targetRef = +v; renderEdges(); });
 
   if (gateway) {
-    field("Condition", "text", flow.condition ?? "", v => {
-      flow.condition = v.trim() ? v : null;
-      renderEdges();
-    });
-    const condHint = document.createElement("p");
-    condHint.className = "empty-note";
-    condHint.textContent = 'NCalc expression, e.g. amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\') to route by the actor who last selected flow #201. FlowInfo reads instance-lifetime action/traversal summaries. Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern). Leave empty for the default flow.';
-    inspector.appendChild(condHint);
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
         flow.isDefault = checked;
         if (checked) {
           flow.condition = null;
-          // only one default per gateway
-          outgoingFlows(flow.sourceRef).forEach(f => { if (f.id !== flow.id) f.isDefault = false; });
+          flow.conditionPriority = null;
+          // Only one default per gateway. A displaced default becomes a
+          // conditional branch and receives the next available priority.
+          outgoingFlows(flow.sourceRef).forEach(other => {
+            if (other.id === flow.id || !other.isDefault) return;
+            other.isDefault = false;
+            other.conditionPriority = nextConditionPriority(flow.sourceRef);
+          });
+        } else if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
+          flow.conditionPriority = nextConditionPriority(flow.sourceRef);
         }
         renderInspector();
         renderEdges();
       })
     );
+    if (flow.isDefault) {
+      const defaultHint = document.createElement("p");
+      defaultHint.className = "empty-note";
+      defaultHint.textContent = "Required fallback: taken only when no conditional branch matches.";
+      inspector.appendChild(defaultHint);
+    } else {
+      field("Condition", "text", flow.condition ?? "", v => {
+        flow.condition = v.trim() ? v : null;
+        renderEdges();
+      });
+      field("Condition priority", "number", flow.conditionPriority ?? "", v => {
+        flow.conditionPriority = v.trim() === "" ? null : Number(v);
+        renderEdges();
+      });
+      const condHint = document.createElement("p");
+      condHint.className = "empty-note";
+      condHint.textContent = 'Required NCalc expression. Lower positive priorities are evaluated first. Example: amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\'). Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
+      inspector.appendChild(condHint);
+    }
   } else {
     if (isUserTaskFlow) {
       if (source.multiInstance) {
@@ -4452,7 +4498,9 @@ function assignNodeLane(nodeId) {
 /* ---------- Connect mode ---------- */
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
-                 roles: [], variables: [], condition: null, isDefault: false, isSelectable: true, canActWithoutClaim: false,
+                 roles: [], variables: [], condition: null,
+                 conditionPriority: isGatewayType(getNode(sourceId)?.type) ? nextConditionPriority(sourceId) : null,
+                 isDefault: false, isSelectable: true, canActWithoutClaim: false,
                  canActWithoutClaimRoles: [],
                  completionCondition: null, completionPriority: null, cancelRemainingInstances: false };
   model.sequenceFlows.push(flow);
@@ -4798,7 +4846,7 @@ function validateModelForSave(candidate) {
       const source = nodesById.get(flow && flow.sourceRef);
       validateVariables(flow && flow.variables, label);
       validateFlowInfoExpression(flow && flow.condition, label + " condition",
-        !!source && source.type === "exclusiveGateway");
+        !!source && source.type === "exclusiveGateway" && !flow.isDefault);
       validateFlowInfoExpression(flow && flow.completionCondition, label + " completionCondition",
         !!source && source.type === "userTask" && !!source.multiInstance);
     }
@@ -5205,6 +5253,58 @@ function validateModelForSave(candidate) {
       errors.push("End event #" + node.id + " cannot have outgoing sequence flows.");
     }
   }
+
+  const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+  for (const flow of flows) {
+    const source = nodesById.get(flow && flow.sourceRef);
+    if (flow && flow.conditionPriority != null &&
+        (!source || source.type !== "exclusiveGateway")) {
+      errors.push(flowLabel(flow) + " can define conditionPriority only when leaving an exclusive gateway.");
+    }
+  }
+  for (const gateway of nodes.filter(node => node && node.type === "exclusiveGateway")) {
+    const label = "Exclusive gateway #" + String(gateway.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === gateway.id);
+    if (outgoing.length < 2) {
+      errors.push(label + " must have at least two outgoing sequence flows.");
+    }
+    const defaults = outgoing.filter(flow => !!flow.isDefault);
+    if (defaults.length !== 1) {
+      errors.push(label + " must have exactly one default outgoing sequence flow.");
+    }
+
+    const priorities = new Set();
+    for (const flow of outgoing) {
+      if (countItems(flow.roles) > 0 || countItems(flow.variables) > 0 ||
+          flow.isSelectable === false || !!flow.canActWithoutClaim ||
+          countItems(flow.canActWithoutClaimRoles) > 0 ||
+          hasText(flow.completionCondition) || flow.completionPriority != null ||
+          !!flow.cancelRemainingInstances) {
+        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          " cannot define user-action or multi-instance metadata.");
+      }
+      if (flow.isDefault) {
+        if (hasText(flow.condition) || flow.conditionPriority != null) {
+          errors.push("The default flow from " + label.toLowerCase() +
+            " cannot define a condition or conditionPriority.");
+        }
+        continue;
+      }
+      if (!hasText(flow.condition)) {
+        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          " must define a condition.");
+      }
+      if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
+        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          " must define a positive integer conditionPriority.");
+      } else if (priorities.has(flow.conditionPriority)) {
+        errors.push(label + " has duplicate conditionPriority " + flow.conditionPriority + ".");
+      } else {
+        priorities.add(flow.conditionPriority);
+      }
+    }
+  }
+
   const reservedIdempotencyHeaders = new Set([
     "authorization", "proxy-authorization", "cookie", "host", "content-length",
     "content-type", "content-encoding", "transfer-encoding", "connection",
@@ -5594,20 +5694,20 @@ function migrateLegacyToNew(obj) {
       }
       if (target != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
-                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false,
+                             roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
     } else if (isAutomaticType(type)) {
       if (s.nextStepId != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
-                             roles: [], variables: [], condition: null, isDefault: false, canActWithoutClaim: false,
+                             roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
     } else {
       for (const a of actions) {
         if (a.toStepId == null) continue;
         sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
-                             roles: a.roles, variables: a.variables, condition: null, isDefault: false, canActWithoutClaim: false,
+                             roles: a.roles, variables: a.variables, condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
     }
@@ -5702,6 +5802,7 @@ function loadFromObject(obj) {
         roles: normalizeRoles(f.roles),
         variables: (f.variables || []).map(normalizeVariable),
         condition: f.condition ?? null,
+        conditionPriority: f.conditionPriority ?? null,
         isDefault: !!f.isDefault,
         isSelectable: f.isSelectable !== false,
         canActWithoutClaim: !!f.canActWithoutClaim,
@@ -5727,6 +5828,7 @@ function loadFromObject(obj) {
   model.flowNodes.filter(node => isMessageStartEventType(node.type))
     .forEach(normalizeLegacyMessageStartNode);
   migrateLegacyUserTaskDefaultFlows();
+  normalizeExclusiveGatewayPriorities();
   clearSelection();
 }
 

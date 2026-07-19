@@ -829,6 +829,14 @@ public sealed class SequenceFlowModel
     public string? Condition { get; set; }
 
     /// <summary>
+    /// Evaluation order for a non-default exclusive-gateway flow. Lower values
+    /// are evaluated first. This field is not used by user-task flows.
+    /// </summary>
+    [JsonPropertyName("conditionPriority")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ConditionPriority { get; set; }
+
+    /// <summary>
     /// If true, this flow acts as the default fallback when other conditions fail.
     /// </summary>
     [JsonPropertyName("isDefault")]

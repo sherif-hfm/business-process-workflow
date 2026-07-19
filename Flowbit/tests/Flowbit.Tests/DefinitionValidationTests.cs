@@ -1354,7 +1354,10 @@ public sealed class DefinitionValidationTests
         var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
-        Assert.Contains("not available", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            context == "gatewayDefault" ? "cannot define a condition" : "not available",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -1543,6 +1546,181 @@ public sealed class DefinitionValidationTests
         Assert.False(node.UsesFlowInfo);
     }
 
+    [Fact]
+    public async Task CreateAsync_AllowsSeveralIncomingPathsToExclusiveGateway()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Alternative incoming path",
+            Type = BpmnFlowNodeTypes.Task
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 601,
+            Name = "Merge into route",
+            SourceRef = 6,
+            TargetRef = 3
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsExclusiveGatewayWithoutExactlyOneDefault()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        var formerDefault = model.SequenceFlows.Single(flow => flow.Id == 302);
+        formerDefault.IsDefault = false;
+        formerDefault.Condition = "true";
+        formerDefault.ConditionPriority = 2;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("exactly one default", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsExclusiveGatewayWithMultipleDefaults()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 303,
+            SourceRef = 3,
+            TargetRef = 5,
+            IsDefault = true
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("exactly one default", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsPureMergeExclusiveGatewayWithOneOutgoingFlow()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.SequenceFlows.RemoveAll(flow => flow.Id == 301);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("at least two outgoing", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresExplicitConditionPriorityOnAuthoredGatewayFlows()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.SequenceFlows.Single(flow => flow.Id == 301).ConditionPriority = null;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("explicitly define", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("conditionPriority", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(null, 1, "condition")]
+    [InlineData("true", 0, "positive")]
+    public async Task CreateAsync_RejectsMalformedConditionalGatewayFlow(
+        string? condition,
+        int priority,
+        string expectedMessage)
+    {
+        var model = BuildGatewayFlowInfoModel();
+        var flow = model.SequenceFlows.Single(candidate => candidate.Id == 301);
+        flow.Condition = condition;
+        flow.ConditionPriority = priority;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(expectedMessage, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsDuplicateGatewayConditionPriorities()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 303,
+            SourceRef = 3,
+            TargetRef = 4,
+            Condition = "true",
+            ConditionPriority = 1
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("duplicate conditionPriority", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsIgnoredGatewayAndNonGatewayPriorityMetadata()
+    {
+        var gatewayMetadata = BuildGatewayFlowInfoModel();
+        gatewayMetadata.SequenceFlows.Single(flow => flow.Id == 301).Roles = ["Manager"];
+        var gatewayError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(gatewayMetadata, false, CancellationToken.None));
+        Assert.Contains("user-action or multi-instance", gatewayError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var nonGatewayMetadata = BuildGatewayFlowInfoModel();
+        nonGatewayMetadata.SequenceFlows.Single(flow => flow.Id == 101).ConditionPriority = 9;
+        var nonGatewayError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(nonGatewayMetadata, false, CancellationToken.None));
+        Assert.Contains("not an exclusive gateway", nonGatewayError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Normalize_DerivesLegacyGatewayPrioritiesFromSequenceFlowOrder()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        var first = model.SequenceFlows.Single(flow => flow.Id == 301);
+        first.ConditionPriority = null;
+        var second = model.SequenceFlows.Single(flow => flow.Id == 302);
+        second.IsDefault = false;
+        second.Condition = "false";
+        second.ConditionPriority = null;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 303,
+            SourceRef = 3,
+            TargetRef = 5,
+            IsDefault = true
+        });
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(1, first.ConditionPriority);
+        Assert.Equal(2, second.ConditionPriority);
+        Assert.Null(model.SequenceFlows.Single(flow => flow.Id == 303).ConditionPriority);
+    }
+
+    [Fact]
+    public void Normalize_DoesNotMaskPartiallyAuthoredGatewayPrioritiesOrAddLegacyDefault()
+    {
+        var model = BuildGatewayFlowInfoModel();
+        var first = model.SequenceFlows.Single(flow => flow.Id == 301);
+        var second = model.SequenceFlows.Single(flow => flow.Id == 302);
+        second.IsDefault = false;
+        second.Condition = "false";
+        second.ConditionPriority = null;
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(1, first.ConditionPriority);
+        Assert.Null(second.ConditionPriority);
+        Assert.DoesNotContain(model.SequenceFlows, flow => flow.SourceRef == 3 && flow.IsDefault);
+    }
+
     private static WorkflowModel BuildGatewayFlowInfoModel() => new()
     {
         Id = "flow-info-gateway",
@@ -1566,7 +1744,8 @@ public sealed class DefinitionValidationTests
                 Name = "Manager",
                 SourceRef = 3,
                 TargetRef = 4,
-                Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"
+                Condition = "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')",
+                ConditionPriority = 1
             },
             new SequenceFlowModel
             {

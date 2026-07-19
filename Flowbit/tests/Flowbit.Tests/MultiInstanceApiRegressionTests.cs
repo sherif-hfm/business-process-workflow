@@ -1106,7 +1106,8 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
                 Name = "Urgent",
                 SourceRef = 8,
                 TargetRef = 9,
-                Condition = "interruptReason == 'urgent' and interruptCategory == 'system'"
+                Condition = "interruptReason == 'urgent' and interruptCategory == 'system'",
+                ConditionPriority = 1
             },
             new SequenceFlowModel
             {
