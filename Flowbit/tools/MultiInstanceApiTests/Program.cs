@@ -387,6 +387,12 @@ sealed partial class MultiInstanceApiSuite
                        && vote.GetString() == "approve",
                 "Completed result preserves submitted vote", JsonSerializer.Serialize(item, JsonOptions));
         }
+        scope.SequenceEqual(["Auditor", "User"],
+            results.Single(item => item.CompletedBy == "alice").UserRoles ?? [],
+            "Completed result snapshots all normalized alice roles");
+        scope.True(results.Where(item => item.Status == "cancelled").All(item => item.UserRoles is null),
+            "Cancelled result rows have no acting-user role snapshot",
+            JsonSerializer.Serialize(results.Where(item => item.Status == "cancelled"), JsonOptions));
 
         var itemHistory = detail.History.Where(h => h.MultiInstanceExecutionId == scenario.ExecutionId).ToList();
         scope.Equal(2, itemHistory.Count(h => h.Note == "multiInstanceItem"),
@@ -476,8 +482,16 @@ sealed partial class MultiInstanceApiSuite
         var history = interruptedDetail.History.Where(h => h.MultiInstanceExecutionId == scenario.ExecutionId).ToList();
         scope.Equal(1, history.Count(h => h.Note == "multiInstanceInterrupt"),
             "Exactly one interrupt history row is written");
-        scope.Equal(5, LatestResult(scope, interruptedDetail, "voteResults").Count,
-            "Interrupted execution materializes all five ordered result entries");
+        var interruptResults = LatestResult(scope, interruptedDetail, "voteResults");
+        AssertOrderedIndexes(scope, interruptResults, 5);
+        scope.Equal(6, interruptResults.Count,
+            "Interrupted execution materializes five child rows and one parent interrupt row");
+        var parentInterrupt = interruptResults.Single(item => item.Kind == "parentInterrupt");
+        scope.Equal("interrupted", parentInterrupt.Status, "Parent interrupt result has interrupt status");
+        scope.Equal(203, parentInterrupt.SelectedFlowId, "Parent interrupt result records the selected flow");
+        scope.Equal("manager", parentInterrupt.CompletedBy, "Parent interrupt result records the actor");
+        scope.SequenceEqual(["Manager"], parentInterrupt.UserRoles ?? [],
+            "Parent interrupt result snapshots the actor roles");
 
         var reenter = await scope.SendAsync(Manager, HttpMethod.Post,
             $"/api/instances/{scenario.InstanceId}/flows/204", EmptyVariables());
@@ -904,8 +918,9 @@ sealed partial class MultiInstanceApiSuite
 
     private static void AssertOrderedIndexes(CaseScope scope, IReadOnlyList<MultiResultItem> results, int count)
     {
-        scope.Equal(count, results.Count, "Result collection contains every item");
-        scope.SequenceEqual(Enumerable.Range(0, count).ToArray(), results.Select(r => r.Index).ToArray(),
+        var items = results.Where(result => result.Kind is null or "item").ToList();
+        scope.Equal(count, items.Count, "Result collection contains every item");
+        scope.SequenceEqual(Enumerable.Range(0, count).ToArray(), items.Select(r => r.Index ?? -1).ToArray(),
             "Result collection is ordered by item index");
     }
 
@@ -935,7 +950,7 @@ sealed partial class MultiInstanceApiSuite
             ["admin"] = ["admin", "sysAdmin", "Manager", "User", "Requester"],
             ["manager"] = ["Manager"],
             ["outsider"] = ["User"],
-            ["alice"] = ["User"],
+            ["alice"] = ["User", "Auditor"],
             ["bob"] = ["User"],
             ["carol"] = ["User"],
             ["dave"] = ["User"],
@@ -1349,12 +1364,14 @@ sealed record MiScenario(long InstanceId, long ExecutionId, InstanceDetailDto De
 sealed record ReportPaths(string Markdown, string Json);
 
 sealed record MultiResultItem(
-    int Index,
+    string? Kind,
+    int? Index,
     JsonElement? Item,
-    long UserTaskId,
+    long? UserTaskId,
     string Status,
     int? SelectedFlowId,
     string? CompletedBy,
+    IReadOnlyList<string>? UserRoles,
     DateTimeOffset? CompletedAt,
     Dictionary<string, JsonElement>? Variables);
 

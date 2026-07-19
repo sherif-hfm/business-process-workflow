@@ -195,6 +195,7 @@ public interface IWorkflowRuntimeRepository
         long taskId,
         int selectedFlowId,
         string completedBy,
+        IReadOnlyList<string> completedByRoles,
         Dictionary<string, JsonElement> result,
         CancellationToken cancellationToken);
 

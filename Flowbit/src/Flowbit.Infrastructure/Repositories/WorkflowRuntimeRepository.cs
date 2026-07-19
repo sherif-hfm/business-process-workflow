@@ -1546,6 +1546,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long taskId,
         int selectedFlowId,
         string completedBy,
+        IReadOnlyList<string> completedByRoles,
         Dictionary<string, System.Text.Json.JsonElement> result,
         CancellationToken cancellationToken)
     {
@@ -1558,6 +1559,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         task.SelectedFlowId = selectedFlowId;
         task.ResultJson = JsonMapping.ToJsonDocument(result);
         task.CompletedBy = completedBy;
+        task.CompletedByRoles = completedByRoles.ToList();
         task.CompletedAt = now;
         task.UpdatedAt = now;
         execution.CompletedCount++;
@@ -2189,7 +2191,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.NodeExternalId, entity.Roles, entity.RequiresClaim, entity.Status,
             entity.ClaimedBy, entity.MultiInstanceExecutionId, entity.ItemIndex,
             entity.ItemValueJson?.RootElement.Clone(), entity.Assignee, entity.SelectedFlowId,
-            JsonMapping.ToDictionary(entity.ResultJson), entity.CompletedBy, entity.CreatedAt,
+            JsonMapping.ToDictionary(entity.ResultJson), entity.CompletedBy, entity.CompletedByRoles,
+            entity.CreatedAt,
             entity.UpdatedAt, entity.CompletedAt);
 
     private static ExecutionTokenEntity NewToken(
@@ -2243,6 +2246,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             task.SelectedFlowId = null;
             task.ResultJson = null;
             task.CompletedBy = null;
+            task.CompletedByRoles = null;
         }
         task.CompletedAt = now;
         task.UpdatedAt = now;

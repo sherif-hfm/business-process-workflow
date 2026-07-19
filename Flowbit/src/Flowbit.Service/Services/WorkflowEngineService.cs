@@ -606,7 +606,7 @@ public sealed class WorkflowEngineService(
         new(row.UserTaskId!.Value, row.Id, row.TokenId, row.CurrentNodeId, row.CurrentNodeName,
             row.CurrentNodeExternalId, row.CurrentNodeRoles, row.CurrentRequiresClaim,
             UserTaskRecordStatuses.Active, row.ClaimedBy, row.MultiInstanceExecutionId,
-            row.ItemIndex, row.ItemValue, row.Assignee, null, null, null,
+            row.ItemIndex, row.ItemValue, row.Assignee, null, null, null, null,
             row.CreatedAt, row.UpdatedAt, null);
 
     private static InboxItemDto ToInboxItem(
@@ -1514,7 +1514,13 @@ public sealed class WorkflowEngineService(
 
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id, workflow.Definition, cancellationToken);
-        await runtime.CompleteMultiInstanceItemAsync(task.Id, flow.Id, user, values, cancellationToken);
+        await runtime.CompleteMultiInstanceItemAsync(
+            task.Id,
+            flow.Id,
+            user,
+            SnapshotRoles(actor.Roles),
+            values,
+            cancellationToken);
         await RecordSequenceFlowOccurrenceAsync(
             flowInfo,
             instance.Id,
@@ -1638,7 +1644,19 @@ public sealed class WorkflowEngineService(
             cancellationToken: cancellationToken);
         await runtime.CloseMultiInstanceAsync(execution.Id, winning.Id, reason, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        var result = await BuildMultiInstanceResultAsync(execution.Id, cancellationToken);
+        var parentInterrupt = directParentInterrupt
+            ? new MultiInstanceParentInterruptResult(
+                winning.Id,
+                user,
+                SnapshotRoles(actor.Roles),
+                timeProvider.GetUtcNow(),
+                CloneDictionary(variableValues)
+                ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+            : null;
+        var result = await BuildMultiInstanceResultAsync(
+            execution.Id,
+            parentInterrupt,
+            cancellationToken);
         await runtime.AddVariableAsync(instance.Id, execution.ResultVariable, node.Id, user, result, cancellationToken);
         context[execution.ResultVariable] = result;
         await runtime.AddMultiInstanceHistoryAsync(
@@ -4212,20 +4230,48 @@ public sealed class WorkflowEngineService(
             summary.SoleClaimedBy,
             summary.SoleAssignee);
 
-    private async Task<JsonElement> BuildMultiInstanceResultAsync(long executionId, CancellationToken cancellationToken)
+    private sealed record MultiInstanceParentInterruptResult(
+        int SelectedFlowId,
+        string CompletedBy,
+        IReadOnlyList<string> UserRoles,
+        DateTimeOffset CompletedAt,
+        IReadOnlyDictionary<string, JsonElement> Variables);
+
+    private async Task<JsonElement> BuildMultiInstanceResultAsync(
+        long executionId,
+        MultiInstanceParentInterruptResult? parentInterrupt,
+        CancellationToken cancellationToken)
     {
         var tasks = await runtime.ListExecutionTasksAsync(executionId, cancellationToken);
-        var results = tasks.OrderBy(t => t.ItemIndex).Select(t => new
+        var results = tasks.OrderBy(t => t.ItemIndex).Select(t => (object)new
         {
+            kind = "item",
             index = t.ItemIndex,
             item = t.ItemValue,
-            userTaskId = t.Id,
+            userTaskId = (long?)t.Id,
             status = t.Status,
             selectedFlowId = t.SelectedFlowId,
             completedBy = t.CompletedBy,
+            userRoles = t.CompletedByRoles,
             completedAt = t.CompletedAt,
             variables = t.Result
-        });
+        }).ToList();
+        if (parentInterrupt is not null)
+        {
+            results.Add(new
+            {
+                kind = "parentInterrupt",
+                index = (int?)null,
+                item = (JsonElement?)null,
+                userTaskId = (long?)null,
+                status = MultiInstanceRecordStatuses.Interrupted,
+                selectedFlowId = (int?)parentInterrupt.SelectedFlowId,
+                completedBy = parentInterrupt.CompletedBy,
+                userRoles = parentInterrupt.UserRoles,
+                completedAt = (DateTimeOffset?)parentInterrupt.CompletedAt,
+                variables = parentInterrupt.Variables
+            });
+        }
         return JsonSerializer.SerializeToElement(results);
     }
 
@@ -4415,10 +4461,7 @@ public sealed class WorkflowEngineService(
             return;
         }
 
-        var roles = NormalizeRoles(actor.Roles)
-            .OrderBy(role => role, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(role => role, StringComparer.Ordinal)
-            .ToList();
+        var roles = SnapshotRoles(actor.Roles);
         var updated = await runtime.AppendSequenceFlowOccurrenceAsync(
             new SequenceFlowOccurrenceWriteRecord(
                 instanceId,
@@ -4518,6 +4561,12 @@ public sealed class WorkflowEngineService(
             .Where(r => !string.IsNullOrWhiteSpace(r))
             .Select(r => r.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static List<string> SnapshotRoles(IReadOnlyCollection<string> roles) =>
+        NormalizeRoles(roles)
+            .OrderBy(role => role, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(role => role, StringComparer.Ordinal)
+            .ToList();
 
     private static void EnsureTaskAssignmentManager(WorkflowModel definition, ActorContext actor)
     {

@@ -1056,6 +1056,114 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task MultiInstanceResultSnapshotsActorRolesAndFeedsDownstreamJavaScript()
+    {
+        var model = LoadUniqueModel("votes-users-list.json", "result-user-roles");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 50,
+            Name = "capturedRoles",
+            DataType = WorkflowVariableTypes.String,
+            IsArray = true,
+            DefaultValue = JsonSerializer.SerializeToElement(Array.Empty<string>())
+        });
+        model.SequenceFlows.Single(flow => flow.Id == 201).TargetRef = 8;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 8,
+            Name = "Read result roles",
+            Type = BpmnFlowNodeTypes.ScriptTask,
+            ScriptFormat = ScriptFormats.JavaScript,
+            UsesFlowInfo = false,
+            Script =
+                "const rows = execution.getVariable('voteResults') || [];" +
+                "let roles = [];" +
+                "for (let i = 0; i < rows.length; i++) {" +
+                "  if (rows[i].kind === 'item' && rows[i].completedBy === 'alice') {" +
+                "    roles = rows[i].userRoles || []; break;" +
+                "  }" +
+                "}" +
+                "execution.setVariable('capturedRoles', roles);"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 301,
+            Name = "After role audit",
+            SourceRef = 8,
+            TargetRef = 3
+        });
+
+        var workflowId = await CreateWorkflowAsync(model);
+        var scenario = await StartAndEnterAsync(workflowId);
+        var aliceTask = Assert.Single((await ListTasksAsync(
+            scenario.Id, "alice", "User", "Auditor", " auditor ", "USER")).Items);
+        var bobTask = Assert.Single((await ListTasksAsync(
+            scenario.Id, "bob", "Reviewer", "User")).Items);
+        var carolTask = Assert.Single((await ListTasksAsync(
+            scenario.Id, "carol", "User")).Items);
+        var vote = new TakeFlowRequest(new Dictionary<string, JsonElement>
+        {
+            ["vote"] = JsonSerializer.SerializeToElement("approve")
+        });
+
+        using (var alice = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/user-tasks/{aliceTask.Id}/flows/201",
+                   vote,
+                   "alice",
+                   "User", "Auditor", " auditor ", "USER"))
+            Assert.Equal(HttpStatusCode.OK, alice.StatusCode);
+        using (var bob = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/user-tasks/{bobTask.Id}/flows/201",
+                   vote,
+                   "bob",
+                   "Reviewer", "User"))
+            Assert.Equal(HttpStatusCode.OK, bob.StatusCode);
+        using (var carol = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/user-tasks/{carolTask.Id}/flows/201",
+                   vote,
+                   "carol",
+                   "User"))
+            Assert.Equal(HttpStatusCode.OK, carol.StatusCode);
+
+        var detail = await GetInstanceAsync(scenario.Id);
+        Assert.Equal("completed", detail.Status);
+        var result = detail.Variables.Last(variable =>
+            variable.VariableName.Equals("voteResults", StringComparison.OrdinalIgnoreCase)).Value;
+        var rows = result.EnumerateArray().ToList();
+        Assert.Equal(5, rows.Count);
+        Assert.All(rows, row => Assert.Equal("item", row.GetProperty("kind").GetString()));
+        var aliceRow = Assert.Single(rows, row => row.GetProperty("completedBy").GetString() == "alice");
+        Assert.Equal(
+            ["admin", "Auditor", "User"],
+            aliceRow.GetProperty("userRoles").EnumerateArray().Select(role => role.GetString()!).ToArray());
+        var bobRow = Assert.Single(rows, row => row.GetProperty("completedBy").GetString() == "bob");
+        Assert.Equal(
+            ["admin", "Reviewer", "User"],
+            bobRow.GetProperty("userRoles").EnumerateArray().Select(role => role.GetString()!).ToArray());
+        Assert.All(
+            rows.Where(row => row.GetProperty("status").GetString() == "cancelled"),
+            row => Assert.Equal(JsonValueKind.Null, row.GetProperty("userRoles").ValueKind));
+
+        var captured = detail.Variables.Last(variable =>
+            variable.VariableName.Equals("capturedRoles", StringComparison.OrdinalIgnoreCase)).Value;
+        Assert.Equal(
+            ["admin", "Auditor", "User"],
+            captured.EnumerateArray().Select(role => role.GetString()!).ToArray());
+
+        await using var db = fixture.CreateDbContext();
+        var storedRoles = await db.UserTasks.AsNoTracking()
+            .Where(task => task.InstanceId == scenario.Id && task.CompletedBy == "alice")
+            .Select(task => task.CompletedByRoles)
+            .SingleAsync();
+        Assert.Equal(["admin", "Auditor", "User"], storedRoles);
+        Assert.False(await db.SequenceFlowOccurrences.AsNoTracking()
+            .AnyAsync(occurrence => occurrence.InstanceId == scenario.Id));
+    }
+
+    [Fact]
     public async Task ParentInterruptPersistsResolvedVariablesBeforeGatewayRouting()
     {
         var model = LoadUniqueModel("votes-users-list.json", "interrupt-variable");
@@ -1127,7 +1235,9 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             new TakeFlowRequest(new Dictionary<string, JsonElement>
             {
                 ["interruptReason"] = JsonSerializer.SerializeToElement("urgent")
-            }));
+            }),
+            "manager",
+            "Manager", "Auditor", " auditor ");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var detail = await ReadAsync<InstanceDetailDto>(response);
 
@@ -1141,6 +1251,33 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             variable.VariableName.Equals("interruptCategory", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("system", defaulted.Value.GetString());
         Assert.Equal(203, defaulted.SourceFlowId);
+
+        var result = detail.Variables.Last(variable =>
+            variable.VariableName.Equals("voteResults", StringComparison.OrdinalIgnoreCase)).Value;
+        var rows = result.EnumerateArray().ToList();
+        Assert.Equal(6, rows.Count);
+        Assert.All(rows.Take(5), row =>
+        {
+            Assert.Equal("item", row.GetProperty("kind").GetString());
+            Assert.Equal("cancelled", row.GetProperty("status").GetString());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("userRoles").ValueKind);
+        });
+        var parentInterrupt = rows[^1];
+        Assert.Equal("parentInterrupt", parentInterrupt.GetProperty("kind").GetString());
+        Assert.Equal(JsonValueKind.Null, parentInterrupt.GetProperty("index").ValueKind);
+        Assert.Equal(JsonValueKind.Null, parentInterrupt.GetProperty("userTaskId").ValueKind);
+        Assert.Equal("interrupted", parentInterrupt.GetProperty("status").GetString());
+        Assert.Equal(203, parentInterrupt.GetProperty("selectedFlowId").GetInt32());
+        Assert.Equal("manager", parentInterrupt.GetProperty("completedBy").GetString());
+        Assert.Equal(
+            ["admin", "Auditor", "Manager"],
+            parentInterrupt.GetProperty("userRoles").EnumerateArray()
+                .Select(role => role.GetString()!).ToArray());
+        Assert.Equal("urgent",
+            parentInterrupt.GetProperty("variables").GetProperty("interruptReason").GetString());
+        Assert.Equal("system",
+            parentInterrupt.GetProperty("variables").GetProperty("interruptCategory").GetString());
+        Assert.Equal(JsonValueKind.String, parentInterrupt.GetProperty("completedAt").ValueKind);
     }
 
     [Fact]

@@ -114,6 +114,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.ClaimedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.Assignee).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.CompletedByRoles).HasColumnType("text[]");
             entity.Property(e => e.ItemValueJson).HasColumnType("jsonb");
             entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");

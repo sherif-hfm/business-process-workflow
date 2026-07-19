@@ -2515,7 +2515,7 @@ function renderNodeInspector() {
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
       miHint.className = "empty-note";
-      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), FlowInfo(id, 'path'), [mi.total], [mi.completed], and [mi.remaining]. FlowInfo reads instance-lifetime action/traversal summaries; CountFlow and PercentFlow remain scoped to this multi-instance execution. One task per actor requires that many distinct eligible users.";
+      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), FlowInfo(id, 'path'), [mi.total], [mi.completed], and [mi.remaining]. FlowInfo reads instance-lifetime action/traversal summaries; CountFlow and PercentFlow remain scoped to this multi-instance execution. Result rows include kind and the completing actor's action-time userRoles; cancelled rows use null, and a direct parent interrupt appends one parentInterrupt row. One task per actor requires that many distinct eligible users.";
       inspector.appendChild(miHint);
     }
   }

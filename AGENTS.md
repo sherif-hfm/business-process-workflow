@@ -155,7 +155,12 @@ Storage follows the hybrid design:
   remain immediate in both modes. Only non-default outcomes participate in
   condition/priority evaluation. A winning condition or interrupt atomically
   cancels unfinished items, writes the ordered JSON result collection, and advances
-  the parent token once. If all items finish without a match, the required default
+  the parent token once. Each child result is tagged with `kind: "item"` and snapshots
+  the completing actor's normalized JWT roles in `userRoles`; cancelled/non-action
+  rows use `null`, while an actor with no roles uses `[]`. A direct parent-level
+  interrupt appends one final `kind: "parentInterrupt"` result carrying the interrupt
+  flow, actor, roles, timestamp, and submitted values after the index-ordered child
+  rows. If all items finish without a match, the required default
   outcome wins. Task-specific operations use `/api/user-tasks/{taskId}`; legacy
   instance-addressed actions return 409 when multiple active tasks are ambiguous.
   An authorized actor can also discover and take parent-level interrupt flows through

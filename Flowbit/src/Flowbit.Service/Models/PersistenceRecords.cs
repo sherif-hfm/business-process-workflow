@@ -77,6 +77,7 @@ public sealed record UserTaskRecord(
     int? SelectedFlowId,
     Dictionary<string, JsonElement>? Result,
     string? CompletedBy,
+    IReadOnlyList<string>? CompletedByRoles,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);

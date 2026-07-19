@@ -27,6 +27,7 @@ public sealed class UserTaskEntity
     public int? SelectedFlowId { get; set; }
     public JsonDocument? ResultJson { get; set; }
     public string? CompletedBy { get; set; }
+    public List<string>? CompletedByRoles { get; set; }
 }
 
 public static class UserTaskStatuses

@@ -714,6 +714,8 @@ public sealed class EditorValidatorTests
         Assert.Contains("FlowInfo(201, 'actions.last.userRoles')", html, StringComparison.Ordinal);
         Assert.Contains("execution.getFlowInfo(201).actions.last.userRoles", html, StringComparison.Ordinal);
         Assert.Contains("CountFlow/PercentFlow use this multi-instance execution", html, StringComparison.Ordinal);
+        Assert.Contains("action-time userRoles", html, StringComparison.Ordinal);
+        Assert.Contains("parentInterrupt row", html, StringComparison.Ordinal);
     }
 
     [Fact]
