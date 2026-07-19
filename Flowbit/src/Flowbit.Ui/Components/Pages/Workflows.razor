@@ -262,7 +262,7 @@
             fileName = null;
             fileSize = null;
             inputFileKey = new object(); // Resets the InputFile component
-            await LoadAsync();
+            await ReloadVersionsAsync();
         }
         catch (Exception ex)
         {
