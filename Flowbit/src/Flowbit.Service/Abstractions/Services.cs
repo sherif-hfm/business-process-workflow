@@ -157,6 +157,7 @@ public interface IWorkflowEngineService
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
+        bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

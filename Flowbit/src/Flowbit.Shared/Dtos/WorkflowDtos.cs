@@ -486,4 +486,11 @@ public sealed record InboxItemDto(
     bool CanClaim,
     bool CanAct,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    /// <summary>
+    /// Gets the latest instance variable values when explicitly requested.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, JsonElement>? Variables { get; init; }
+}

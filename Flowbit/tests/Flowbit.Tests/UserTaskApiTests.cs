@@ -547,6 +547,86 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task InboxIncludesOnlyLatestVariablesWhenRequested()
+    {
+        var model = CreateModel("inbox-include-variables");
+        model.FlowNodes.Single(node => node.Id == 2).Roles = ["Worker"];
+        var workflowId = await CreateWorkflowAsync(model);
+        var instance = await StartAsync(workflowId, 1000);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            db.InstanceVariables.AddRange(
+                Variable(instance.Id, "amount", 6000),
+                Variable(instance.Id, "optional", null),
+                Variable(instance.Id, "tags", new[] { "urgent", "internal" }),
+                Variable(instance.Id, "metadata", new { priority = "high" }));
+            await db.SaveChangesAsync();
+        }
+
+        foreach (var suffix in new[] { string.Empty, "&includeVariables=false" })
+        {
+            using var response = await SendAsync(
+                HttpMethod.Get,
+                $"/api/instances/inbox?instanceId={instance.Id}&pageSize=20{suffix}",
+                user: "worker",
+                roles: ["Worker"]);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var item = Assert.Single(json.RootElement.GetProperty("items").EnumerateArray().ToArray());
+            Assert.False(item.TryGetProperty("variables", out _));
+        }
+
+        using (var response = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/instances/inbox?instanceId={instance.Id}&includeVariables=true&pageSize=20",
+                   user: "worker",
+                   roles: ["Worker"]))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var item = Assert.Single(json.RootElement.GetProperty("items").EnumerateArray().ToArray());
+            var variables = item.GetProperty("variables");
+            Assert.Equal(6000, variables.GetProperty("amount").GetInt32());
+            Assert.Equal(JsonValueKind.Null, variables.GetProperty("optional").ValueKind);
+            Assert.Equal(
+                new[] { "urgent", "internal" },
+                variables.GetProperty("tags").EnumerateArray().Select(value => value.GetString()).ToArray());
+            Assert.Equal("high", variables.GetProperty("metadata").GetProperty("priority").GetString());
+        }
+
+        var emptyModel = CreateModel("inbox-empty-variables");
+        emptyModel.FlowNodes.Single(node => node.Id == 1).Variables = [];
+        emptyModel.FlowNodes.Single(node => node.Id == 2).Roles = ["Worker"];
+        var emptyWorkflowId = await CreateWorkflowAsync(emptyModel);
+        using var startResponse = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances",
+            new StartInstanceRequest(emptyWorkflowId, null, null, null),
+            "starter");
+        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
+        var emptyInstance = await ReadAsync<StartInstanceResultDto>(startResponse);
+
+        using var emptyResponse = await SendAsync(
+            HttpMethod.Get,
+            $"/api/instances/inbox?instanceId={emptyInstance.Id}&includeVariables=true&pageSize=20",
+            user: "worker",
+            roles: ["Worker"]);
+        Assert.Equal(HttpStatusCode.OK, emptyResponse.StatusCode);
+        using var emptyJson = JsonDocument.Parse(await emptyResponse.Content.ReadAsStringAsync());
+        var emptyItem = Assert.Single(emptyJson.RootElement.GetProperty("items").EnumerateArray().ToArray());
+        Assert.Empty(emptyItem.GetProperty("variables").EnumerateObject());
+
+        static InstanceVariableEntity Variable(long instanceId, string name, object? value) => new()
+        {
+            InstanceId = instanceId,
+            VariableName = name,
+            ValueJson = JsonDocument.Parse(JsonSerializer.Serialize(value)),
+            SetBy = "latest-write"
+        };
+    }
+
+    [Fact]
     public async Task InboxProjectionUsesExactlyTwoQueriesAndPreservesPagingAndLatestVariables()
     {
         const int taskCount = 100;
@@ -649,6 +729,23 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
         });
 
         fixture.CommandCounter.Reset();
+        using (var response = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/instances/inbox?workflowId={workflowId}&includeVariables=true&pageSize=50",
+                   user: "worker",
+                   roles: ["Worker"]))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var included = await ReadAsync<PagedResult<InboxItemDto>>(response);
+            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(taskCount, included.TotalCount);
+            Assert.Equal(50, included.Items.Count);
+            Assert.Equal(6000, included.Items[0].Variables!["amount"].GetInt32());
+            Assert.All(included.Items.Skip(1), item =>
+                Assert.Equal(1000, item.Variables!["amount"].GetInt32()));
+        }
+
+        fixture.CommandCounter.Reset();
         var secondFifty = await GetInboxPageByWorkflowAsync(workflowId, 2, 50, "worker", "Worker");
         Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(taskCount, secondFifty.TotalCount);
@@ -740,6 +837,19 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
                 Assert.Equal(1, Assert.Single(progress.FlowCounts, count => count.FlowId == 201).Count);
             });
         }
+
+        fixture.CommandCounter.Reset();
+        using var variablesResponse = await SendAsync(
+            HttpMethod.Get,
+            $"/api/instances/inbox?workflowId={workflowId}&includeVariables=true&pageSize=50",
+            user: "worker",
+            roles: ["User"]);
+        Assert.Equal(HttpStatusCode.OK, variablesResponse.StatusCode);
+        var variablesPage = await ReadAsync<PagedResult<InboxItemDto>>(variablesResponse);
+        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(50, variablesPage.Items.Count);
+        Assert.All(variablesPage.Items, item =>
+            Assert.Equal(totalCount, item.Variables!["voters"].GetInt32()));
     }
 
     [Fact]

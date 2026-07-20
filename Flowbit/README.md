@@ -122,6 +122,7 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `GET /api/instances?status=running`
 - `GET /api/instances?includeVariables=true`
 - `GET /api/instances/inbox` (actor-scoped)
+- `GET /api/instances/inbox?includeVariables=true` (actor-scoped)
 - `GET /api/instances/{id}`
 - `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`
@@ -205,10 +206,12 @@ pairs are AND-combined, and on the inbox the filter is additive on top of the
 caller's role/claim scope. In the Blazor UI, the Instances and Inbox pages expose
 this as a comma-separated `name:value` filter box.
 
-The instance list also accepts `includeVariables=true`. Each returned summary
-then includes a `variables` object containing the latest JSON value for every
-variable name; instances without variables receive an empty object. The property
-is omitted, and no variable query runs, when the parameter is absent or false.
+The instance list and inbox also accept `includeVariables=true`. Each returned
+item then includes a `variables` object containing the latest JSON value for
+every variable name; instances without variables receive an empty object. The
+property is omitted when the parameter is absent or false. The instance list
+loads variables only when requested; the inbox already projects them for its
+stored-state capability checks, so including them adds no database query.
 
 ## User tasks
 

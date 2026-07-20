@@ -590,7 +590,7 @@ what the cross-version `workflowKey` instance search matches.
   `startEventId`; a configured idempotency value is accepted only through its
   HTTP header and a duplicate returns `StartConflictDto` with 409/`Location`),
   `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&page=&pageSize=` (paged),
-  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
@@ -604,8 +604,10 @@ what the cross-version `workflowKey` instance search matches.
   offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
   repository can later switch to keyset paging without an API change.
   `includeVariables=true` adds a compact `variables` dictionary with only the
-  latest JSON value per name, loaded in one page-bounded query; otherwise that
-  property is omitted and no variables are loaded.
+  latest JSON value per name; otherwise that property is omitted. The instance
+  list loads variables in one page-bounded query only when requested. The inbox
+  always projects page-bounded latest variables to evaluate stored-state action
+  visibility, so returning them adds no database query.
   Inbox role/assignment/claim filtering, counting, ordering, and paging all run
   in PostgreSQL. The service loads definitions only for the returned page to
   calculate outgoing-flow `CanAct`/`CanClaim` flags.

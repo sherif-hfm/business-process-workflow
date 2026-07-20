@@ -542,6 +542,7 @@ public sealed class WorkflowEngineService(
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
+        bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -593,7 +594,8 @@ public sealed class WorkflowEngineService(
             .ToDictionary(group => group.Key, group => ToProgress(group.First().MultiInstanceProgress!));
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             canActByTask, hasBypassClaimByTask,
-            row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null)).ToList();
+            row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null,
+            includeVariables)).ToList();
         return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
@@ -619,7 +621,8 @@ public sealed class WorkflowEngineService(
         IReadOnlySet<string> normalizedRoles,
         Dictionary<long, bool>? canActByTask = null,
         Dictionary<long, bool>? hasBypassClaimByTask = null,
-        MultiInstanceProgressDto? multiInstance = null)
+        MultiInstanceProgressDto? multiInstance = null,
+        bool includeVariables = false)
     {
         var claimedByMe = string.Equals(row.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
         var claimedByOther = !string.IsNullOrWhiteSpace(row.ClaimedBy) && !claimedByMe;
@@ -675,7 +678,10 @@ public sealed class WorkflowEngineService(
             canClaim,
             canAct,
             row.CreatedAt,
-            row.UpdatedAt);
+            row.UpdatedAt)
+        {
+            Variables = includeVariables ? row.Variables : null
+        };
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>

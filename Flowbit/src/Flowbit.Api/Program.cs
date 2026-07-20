@@ -174,7 +174,7 @@ try
                     }
                     else if (string.Equals(param.Name, "includeVariables", StringComparison.Ordinal) && param.In == ParameterLocation.Query)
                     {
-                        param.Description = "When true, each instance summary includes a `variables` object containing the latest value for every variable. Defaults to false.";
+                        param.Description = "When true, each returned item includes a `variables` object containing the latest value for every instance variable. Defaults to false.";
                     }
                 }
             }
