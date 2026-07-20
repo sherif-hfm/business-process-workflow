@@ -344,6 +344,15 @@ public sealed record MessageDeliveryAckDto(
     FaultInfoDto? Fault = null);
 
 /// <summary>
+/// Conflict returned when a message delivery key has already been committed or
+/// another request consumed the catch activation while this request was waiting.
+/// </summary>
+public sealed record MessageDeliveryConflictDto(
+    string Code,
+    long InstanceId,
+    int SourceNodeId);
+
+/// <summary>
 /// Slim acknowledgment returned when starting a workflow instance via a message start event.
 /// </summary>
 /// <param name="InstanceId">The database ID of the created workflow instance.</param>

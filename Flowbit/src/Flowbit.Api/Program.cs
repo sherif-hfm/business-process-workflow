@@ -13,6 +13,7 @@ using Flowbit.Infrastructure.DependencyInjection;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.DependencyInjection;
 using Flowbit.Service.Services;
+using Flowbit.Shared.Dtos;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -218,6 +219,16 @@ try
     }
     builder.Services.AddSingleton(serviceTaskOptions);
 
+    var messageDeliveryOptions = builder.Configuration
+        .GetSection(MessageDeliveryOptions.SectionName)
+        .Get<MessageDeliveryOptions>() ?? new MessageDeliveryOptions();
+    if (messageDeliveryOptions.MaxPayloadBytes <= 0)
+    {
+        throw new InvalidOperationException(
+            $"{MessageDeliveryOptions.SectionName}:MaxPayloadBytes must be greater than zero.");
+    }
+    builder.Services.AddSingleton(messageDeliveryOptions);
+
     builder.Services
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
@@ -247,6 +258,20 @@ try
                 error = ex.Message,
                 existingInstanceId = ex.ExistingInstanceId
             });
+        }
+        catch (MessageDeliveryConflictException ex)
+        {
+            Log.Warning(
+                "Message delivery conflict {Code} for instance {InstanceId} at node {SourceNodeId}.",
+                ex.Code,
+                ex.InstanceId,
+                ex.SourceNodeId);
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            context.Response.Headers.Location = $"/api/instances/{ex.InstanceId}";
+            await context.Response.WriteAsJsonAsync(new MessageDeliveryConflictDto(
+                ex.Code,
+                ex.InstanceId,
+                ex.SourceNodeId));
         }
         catch (WorkflowConflictException ex)
         {

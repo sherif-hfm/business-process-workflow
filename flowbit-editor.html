@@ -865,8 +865,18 @@ function normalizeMessage(message, typedStart = false, processVariables = []) {
       ? message.outputMappings.map(mapping =>
           normalizeTypedOutputMapping(mapping, processVariables, typedStart))
       : [],
+    deliveryIdempotency: !typedStart && message.deliveryIdempotency === true,
+    deliveryIdempotencyHeaderName: !typedStart && message.deliveryIdempotency === true
+      ? (typeof message.deliveryIdempotencyHeaderName === "string" && message.deliveryIdempotencyHeaderName.trim()
+          ? message.deliveryIdempotencyHeaderName.trim()
+          : "Idempotency-Key")
+      : null,
     idempotencyVariable: typeof message.idempotencyVariable === "string" ? message.idempotencyVariable : ""
   };
+  if (!normalized.deliveryIdempotency) {
+    delete normalized.deliveryIdempotency;
+    delete normalized.deliveryIdempotencyHeaderName;
+  }
   if (!typedStart || !normalized.idempotencyVariable) delete normalized.idempotencyVariable;
   return normalized;
 }
@@ -1205,6 +1215,8 @@ function applyTypeInvariants(node) {
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
     node.message = normalizeMessage(node.message, false, model.variables);
   } else if (isMessageStartEventType(node.type)) {
     // A message start event is an entry point started by an external system via
@@ -1224,6 +1236,8 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     node.message = normalizeMessage(node.message, true);
+    delete node.message.deliveryIdempotency;
+    delete node.message.deliveryIdempotencyHeaderName;
     normalizeLegacyMessageStartNode(node);
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
@@ -2908,9 +2922,38 @@ function renderMessageSection(node) {
   inspector.appendChild(hint);
 
   field("Client id", "text", message.clientId, v => { message.clientId = v; });
-  field("Client secret", "text", message.clientSecret, v => { message.clientSecret = v; });
+  field("Client secret", "password", message.clientSecret, v => { message.clientSecret = v; });
   field("Header name", "text", message.headerName, v => { message.headerName = v; });
-  field("Header value", "text", message.headerValue, v => { message.headerValue = v; });
+  field("Header value", "password", message.headerValue, v => { message.headerValue = v; });
+
+  const secretHint = document.createElement("p");
+  secretHint.className = "empty-note";
+  secretHint.textContent = "Prefer ${config.*} or ${setting.*} placeholders. Literal secrets remain visible to workflow-definition administrators.";
+  inspector.appendChild(secretHint);
+
+  if (!isStart) {
+    inspector.appendChild(variableCheckbox(
+      "Enable delivery idempotency",
+      message.deliveryIdempotency === true,
+      checked => {
+        if (checked) {
+          message.deliveryIdempotency = true;
+          message.deliveryIdempotencyHeaderName ||= "Idempotency-Key";
+        } else {
+          delete message.deliveryIdempotency;
+          delete message.deliveryIdempotencyHeaderName;
+        }
+        renderInspector();
+      }));
+    if (message.deliveryIdempotency === true) {
+      field("Idempotency header name", "text", message.deliveryIdempotencyHeaderName,
+        value => { message.deliveryIdempotencyHeaderName = value; });
+    }
+    const idempotencyHint = document.createElement("p");
+    idempotencyHint.className = "empty-note";
+    idempotencyHint.textContent = "The header carries transport metadata only; no implicit workflow variable is created. The key is unique for this instance and every committed retry returns 409.";
+    inspector.appendChild(idempotencyHint);
+  }
 
   const valHint = document.createElement("p");
   valHint.className = "empty-note";
@@ -4951,6 +4994,45 @@ function validateModelForSave(candidate) {
     }
   }
 
+  const reservedIdempotencyHeaders = new Set([
+    "authorization", "proxy-authorization", "cookie", "host", "content-length",
+    "content-type", "content-encoding", "transfer-encoding", "connection",
+    "keep-alive", "te", "trailer", "upgrade", "expect", "x-client-id", "x-client-secret"
+  ]);
+  const httpFieldName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+  function validateMessageAuthentication(label, message, deliveryIdempotency) {
+    if (!hasText(message.clientId)) errors.push(label + " must have a clientId.");
+    if (!hasText(message.clientSecret)) errors.push(label + " must have a clientSecret.");
+    if (!hasText(message.headerName)) errors.push(label + " must have a headerName.");
+    if (!hasText(message.headerValue)) errors.push(label + " must have a headerValue.");
+    if (hasText(message.clientId) && !message.clientId.includes("${") &&
+        Array.from(message.clientId).length > 300) {
+      errors.push(label + " clientId must contain at most 300 Unicode scalar values.");
+    }
+    if (hasText(message.headerName) && !message.headerName.includes("${")) {
+      const name = message.headerName.trim();
+      if (name.length > 300 || !httpFieldName.test(name)) {
+        errors.push(label + " headerName must be a valid HTTP field name of at most 300 characters.");
+      } else if (name.toLowerCase() === "x-client-id" || name.toLowerCase() === "x-client-secret") {
+        errors.push(label + " headerName '" + name + "' is reserved.");
+      }
+    }
+    if (deliveryIdempotency) {
+      const idempotencyHeaderName = typeof message.deliveryIdempotencyHeaderName === "string"
+        ? message.deliveryIdempotencyHeaderName.trim() : "";
+      if (!idempotencyHeaderName || idempotencyHeaderName.length > 300 ||
+          !httpFieldName.test(idempotencyHeaderName)) {
+        errors.push(label + " deliveryIdempotencyHeaderName must be a valid HTTP field name of at most 300 characters.");
+      } else if (reservedIdempotencyHeaders.has(idempotencyHeaderName.toLowerCase())) {
+        errors.push(label + " delivery idempotency header '" + idempotencyHeaderName + "' is reserved.");
+      } else if (hasText(message.headerName) && !message.headerName.includes("${") &&
+          message.headerName.trim().toLowerCase() === idempotencyHeaderName.toLowerCase()) {
+        errors.push(label + " delivery idempotency header must differ from the message correlation header.");
+      }
+    }
+  }
+
   for (const node of nodes.filter(candidate => candidate && candidate.type === "scriptTask")) {
     const label = "Script task #" + String(node.id);
     const format = typeof node.scriptFormat === "string"
@@ -5237,9 +5319,18 @@ function validateModelForSave(candidate) {
   }
 
   for (const node of nodes.filter(candidate => candidate && candidate.type === "intermediateMessageCatchEvent")) {
+    const label = "Message catch event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
+    validateMessageAuthentication(label, message, message.deliveryIdempotency === true);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
     validateTypedOutputMappings(
-      "Message catch event #" + String(node.id),
+      label,
       message.outputMappings,
       "body",
       true);
@@ -5248,6 +5339,7 @@ function validateModelForSave(candidate) {
   for (const node of nodes.filter(candidate => candidate && candidate.type === "messageStartEvent")) {
     const label = "Message start event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
+    validateMessageAuthentication(label, message, false);
     const mappings = Array.isArray(message.outputMappings) ? message.outputMappings : [];
     const seenMappings = validateTypedOutputMappings(label, mappings, "body", false);
 
@@ -5370,12 +5462,6 @@ function validateModelForSave(candidate) {
     }
   }
 
-  const reservedIdempotencyHeaders = new Set([
-    "authorization", "proxy-authorization", "cookie", "host", "content-length",
-    "content-type", "content-encoding", "transfer-encoding", "connection",
-    "keep-alive", "te", "trailer", "upgrade", "expect", "x-client-id", "x-client-secret"
-  ]);
-  const httpFieldName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   for (const node of entries.filter(entry => entry.idempotency != null)) {
     const config = node.idempotency;
     const label = "Entry event #" + String(node.id);

@@ -1,8 +1,10 @@
 using System.Collections;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
@@ -1902,9 +1904,55 @@ public sealed class WorkflowEngineService(
         IncomingMessage message,
         CancellationToken cancellationToken)
     {
-        await LoadSettingsAsync(cancellationToken);
-        var actor = message.Actor;
-        var performedBy = actor.User;
+        // Authenticate without a row lock first so invalid anonymous requests do
+        // not serialize valid work on a known instance. The exact wait occurrence
+        // is captured and checked again after the lock.
+        var preview = await runtime.GetInstanceAsync(id, cancellationToken);
+        if (preview is null)
+        {
+            logger.LogInformation("Deliver message to instance {InstanceId}: instance not found.", id);
+            return null;
+        }
+
+        var workflow = await GetWorkflowAsync(preview.WorkflowDefinitionId, cancellationToken);
+        var committedReceipt = await FindCommittedMessageDeliveryAsync(
+            preview.Id,
+            workflow.Definition,
+            message.Headers,
+            cancellationToken);
+        if (committedReceipt is not null)
+        {
+            ValidateReceiptAuthentication(committedReceipt, message);
+            throw MessageIdempotencyConflict(committedReceipt);
+        }
+
+        ValidateMessageDeliveryState(preview);
+        var previewNode = GetFlowNode(workflow.Definition, preview.CurrentStepId);
+        ValidateMessageCatchNode(previewNode);
+        var previewConfig = previewNode.Message
+            ?? throw new WorkflowDomainException($"Message catch event #{previewNode.Id} has no message configuration.");
+        var previewIdempotencyHeaderName = GetDeliveryIdempotencyHeaderName(previewConfig);
+        var idempotencyKey = previewIdempotencyHeaderName is not null
+            ? ReadRequiredMessageDeliveryKey(message.Headers, previewIdempotencyHeaderName)
+            : null;
+
+        if (idempotencyKey is not null)
+        {
+            var existingReceipt = await runtime.GetMessageDeliveryReceiptAsync(
+                id, idempotencyKey, cancellationToken);
+            if (existingReceipt is not null)
+            {
+                ValidateReceiptAuthentication(existingReceipt, message);
+                throw MessageIdempotencyConflict(existingReceipt);
+            }
+        }
+
+        var previewWaitHistoryId = await runtime.GetLatestNodeEntryHistoryIdAsync(
+            preview.Id, previewNode.Id, cancellationToken)
+            ?? throw new WorkflowDomainException(
+                $"Message catch event #{previewNode.Id} has no recorded wait activation.");
+        await AuthenticateMessageCatchAsync(
+            preview, workflow.Definition, previewNode, previewConfig, message, cancellationToken);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken);
@@ -1914,18 +1962,32 @@ public sealed class WorkflowEngineService(
             return null;
         }
 
-        if (instance.Status != WorkflowInstanceStatuses.Running)
+        if (idempotencyKey is not null)
         {
-            logger.LogWarning("Deliver message to instance {InstanceId} rejected: instance status is {Status} (not Running).", id, instance.Status);
-            throw new WorkflowDomainException("Only running instances can receive a message.");
+            var existingReceipt = await runtime.GetMessageDeliveryReceiptAsync(
+                id, idempotencyKey, cancellationToken);
+            if (existingReceipt is not null)
+            {
+                ValidateReceiptAuthentication(existingReceipt, message);
+                throw MessageIdempotencyConflict(existingReceipt);
+            }
         }
 
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        ValidateMessageDeliveryState(instance);
+        workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        if (!BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+        ValidateMessageCatchNode(node);
+        var waitHistoryId = await runtime.GetLatestNodeEntryHistoryIdAsync(
+            instance.Id, node.Id, cancellationToken);
+        if (instance.ActiveTokenId != preview.ActiveTokenId
+            || node.Id != previewNode.Id
+            || waitHistoryId != previewWaitHistoryId)
         {
-            logger.LogWarning("Deliver message to instance {InstanceId} rejected: current node #{NodeId} ({NodeType}) is not a message catch event.", id, node.Id, node.Type);
-            throw new WorkflowDomainException("The instance is not currently waiting for a message.");
+            throw new MessageDeliveryConflictException(
+                "message_wait_conflict",
+                instance.Id,
+                previewNode.Id,
+                "Another request consumed this message wait activation.");
         }
 
         logger.LogInformation("Delivering message to catch node #{NodeId} ({NodeName}) on instance {InstanceId} for client '{ClientId}'",
@@ -1933,71 +1995,25 @@ public sealed class WorkflowEngineService(
 
         var messageConfig = node.Message
             ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no message configuration.");
-
-        // Resolve the templated expected credentials + required header. Credentials
-        // and the header name/value are resolved against stored instance variables
-        // overlaid with read-only config.*/setting.* context ONLY - the caller's
-        // sys.user/sys.roles are intentionally excluded so an unverified caller
-        // cannot satisfy a credential by templating it from ${sys.user} (the value
-        // would resolve to the empty string they don't send). sys.* context the
-        // caller cannot influence (sys.now/sys.today/sys.instanceId/sys.workflowId/
-        // sys.nodeId/sys.nodeName) is still available since it is not attacker-
-        // controlled and may be useful in a headerValue/headerValidation template.
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var authContext = BuildAuthContext(stored, instance, workflow.Definition, node);
-
-        var expectedClientId = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientId, authContext);
-        var expectedClientSecret = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientSecret, authContext);
-        var expectedHeaderName = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderName, authContext);
-        var expectedHeaderValue = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderValue, authContext);
-
-        // Authenticate the caller against the node's expected client id/secret.
-        if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
-            || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
+        var idempotencyHeaderName = GetDeliveryIdempotencyHeaderName(messageConfig);
+        if ((idempotencyHeaderName is not null) != (idempotencyKey is not null)
+            || !string.Equals(
+                idempotencyHeaderName,
+                previewIdempotencyHeaderName,
+                StringComparison.OrdinalIgnoreCase))
         {
-            logger.LogWarning("Deliver message to instance {InstanceId} rejected: invalid client credentials (client id '{ClientId}').", id, message.ClientId);
-            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+            throw new MessageDeliveryConflictException(
+                "message_wait_conflict",
+                instance.Id,
+                previewNode.Id,
+                "The message wait configuration changed while the request was in progress.");
         }
 
-        // Validate the required custom header: present, equal to the resolved
-        // expected value, and (when set) satisfying the NCalc headerValidation rule
-        // with the incoming value bound as `header` alongside instance vars/context.
-        // Header failures are domain errors (400), not auth failures (401): the
-        // caller has already authenticated via the client id/secret, so a header
-        // problem is a bad request rather than an identity failure.
-        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValues)
-            || incomingHeaderValues.Count == 0
-            || incomingHeaderValues[0] is not { } incomingHeaderValue)
-        {
-            logger.LogWarning("Deliver message to instance {InstanceId} rejected: required header '{HeaderName}' is missing.", id, expectedHeaderName);
-            throw new WorkflowDomainException(
-                $"Required header '{expectedHeaderName}' is missing.");
-        }
-
-        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
-        {
-            logger.LogWarning("Deliver message to instance {InstanceId} rejected: header '{HeaderName}' value mismatch.", id, expectedHeaderName);
-            throw new WorkflowDomainException(
-                $"Header '{expectedHeaderName}' does not match the expected value.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
-        {
-            // The headerValidation rule may legitimately reference sys.user (the
-            // now-authenticated client id) and other sys.* context, so it is evaluated
-            // against the full context (caller actor included) plus the incoming header.
-            var fullContext = WithContext(stored, actor, instance, workflow.Definition, node);
-            var validationCtx = new Dictionary<string, JsonElement>(fullContext, StringComparer.OrdinalIgnoreCase)
-            {
-                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
-            };
-            if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
-            {
-                logger.LogWarning("Deliver message to instance {InstanceId} rejected: header '{HeaderName}' failed validation '{Validation}'.", id, expectedHeaderName, messageConfig.HeaderValidation);
-                throw new WorkflowDomainException(
-                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
-            }
-        }
+        var authentication = await AuthenticateMessageCatchAsync(
+            instance, workflow.Definition, node, messageConfig, message, cancellationToken);
+        var actor = authentication.Actor;
+        var performedBy = actor.User;
+        var stored = authentication.StoredVariables;
 
         // Resolve the complete typed mapping batch before writing anything. The
         // authenticated client becomes sys.user for defaults and NCalc rules.
@@ -2020,8 +2036,13 @@ public sealed class WorkflowEngineService(
         // enforced exactly one for a message catch event). SingleOrDefault + a
         // domain exception keeps a malformed legacy definition from surfacing as a
         // bare 500 (matching SelectPassThroughFlow's style).
-        var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault()
-            ?? throw new WorkflowDomainException($"Message catch event #{node.Id} has no outgoing sequence flow.");
+        var outgoing = OutgoingFlows(workflow.Definition, node.Id).Take(2).ToList();
+        if (outgoing.Count != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Message catch event #{node.Id} must have exactly one outgoing sequence flow.");
+        }
+        var flow = outgoing[0];
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
         var nextStatus = StatusForTargetNode(nextNode);
 
@@ -2078,24 +2099,52 @@ public sealed class WorkflowEngineService(
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
+        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        var ack = new MessageDeliveryAckDto(
+            instance.Id,
+            restingNode.Id,
+            restingNode.Name,
+            restingNode.ExternalId,
+            instance.Status,
+            instance.UpdatedAt,
+            ToFault(
+                instance.Status,
+                instance.FaultCode,
+                instance.FaultDescription,
+                restingNode.Name));
+
+        if (idempotencyKey is not null)
+        {
+            var proofs = CreateMessageDeliveryProofs(
+                authentication.ClientId,
+                authentication.ClientSecret,
+                authentication.HeaderName,
+                authentication.HeaderValue);
+            await runtime.AddMessageDeliveryReceiptAsync(
+                new MessageDeliveryReceiptRecord(
+                    instance.Id,
+                    idempotencyKey,
+                    previewWaitHistoryId,
+                    node.Id,
+                    authentication.HeaderName,
+                    MessageDeliveryProofVersion,
+                    proofs.CredentialSalt,
+                    proofs.CredentialHash,
+                    proofs.EnvelopeSalt,
+                    proofs.EnvelopeHash,
+                    timeProvider.GetUtcNow()),
+                cancellationToken);
+        }
+
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         logger.LogInformation("Successfully delivered message to instance {InstanceId} on node {NodeId}. Advancing to {NextNodeId} ({NextNodeType})",
             instance.Id, node.Id, instance.CurrentStepId, restingNode.Type);
 
-        // Return a slim ack (no definition/variables/history) so an AllowAnonymous
-        // webhook caller cannot read the full workflow model or instance data.
-        return await BuildMessageAckAsync(instance.Id, cancellationToken);
+        return ack;
     }
 
-    // Builds the credential/header resolution context: stored instance variables
-    // overlaid with config.*/setting.* and the sys.* entries an unverified caller
-    // cannot influence (now/today/instance/workflow/node). It deliberately omits
-    // sys.user and sys.roles (which come from the unverified X-Client-Id header)
-    // and sys.claim.* (JWT claims, absent for an anonymous delivery) so a templated
-    // credential cannot be satisfied by the very caller it is supposed to authenticate.
     // Builds the credential/header resolution context: stored instance variables
     // (empty for a message start, which has no instance yet) overlaid with
     // config.*/setting.* and the sys.* entries an unverified caller cannot
@@ -2150,27 +2199,442 @@ public sealed class WorkflowEngineService(
         return merged;
     }
 
-    // Builds the slim delivery ack: only the resting node identity + status, no
-    // definition/variables/history (the message endpoint is AllowAnonymous).
-    private async Task<MessageDeliveryAckDto?> BuildMessageAckAsync(long id, CancellationToken cancellationToken)
+    private async Task<MessageCatchAuthentication> AuthenticateMessageCatchAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        FlowNodeModel node,
+        MessageCatchModel messageConfig,
+        IncomingMessage message,
+        CancellationToken cancellationToken)
     {
-        var instance = await runtime.GetInstanceAsync(id, cancellationToken);
-        if (instance is null)
+        var freshSettings = await settings.LoadAllFreshAsync(cancellationToken);
+        _settingsCache = freshSettings.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.Clone(),
+            StringComparer.OrdinalIgnoreCase);
+
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var authContext = BuildAuthContext(stored, instance, definition, node);
+        if (!TryResolveRequiredScalar(messageConfig.ClientId, authContext, out var expectedClientId)
+            || !TryResolveRequiredScalar(messageConfig.ClientSecret, authContext, out var expectedClientSecret))
+        {
+            logger.LogError(
+                "Message catch node {NodeId} on instance {InstanceId} has unresolved client credentials.",
+                node.Id,
+                instance.Id);
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        var clientId = ReadSingleCredentialHeader(message.Headers, "X-Client-Id");
+        var clientSecret = ReadSingleCredentialHeader(message.Headers, "X-Client-Secret");
+        if (clientId.EnumerateRunes().Take(UserTaskConstraints.MaxActorNameLength + 1).Count()
+                > UserTaskConstraints.MaxActorNameLength
+            || !string.Equals(clientId, expectedClientId, StringComparison.Ordinal)
+            || !ConstantTimeEquals(clientSecret, expectedClientSecret))
+        {
+            logger.LogWarning(
+                "Deliver message to instance {InstanceId} rejected: invalid client credentials (client id '{ClientId}').",
+                instance.Id,
+                clientId);
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        if (!TryResolveRequiredScalar(messageConfig.HeaderName, authContext, out var expectedHeaderName)
+            || !TryResolveRequiredScalar(messageConfig.HeaderValue, authContext, out var expectedHeaderValue))
+        {
+            logger.LogError(
+                "Message catch node {NodeId} on instance {InstanceId} has unresolved correlation configuration.",
+                node.Id,
+                instance.Id);
+            throw new WorkflowDomainException("The message correlation configuration is invalid.");
+        }
+
+        expectedHeaderName = expectedHeaderName.Trim();
+        ValidateResolvedMessageHeaderName(
+            expectedHeaderName,
+            GetDeliveryIdempotencyHeaderName(messageConfig));
+        var incomingHeaderValue = ReadSingleCorrelationHeader(
+            message.Headers,
+            expectedHeaderName);
+        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
+        {
+            throw new WorkflowDomainException(
+                $"Header '{expectedHeaderName}' does not match the expected value.");
+        }
+
+        var actor = new ActorContext(
+            clientId,
+            [],
+            message.Actor.Claims);
+        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
+        {
+            var fullContext = WithContext(stored, actor, instance, definition, node);
+            var validationContext = new Dictionary<string, JsonElement>(
+                fullContext,
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
+            };
+            if (!SequenceFlowConditionEvaluator.Evaluate(
+                    messageConfig.HeaderValidation,
+                    validationContext))
+            {
+                throw new WorkflowDomainException(
+                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
+            }
+        }
+
+        return new MessageCatchAuthentication(
+            actor,
+            clientId,
+            clientSecret,
+            expectedHeaderName,
+            incomingHeaderValue,
+            stored);
+    }
+
+    private static void ValidateMessageDeliveryState(WorkflowInstanceRecord instance)
+    {
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            throw new WorkflowDomainException("Only running instances can receive a message.");
+        }
+    }
+
+    private static void ValidateMessageCatchNode(FlowNodeModel node)
+    {
+        if (!BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+        {
+            throw new WorkflowDomainException(
+                "The instance is not currently waiting for a message.");
+        }
+    }
+
+    private static bool TryResolveRequiredScalar(
+        string? template,
+        IReadOnlyDictionary<string, JsonElement> context,
+        out string value)
+    {
+        var resolved = ServiceTaskTemplating.TrySubstituteScalarStrict(
+            template,
+            context,
+            out value,
+            out _);
+        return resolved && !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static string ReadSingleCredentialHeader(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers,
+        string name)
+    {
+        if (!headers.TryGetValue(name, out var values)
+            || values.Count != 1
+            || string.IsNullOrEmpty(values[0]))
+        {
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        return values[0];
+    }
+
+    private static string ReadSingleCorrelationHeader(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers,
+        string name)
+    {
+        if (!headers.TryGetValue(name, out var values) || values.Count == 0)
+        {
+            throw new WorkflowDomainException($"Required header '{name}' is missing.");
+        }
+
+        if (values.Count != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Required header '{name}' must contain exactly one value.");
+        }
+
+        return values[0];
+    }
+
+    private static void ValidateResolvedMessageHeaderName(
+        string name,
+        string? deliveryIdempotencyHeaderName)
+    {
+        if (name.Length > 300
+            || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                "The resolved message correlation header name is invalid.");
+        }
+
+        if (name.Equals("X-Client-Id", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("X-Client-Secret", StringComparison.OrdinalIgnoreCase)
+            || (deliveryIdempotencyHeaderName is not null
+                && name.Equals(deliveryIdempotencyHeaderName, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new WorkflowDomainException(
+                "The resolved message correlation header name is reserved.");
+        }
+    }
+
+    private async Task<MessageDeliveryReceiptRecord?> FindCommittedMessageDeliveryAsync(
+        long instanceId,
+        WorkflowModel definition,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers,
+        CancellationToken cancellationToken)
+    {
+        var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var node in definition.FlowNodes.Where(node =>
+                     BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                     && node.Message?.DeliveryIdempotency == true))
+        {
+            var headerName = GetDeliveryIdempotencyHeaderName(node.Message!);
+            if (headerName is null
+                || !TryReadMessageDeliveryKey(headers, headerName, out var key)
+                || !candidateKeys.Add(key))
+            {
+                continue;
+            }
+
+            var receipt = await runtime.GetMessageDeliveryReceiptAsync(
+                instanceId,
+                key,
+                cancellationToken);
+            if (receipt is not null)
+            {
+                return receipt;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? GetDeliveryIdempotencyHeaderName(MessageCatchModel messageConfig)
+    {
+        if (!messageConfig.DeliveryIdempotency)
         {
             return null;
         }
 
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        return new MessageDeliveryAckDto(
-            instance.Id,
-            node.Id,
-            node.Name,
-            node.ExternalId,
-            instance.Status,
-            instance.UpdatedAt,
-            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
+        var headerName = string.IsNullOrWhiteSpace(messageConfig.DeliveryIdempotencyHeaderName)
+            ? IdempotencyHeaders.Standard
+            : messageConfig.DeliveryIdempotencyHeaderName.Trim();
+        if (headerName.Length > 300
+            || !Regex.IsMatch(headerName, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+            || ReservedMessageDeliveryIdempotencyHeaders.Contains(headerName))
+        {
+            throw new WorkflowDomainException(
+                "The resolved message delivery idempotency header name is invalid or reserved.");
+        }
+
+        return headerName;
     }
+
+    private static readonly HashSet<string> ReservedMessageDeliveryIdempotencyHeaders = new(
+        [
+            "Authorization",
+            "Proxy-Authorization",
+            "Cookie",
+            "Host",
+            "Content-Length",
+            "Content-Type",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Connection",
+            "Keep-Alive",
+            "TE",
+            "Trailer",
+            "Upgrade",
+            "Expect",
+            "X-Client-Id",
+            "X-Client-Secret"
+        ],
+        StringComparer.OrdinalIgnoreCase);
+
+    private static string ReadRequiredMessageDeliveryKey(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers,
+        string headerName)
+    {
+        if (!TryReadMessageDeliveryKey(headers, headerName, out var key))
+        {
+            throw new WorkflowDomainException(
+                $"A valid '{headerName}' idempotency header is required for this message catch event.");
+        }
+
+        return key;
+    }
+
+    private static bool TryReadMessageDeliveryKey(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> headers,
+        string headerName,
+        out string key)
+    {
+        key = string.Empty;
+        if (!string.Equals(headerName, IdempotencyHeaders.Standard, StringComparison.OrdinalIgnoreCase))
+        {
+            return headers.TryGetValue(headerName, out var configuredValues)
+                && TryNormalizeMessageDeliveryKey(configuredValues, out key);
+        }
+
+        var hasStandard = headers.TryGetValue(IdempotencyHeaders.Standard, out var standardValues);
+        var hasAlias = headers.TryGetValue(IdempotencyHeaders.LegacyAlias, out var aliasValues);
+        if (!hasStandard && !hasAlias)
+        {
+            return false;
+        }
+        if ((hasStandard && standardValues!.Count != 1)
+            || (hasAlias && aliasValues!.Count != 1))
+        {
+            return false;
+        }
+
+        var standard = hasStandard ? standardValues![0].Trim() : null;
+        var alias = hasAlias ? aliasValues![0].Trim() : null;
+        if (standard is not null && alias is not null
+            && !string.Equals(standard, alias, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        key = standard ?? alias ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(key)
+               && key.EnumerateRunes().Take(301).Count() <= 300;
+    }
+
+    private static bool TryNormalizeMessageDeliveryKey(
+        IReadOnlyList<string> values,
+        out string key)
+    {
+        key = string.Empty;
+        if (values.Count != 1)
+        {
+            return false;
+        }
+
+        key = values[0].Trim();
+        return key.Length > 0
+               && key.EnumerateRunes().Take(301).Count() <= 300;
+    }
+
+    private static MessageDeliveryConflictException MessageIdempotencyConflict(
+        MessageDeliveryReceiptRecord receipt) =>
+        new(
+            "idempotency_conflict",
+            receipt.InstanceId,
+            receipt.SourceNodeId,
+            "This message delivery idempotency key has already been committed.");
+
+    private static void ValidateReceiptAuthentication(
+        MessageDeliveryReceiptRecord receipt,
+        IncomingMessage message)
+    {
+        if (receipt.ProofVersion != MessageDeliveryProofVersion)
+        {
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        var clientId = ReadSingleCredentialHeader(message.Headers, "X-Client-Id");
+        var clientSecret = ReadSingleCredentialHeader(message.Headers, "X-Client-Secret");
+        if (!VerifyMessageDeliveryProof(
+                BuildProofInput("credentials", clientId, clientSecret),
+                receipt.CredentialProofSalt,
+                receipt.CredentialProofHash))
+        {
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        var headerValue = ReadSingleCorrelationHeader(
+            message.Headers,
+            receipt.CorrelationHeaderName);
+        if (!VerifyMessageDeliveryProof(
+                BuildProofInput(
+                    "envelope",
+                    clientId,
+                    clientSecret,
+                    receipt.CorrelationHeaderName.ToLowerInvariant(),
+                    headerValue),
+                receipt.EnvelopeProofSalt,
+                receipt.EnvelopeProofHash))
+        {
+            throw new WorkflowDomainException(
+                $"Header '{receipt.CorrelationHeaderName}' does not match the expected value.");
+        }
+    }
+
+    private static MessageDeliveryProofs CreateMessageDeliveryProofs(
+        string clientId,
+        string clientSecret,
+        string headerName,
+        string headerValue)
+    {
+        var credentialSalt = RandomNumberGenerator.GetBytes(MessageDeliveryProofSaltBytes);
+        var envelopeSalt = RandomNumberGenerator.GetBytes(MessageDeliveryProofSaltBytes);
+        return new MessageDeliveryProofs(
+            credentialSalt,
+            DeriveMessageDeliveryProof(
+                BuildProofInput("credentials", clientId, clientSecret),
+                credentialSalt),
+            envelopeSalt,
+            DeriveMessageDeliveryProof(
+                BuildProofInput(
+                    "envelope",
+                    clientId,
+                    clientSecret,
+                    headerName.ToLowerInvariant(),
+                    headerValue),
+                envelopeSalt));
+    }
+
+    private static byte[] BuildProofInput(string purpose, params string[] values)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+        writer.Write(MessageDeliveryProofVersion);
+        writer.Write(purpose);
+        foreach (var value in values)
+        {
+            var bytes = Encoding.UTF8.GetBytes(value);
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] DeriveMessageDeliveryProof(byte[] input, byte[] salt) =>
+        Rfc2898DeriveBytes.Pbkdf2(
+            input,
+            salt,
+            MessageDeliveryProofIterations,
+            HashAlgorithmName.SHA256,
+            MessageDeliveryProofHashBytes);
+
+    private static bool VerifyMessageDeliveryProof(
+        byte[] input,
+        byte[] salt,
+        byte[] expectedHash)
+    {
+        var actual = DeriveMessageDeliveryProof(input, salt);
+        return CryptographicOperations.FixedTimeEquals(actual, expectedHash);
+    }
+
+    private const short MessageDeliveryProofVersion = 1;
+    private const int MessageDeliveryProofIterations = 100_000;
+    private const int MessageDeliveryProofSaltBytes = 16;
+    private const int MessageDeliveryProofHashBytes = 32;
+
+    private sealed record MessageCatchAuthentication(
+        ActorContext Actor,
+        string ClientId,
+        string ClientSecret,
+        string HeaderName,
+        string HeaderValue,
+        Dictionary<string, JsonElement> StoredVariables);
+
+    private sealed record MessageDeliveryProofs(
+        byte[] CredentialSalt,
+        byte[] CredentialHash,
+        byte[] EnvelopeSalt,
+        byte[] EnvelopeHash);
 
     // Message-start mappings are typed start-variable declarations. A missing path
     // is not an extraction failure here: defaults and final required checks run in
@@ -2383,21 +2847,12 @@ public sealed class WorkflowEngineService(
         return values;
     }
 
-    // Constant-time string comparison to avoid leaking secret length/prefix via timing.
+    // Compare fixed-size digests so differing input lengths do not return early.
     private static bool ConstantTimeEquals(string a, string b)
     {
-        if (a.Length != b.Length)
-        {
-            return false;
-        }
-
-        var diff = 0;
-        for (var i = 0; i < a.Length; i++)
-        {
-            diff |= a[i] ^ b[i];
-        }
-
-        return diff == 0;
+        var left = SHA256.HashData(Encoding.UTF8.GetBytes(a));
+        var right = SHA256.HashData(Encoding.UTF8.GetBytes(b));
+        return CryptographicOperations.FixedTimeEquals(left, right);
     }
 
     public async Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken)
@@ -3833,7 +4288,7 @@ public sealed class WorkflowEngineService(
 
         return new InstanceDetailDto(
             instance.Id,
-            WorkflowDefinitionService.ToDetail(workflow),
+            ToRuntimeWorkflowDetail(workflow),
             instance.CurrentStepId,
             node.Name,
             node.ExternalId,
@@ -3867,6 +4322,35 @@ public sealed class WorkflowEngineService(
             userTasks,
             ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
     }
+
+    private static WorkflowDetailDto ToRuntimeWorkflowDetail(WorkflowDefinitionRecord workflow)
+    {
+        var definition = JsonSerializer.Deserialize<WorkflowModel>(
+            JsonSerializer.Serialize(workflow.Definition))
+            ?? throw new InvalidOperationException("Unable to clone the workflow definition.");
+        foreach (var node in definition.FlowNodes)
+        {
+            if (node.Message is null)
+            {
+                continue;
+            }
+
+            node.Message.ClientSecret = RedactedSecret;
+            node.Message.HeaderValue = RedactedSecret;
+        }
+
+        return new WorkflowDetailDto(
+            workflow.Id,
+            workflow.Name,
+            workflow.WorkflowKey,
+            workflow.Version,
+            workflow.IsPublished,
+            workflow.IsDefault,
+            workflow.CreatedAt,
+            definition);
+    }
+
+    private const string RedactedSecret = "[redacted]";
 
     private async Task<WorkflowDefinitionRecord> GetPublishedWorkflowAsync(
         long id,

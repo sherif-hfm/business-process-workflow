@@ -486,6 +486,12 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
             node.Message ??= new MessageCatchModel();
+            node.Message.OutputMappings ??= [];
+            node.Message.DeliveryIdempotencyHeaderName = node.Message.DeliveryIdempotency
+                ? string.IsNullOrWhiteSpace(node.Message.DeliveryIdempotencyHeaderName)
+                    ? IdempotencyHeaders.Standard
+                    : node.Message.DeliveryIdempotencyHeaderName.Trim()
+                : null;
             NormalizeMessageCatchMappings(node.Message.OutputMappings, processVariables);
         }
         else if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -505,6 +511,8 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
             node.Message ??= new MessageCatchModel();
+            node.Message.DeliveryIdempotency = false;
+            node.Message.DeliveryIdempotencyHeaderName = null;
             NormalizeMessageStartMappings(node);
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
@@ -699,6 +707,11 @@ public static class WorkflowModelMigrator
     {
         foreach (var mapping in mappings)
         {
+            if (mapping is null)
+            {
+                continue;
+            }
+
             NormalizeTypedOutputMapping(
                 mapping.Variable,
                 value => mapping.Variable = value,

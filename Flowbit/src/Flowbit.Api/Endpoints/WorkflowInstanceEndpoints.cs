@@ -84,10 +84,14 @@ public static class WorkflowInstanceEndpoints
 
         group.MapPost("/{id:long}/message", DeliverMessage)
             .AllowAnonymous()
+            .Accepts<JsonElement>("application/json")
             .Produces<MessageDeliveryAckDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
-            .Produces(StatusCodes.Status404NotFound);
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces<MessageDeliveryConflictDto>(StatusCodes.Status409Conflict)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
 
         return app;
     }
@@ -455,6 +459,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="context">The HTTP request context containing correlation and credential headers.</param>
     /// <param name="id">The database ID of the workflow instance waiting for the message.</param>
     /// <param name="service">The workflow engine service.</param>
+    /// <param name="options">Deployment-wide inbound message payload limits.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// This endpoint is <c>AllowAnonymous</c> - authentication is the catch node's configured
@@ -473,14 +478,16 @@ public static class WorkflowInstanceEndpoints
     /// must be <c>running</c> and currently resting on the catch node. A 401 is returned on a
     /// client id/secret mismatch; a 400 for a missing/mismatched header, a failed
     /// <c>headerValidation</c> rule, a required-mapping failure, or a not-running/not-waiting
-    /// instance; 404 when the instance does not exist. There is no delivery idempotency key -
-    /// a retry after a successful delivery gets a 400 because the instance has already
-    /// advanced off the catch node.
+    /// instance; 404 when the instance does not exist. A catch configured with
+    /// <c>message.deliveryIdempotency=true</c> requires the configured
+    /// <c>message.deliveryIdempotencyHeaderName</c> (default <c>Idempotency-Key</c>)
+    /// and returns 409 for every authenticated reuse of a committed instance-scoped key.
     /// </remarks>
     public static async Task<IResult> DeliverMessage(
         HttpContext context,
         long id,
         IWorkflowEngineService service,
+        MessageDeliveryOptions options,
         CancellationToken cancellationToken)
     {
         var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
@@ -489,23 +496,17 @@ public static class WorkflowInstanceEndpoints
 
         Log.Information("Message delivery request to instance {InstanceId} from client '{ClientId}'", id, clientId);
 
-        JsonElement? payload = null;
-        if (context.Request.HasJsonContentType()
-            && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
+        var payloadRead = await ReadMessagePayloadAsync(
+            context.Request,
+            options.MaxPayloadBytes,
+            cancellationToken);
+        if (payloadRead.Error is not null)
         {
-            try
-            {
-                payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            }
-            catch (JsonException ex)
-            {
-                Log.Warning(ex, "Failed to parse incoming JSON payload on DeliverMessage endpoint for instance {InstanceId}.", id);
-                payload = null;
-            }
+            return payloadRead.Error;
         }
 
         var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-        var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
+        var message = new IncomingMessage(clientId, clientSecret, headers, payloadRead.Payload, actor);
         var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
         if (ack is null)
         {
@@ -516,6 +517,74 @@ public static class WorkflowInstanceEndpoints
         Log.Information("Message delivery to instance {InstanceId} acknowledged. Status: {Status}, resting on node {NodeId}.",
             id, ack.Status, ack.CurrentNodeId);
         return Results.Ok(ack);
+    }
+
+    private static async Task<MessagePayloadReadResult> ReadMessagePayloadAsync(
+        HttpRequest request,
+        int maxPayloadBytes,
+        CancellationToken cancellationToken)
+    {
+        if (request.ContentLength is > 0 && request.ContentLength > maxPayloadBytes)
+        {
+            return MessagePayloadReadResult.Failed(Results.Problem(
+                statusCode: StatusCodes.Status413PayloadTooLarge,
+                title: "Message payload is too large."));
+        }
+
+        await using var body = new MemoryStream(
+            request.ContentLength is > 0
+                ? (int)Math.Min(request.ContentLength.Value, maxPayloadBytes)
+                : 0);
+        var buffer = new byte[81920];
+        while (true)
+        {
+            var read = await request.Body.ReadAsync(buffer, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (body.Length + read > maxPayloadBytes)
+            {
+                return MessagePayloadReadResult.Failed(Results.Problem(
+                    statusCode: StatusCodes.Status413PayloadTooLarge,
+                    title: "Message payload is too large."));
+            }
+
+            await body.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+        }
+
+        if (body.Length == 0)
+        {
+            return MessagePayloadReadResult.Succeeded(null);
+        }
+
+        if (!request.HasJsonContentType())
+        {
+            return MessagePayloadReadResult.Failed(Results.Problem(
+                statusCode: StatusCodes.Status415UnsupportedMediaType,
+                title: "A non-empty message payload must use a JSON media type."));
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body.GetBuffer().AsMemory(0, checked((int)body.Length)));
+            return MessagePayloadReadResult.Succeeded(document.RootElement.Clone());
+        }
+        catch (JsonException ex)
+        {
+            Log.Warning(ex, "Failed to parse an incoming message JSON payload.");
+            return MessagePayloadReadResult.Failed(Results.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "The message payload is not valid JSON."));
+        }
+    }
+
+    private sealed record MessagePayloadReadResult(JsonElement? Payload, IResult? Error)
+    {
+        public static MessagePayloadReadResult Succeeded(JsonElement? payload) => new(payload, null);
+
+        public static MessagePayloadReadResult Failed(IResult error) => new(null, error);
     }
 
     private const int DefaultPageSize = 50;

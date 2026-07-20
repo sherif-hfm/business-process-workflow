@@ -167,6 +167,19 @@ public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingI
 
 public sealed record IdempotencyReservationRecord(bool Reserved, long? ExistingInstanceId);
 
+public sealed record MessageDeliveryReceiptRecord(
+    long InstanceId,
+    string IdempotencyKey,
+    long WaitHistoryId,
+    int SourceNodeId,
+    string CorrelationHeaderName,
+    short ProofVersion,
+    byte[] CredentialProofSalt,
+    byte[] CredentialProofHash,
+    byte[] EnvelopeProofSalt,
+    byte[] EnvelopeProofHash,
+    DateTimeOffset CreatedAt);
+
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);
 

@@ -60,9 +60,11 @@
       "errorVariable": null,
       "message": {
         "clientId": "user",
-        "clientSecret": "123",
+        "clientSecret": "${setting.messageCatch.clientSecret}",
         "headerName": "msg-id",
-        "headerValue": "456",
+        "headerValue": "${setting.messageCatch.correlationValue}",
+        "deliveryIdempotency": true,
+        "deliveryIdempotencyHeaderName": "Idempotency-Key",
         "headerValidation": "",
         "outputMappings": [
           {

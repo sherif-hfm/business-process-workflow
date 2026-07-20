@@ -17,6 +17,26 @@ public sealed class WorkflowDefinitionService(
     ILogger<WorkflowDefinitionService> logger)
     : IWorkflowDefinitionService
 {
+    private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization",
+        "Proxy-Authorization",
+        "Cookie",
+        "Host",
+        "Content-Length",
+        "Content-Type",
+        "Content-Encoding",
+        "Transfer-Encoding",
+        "Connection",
+        "Keep-Alive",
+        "TE",
+        "Trailer",
+        "Upgrade",
+        "Expect",
+        "X-Client-Id",
+        "X-Client-Secret"
+    };
+
     public async Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken)
     {
         var records = await definitions.ListLatestAsync(cancellationToken);
@@ -306,7 +326,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
             {
-                ValidateMessageCatch(node, definition.Variables);
+                ValidateMessageCatch(node, outgoing, definition.Variables);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -563,6 +583,31 @@ public sealed class WorkflowDefinitionService(
             throw new WorkflowDomainException($"{kind} #{node.Id} must have a header value.");
         }
 
+        if (!message.ClientId.Contains("${", StringComparison.Ordinal)
+            && message.ClientId.EnumerateRunes().Take(UserTaskConstraints.MaxActorNameLength + 1).Count()
+                > UserTaskConstraints.MaxActorNameLength)
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{node.Id} client id cannot exceed {UserTaskConstraints.MaxActorNameLength} Unicode characters.");
+        }
+
+        if (!message.HeaderName.Contains("${", StringComparison.Ordinal))
+        {
+            ValidateMessageHeaderName(node.Id, kind, message.HeaderName);
+        }
+
+        if (message.DeliveryIdempotency)
+        {
+            var idempotencyHeaderName = message.DeliveryIdempotencyHeaderName?.Trim() ?? string.Empty;
+            ValidateDeliveryIdempotencyHeaderName(node.Id, kind, idempotencyHeaderName);
+            if (!message.HeaderName.Contains("${", StringComparison.Ordinal)
+                && string.Equals(message.HeaderName.Trim(), idempotencyHeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{node.Id} delivery idempotency header must differ from the message correlation header.");
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(message.HeaderValidation)
             && !SequenceFlowConditionEvaluator.IsValid(message.HeaderValidation))
         {
@@ -572,6 +617,12 @@ public sealed class WorkflowDefinitionService(
 
         foreach (var mapping in message.OutputMappings)
         {
+            if (mapping is null)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{node.Id} has a null output mapping.");
+            }
+
             if (string.IsNullOrWhiteSpace(mapping.Variable))
             {
                 throw new WorkflowDomainException(
@@ -788,14 +839,61 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateMessageCatch(
         FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing,
         IReadOnlyList<VariableModel> processVariables)
     {
         ValidateMessageConfig(node, "Message catch event");
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Message catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
         ValidateTypedOutputMappings(
             node.Id,
             "Message catch event",
             node.Message!.OutputMappings.Select(ToTypedOutputDefinition),
             processVariables);
+    }
+
+    private static void ValidateMessageHeaderName(
+        int nodeId,
+        string kind,
+        string value)
+    {
+        var name = value.Trim();
+        if (name.Length > 300 || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} header name '{value}' is not a valid HTTP field name.");
+        }
+
+        if (name.Equals("X-Client-Id", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("X-Client-Secret", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} header name '{value}' is reserved.");
+        }
+    }
+
+    private static void ValidateDeliveryIdempotencyHeaderName(
+        int nodeId,
+        string kind,
+        string name)
+    {
+        if (name.Length == 0
+            || name.Length > 300
+            || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} deliveryIdempotencyHeaderName must be a valid HTTP field name of at most 300 characters.");
+        }
+
+        if (ReservedIdempotencyHeaders.Contains(name))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} delivery idempotency header '{name}' is reserved.");
+        }
     }
 
     private static void ValidateRestUri(string value, string owner)
@@ -1383,26 +1481,6 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateIdempotency(WorkflowModel definition)
     {
-        var reservedHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "Authorization",
-            "Proxy-Authorization",
-            "Cookie",
-            "Host",
-            "Content-Length",
-            "Content-Type",
-            "Content-Encoding",
-            "Transfer-Encoding",
-            "Connection",
-            "Keep-Alive",
-            "TE",
-            "Trailer",
-            "Upgrade",
-            "Expect",
-            "X-Client-Id",
-            "X-Client-Secret"
-        };
-
         foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
         {
             var idempotency = entry.Idempotency;
@@ -1420,7 +1498,7 @@ public sealed class WorkflowDefinitionService(
                     $"Entry event #{entry.Id} idempotency.headerName must be a valid HTTP field name of at most 300 characters.");
             }
 
-            if (reservedHeaders.Contains(headerName))
+            if (ReservedIdempotencyHeaders.Contains(headerName))
             {
                 throw new WorkflowDomainException(
                     $"Entry event #{entry.Id} idempotency.headerName '{headerName}' is reserved.");
@@ -1729,6 +1807,12 @@ public sealed class WorkflowDefinitionService(
 
             foreach (var mapping in node.Message?.OutputMappings ?? [])
             {
+                if (mapping is null)
+                {
+                    // The message-event validator reports a precise domain error.
+                    continue;
+                }
+
                 Check(mapping.Validation, false,
                     $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
             }

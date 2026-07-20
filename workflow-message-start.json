@@ -23,9 +23,9 @@
       "errorVariable": null,
       "message": {
         "clientId": "user",
-        "clientSecret": "123",
+        "clientSecret": "${setting.messageStart.clientSecret}",
         "headerName": "msg-id",
-        "headerValue": "456",
+        "headerValue": "${setting.messageStart.correlationValue}",
         "headerValidation": "",
         "outputMappings": [
           {

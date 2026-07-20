@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(dataSource);
         services.TryAddSingleton(new ServiceTaskOptions());
+        services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new ScriptOptions());
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
         services.AddMemoryCache();

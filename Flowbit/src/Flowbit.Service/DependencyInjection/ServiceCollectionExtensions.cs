@@ -10,6 +10,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddServiceLayer(this IServiceCollection services)
     {
         services.TryAddSingleton(new ServiceTaskOptions());
+        services.TryAddSingleton(new MessageDeliveryOptions());
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<IWorkflowEngineService, WorkflowEngineService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();

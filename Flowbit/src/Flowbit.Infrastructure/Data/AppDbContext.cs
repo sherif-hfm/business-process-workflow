@@ -16,6 +16,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<WorkflowIdempotencyClaimEntity> WorkflowIdempotencyClaims => Set<WorkflowIdempotencyClaimEntity>();
 
+    public DbSet<MessageDeliveryReceiptEntity> MessageDeliveryReceipts => Set<MessageDeliveryReceiptEntity>();
+
     public DbSet<InstanceVariableEntity> InstanceVariables => Set<InstanceVariableEntity>();
 
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
@@ -179,6 +181,28 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne<WorkflowInstanceEntity>()
                 .WithMany()
                 .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MessageDeliveryReceiptEntity>(entity =>
+        {
+            entity.ToTable("message_delivery_receipts");
+            entity.HasKey(e => new { e.InstanceId, e.IdempotencyKey });
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(300).UseCollation("C");
+            entity.Property(e => e.CorrelationHeaderName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.CredentialProofSalt).IsRequired();
+            entity.Property(e => e.CredentialProofHash).IsRequired();
+            entity.Property(e => e.EnvelopeProofSalt).IsRequired();
+            entity.Property(e => e.EnvelopeProofHash).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.WaitHistoryId).IsUnique();
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.MessageDeliveryReceipts)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WaitHistory)
+                .WithMany()
+                .HasForeignKey(e => e.WaitHistoryId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

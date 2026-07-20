@@ -53,6 +53,16 @@ public sealed class ServiceTaskOptions
     public int MaxResponseBodyBytes { get; set; } = 1_048_576;
 }
 
+/// <summary>
+/// Deployment-wide limits for anonymous intermediate message deliveries.
+/// </summary>
+public sealed class MessageDeliveryOptions
+{
+    public const string SectionName = "WorkflowMessageDelivery";
+
+    public int MaxPayloadBytes { get; set; } = 1_048_576;
+}
+
 public interface IWorkflowDefinitionService
 {
     Task<IReadOnlyList<WorkflowSummaryDto>> ListLatestAsync(CancellationToken cancellationToken);

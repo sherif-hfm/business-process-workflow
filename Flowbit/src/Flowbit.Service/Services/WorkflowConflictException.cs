@@ -13,3 +13,17 @@ public sealed class IdempotencyKeyConflictException(long existingInstanceId)
 {
     public long ExistingInstanceId { get; } = existingInstanceId;
 }
+
+public sealed class MessageDeliveryConflictException(
+    string code,
+    long instanceId,
+    int sourceNodeId,
+    string message)
+    : WorkflowConflictException(message)
+{
+    public string Code { get; } = code;
+
+    public long InstanceId { get; } = instanceId;
+
+    public int SourceNodeId { get; } = sourceNodeId;
+}

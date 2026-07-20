@@ -1976,6 +1976,50 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
+    public Task<long?> GetLatestNodeEntryHistoryIdAsync(
+        long instanceId,
+        int nodeId,
+        CancellationToken cancellationToken) =>
+        dbContext.InstanceHistory.AsNoTracking()
+            .Where(history => history.InstanceId == instanceId && history.ToStepId == nodeId)
+            .OrderByDescending(history => history.Id)
+            .Select(history => (long?)history.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<MessageDeliveryReceiptRecord?> GetMessageDeliveryReceiptAsync(
+        long instanceId,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        var entity = await dbContext.MessageDeliveryReceipts.AsNoTracking()
+            .SingleOrDefaultAsync(
+                receipt => receipt.InstanceId == instanceId
+                           && receipt.IdempotencyKey == idempotencyKey,
+                cancellationToken);
+        return entity is null ? null : ToRecord(entity);
+    }
+
+    public Task AddMessageDeliveryReceiptAsync(
+        MessageDeliveryReceiptRecord receipt,
+        CancellationToken cancellationToken)
+    {
+        dbContext.MessageDeliveryReceipts.Add(new MessageDeliveryReceiptEntity
+        {
+            InstanceId = receipt.InstanceId,
+            IdempotencyKey = receipt.IdempotencyKey,
+            WaitHistoryId = receipt.WaitHistoryId,
+            SourceNodeId = receipt.SourceNodeId,
+            CorrelationHeaderName = receipt.CorrelationHeaderName,
+            ProofVersion = receipt.ProofVersion,
+            CredentialProofSalt = receipt.CredentialProofSalt.ToArray(),
+            CredentialProofHash = receipt.CredentialProofHash.ToArray(),
+            EnvelopeProofSalt = receipt.EnvelopeProofSalt.ToArray(),
+            EnvelopeProofHash = receipt.EnvelopeProofHash.ToArray(),
+            CreatedAt = receipt.CreatedAt
+        });
+        return Task.CompletedTask;
+    }
+
     public async Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
         long instanceId,
         CancellationToken cancellationToken)
@@ -2295,6 +2339,20 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             JsonMapping.ToDictionary(entity.Payload),
             entity.Note,
             entity.PerformedAt);
+
+    private static MessageDeliveryReceiptRecord ToRecord(MessageDeliveryReceiptEntity entity) =>
+        new(
+            entity.InstanceId,
+            entity.IdempotencyKey,
+            entity.WaitHistoryId,
+            entity.SourceNodeId,
+            entity.CorrelationHeaderName,
+            entity.ProofVersion,
+            entity.CredentialProofSalt.ToArray(),
+            entity.CredentialProofHash.ToArray(),
+            entity.EnvelopeProofSalt.ToArray(),
+            entity.EnvelopeProofHash.ToArray(),
+            entity.CreatedAt);
 
     private static SequenceFlowSummaryRecord ToRecord(SequenceFlowSummaryEntity entity) =>
         new(

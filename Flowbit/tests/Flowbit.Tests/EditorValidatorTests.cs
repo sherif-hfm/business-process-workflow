@@ -263,6 +263,38 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_ValidatesMessageCatchAuthenticationTopologyAndIdempotency()
+    {
+        var model = DefinitionValidationTests.CreateOutputMappingModel();
+        var catchNode = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageCatch(node.Type));
+        catchNode.Message!.DeliveryIdempotency = true;
+        catchNode.Message.DeliveryIdempotencyHeaderName = IdempotencyHeaders.Standard;
+        Assert.Empty(Validate(model));
+
+        catchNode.Message.HeaderName = IdempotencyHeaders.Standard;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("differ", StringComparison.OrdinalIgnoreCase));
+
+        catchNode.Message.HeaderName = "X-Correlation";
+        catchNode.Message.DeliveryIdempotencyHeaderName = "X-Delivery-Id";
+        Assert.Empty(Validate(model));
+
+        catchNode.Message.DeliveryIdempotencyHeaderName = "X-Client-Id";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("reserved", StringComparison.OrdinalIgnoreCase));
+
+        catchNode.Message.DeliveryIdempotencyHeaderName = "X-Delivery-Id";
+        catchNode.Message.ClientSecret = "";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("clientSecret", StringComparison.OrdinalIgnoreCase));
+
+        catchNode.Message.ClientSecret = "secret";
+        model.SequenceFlows.Single(flow => flow.SourceRef == catchNode.Id).Condition = "true";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("unconditional", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void ServiceTaskInspector_ExposesExtensibleConnectorDropdownWithRestSelected()
     {
         var html = ReadEditorSource();

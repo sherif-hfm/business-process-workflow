@@ -765,6 +765,26 @@ public sealed class MessageCatchModel
     [JsonPropertyName("outputMappings")]
     public List<MessageOutputMappingModel> OutputMappings { get; set; } = [];
 
+    /// <summary>
+    /// Enables instance-scoped transport idempotency for deliveries to an
+    /// intermediate message catch event. When enabled, callers must supply an
+    /// header named by <see cref="DeliveryIdempotencyHeaderName"/>. Message
+    /// start events use the node-level <see cref="FlowNodeModel.Idempotency"/>
+    /// contract instead.
+    /// </summary>
+    [JsonPropertyName("deliveryIdempotency")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool DeliveryIdempotency { get; set; }
+
+    /// <summary>
+    /// HTTP header that carries the delivery idempotency key for an intermediate
+    /// message catch event. It is transport metadata and is not written to an
+    /// implicit workflow variable.
+    /// </summary>
+    [JsonPropertyName("deliveryIdempotencyHeaderName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeliveryIdempotencyHeaderName { get; set; }
+
     // Legacy messageStartEvent-only shape. WorkflowModelMigrator moves this value
     // into FlowNodeModel.Idempotency and clears it before canonical serialization.
     /// <summary>

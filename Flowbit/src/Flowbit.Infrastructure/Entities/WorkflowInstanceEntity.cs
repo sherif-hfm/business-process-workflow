@@ -37,4 +37,6 @@ public sealed class WorkflowInstanceEntity
     public List<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences { get; set; } = [];
 
     public List<SequenceFlowSummaryEntity> SequenceFlowSummaries { get; set; } = [];
+
+    public List<MessageDeliveryReceiptEntity> MessageDeliveryReceipts { get; set; } = [];
 }

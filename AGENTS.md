@@ -95,7 +95,8 @@ Storage follows the hybrid design:
   search (see the workflow key search below).
 - Runtime state is normalized in `workflow_instances`, `execution_tokens`,
   `user_tasks`, `instance_variables`, `instance_history`,
-  `sequence_flow_occurrences`, and `sequence_flow_summaries`. An instance row
+  `sequence_flow_occurrences`, `sequence_flow_summaries`, and
+  `message_delivery_receipts`. An instance row
   owns lifecycle status and timestamps but no longer stores a single current
   step or claim. `execution_tokens` own execution position and its node snapshot;
   `user_tasks` are work items created when a token rests on a `userTask` and own
@@ -395,10 +396,18 @@ Storage follows the hybrid design:
   `UpdatedAt`) - not the full `InstanceDetailDto` - so a node-credentialed webhook
   caller cannot read the workflow definition (which may contain other nodes'
   literal secrets) or the instance's stored variables/history.
-  **Idempotency.** There is no delivery idempotency key: a webhook that retries
-  after a successful delivery gets a `400` ("not currently waiting for a message")
-  because the instance has already advanced off the catch node. Integrators should
-  deduplicate at the source; a future idempotency-key mechanism could address this.
+  **Idempotency.** A catch may opt in with `message.deliveryIdempotency=true` and
+  select its transport header with `message.deliveryIdempotencyHeaderName`
+  (default `Idempotency-Key`). The `X-Idempotency-Key` alias is accepted only
+  when the configured name is `Idempotency-Key`; custom names have no alias.
+  The endpoint permanently reserves the trimmed,
+  exact key for that instance in `message_delivery_receipts`. The first committed
+  delivery returns 200; every authenticated reuse returns 409 and cannot consume a
+  later catch. A receipt also owns the exact catch wait-history occurrence, so
+  concurrent requests for one wait have one winner. Failed/rolled-back deliveries
+  reserve nothing. Unconfigured catches retain the legacy behavior.
+  Non-empty bodies must use a JSON media type, malformed JSON returns 400, and
+  `WorkflowMessageDelivery.MaxPayloadBytes` bounds the request (default 1 MiB).
   No timeout escape hatch exists yet (a waiting instance waits indefinitely, like
   an unclaimed `userTask`); a future timer boundary event could address that.
 - **Message start events.** A `messageStartEvent` is an entry point (like a
@@ -1157,9 +1166,14 @@ The endpoint returns a slim `MessageDeliveryAckDto` (`Id`, `CurrentNodeId`,
 `CurrentNodeName`, `CurrentNodeExternalId`, `Status`, `UpdatedAt`) rather than
 the full `InstanceDetailDto`, so a node-credentialed webhook caller cannot read
 the workflow definition (which may contain other nodes' literal secrets) or the
-instance's stored variables/history. There is no delivery idempotency key; a
-retry after a successful delivery gets a `400` because the instance has already
-advanced off the catch node.
+instance's stored variables/history. Authenticated instance-detail responses
+deep-clone the definition and redact message `clientSecret`/`headerValue`; admin
+definition endpoints remain unchanged. A catch may opt in to instance-scoped,
+permanent receipts with `message.deliveryIdempotency=true` and a configurable
+`message.deliveryIdempotencyHeaderName`; the key remains internal transport
+metadata and does not create an implicit workflow variable. Committed key reuse
+returns 409. Request bodies are strict JSON and bounded by
+`WorkflowMessageDelivery.MaxPayloadBytes` (default 1 MiB).
 
 **Message-start delivery** (`POST /api/workflows/{workflowKey}/message-start`,
 `AllowAnonymous`): same auth mechanics, but the credential/header templates are

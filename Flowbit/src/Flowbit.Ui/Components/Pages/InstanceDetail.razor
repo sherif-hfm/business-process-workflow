@@ -187,6 +187,12 @@ else
         {
             <p>Personal work-item actions are available from the Inbox.</p>
         }
+        else if (IsWaitingForMessage)
+        {
+            <div class="alert alert-info mb-0">
+                Waiting for an authenticated external message. This page refreshes automatically after delivery.
+            </div>
+        }
         else if (availableFlows.Count == 0)
         {
             <p>No user actions are available.</p>
@@ -326,6 +332,11 @@ else
 
     private FlowNodeModel? CurrentNode =>
         instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
+
+    private bool IsWaitingForMessage =>
+        instance?.Status == "running"
+        && CurrentNode is { } node
+        && BpmnFlowNodeTypes.IsMessageCatch(node.Type);
 
     private IReadOnlyList<InstanceHistoryDto> CompletedMultiInstanceItems =>
         instance?.History
@@ -567,7 +578,8 @@ else
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
-                if (instance?.MultiInstance is not { Status: "active" })
+                if (instance?.MultiInstance is not { Status: "active" }
+                    && !IsWaitingForMessage)
                 {
                     continue;
                 }

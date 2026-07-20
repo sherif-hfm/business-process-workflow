@@ -305,6 +305,20 @@ public interface IWorkflowRuntimeRepository
         long instanceId,
         CancellationToken cancellationToken);
 
+    Task<long?> GetLatestNodeEntryHistoryIdAsync(
+        long instanceId,
+        int nodeId,
+        CancellationToken cancellationToken);
+
+    Task<MessageDeliveryReceiptRecord?> GetMessageDeliveryReceiptAsync(
+        long instanceId,
+        string idempotencyKey,
+        CancellationToken cancellationToken);
+
+    Task AddMessageDeliveryReceiptAsync(
+        MessageDeliveryReceiptRecord receipt,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
         long instanceId,
         CancellationToken cancellationToken);
