@@ -72,7 +72,8 @@ public sealed class WorkflowEngineService(
             instance.BusinessKeyUniqueness,
             instance.StartedBy,
             instance.CreatedAt,
-            instance.UpdatedAt);
+            instance.UpdatedAt,
+            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
     }
 
     private async Task<(WorkflowInstanceRecord Instance, WorkflowModel Definition)> StartInstanceCoreAsync(
@@ -506,7 +507,8 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
-            instance.CreatedAt);
+            instance.CreatedAt,
+            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
     }
 
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
@@ -1455,7 +1457,8 @@ public sealed class WorkflowEngineService(
                 initialTask.InstanceId, flowId, actor, variableValues, taskId, cancellationToken);
             if (detail is null) return null;
             return new UserTaskActionAckDto(taskId, detail.Id, UserTaskRecordStatuses.Completed, detail.Status,
-                flowId, detail.CurrentNodeId, detail.CurrentNodeName, detail.CurrentNodeExternalId, null, detail.UpdatedAt);
+                flowId, detail.CurrentNodeId, detail.CurrentNodeName, detail.CurrentNodeExternalId, null, detail.UpdatedAt,
+                detail.Fault);
         }
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
@@ -1608,7 +1611,8 @@ public sealed class WorkflowEngineService(
         var closedProgress = await BuildProgressAsync(execution.Id, cancellationToken);
         return new UserTaskActionAckDto(task.Id, instance.Id, UserTaskRecordStatuses.Completed,
             lockedInstance.Status, flow.Id, resting.Id, resting.Name, resting.ExternalId,
-            closedProgress, lockedInstance.UpdatedAt);
+            closedProgress, lockedInstance.UpdatedAt,
+            ToFault(lockedInstance.Status, lockedInstance.FaultCode, lockedInstance.FaultDescription, resting.Name));
     }
 
     private async Task<WorkflowInstanceRecord> CloseAndAdvanceMultiInstanceAsync(
@@ -1680,6 +1684,10 @@ public sealed class WorkflowEngineService(
             CurrentStepId = nextNode.Id,
             Status = nextStatus,
             ClaimedBy = null,
+            FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
+            FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                ? nextNode.ErrorDescription ?? nextNode.Name
+                : null,
             UpdatedAt = DateTimeOffset.UtcNow
         };
         var nextContext = WithContext(context, actor, lockedInstance, workflow.Definition, nextNode);
@@ -1858,6 +1866,10 @@ public sealed class WorkflowEngineService(
             CurrentStepId = nextNode.Id,
             Status = nextStatus,
             ClaimedBy = null,
+            FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
+            FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                ? nextNode.ErrorDescription ?? nextNode.Name
+                : null,
             UpdatedAt = DateTimeOffset.UtcNow
         };
 
@@ -2045,6 +2057,10 @@ public sealed class WorkflowEngineService(
             CurrentStepId = nextNode.Id,
             Status = nextStatus,
             ClaimedBy = null,
+            FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
+            FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                ? nextNode.ErrorDescription ?? nextNode.Name
+                : null,
             UpdatedAt = DateTimeOffset.UtcNow
         };
 
@@ -2152,7 +2168,8 @@ public sealed class WorkflowEngineService(
             node.Name,
             node.ExternalId,
             instance.Status,
-            instance.UpdatedAt);
+            instance.UpdatedAt,
+            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
     }
 
     // Message-start mappings are typed start-variable declarations. A missing path
@@ -2588,6 +2605,10 @@ public sealed class WorkflowEngineService(
                 CurrentStepId = nextNode.Id,
                 Status = nextStatus,
                 ClaimedBy = null,
+                FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
+                FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                    ? nextNode.ErrorDescription ?? nextNode.Name
+                    : null,
                 UpdatedAt = DateTimeOffset.UtcNow
             };
 
@@ -3843,7 +3864,8 @@ public sealed class WorkflowEngineService(
                 h.Note,
                 h.PerformedAt)).ToList(),
             multiProgress,
-            userTasks);
+            userTasks,
+            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
     }
 
     private async Task<WorkflowDefinitionRecord> GetPublishedWorkflowAsync(
@@ -3981,7 +4003,8 @@ public sealed class WorkflowEngineService(
             row.CreatedAt,
             row.UpdatedAt,
             row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks),
-            row.Variables);
+            row.Variables,
+            ToFault(row.Status, row.FaultCode, row.FaultDescription, row.CurrentNodeName));
 
     private async Task<UserTaskDto> BuildUserTaskDtoAsync(
         UserTaskRecord task,
@@ -4370,8 +4393,19 @@ public sealed class WorkflowEngineService(
             node.Roles,
             node.RequiresClaim,
             assignee,
-            node.MultiInstance is not null);
+            node.MultiInstance is not null,
+            BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorCode : null,
+            BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorDescription ?? node.Name : null);
     }
+
+    private static FaultInfoDto? ToFault(
+        string status,
+        string? code,
+        string? description,
+        string nodeName) =>
+        status == WorkflowInstanceStatuses.Faulted
+            ? new FaultInfoDto(code, string.IsNullOrWhiteSpace(description) ? nodeName : description)
+            : null;
 
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)

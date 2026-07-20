@@ -334,6 +334,17 @@ public static class WorkflowModelMigrator
             node.MultiInstance = null;
         }
 
+        if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
+        {
+            node.ErrorCode = TrimToNull(node.ErrorCode);
+            node.ErrorDescription = TrimToNull(node.ErrorDescription);
+        }
+        else
+        {
+            node.ErrorCode = null;
+            node.ErrorDescription = null;
+        }
+
         if (BpmnFlowNodeTypes.IsEnd(node.Type))
         {
             node.RequiresClaim = false;
@@ -545,6 +556,9 @@ public static class WorkflowModelMigrator
                 : node.ErrorVariable.Trim();
         }
     }
+
+    private static string? TrimToNull(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>
     /// Converts the historical message-start shape (node variables plus raw output

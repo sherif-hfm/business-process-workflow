@@ -654,7 +654,13 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
                 },
                 new FlowNodeModel { Id = 3, Name = "Route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
                 new FlowNodeModel { Id = 4, Name = "Correct", Type = BpmnFlowNodeTypes.EndEvent },
-                new FlowNodeModel { Id = 5, Name = "Incorrect", Type = BpmnFlowNodeTypes.ErrorEndEvent }
+                new FlowNodeModel
+                {
+                    Id = 5,
+                    Name = "Incorrect",
+                    Type = BpmnFlowNodeTypes.ErrorEndEvent,
+                    ErrorCode = "SCRIPT_RESULT_INCORRECT"
+                }
             ],
             SequenceFlows =
             [

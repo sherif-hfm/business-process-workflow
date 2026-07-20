@@ -376,6 +376,7 @@ public sealed class EditorValidatorTests
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
         var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
         terminal.Type = terminalType;
+        terminal.ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "INVALID_TERMINAL_FLOW" : null;
         model.SequenceFlows.Add(new SequenceFlowModel
         {
             Id = model.SequenceFlows.Max(flow => flow.Id) + 1,
@@ -386,6 +387,59 @@ public sealed class EditorValidatorTests
 
         Assert.Contains(Validate(model), error =>
             error.Contains($"End event #{terminal.Id} cannot have outgoing sequence flows", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
+    public void Validator_RejectsTerminalEventsWithoutIncomingFlows(string terminalType)
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
+        terminal.Type = terminalType;
+        terminal.ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "ORPHAN_FAULT" : null;
+        var replacement = new FlowNodeModel { Id = 999, Name = "Reachable end", Type = BpmnFlowNodeTypes.EndEvent };
+        model.FlowNodes.Add(replacement);
+        foreach (var flow in model.SequenceFlows.Where(flow => flow.TargetRef == terminal.Id)) flow.TargetRef = replacement.Id;
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains($"End event #{terminal.Id} must have at least one incoming", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_ValidatesErrorEndCodeAndDescription()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
+        terminal.Type = BpmnFlowNodeTypes.ErrorEndEvent;
+        terminal.ErrorCode = "BAD CODE";
+        terminal.ErrorDescription = new string('x', ErrorEndConstraints.MaxDescriptionLength + 1);
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error => error.Contains("errorCode", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("errorDescription", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("default")]
+    [InlineData("condition")]
+    [InlineData("roles")]
+    [InlineData("completion")]
+    [InlineData("cancel")]
+    public void Validator_RejectsIgnoredErrorBoundaryFlowMetadata(string metadata)
+    {
+        var model = CreateBoundaryModel();
+        var flow = model.SequenceFlows.Single(candidate => candidate.SourceRef == 3);
+        if (metadata == "default") flow.IsDefault = true;
+        if (metadata == "condition") flow.Condition = "false";
+        if (metadata == "roles") flow.Roles = ["Operator"];
+        if (metadata == "completion") flow.CompletionCondition = "true";
+        if (metadata == "cancel") flow.CancelRemainingInstances = true;
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains("Error boundary event #3", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("unconditional", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -415,6 +469,8 @@ public sealed class EditorValidatorTests
             script = "execution.setVariable('result', 1);",
             attachedToRef = 2,
             errorVariable = "failure",
+            errorCode = "TERMINAL_FAULT",
+            errorDescription = "Terminal description.",
             message = new { clientSecret = "secret-terminal" },
             businessKey = new { variable = "caseId", uniqueness = "all" },
             idempotency = new { headerName = "Idempotency-Key", variable = "requestId" }
@@ -434,6 +490,7 @@ public sealed class EditorValidatorTests
             function isMessageStartEventType(type) { return type === NODE_TYPE.MESSAGE_START_EVENT; }
             function isUserTaskType(type) { return type === NODE_TYPE.USER_TASK; }
             function isEndEventType(type) { return type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT; }
+            function isErrorEndEventType(type) { return type === NODE_TYPE.ERROR_END_EVENT; }
             function isAutomaticType(type) { return type === NODE_TYPE.TASK; }
             function isGatewayType(type) { return type === NODE_TYPE.EXCLUSIVE_GATEWAY; }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
@@ -464,6 +521,16 @@ public sealed class EditorValidatorTests
             Assert.False(root.TryGetProperty(property, out _), $"Terminal node retained '{property}'.");
         }
         Assert.DoesNotContain("secret-terminal", root.GetRawText(), StringComparison.Ordinal);
+        if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            Assert.Equal("TERMINAL_FAULT", root.GetProperty("errorCode").GetString());
+            Assert.Equal("Terminal description.", root.GetProperty("errorDescription").GetString());
+        }
+        else
+        {
+            Assert.False(root.TryGetProperty("errorCode", out _));
+            Assert.False(root.TryGetProperty("errorDescription", out _));
+        }
     }
 
     [Fact]
@@ -499,7 +566,13 @@ public sealed class EditorValidatorTests
         Assert.True(engine.Evaluate(
             "appendNodeIcon(group, 'endEvent', 0, 0, 12) === null && created === 0 && appended === 0").AsBoolean());
         Assert.True(engine.Evaluate(
-            "const icon = appendNodeIcon(group, 'errorEndEvent', 0, 0, 12); icon.attrs.href === '#icon-error' && created === 1 && appended === 1").AsBoolean());
+            "const icon = appendNodeIcon(group, 'errorEndEvent', 0, 0, 12); icon.attrs.href === '#icon-error-throw' && created === 1 && appended === 1").AsBoolean());
+        Assert.True(engine.Evaluate(
+            "const boundaryIcon = appendNodeIcon(group, 'errorBoundaryEvent', 0, 0, 12); boundaryIcon.attrs.href === '#icon-error-catch' && created === 2 && appended === 2").AsBoolean());
+        Assert.Contains("id=\"icon-error-throw\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"icon-error-catch\"", html, StringComparison.Ordinal);
+        Assert.Matches("icon-error-throw[^>]*>[\\s\\S]*?fill=\"currentColor\"", html);
+        Assert.Matches("icon-error-catch[^>]*>[\\s\\S]*?fill=\"none\"", html);
 
         Assert.Contains(
             "isEndEventType(v) && outgoingFlows(node.id).length > 0",
@@ -948,6 +1021,43 @@ public sealed class EditorValidatorTests
                 ConditionPriority = 1
             },
             new SequenceFlowModel { Id = 302, SourceRef = 3, TargetRef = 5, IsDefault = true }
+        ]
+    };
+
+    private static WorkflowModel CreateBoundaryModel() => new()
+    {
+        Id = "editor-boundary",
+        Name = "Editor boundary",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Call service",
+                Type = BpmnFlowNodeTypes.ServiceTask,
+                Service = new ServiceTaskModel
+                {
+                    Url = "https://tests.local/service",
+                    Method = "POST",
+                    TimeoutSeconds = 10
+                }
+            },
+            new FlowNodeModel
+            {
+                Id = 3,
+                Name = "Service error",
+                Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                AttachedToRef = 2
+            },
+            new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 4 },
+            new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
         ]
     };
 

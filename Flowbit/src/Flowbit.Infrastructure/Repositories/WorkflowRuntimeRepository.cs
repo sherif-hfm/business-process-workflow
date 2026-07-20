@@ -794,7 +794,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 e.CreatedAt,
                 e.UpdatedAt,
                 taskSummary,
-                variables);
+                variables,
+                null,
+                token.FaultCode,
+                token.FaultDescription);
         }).ToList();
     }
 
@@ -1804,6 +1807,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.NodeName = node.Name;
         token.NodeExternalId = node.ExternalId;
         token.NodeType = node.Type;
+        token.FaultCode = node.FaultCode;
+        token.FaultDescription = node.FaultDescription;
         token.Status = ToTokenStatus(status);
         token.UpdatedAt = now;
         entity.Status = status;
@@ -2178,7 +2183,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             task?.ClaimedBy,
             entity.StartedBy,
             entity.CreatedAt,
-            entity.UpdatedAt);
+            entity.UpdatedAt,
+            token.FaultCode,
+            token.FaultDescription);
 
     private static MultiInstanceExecutionRecord ToRecord(MultiInstanceExecutionEntity entity) =>
         new(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.Mode, entity.Source,
@@ -2206,6 +2213,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeName = node.Name,
             NodeExternalId = node.ExternalId,
             NodeType = node.Type,
+            FaultCode = node.FaultCode,
+            FaultDescription = node.FaultDescription,
             Status = ExecutionTokenStatuses.Active,
             CreatedAt = now,
             UpdatedAt = now

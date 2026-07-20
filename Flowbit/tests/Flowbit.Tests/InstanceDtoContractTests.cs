@@ -32,5 +32,11 @@ public sealed class InstanceDtoContractTests
         Assert.Contains(typeof(InstanceSummaryDto).GetProperties(), property => property.Name == "BusinessKey");
         Assert.Contains(typeof(InstanceDetailDto).GetProperties(), property => property.Name == "BusinessKey");
         Assert.Contains(typeof(InboxItemDto).GetProperties(), property => property.Name == "BusinessKey");
+        Assert.Contains(typeof(StartInstanceResultDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(typeof(InstanceSummaryDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(typeof(InstanceDetailDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(typeof(UserTaskActionAckDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(typeof(MessageDeliveryAckDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(typeof(MessageStartAckDto).GetProperties(), property => property.Name == "Fault");
     }
 }

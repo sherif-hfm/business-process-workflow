@@ -74,7 +74,17 @@
                         <tr>
                             <td><span class="mono-id">#@instance.Id</span><span class="data-subtitle">@(instance.BusinessKey ?? "No business key")</span></td>
                             <td><a class="data-title" href="@($"instances/{instance.Id}")">@instance.WorkflowName</a><span class="data-subtitle">Version @instance.WorkflowVersion</span></td>
-                            <td>@instance.CurrentNodeName@if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId)) { <span class="data-subtitle">@instance.CurrentNodeExternalId</span> }</td>
+                            <td>
+                                @instance.CurrentNodeName
+                                @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
+                                {
+                                    <span class="data-subtitle">@instance.CurrentNodeExternalId</span>
+                                }
+                                @if (instance.Fault is not null)
+                                {
+                                    <span class="data-subtitle"><strong>@(instance.Fault.Code ?? "Unspecified fault")</strong> Â· @instance.Fault.Description</span>
+                                }
+                            </td>
                             <td><StatusBadge Status="@instance.Status" /></td>
                             <td>@FormatTaskState(instance.UserTasks)</td>
                             <td><span title="@instance.UpdatedAt.ToString("O")">@instance.UpdatedAt.ToLocalTime().ToString("g")</span></td>

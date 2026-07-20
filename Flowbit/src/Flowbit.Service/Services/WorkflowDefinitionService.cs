@@ -245,12 +245,22 @@ public sealed class WorkflowDefinitionService(
                     $"Flow isSelectable=false is supported only on multi-instance user task #{node.Id}.");
             }
 
-            // errorEndEvent is covered by IsEnd (no outgoing). errorBoundaryEvent
+            // errorEndEvent is covered by IsEnd (incoming and no outgoing). errorBoundaryEvent
             // has exactly one outgoing (the error path) and no incoming flows
             // (it is attached, not reached via a normal sequence flow).
+            if (BpmnFlowNodeTypes.IsEnd(node.Type) && incoming.Count == 0)
+            {
+                throw new WorkflowDomainException($"End event #{node.Id} must have at least one incoming sequence flow.");
+            }
+
             if (BpmnFlowNodeTypes.IsEnd(node.Type) && outgoing.Count > 0)
             {
                 throw new WorkflowDomainException($"End event #{node.Id} cannot have outgoing sequence flows.");
+            }
+
+            if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
+            {
+                ValidateErrorEnd(node);
             }
 
             if ((BpmnFlowNodeTypes.IsStart(node.Type)
@@ -280,7 +290,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
             {
-                ValidateErrorBoundary(node, definition, incoming);
+                ValidateErrorBoundary(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -736,22 +746,24 @@ public sealed class WorkflowDefinitionService(
             return;
         }
 
-        var flow = outgoing[0];
-        if (!flow.IsSelectable
-            || flow.IsDefault
-            || !string.IsNullOrWhiteSpace(flow.Condition)
-            || flow.Roles.Count > 0
-            || flow.Variables.Count > 0
-            || flow.CanActWithoutClaim
-            || flow.CanActWithoutClaimRoles.Count > 0
-            || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
-            || flow.CompletionPriority is not null
-            || flow.CancelRemainingInstances)
+        if (HasUnsupportedPassThroughMetadata(outgoing[0]))
         {
             throw new WorkflowDomainException(
                 $"Script task #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
     }
+
+    private static bool HasUnsupportedPassThroughMetadata(SequenceFlowModel flow) =>
+        !flow.IsSelectable
+        || flow.IsDefault
+        || !string.IsNullOrWhiteSpace(flow.Condition)
+        || flow.Roles.Count > 0
+        || flow.Variables.Count > 0
+        || flow.CanActWithoutClaim
+        || flow.CanActWithoutClaimRoles.Count > 0
+        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+        || flow.CompletionPriority is not null
+        || flow.CancelRemainingInstances;
 
     private static void ValidateTaskDistribution(WorkflowModel definition)
     {
@@ -1018,7 +1030,11 @@ public sealed class WorkflowDefinitionService(
     // (attachedToRef), has no incoming sequence flows (it is reached by the
     // engine's error routing, not a normal flow), and at most one boundary may
     // be attached to a given host.
-    private static void ValidateErrorBoundary(FlowNodeModel node, WorkflowModel definition, List<SequenceFlowModel> incoming)
+    private static void ValidateErrorBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        List<SequenceFlowModel> incoming,
+        List<SequenceFlowModel> outgoing)
     {
         if (node.AttachedToRef is null)
         {
@@ -1042,6 +1058,12 @@ public sealed class WorkflowDefinitionService(
         {
             throw new WorkflowDomainException(
                 $"Error boundary event #{node.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
 
         var siblings = definition.FlowNodes.Count(n =>
@@ -1259,6 +1281,33 @@ public sealed class WorkflowDefinitionService(
                         $"Sequence flow #{flow.Id} completionCondition references a non-selectable outcome flow.");
                 }
             }
+        }
+    }
+
+    private static void ValidateErrorEnd(FlowNodeModel node)
+    {
+        if (string.IsNullOrWhiteSpace(node.ErrorCode))
+        {
+            throw new WorkflowDomainException($"Error end event #{node.Id} must have an errorCode.");
+        }
+
+        if (node.ErrorCode.EnumerateRunes().Count() > ErrorEndConstraints.MaxCodeLength)
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorCode must contain at most {ErrorEndConstraints.MaxCodeLength} characters.");
+        }
+
+        if (!Regex.IsMatch(node.ErrorCode, ErrorEndConstraints.CodePattern, RegexOptions.CultureInvariant))
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorCode must start with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'.");
+        }
+
+        if (node.ErrorDescription is not null
+            && node.ErrorDescription.EnumerateRunes().Count() > ErrorEndConstraints.MaxDescriptionLength)
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorDescription must contain at most {ErrorEndConstraints.MaxDescriptionLength} characters.");
         }
     }
 
@@ -1482,16 +1531,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         var flow = outgoing.Single();
-        if (!flow.IsSelectable
-            || flow.IsDefault
-            || flow.CanActWithoutClaim
-            || flow.CanActWithoutClaimRoles.Count > 0
-            || flow.CancelRemainingInstances
-            || flow.Roles.Count > 0
-            || flow.Variables.Count > 0
-            || !string.IsNullOrWhiteSpace(flow.Condition)
-            || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
-            || flow.CompletionPriority is not null)
+        if (HasUnsupportedPassThroughMetadata(flow))
         {
             throw new WorkflowDomainException(
                 $"The outgoing sequence flow from {kind.ToLowerInvariant()} #{entry.Id} must be unconditional and cannot define action or multi-instance metadata.");

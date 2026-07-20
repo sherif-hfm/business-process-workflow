@@ -368,6 +368,28 @@ public sealed class FlowNodeModel
     [JsonPropertyName("errorVariable")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorVariable { get; set; }
+
+    /// <summary>
+    /// Stable, business-facing fault code thrown by an errorEndEvent.
+    /// </summary>
+    [JsonPropertyName("errorCode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorCode { get; set; }
+
+    /// <summary>
+    /// Optional public description for the fault thrown by an errorEndEvent.
+    /// The node name is used at runtime when this value is omitted.
+    /// </summary>
+    [JsonPropertyName("errorDescription")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorDescription { get; set; }
+}
+
+public static class ErrorEndConstraints
+{
+    public const int MaxCodeLength = 300;
+    public const int MaxDescriptionLength = 1000;
+    public const string CodePattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
 }
 
 public static class ScriptFormats

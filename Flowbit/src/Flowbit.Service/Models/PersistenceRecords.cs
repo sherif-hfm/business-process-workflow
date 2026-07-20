@@ -27,7 +27,9 @@ public sealed record WorkflowInstanceRecord(
     string? ClaimedBy,
     string? StartedBy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? FaultCode = null,
+    string? FaultDescription = null);
 
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
@@ -38,7 +40,9 @@ public sealed record CurrentNodeSnapshot(
     IReadOnlyList<string> Roles,
     bool RequiresClaim,
     string? Assignee,
-    bool IsMultiInstance = false);
+    bool IsMultiInstance = false,
+    string? FaultCode = null,
+    string? FaultDescription = null);
 
 public sealed record MultiInstanceExecutionRecord(
     long Id,
@@ -155,7 +159,9 @@ public sealed record InstanceListItem(
     DateTimeOffset UpdatedAt,
     UserTaskWorkSummaryRecord? UserTasks,
     IReadOnlyDictionary<string, JsonElement>? Variables,
-    MultiInstanceProgressRecord? MultiInstanceProgress = null);
+    MultiInstanceProgressRecord? MultiInstanceProgress = null,
+    string? FaultCode = null,
+    string? FaultDescription = null);
 
 public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
 

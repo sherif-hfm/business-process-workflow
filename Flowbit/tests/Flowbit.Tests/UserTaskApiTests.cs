@@ -967,7 +967,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
         bool loop = false)
     {
         var suffix = Guid.NewGuid().ToString("N");
-        return new WorkflowModel
+        var model = new WorkflowModel
         {
             Id = $"user-task-{label}-{suffix}",
             Name = $"User task {label} {suffix}",
@@ -1012,5 +1012,17 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
                 }
             ]
         };
+        if (loop)
+        {
+            model.SequenceFlows.Add(new SequenceFlowModel
+            {
+                Id = 202,
+                Name = "Finish",
+                SourceRef = 2,
+                TargetRef = 3
+            });
+        }
+
+        return model;
     }
 }

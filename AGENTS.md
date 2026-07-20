@@ -339,11 +339,18 @@ Storage follows the hybrid design:
   failing the transition, with an optional `errorVariable` capturing the failure
   reason. With no boundary attached, a failure throws a
   `WorkflowDomainException` (rollback + 400) - the historical no-boundary
-  default. A boundary is pass-through (it auto-advances its error flow, history
-  note `error` then `boundary`) and may have no incoming flows; at most one
-  boundary per host. An `errorEndEvent` is a terminal event (no outgoing flows)
-  that ends the instance with the `Faulted` status; it is typically reached via
-  a boundary's error path, directly or through a handler task. The legacy
+  default. A boundary is pass-through (it auto-advances its one unconditional
+  error flow, history note `error` then `boundary`) and may have no incoming
+  flows; at most one boundary per host. An `errorEndEvent` must have at least
+  one incoming flow and no outgoing flows. Newly authored definitions give it a
+  required stable `errorCode` (case-sensitive, up to 300 characters, matching
+  `[A-Za-z0-9][A-Za-z0-9._-]*`) and an optional `errorDescription` (up to 1000
+  characters, falling back to the node name). Entering it ends the instance with
+  `Faulted`; the code and resolved description are snapshotted on the execution
+  token and exposed as `fault` by instance and transition DTOs. Legacy faulted
+  tokens keep a nullable code and use the terminal node name as their description.
+  It is typically reached via a boundary's error path, directly or through a
+  handler task. The legacy
   `serviceTask.onError` (fail|continue) field has been removed in favor of
   boundary events (old definitions load tolerantly; the dropped `onError` value
   is ignored, and behavior is the no-boundary default = fail).
@@ -857,20 +864,23 @@ Node kinds and their outgoing-flow rules:
   `isDefault` fallback. The engine evaluates lower priorities first. This is a
   merge-then-split XOR; a pure one-outgoing merge is intentionally unsupported.
   No user interaction.
-- **`endEvent`**: terminal; thick-ring circle. No outgoing flows.
-- **`errorEndEvent`**: terminal; thick-ring circle with an error glyph. No
-  outgoing flows. Entering it ends the instance with the `Faulted` status
-  (vs `Completed` for a plain `endEvent`). Typically reached via an
-  `errorBoundaryEvent`'s error path, directly or through a handler task.
+- **`endEvent`**: terminal; thick-ring circle. Requires at least one incoming
+  flow and has no outgoing flows.
+- **`errorEndEvent`**: terminal throwing event; thick-ring circle with a filled
+  error glyph. Requires at least one incoming flow and no outgoing flows. It has
+  a required stable `errorCode` and optional `errorDescription`; entering it
+  ends the instance with `Faulted` (vs `Completed` for a plain `endEvent`) and
+  snapshots the resolved fault metadata for API projections. Typically reached
+  via an `errorBoundaryEvent`'s error path, directly or through a handler task.
 - **`errorBoundaryEvent`**: an error catch attached to a `serviceTask` or
-  `scriptTask` (`attachedToRef`); a small double-ring circle drawn on the
-  host's border. When the host fails at runtime (HTTP non-2xx/timeout/network,
+  `scriptTask` (`attachedToRef`); a small double-ring circle with an outlined
+  catching error glyph drawn on the host's border. When the host fails at runtime (HTTP non-2xx/timeout/network,
   or a script/assignment/validation error) the token routes out the boundary's
   single outgoing **error** flow instead of failing the transition, with an
   optional `errorVariable` capturing the failure reason. With no boundary
   attached, a failure fails the transition (rollback + 400). A boundary is
-  pass-through (auto-advances its error flow) and may have no incoming flows;
-  at most one boundary per host.
+  pass-through (auto-advances its single unconditional error flow) and may have
+  no incoming flows; at most one boundary per host.
 - **`intermediateMessageCatchEvent`**: a resting node (like a `userTask`) that
   waits for an external system to deliver a message via
   `POST /api/instances/{id}/message`; a thin double-ring circle with an envelope
@@ -1218,8 +1228,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; permits multiple incoming paths and routes by ascending condition priority, else the required default flow. Requires at least two outgoing flows, so a pure merge is not modeled. |
-| `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. |
-| `type: "errorEndEvent"` | Error End Event | Terminal marker; thick-ring circle with error glyph. Ends the instance with `Faulted` status. Simplified: no error code (catch-all); no subprocess, so an error end event is reached via a boundary's error path rather than by throwing out of a subprocess. |
+| `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
+| `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |

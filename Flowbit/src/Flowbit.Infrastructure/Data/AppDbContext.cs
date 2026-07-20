@@ -91,6 +91,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.FaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
+            entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");

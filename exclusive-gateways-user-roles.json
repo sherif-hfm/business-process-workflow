@@ -100,6 +100,8 @@
       "name": "Error",
       "externalId": null,
       "type": "errorEndEvent",
+      "errorCode": "ROLE_ROUTE_NOT_FOUND",
+      "errorDescription": "No authorized gateway route matched.",
       "laneId": null,
       "x": 1111,
       "y": 346,

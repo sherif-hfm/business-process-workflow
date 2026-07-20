@@ -121,6 +121,7 @@ public sealed class DefinitionValidationTests
         var model = LoadModel("votes-users-list.json");
         var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
         terminal.Type = terminalType;
+        terminal.ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "INVALID_TERMINAL_FLOW" : null;
         model.SequenceFlows.Add(new SequenceFlowModel
         {
             Id = model.SequenceFlows.Max(flow => flow.Id) + 1,
@@ -133,6 +134,75 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains($"End event #{terminal.Id} cannot have outgoing sequence flows", error.Message);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
+    public async Task CreateAsync_RejectsTerminalEventsWithoutIncomingFlows(string terminalType)
+    {
+        var model = CreateTerminalModel(terminalType);
+        model.FlowNodes.Add(new FlowNodeModel { Id = 4, Name = "Reachable end", Type = BpmnFlowNodeTypes.EndEvent });
+        model.SequenceFlows.Single(flow => flow.Id == 201).TargetRef = 4;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("must have at least one incoming", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
+    public async Task CreateAsync_AcceptsMultipleIncomingFlowsToTerminalEvents(string terminalType)
+    {
+        var model = CreateTerminalModel(terminalType);
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 202, Name = "Also finish", SourceRef = 2, TargetRef = 3 });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("characters")]
+    [InlineData("codeLength")]
+    [InlineData("descriptionLength")]
+    public async Task CreateAsync_RejectsInvalidErrorEndFaultMetadata(string invalid)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.ErrorEndEvent);
+        var terminal = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsErrorEnd(node.Type));
+        if (invalid == "missing") terminal.ErrorCode = "   ";
+        if (invalid == "characters") terminal.ErrorCode = "BAD CODE";
+        if (invalid == "codeLength") terminal.ErrorCode = new string('A', ErrorEndConstraints.MaxCodeLength + 1);
+        if (invalid == "descriptionLength") terminal.ErrorDescription = new string('x', ErrorEndConstraints.MaxDescriptionLength + 1);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(invalid == "descriptionLength" ? "errorDescription" : "errorCode", error.Message);
+    }
+
+    [Fact]
+    public async Task CreateAsync_TrimsErrorEndMetadataAndAllowsSharedCodes()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.ErrorEndEvent);
+        var first = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsErrorEnd(node.Type));
+        first.ErrorCode = "  SHARED.FAULT_1  ";
+        first.ErrorDescription = "  A public description.  ";
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Alternate fault",
+            Type = BpmnFlowNodeTypes.ErrorEndEvent,
+            ErrorCode = "SHARED.FAULT_1"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 202, Name = "Alternate", SourceRef = 2, TargetRef = 4 });
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 3);
+        Assert.Equal("SHARED.FAULT_1", saved.ErrorCode);
+        Assert.Equal("A public description.", saved.ErrorDescription);
     }
 
     [Theory]
@@ -172,6 +242,8 @@ public sealed class DefinitionValidationTests
         terminal.ErrorVariable = "terminalError";
         terminal.BusinessKey = new BusinessKeyModel { Variable = "terminalKey", Uniqueness = BusinessKeyUniqueness.Active };
         terminal.Idempotency = new IdempotencyModel { HeaderName = "X-Terminal-Key", Variable = "terminalRequest" };
+        terminal.ErrorCode = "  TERMINAL_FAULT  ";
+        terminal.ErrorDescription = "  Terminal description.  ";
 
         WorkflowModelMigrator.Normalize(model);
 
@@ -191,6 +263,16 @@ public sealed class DefinitionValidationTests
         Assert.Null(terminal.ErrorVariable);
         Assert.Null(terminal.BusinessKey);
         Assert.Null(terminal.Idempotency);
+        if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            Assert.Equal("TERMINAL_FAULT", terminal.ErrorCode);
+            Assert.Equal("Terminal description.", terminal.ErrorDescription);
+        }
+        else
+        {
+            Assert.Null(terminal.ErrorCode);
+            Assert.Null(terminal.ErrorDescription);
+        }
         var json = JsonSerializer.Serialize(model);
         Assert.DoesNotContain("secret-terminal", json, StringComparison.Ordinal);
     }
@@ -981,6 +1063,41 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains("collides with a host service output target", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("selectable")]
+    [InlineData("default")]
+    [InlineData("condition")]
+    [InlineData("roles")]
+    [InlineData("variables")]
+    [InlineData("bypass")]
+    [InlineData("completion")]
+    [InlineData("cancel")]
+    public async Task CreateAsync_RejectsIgnoredErrorBoundaryFlowMetadata(string metadata)
+    {
+        var model = CreateOutputMappingModel();
+        var flow = AddErrorBoundary(model);
+        if (metadata == "selectable") flow.IsSelectable = false;
+        if (metadata == "default") flow.IsDefault = true;
+        if (metadata == "condition") flow.Condition = "false";
+        if (metadata == "roles") flow.Roles = ["Operator"];
+        if (metadata == "variables") flow.Variables = [new VariableModel { Id = 91, Name = "reason" }];
+        if (metadata == "bypass") flow.CanActWithoutClaim = true;
+        if (metadata == "completion") flow.CompletionCondition = "true";
+        if (metadata == "cancel") flow.CancelRemainingInstances = true;
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsUnconditionalErrorBoundaryFlow()
+    {
+        var model = CreateOutputMappingModel();
+        AddErrorBoundary(model);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
     }
 
     [Theory]
@@ -1793,6 +1910,52 @@ public sealed class DefinitionValidationTests
         [
             new SequenceFlowModel { Id = 101, Name = "To script", SourceRef = 1, TargetRef = 2 },
             new SequenceFlowModel { Id = 201, Name = "Done", SourceRef = 2, TargetRef = 3 }
+        ]
+    };
+
+    private static SequenceFlowModel AddErrorBoundary(WorkflowModel model)
+    {
+        var host = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        var target = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 50,
+            Name = "Service error",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = host.Id
+        });
+        var flow = new SequenceFlowModel
+        {
+            Id = 501,
+            Name = "Handle error",
+            SourceRef = 50,
+            TargetRef = target.Id
+        };
+        model.SequenceFlows.Add(flow);
+        return flow;
+    }
+
+    private static WorkflowModel CreateTerminalModel(string terminalType) => new()
+    {
+        Id = "terminal-validation",
+        Name = "Terminal validation",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 2, Name = "Review", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel
+            {
+                Id = 3,
+                Name = "Terminal",
+                Type = terminalType,
+                ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "TERMINAL_FAULT" : null
+            }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, Name = "Finish", SourceRef = 2, TargetRef = 3 }
         ]
     };
 

@@ -531,7 +531,13 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                     ]
                 },
                 new FlowNodeModel { Id = 4, Name = "Approved", Type = BpmnFlowNodeTypes.EndEvent },
-                new FlowNodeModel { Id = 5, Name = "No outcome", Type = BpmnFlowNodeTypes.ErrorEndEvent }
+                new FlowNodeModel
+                {
+                    Id = 5,
+                    Name = "No outcome",
+                    Type = BpmnFlowNodeTypes.ErrorEndEvent,
+                    ErrorCode = "NO_OUTCOME"
+                }
             ],
             SequenceFlows =
             [

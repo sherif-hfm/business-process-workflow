@@ -948,7 +948,18 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
 
         using var first = await StartWithBusinessKeyAsync(workflow, "TERMINAL-1");
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
-        Assert.Equal(expectedStatus, (await ReadAsync<StartInstanceResultDto>(first)).Status);
+        var firstAck = await ReadAsync<StartInstanceResultDto>(first);
+        Assert.Equal(expectedStatus, firstAck.Status);
+        if (endType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            var fault = Assert.IsType<FaultInfoDto>(firstAck.Fault);
+            Assert.Equal("IMMEDIATE_FAULT", fault.Code);
+            Assert.Equal("The workflow faulted immediately.", fault.Description);
+        }
+        else
+        {
+            Assert.Null(firstAck.Fault);
+        }
 
         using var reused = await StartWithBusinessKeyAsync(workflow, "TERMINAL-1");
         Assert.Equal(HttpStatusCode.Created, reused.StatusCode);
@@ -1424,6 +1435,9 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         var ack = await ReadAsync<UserTaskActionAckDto>(completed);
         Assert.Equal("faulted", ack.InstanceStatus);
         Assert.Equal(6, ack.CurrentNodeId);
+        var ackFault = Assert.IsType<FaultInfoDto>(ack.Fault);
+        Assert.Equal("NO_APPROVAL_OUTCOME", ackFault.Code);
+        Assert.Equal("No approval outcome matched.", ackFault.Description);
         Assert.Equal(UserTaskStatuses.Completed, ack.TaskStatus);
         Assert.NotNull(ack.MultiInstance);
         Assert.Equal(MultiInstanceExecutionStatuses.Completed, ack.MultiInstance.Status);
@@ -1434,6 +1448,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         var detail = await GetInstanceAsync(scenario.Id);
         Assert.Equal("faulted", detail.Status);
         Assert.Equal(6, detail.CurrentNodeId);
+        Assert.Equal("NO_APPROVAL_OUTCOME", Assert.IsType<FaultInfoDto>(detail.Fault).Code);
         Assert.Null(detail.UserTasks);
         Assert.Single(detail.History, entry =>
             entry.Note == "multiInstanceComplete" && entry.SequenceFlowId == 207);
@@ -1443,6 +1458,8 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == scenario.Id);
         Assert.Equal(BpmnFlowNodeTypes.ErrorEndEvent, token.NodeType);
         Assert.Equal(ExecutionTokenStatuses.Faulted, token.Status);
+        Assert.Equal("NO_APPROVAL_OUTCOME", token.FaultCode);
+        Assert.Equal("No approval outcome matched.", token.FaultDescription);
         var execution = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == scenario.Id);
         Assert.Equal(MultiInstanceExecutionStatuses.Completed, execution.Status);
         Assert.Equal(207, execution.WinningFlowId);
@@ -1451,6 +1468,69 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         Assert.False(await db.UserTasks.AnyAsync(row =>
             row.InstanceId == scenario.Id
             && (row.Status == UserTaskStatuses.Active || row.Status == UserTaskStatuses.Pending)));
+    }
+
+    [Fact]
+    public async Task CardinalityEarlyOutcome_EnteringErrorEndEventFaultsAndCancelsUnfinishedItems()
+    {
+        var model = LoadUniqueModel("votes-cardinality-approve-reject.json", "error-end-early-outcome");
+        var multiInstance = model.FlowNodes.Single(node => node.Id == 2).MultiInstance!;
+        multiInstance.CompletionEvaluation = MultiInstanceCompletionEvaluations.AfterEach;
+        var faultOutcome = model.SequenceFlows.Single(flow => flow.Id == 201);
+        faultOutcome.TargetRef = 6;
+        faultOutcome.CompletionCondition = "CountFlow(201) >= 1";
+        model.FlowNodes.RemoveAll(node => node.Id == 3);
+
+        var workflowId = await CreateWorkflowAsync(model);
+        var scenario = await StartAndEnterAsync(
+            workflowId,
+            new Dictionary<string, JsonElement>
+            {
+                ["voters"] = JsonSerializer.SerializeToElement(3)
+            });
+        var activeTasks = (await ListTasksAsync(scenario.Id, "solo", "User")).Items;
+        Assert.Equal(3, activeTasks.Count);
+        var task = activeTasks.OrderBy(item => item.ItemIndex).First();
+
+        using var completed = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{task.Id}/flows/201",
+            new TakeFlowRequest(null),
+            "solo",
+            "User");
+        Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+        var ack = await ReadAsync<UserTaskActionAckDto>(completed);
+        Assert.Equal("faulted", ack.InstanceStatus);
+        Assert.Equal(6, ack.CurrentNodeId);
+        Assert.Equal("NO_APPROVAL_OUTCOME", Assert.IsType<FaultInfoDto>(ack.Fault).Code);
+        Assert.Equal(MultiInstanceExecutionStatuses.Completed, ack.MultiInstance!.Status);
+        Assert.Equal(201, ack.MultiInstance.WinningFlowId);
+        Assert.Equal("condition", ack.MultiInstance.CompletionReason);
+        Assert.Equal(1, ack.MultiInstance.Completed);
+        Assert.Equal(2, ack.MultiInstance.Cancelled);
+
+        var detail = await GetInstanceAsync(scenario.Id);
+        Assert.Equal("faulted", detail.Status);
+        Assert.Equal("NO_APPROVAL_OUTCOME", Assert.IsType<FaultInfoDto>(detail.Fault).Code);
+        Assert.Null(detail.UserTasks);
+        Assert.Empty((await ListTasksAsync(scenario.Id, "solo", "User")).Items);
+
+        await using var db = fixture.CreateDbContext();
+        var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == scenario.Id);
+        Assert.Equal(ExecutionTokenStatuses.Faulted, token.Status);
+        Assert.Equal("NO_APPROVAL_OUTCOME", token.FaultCode);
+        var execution = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == scenario.Id);
+        Assert.Equal(1, execution.CompletedCount);
+        Assert.Equal(2, execution.CancelledCount);
+        Assert.Equal(201, execution.WinningFlowId);
+        Assert.Equal(1, await db.UserTasks.CountAsync(row =>
+            row.InstanceId == scenario.Id
+            && row.NodeId == 2
+            && row.Status == UserTaskStatuses.Completed));
+        Assert.Equal(2, await db.UserTasks.CountAsync(row =>
+            row.InstanceId == scenario.Id
+            && row.NodeId == 2
+            && row.Status == UserTaskStatuses.Cancelled));
     }
 
     [Fact]
@@ -2358,7 +2438,14 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             FlowNodes =
             [
                 start,
-                new FlowNodeModel { Id = 2, Name = "End", Type = endType }
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "End",
+                    Type = endType,
+                    ErrorCode = endType == BpmnFlowNodeTypes.ErrorEndEvent ? "IMMEDIATE_FAULT" : null,
+                    ErrorDescription = endType == BpmnFlowNodeTypes.ErrorEndEvent ? "The workflow faulted immediately." : null
+                }
             ],
             SequenceFlows =
             [

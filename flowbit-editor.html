@@ -574,7 +574,8 @@
         <symbol id="icon-end" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
         <symbol id="icon-gateway" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
         <symbol id="icon-message" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
-        <symbol id="icon-error" viewBox="0 0 24 24"><path d="M12 5v9M12 18v.1" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
+        <symbol id="icon-error-throw" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-error-catch" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-assignee" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.3 2.4-5 5.5-5 1.4 0 2.6.3 3.5 1M15 16l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       </defs>
       <rect id="gridSurface" x="-100000" y="-100000" width="200000" height="200000" fill="url(#gridPattern)"></rect>
@@ -1085,6 +1086,15 @@ function isPassThroughType(type) {
 }
 function applyTypeInvariants(node) {
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
+  if (isErrorEndEventType(node.type)) {
+    if (typeof node.errorCode !== "string") node.errorCode = "";
+    if (typeof node.errorDescription !== "string" || !node.errorDescription.trim()) {
+      node.errorDescription = null;
+    }
+  } else {
+    delete node.errorCode;
+    delete node.errorDescription;
+  }
   if (!isStartEventType(node.type) && !isMessageStartEventType(node.type)) {
     delete node.businessKey;
     delete node.idempotency;
@@ -1380,8 +1390,8 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.START_EVENT]: "icon-start",
   [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
   [NODE_TYPE.END_EVENT]: null,
-  [NODE_TYPE.ERROR_END_EVENT]: "icon-error",
-  [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error",
+  [NODE_TYPE.ERROR_END_EVENT]: "icon-error-throw",
+  [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error-catch",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
   [NODE_TYPE.USER_TASK]: "icon-user",
   [NODE_TYPE.TASK]: "icon-task",
@@ -2416,6 +2426,19 @@ function renderNodeInspector() {
     node.laneId = v ? +v : null;
     render();
   });
+
+  if (isErrorEndEventType(node.type)) {
+    field("Error code", "text", node.errorCode ?? "", v => {
+      node.errorCode = v;
+    });
+    textareaField("Error description (optional)", node.errorDescription ?? "", v => {
+      node.errorDescription = v.trim() ? v : null;
+    }, 4);
+    const faultHint = document.createElement("p");
+    faultHint.className = "empty-note";
+    faultHint.textContent = "The code is a stable business-facing identifier. The node name is used as the runtime description when this field is empty.";
+    inspector.appendChild(faultHint);
+  }
 
   if (isUserTaskType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
@@ -3735,6 +3758,17 @@ function field(label, type, value, onInput, disabled = false) {
   f.appendChild(input);
   inspector.appendChild(f);
 }
+function textareaField(label, value, onInput, rows = 3) {
+  const f = document.createElement("div");
+  f.className = "field";
+  f.innerHTML = `<label>${label}</label>`;
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.rows = rows;
+  input.oninput = () => onInput(input.value);
+  f.appendChild(input);
+  inspector.appendChild(f);
+}
 function selectField(label, options, value, onChange) {
   const f = document.createElement("div");
   f.className = "field";
@@ -4650,6 +4684,11 @@ function validateModelForSave(candidate) {
   const hasText = value => typeof value === "string" && value.trim().length > 0;
   const hasMappingDefault = value => value !== null && value !== undefined;
   const countItems = value => Array.isArray(value) ? value.length : 0;
+  const hasUnsupportedPassThroughMetadata = flow => flow.isSelectable === false || !!flow.isDefault ||
+    !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
+    !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
+    countItems(flow.variables) > 0 || hasText(flow.condition) ||
+    hasText(flow.completionCondition) || flow.completionPriority != null;
   const nodeLabel = node => "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
   const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
@@ -4927,11 +4966,7 @@ function validateModelForSave(candidate) {
       errors.push(label + " must have exactly one outgoing sequence flow.");
     } else {
       const flow = outgoing[0];
-      if (flow.isSelectable === false || !!flow.isDefault || !!flow.canActWithoutClaim ||
-          countItems(flow.canActWithoutClaimRoles) > 0 ||
-          !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
-          countItems(flow.variables) > 0 || hasText(flow.condition) ||
-          hasText(flow.completionCondition) || flow.completionPriority != null) {
+      if (hasUnsupportedPassThroughMetadata(flow)) {
         errors.push(label + " must have one unconditional outgoing sequence flow without " +
           "user-action or multi-instance metadata.");
       }
@@ -5167,10 +5202,26 @@ function validateModelForSave(candidate) {
   }
 
   for (const node of nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent")) {
-    if (!hasText(node.errorVariable)) continue;
     const label = "Error boundary event #" + String(node.id);
-    validateRuntimeOutputTarget(label + " errorVariable", node.errorVariable, "string");
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
+    if (!host || (host.type !== "serviceTask" && host.type !== "scriptTask")) {
+      errors.push(label + " attachedToRef must reference a service or script task.");
+    }
+    const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+    if (nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent" &&
+        candidate.attachedToRef === node.attachedToRef).length > 1) {
+      errors.push("Host node #" + String(node.attachedToRef) + " has more than one error boundary event.");
+    }
+    if (!hasText(node.errorVariable)) continue;
+    validateRuntimeOutputTarget(label + " errorVariable", node.errorVariable, "string");
     const hostService = host && host.type === "serviceTask" && host.service;
     if (hostService) {
       const errorName = node.errorVariable.trim().toLowerCase();
@@ -5225,11 +5276,7 @@ function validateModelForSave(candidate) {
       errors.push(label + " must have exactly one outgoing sequence flow.");
     } else {
       const flow = outgoing[0];
-      if (flow.isSelectable === false || !!flow.isDefault || !!flow.canActWithoutClaim ||
-          countItems(flow.canActWithoutClaimRoles) > 0 ||
-          !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
-          countItems(flow.variables) > 0 || hasText(flow.condition) ||
-          hasText(flow.completionCondition) || flow.completionPriority != null) {
+      if (hasUnsupportedPassThroughMetadata(flow)) {
         errors.push("The outgoing sequence flow from " + label.toLowerCase() +
           " must be unconditional and cannot define action or multi-instance metadata.");
       }
@@ -5249,8 +5296,26 @@ function validateModelForSave(candidate) {
 
   for (const node of nodes.filter(node => node &&
       (node.type === "endEvent" || node.type === "errorEndEvent"))) {
+    if (!flows.some(flow => flow && flow.targetRef === node.id)) {
+      errors.push("End event #" + node.id + " must have at least one incoming sequence flow.");
+    }
     if (flows.some(flow => flow && flow.sourceRef === node.id)) {
       errors.push("End event #" + node.id + " cannot have outgoing sequence flows.");
+    }
+    if (node.type === "errorEndEvent") {
+      const label = "Error end event #" + node.id;
+      const code = typeof node.errorCode === "string" ? node.errorCode.trim() : "";
+      if (!code) {
+        errors.push(label + " must have an errorCode.");
+      } else if (Array.from(code).length > 300) {
+        errors.push(label + " errorCode must contain at most 300 characters.");
+      } else if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(code)) {
+        errors.push(label + " errorCode must start with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'.");
+      }
+      if (typeof node.errorDescription === "string" &&
+          Array.from(node.errorDescription.trim()).length > 1000) {
+        errors.push(label + " errorDescription must contain at most 1000 characters.");
+      }
     }
   }
 
@@ -5557,6 +5622,11 @@ async function save() {
   // invariant helpers here: imported invalid source/flow settings must survive
   // long enough for validateModelForSave to report them.
   model.flowNodes.forEach(node => {
+    if (isErrorEndEventType(node.type)) {
+      node.errorCode = typeof node.errorCode === "string" ? node.errorCode.trim() : "";
+      node.errorDescription = typeof node.errorDescription === "string" && node.errorDescription.trim()
+        ? node.errorDescription.trim() : null;
+    }
     if (isMessageStartEventType(node.type)) normalizeLegacyMessageStartNode(node);
     if (isServiceTaskType(node.type)) {
       node.service = normalizeService(node.service, model.variables);
@@ -5786,6 +5856,9 @@ function loadFromObject(obj) {
           : undefined,
         attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
         errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null,
+        errorCode: isErrorEndEventType(s.type) && typeof s.errorCode === "string" ? s.errorCode.trim() : undefined,
+        errorDescription: isErrorEndEventType(s.type) && typeof s.errorDescription === "string" && s.errorDescription.trim()
+          ? s.errorDescription.trim() : undefined,
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined

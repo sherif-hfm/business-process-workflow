@@ -9,6 +9,8 @@ public sealed class ExecutionTokenEntity
     public string NodeName { get; set; } = string.Empty;
     public string? NodeExternalId { get; set; }
     public string NodeType { get; set; } = string.Empty;
+    public string? FaultCode { get; set; }
+    public string? FaultDescription { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

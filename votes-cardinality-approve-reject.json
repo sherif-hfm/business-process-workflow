@@ -113,6 +113,8 @@
       "name": "Error",
       "externalId": null,
       "type": "errorEndEvent",
+      "errorCode": "NO_APPROVAL_OUTCOME",
+      "errorDescription": "No approval outcome matched.",
       "laneId": null,
       "x": 987,
       "y": 337,

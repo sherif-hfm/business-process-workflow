@@ -78,6 +78,15 @@ else
             }
     </section>
 
+    @if (instance.Fault is not null)
+    {
+        <section class="alert alert-danger mb-3" aria-labelledby="instance-fault-heading">
+            <h2 id="instance-fault-heading" class="h5 mb-1">Workflow fault</h2>
+            <div><strong>Code:</strong> @(instance.Fault.Code ?? "Legacy / unspecified")</div>
+            <div><strong>Description:</strong> @instance.Fault.Description</div>
+        </section>
+    }
+
     <nav class="status-tabs" aria-label="Instance sections">
         <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
         @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }

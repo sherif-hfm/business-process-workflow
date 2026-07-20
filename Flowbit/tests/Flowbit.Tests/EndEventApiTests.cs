@@ -40,6 +40,11 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         Assert.Equal(3, ack.CurrentNodeId);
         Assert.Equal("Terminal", ack.CurrentNodeName);
         Assert.Equal("terminal-event", ack.CurrentNodeExternalId);
+        AssertFault(
+            terminalType,
+            ack.Fault,
+            "USER_TASK_FAULT",
+            "The user task ended in a fault.");
 
         var detail = await GetInstanceAsync(started.Id);
         Assert.Equal(expectedInstanceStatus, detail.Status);
@@ -48,6 +53,11 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         Assert.Equal("terminal-event", detail.CurrentNodeExternalId);
         Assert.Null(detail.MultiInstance);
         Assert.Null(detail.UserTasks);
+        AssertFault(
+            terminalType,
+            detail.Fault,
+            "USER_TASK_FAULT",
+            "The user task ended in a fault.");
 
         var finalHistory = Assert.Single(detail.History, entry => entry.SequenceFlowId == 201);
         Assert.Equal(2, finalHistory.FromNodeId);
@@ -85,6 +95,16 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
             Assert.Equal(3, token.NodeId);
             Assert.Equal(terminalType, token.NodeType);
             Assert.Equal(expectedTokenStatus, token.Status);
+            if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+            {
+                Assert.Equal("USER_TASK_FAULT", token.FaultCode);
+                Assert.Equal("The user task ended in a fault.", token.FaultDescription);
+            }
+            else
+            {
+                Assert.Null(token.FaultCode);
+                Assert.Null(token.FaultDescription);
+            }
 
             var storedTask = await db.UserTasks.SingleAsync(row => row.Id == task.Id);
             Assert.Equal(UserTaskStatuses.Completed, storedTask.Status);
@@ -123,12 +143,35 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
             $"/api/instances/{started.Id}/cancel",
             user: "finisher");
         Assert.Equal(HttpStatusCode.Conflict, cancel.StatusCode);
+
+        using var filteredResponse = await SendAsync(
+            HttpMethod.Get,
+            $"/api/instances?status=faulted&instanceId={started.Id}&page=1&pageSize=20",
+            user: "finisher");
+        Assert.Equal(HttpStatusCode.OK, filteredResponse.StatusCode);
+        var filtered = await ReadAsync<PagedResult<InstanceSummaryDto>>(filteredResponse);
+        if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            var summary = Assert.Single(filtered.Items);
+            Assert.Equal(3, summary.CurrentNodeId);
+            Assert.NotNull(summary.Fault);
+            Assert.Equal("USER_TASK_FAULT", summary.Fault.Code);
+        }
+        else
+        {
+            Assert.Empty(filtered.Items);
+        }
     }
 
-    [Fact]
-    public async Task ConcurrentFinalActions_AdvanceExactlyOnceAndReturnConflictToTheLoser()
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent, "completed", ExecutionTokenStatuses.Completed)]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent, "faulted", ExecutionTokenStatuses.Faulted)]
+    public async Task ConcurrentFinalActions_AdvanceExactlyOnceAndReturnConflictToTheLoser(
+        string terminalType,
+        string expectedInstanceStatus,
+        string expectedTokenStatus)
     {
-        var workflowId = await CreateWorkflowAsync(CreateUserTaskTerminalModel(BpmnFlowNodeTypes.EndEvent));
+        var workflowId = await CreateWorkflowAsync(CreateUserTaskTerminalModel(terminalType));
         var started = await StartAtUserTaskAsync(workflowId);
         var task = Assert.Single((await ListTasksAsync(started.Id, "active")).Items);
 
@@ -149,8 +192,9 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         }
 
         var detail = await GetInstanceAsync(started.Id);
-        Assert.Equal("completed", detail.Status);
+        Assert.Equal(expectedInstanceStatus, detail.Status);
         Assert.Equal(3, detail.CurrentNodeId);
+        AssertFault(terminalType, detail.Fault, "USER_TASK_FAULT", "The user task ended in a fault.");
         Assert.Single(detail.History, entry => entry.SequenceFlowId == 201);
 
         await using var db = fixture.CreateDbContext();
@@ -158,12 +202,18 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
             row.InstanceId == started.Id && row.ActionId == 201));
         var storedTask = await db.UserTasks.SingleAsync(row => row.Id == task.Id);
         Assert.Equal(UserTaskStatuses.Completed, storedTask.Status);
+        var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == started.Id);
+        Assert.Equal(expectedTokenStatus, token.Status);
     }
 
-    [Fact]
-    public async Task ConcurrentFinalActionAndCancellation_HaveOneAtomicWinner()
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.EndEvent, "completed")]
+    [InlineData(BpmnFlowNodeTypes.ErrorEndEvent, "faulted")]
+    public async Task ConcurrentFinalActionAndCancellation_HaveOneAtomicWinner(
+        string terminalType,
+        string expectedTerminalStatus)
     {
-        var workflowId = await CreateWorkflowAsync(CreateUserTaskTerminalModel(BpmnFlowNodeTypes.EndEvent));
+        var workflowId = await CreateWorkflowAsync(CreateUserTaskTerminalModel(terminalType));
         var started = await StartAtUserTaskAsync(workflowId);
         var task = Assert.Single((await ListTasksAsync(started.Id, "active")).Items);
 
@@ -182,17 +232,22 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         }
 
         var detail = await GetInstanceAsync(started.Id);
-        Assert.Contains(detail.Status, new[] { "completed", "cancelled" });
-        Assert.Equal(detail.Status == "completed" ? 3 : 2, detail.CurrentNodeId);
-        Assert.Equal(detail.Status == "completed" ? 1 : 0,
+        Assert.Contains(detail.Status, new[] { expectedTerminalStatus, "cancelled" });
+        var terminalWon = detail.Status == expectedTerminalStatus;
+        Assert.Equal(terminalWon ? 3 : 2, detail.CurrentNodeId);
+        Assert.Equal(terminalWon ? 1 : 0,
             detail.History.Count(entry => entry.SequenceFlowId == 201));
+        if (terminalWon)
+            AssertFault(terminalType, detail.Fault, "USER_TASK_FAULT", "The user task ended in a fault.");
+        else
+            Assert.Null(detail.Fault);
 
         await using var db = fixture.CreateDbContext();
-        Assert.Equal(detail.Status == "completed" ? 1 : 0,
+        Assert.Equal(terminalWon ? 1 : 0,
             await db.InstanceHistory.CountAsync(row => row.InstanceId == started.Id && row.ActionId == 201));
         var storedTask = await db.UserTasks.SingleAsync(row => row.Id == task.Id);
         Assert.Equal(
-            detail.Status == "completed" ? UserTaskStatuses.Completed : UserTaskStatuses.Cancelled,
+            terminalWon ? UserTaskStatuses.Completed : UserTaskStatuses.Cancelled,
             storedTask.Status);
     }
 
@@ -219,10 +274,12 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         Assert.Equal(expectedInstanceStatus, ack.Status);
         Assert.Equal(3, ack.CurrentNodeId);
         Assert.Equal("terminal-event", ack.CurrentNodeExternalId);
+        AssertFault(terminalType, ack.Fault, "MESSAGE_DELIVERY_FAULT", "Terminal");
 
         var detail = await GetInstanceAsync(started.Id);
         Assert.Equal(expectedInstanceStatus, detail.Status);
         Assert.Equal(3, detail.CurrentNodeId);
+        AssertFault(terminalType, detail.Fault, "MESSAGE_DELIVERY_FAULT", "Terminal");
         var messageHistory = Assert.Single(detail.History, entry =>
             entry.Note == "message" && entry.FromNodeId == 2 && entry.ToNodeId == 3);
         Assert.Equal("tests-client", messageHistory.PerformedBy);
@@ -232,6 +289,46 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == started.Id);
         Assert.Equal(terminalType, token.NodeType);
         Assert.Equal(expectedTokenStatus, token.Status);
+        if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            Assert.Equal("MESSAGE_DELIVERY_FAULT", token.FaultCode);
+            Assert.Equal("Terminal", token.FaultDescription);
+        }
+    }
+
+    [Fact]
+    public async Task MessageStart_EnteringErrorEndEventReturnsFaultedAckAndPersistsFault()
+    {
+        var model = CreateMessageStartErrorEndModel();
+        await CreateWorkflowAsync(model);
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/workflows/" + Uri.EscapeDataString(model.Id) + "/message-start");
+        request.Headers.Add("X-Client-Id", "tests-client");
+        request.Headers.Add("X-Client-Secret", "tests-secret");
+        request.Headers.Add("X-Correlation", "accepted");
+        request.Content = JsonContent.Create(new { }, options: JsonOptions);
+
+        using var response = await fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var ack = await ReadAsync<MessageStartAckDto>(response);
+        Assert.Equal("faulted", ack.Status);
+        Assert.Equal(2, ack.CurrentNodeId);
+        var fault = Assert.IsType<FaultInfoDto>(ack.Fault);
+        Assert.Equal("MESSAGE_START_FAULT", fault.Code);
+        Assert.Equal("The inbound message was rejected.", fault.Description);
+
+        var detail = await GetInstanceAsync(ack.InstanceId);
+        Assert.Equal("faulted", detail.Status);
+        Assert.Equal("MESSAGE_START_FAULT", Assert.IsType<FaultInfoDto>(detail.Fault).Code);
+        Assert.Single(detail.History, entry => entry.Note == "messageStart" && entry.ToNodeId == 2);
+
+        await using var db = fixture.CreateDbContext();
+        var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == ack.InstanceId);
+        Assert.Equal(ExecutionTokenStatuses.Faulted, token.Status);
+        Assert.Equal("MESSAGE_START_FAULT", token.FaultCode);
+        Assert.Equal("The inbound message was rejected.", token.FaultDescription);
     }
 
     [Theory]
@@ -250,6 +347,9 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         Assert.Equal("faulted", detail.Status);
         Assert.Equal(5, detail.CurrentNodeId);
         Assert.Equal("error-terminal", detail.CurrentNodeExternalId);
+        var fault = Assert.IsType<FaultInfoDto>(detail.Fault);
+        Assert.Equal("HOST_EXECUTION_FAILED", fault.Code);
+        Assert.Equal("The automated host task failed.", fault.Description);
         Assert.Contains(detail.History, entry => entry.Note == "error" && entry.ToNodeId == 4);
         Assert.Contains(detail.History, entry =>
             entry.Note == "boundary" && entry.FromNodeId == 4 && entry.ToNodeId == 5);
@@ -269,6 +369,8 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == detail.Id);
         Assert.Equal(BpmnFlowNodeTypes.ErrorEndEvent, token.NodeType);
         Assert.Equal(ExecutionTokenStatuses.Faulted, token.Status);
+        Assert.Equal("HOST_EXECUTION_FAILED", token.FaultCode);
+        Assert.Equal("The automated host task failed.", token.FaultDescription);
         Assert.False(await db.UserTasks.AnyAsync(row => row.InstanceId == detail.Id));
     }
 
@@ -334,6 +436,24 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
         await response.Content.ReadFromJsonAsync<T>(JsonOptions)
         ?? throw new InvalidOperationException("Response body was empty.");
 
+    private static void AssertFault(
+        string terminalType,
+        FaultInfoDto? fault,
+        string expectedCode,
+        string expectedDescription)
+    {
+        if (terminalType == BpmnFlowNodeTypes.ErrorEndEvent)
+        {
+            var present = Assert.IsType<FaultInfoDto>(fault);
+            Assert.Equal(expectedCode, present.Code);
+            Assert.Equal(expectedDescription, present.Description);
+        }
+        else
+        {
+            Assert.Null(fault);
+        }
+    }
+
     private static WorkflowModel CreateUserTaskTerminalModel(string terminalType)
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -351,7 +471,11 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
                     Id = 3,
                     Name = "Terminal",
                     ExternalId = "terminal-event",
-                    Type = terminalType
+                    Type = terminalType,
+                    ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "USER_TASK_FAULT" : null,
+                    ErrorDescription = terminalType == BpmnFlowNodeTypes.ErrorEndEvent
+                        ? "The user task ended in a fault."
+                        : null
                 }
             ],
             SequenceFlows =
@@ -391,13 +515,53 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
                     Id = 3,
                     Name = "Terminal",
                     ExternalId = "terminal-event",
-                    Type = terminalType
+                    Type = terminalType,
+                    ErrorCode = terminalType == BpmnFlowNodeTypes.ErrorEndEvent ? "MESSAGE_DELIVERY_FAULT" : null
                 }
             ],
             SequenceFlows =
             [
                 new SequenceFlowModel { Id = 101, Name = "Wait", SourceRef = 1, TargetRef = 2 },
                 new SequenceFlowModel { Id = 201, Name = "Delivered", SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateMessageStartErrorEndModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "terminal-message-start-" + suffix,
+            Name = "Terminal message start " + suffix,
+            InitialEventId = null,
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Inbound message",
+                    Type = BpmnFlowNodeTypes.MessageStartEvent,
+                    Message = new MessageCatchModel
+                    {
+                        ClientId = "tests-client",
+                        ClientSecret = "tests-secret",
+                        HeaderName = "X-Correlation",
+                        HeaderValue = "accepted"
+                    }
+                },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Message rejected",
+                    Type = BpmnFlowNodeTypes.ErrorEndEvent,
+                    ErrorCode = "MESSAGE_START_FAULT",
+                    ErrorDescription = "The inbound message was rejected."
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Reject", SourceRef = 1, TargetRef = 2 }
             ]
         };
     }
@@ -472,7 +636,9 @@ public sealed class EndEventApiTests(PostgresApiFixture fixture)
                     Id = 5,
                     Name = "Error end",
                     ExternalId = "error-terminal",
-                    Type = BpmnFlowNodeTypes.ErrorEndEvent
+                    Type = BpmnFlowNodeTypes.ErrorEndEvent,
+                    ErrorCode = "HOST_EXECUTION_FAILED",
+                    ErrorDescription = "The automated host task failed."
                 }
             ],
             SequenceFlows =

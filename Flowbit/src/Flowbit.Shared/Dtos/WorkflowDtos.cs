@@ -89,6 +89,7 @@ public sealed record StartInstanceRequest(
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
 /// <param name="CreatedAt">The timestamp when the instance was started.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
+/// <param name="Fault">Business-facing fault information when starting faulted the instance.</param>
 public sealed record StartInstanceResultDto(
     long Id,
     int CurrentNodeId,
@@ -99,7 +100,9 @@ public sealed record StartInstanceResultDto(
     string? BusinessKeyUniqueness,
     string? StartedBy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 /// <summary>
 /// Request payload for advancing a workflow instance down a sequence flow.
@@ -171,7 +174,9 @@ public sealed record UserTaskActionAckDto(
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     MultiInstanceProgressDto? MultiInstance,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 public static class UserTaskOwnershipKinds
 {
@@ -234,6 +239,13 @@ public sealed record UserTaskAssignmentAckDto(
     bool Changed,
     DateTimeOffset UpdatedAt);
 
+/// <summary>Business-facing fault information snapshotted when an instance enters an error end event.</summary>
+/// <param name="Code">Stable authored code, or null for a legacy definition.</param>
+/// <param name="Description">Authored description, falling back to the error end node name.</param>
+public sealed record FaultInfoDto(
+    string? Code,
+    string Description);
+
 /// <summary>
 /// Represents a summary of a workflow instance.
 /// </summary>
@@ -252,6 +264,7 @@ public sealed record UserTaskAssignmentAckDto(
 /// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
 /// <param name="UserTasks">Aggregate state for the current open user-task work, when present.</param>
 /// <param name="Variables">Latest instance variable values when explicitly requested; otherwise omitted.</param>
+/// <param name="Fault">Business-facing fault information when the instance is faulted.</param>
 public sealed record InstanceSummaryDto(
     long Id,
     long WorkflowId,
@@ -268,7 +281,9 @@ public sealed record InstanceSummaryDto(
     DateTimeOffset UpdatedAt,
     UserTaskWorkSummaryDto? UserTasks,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyDictionary<string, JsonElement>? Variables);
+    IReadOnlyDictionary<string, JsonElement>? Variables,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 /// <summary>
 /// Represents full details of a workflow instance, including variable values and history.
@@ -288,6 +303,7 @@ public sealed record InstanceSummaryDto(
 /// <param name="History">The complete execution history of sequence flow hops and resting states.</param>
 /// <param name="MultiInstance">Progress for the active multi-instance user task, when present.</param>
 /// <param name="UserTasks">Aggregate state for the current open user-task work, when present.</param>
+/// <param name="Fault">Business-facing fault information when the instance is faulted.</param>
 public sealed record InstanceDetailDto(
     long Id,
     WorkflowDetailDto Workflow,
@@ -303,7 +319,9 @@ public sealed record InstanceDetailDto(
     IReadOnlyList<InstanceVariableDto> Variables,
     IReadOnlyList<InstanceHistoryDto> History,
     MultiInstanceProgressDto? MultiInstance,
-    UserTaskWorkSummaryDto? UserTasks);
+    UserTaskWorkSummaryDto? UserTasks,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 /// <summary>
 /// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.
@@ -314,13 +332,16 @@ public sealed record InstanceDetailDto(
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The execution status of the instance after the delivery.</param>
 /// <param name="UpdatedAt">The timestamp when the instance was updated.</param>
+/// <param name="Fault">Business-facing fault information when delivery faulted the instance.</param>
 public sealed record MessageDeliveryAckDto(
     long Id,
     int CurrentNodeId,
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 /// <summary>
 /// Slim acknowledgment returned when starting a workflow instance via a message start event.
@@ -331,13 +352,16 @@ public sealed record MessageDeliveryAckDto(
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
 /// <param name="Status">The execution status of the instance after starting.</param>
 /// <param name="CreatedAt">The timestamp when the instance was started.</param>
+/// <param name="Fault">Business-facing fault information when starting faulted the instance.</param>
 public sealed record MessageStartAckDto(
     long InstanceId,
     int CurrentNodeId,
     string CurrentNodeName,
     string? CurrentNodeExternalId,
     string Status,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FaultInfoDto? Fault = null);
 
 /// <summary>
 /// Conflict returned when a start idempotency key or message-start business key is already owned.
