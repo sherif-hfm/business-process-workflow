@@ -159,6 +159,11 @@ public interface IWorkflowRuntimeRepository
 
     Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken);
 
+    Task<AssignmentInheritanceSourceRecord?> GetAssignmentInheritanceSourceAsync(
+        long instanceId,
+        int? nodeId,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyDictionary<long, UserTaskWorkSummaryRecord>> GetUserTaskWorkSummariesAsync(
         IReadOnlyCollection<long> instanceIds,
         CancellationToken cancellationToken);

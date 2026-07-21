@@ -39,6 +39,7 @@ public sealed record CurrentNodeSnapshot(
     string Type,
     IReadOnlyList<string> Roles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string? Assignee,
     bool IsMultiInstance = false,
     string? FaultCode = null,
@@ -72,6 +73,7 @@ public sealed record UserTaskRecord(
     string? NodeExternalId,
     IReadOnlyList<string> Roles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string Status,
     string? ClaimedBy,
     long? MultiInstanceExecutionId,
@@ -100,6 +102,7 @@ public sealed record ManagedUserTaskRecord(
     string? NodeExternalId,
     IReadOnlyList<string> NodeRoles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string? ClaimedBy,
     string? Assignee,
     long? MultiInstanceExecutionId,
@@ -152,6 +155,7 @@ public sealed record InstanceListItem(
     string CurrentNodeType,
     IReadOnlyList<string> CurrentNodeRoles,
     bool CurrentRequiresClaim,
+    bool CurrentRequiresAssignment,
     string Status,
     string? ClaimedBy,
     string? StartedBy,
@@ -182,6 +186,12 @@ public sealed record MessageDeliveryReceiptRecord(
 
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);
+
+public sealed record AssignmentInheritanceSourceRecord(
+    long UserTaskId,
+    int NodeId,
+    string? Assignee,
+    string? CompletedBy);
 
 public sealed record InstanceVariableRecord(
     long Id,

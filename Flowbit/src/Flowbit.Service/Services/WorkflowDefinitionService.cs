@@ -352,6 +352,7 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsUserTask(node.Type))
             {
                 ValidateClaimMode(node, definition);
+                ValidateAssignmentMode(node, definition);
 
                 if (node.MultiInstance is not null)
                 {
@@ -1259,6 +1260,76 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException(
                     $"User task #{node.Id} inheritClaimFromNodeId #{node.InheritClaimFromNodeId} must reference a user task.");
             }
+        }
+    }
+
+    private static void ValidateAssignmentMode(FlowNodeModel node, WorkflowModel definition)
+    {
+        var mode = node.AssignmentMode;
+        if (mode != AssignmentModes.Fresh
+            && mode != AssignmentModes.Previous
+            && mode != AssignmentModes.FromNode)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has an unsupported assignmentMode '{mode}'.");
+        }
+
+        if (!node.RequiresAssignment)
+        {
+            if (mode != AssignmentModes.Fresh)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} assignmentMode '{mode}' requires requiresAssignment to be true.");
+            }
+            return;
+        }
+
+        if (node.MultiInstance is not null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} cannot require direct assignment while multi-instance is enabled.");
+        }
+
+        if (node.RequiresClaim || node.ClaimMode != ClaimModes.Fresh)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} requiresAssignment must use requiresClaim=false and claimMode='fresh'.");
+        }
+
+        if (definition.TaskDistribution is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} requiresAssignment requires workflow taskDistribution credentials.");
+        }
+
+        if (mode != AssignmentModes.Fresh && !string.IsNullOrWhiteSpace(node.AssigneeExpression))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} cannot combine assignmentMode '{mode}' with an assignee expression.");
+        }
+
+        if (mode != AssignmentModes.FromNode)
+        {
+            return;
+        }
+
+        if (node.InheritAssignmentFromNodeId is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} assignmentMode 'fromNode' requires inheritAssignmentFromNodeId.");
+        }
+
+        var source = definition.FlowNodes.SingleOrDefault(n => n.Id == node.InheritAssignmentFromNodeId);
+        if (source is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} inheritAssignmentFromNodeId #{node.InheritAssignmentFromNodeId} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} inheritAssignmentFromNodeId #{node.InheritAssignmentFromNodeId} must reference a user task.");
         }
     }
 

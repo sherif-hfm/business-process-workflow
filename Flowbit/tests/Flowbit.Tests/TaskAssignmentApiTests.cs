@@ -14,6 +14,29 @@ public sealed class TaskAssignmentApiTests(PostgresApiFixture fixture)
     private const string ManagerRole = "AssignmentManager";
 
     [Fact]
+    public async Task AssignmentManagerCanSeeAndAssignTaskHiddenFromRegularInboxes()
+    {
+        var model = CreateSimpleModel("manager-required-assignment");
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = "distributor",
+            ClientSecret = "secret"
+        };
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
+        var workflowId = await CreateWorkflowAsync(model);
+        var instance = await StartAsync(workflowId);
+
+        Assert.Empty((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
+        var hidden = Assert.Single((await GetManagedAsync(instance.Id)).Items);
+        Assert.True(hidden.RequiresAssignment);
+        Assert.Equal(UserTaskOwnershipKinds.Unassigned, hidden.Ownership);
+
+        var assigned = await AssignAsync(hidden, "alice", null);
+        Assert.True(assigned.RequiresAssignment);
+        Assert.Single((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
+    }
+
+    [Fact]
     public async Task ManagerCanAssignReassignReleaseAndAuditAnActiveTask()
     {
         var workflowId = await CreateWorkflowAsync(CreateSimpleModel("assignment-lifecycle"));

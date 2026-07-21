@@ -342,6 +342,25 @@ public sealed class FlowNodeModel
     public string? AssigneeExpression { get; set; }
 
     /// <summary>
+    /// Whether this user task must have a direct assignee before it is exposed
+    /// to, or can be acted on by, workflow users.
+    /// </summary>
+    [JsonPropertyName("requiresAssignment")]
+    public bool RequiresAssignment { get; set; }
+
+    /// <summary>
+    /// How a required direct assignment is resolved when the task is entered.
+    /// </summary>
+    [JsonPropertyName("assignmentMode")]
+    public string AssignmentMode { get; set; } = AssignmentModes.Fresh;
+
+    /// <summary>
+    /// The user-task node whose latest completed work item supplies an inherited assignment.
+    /// </summary>
+    [JsonPropertyName("inheritAssignmentFromNodeId")]
+    public int? InheritAssignmentFromNodeId { get; set; }
+
+    /// <summary>
     /// Optional multi-instance loop configuration for a user task.
     /// </summary>
     [JsonPropertyName("multiInstance")]
@@ -924,6 +943,21 @@ public sealed class SequenceFlowModel
     /// </summary>
     [JsonPropertyName("cancelRemainingInstances")]
     public bool CancelRemainingInstances { get; set; }
+}
+
+/// <summary>
+/// Defines direct-assignment inheritance modes for user tasks.
+/// </summary>
+public static class AssignmentModes
+{
+    /// <summary>No assignment is inherited when the task is entered.</summary>
+    public const string Fresh = "fresh";
+
+    /// <summary>Inherit from the most recently completed user-task work item.</summary>
+    public const string Previous = "previous";
+
+    /// <summary>Inherit from the latest completed work item at a configured user-task node.</summary>
+    public const string FromNode = "fromNode";
 }
 
 /// <summary>

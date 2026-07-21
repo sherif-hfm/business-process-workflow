@@ -85,6 +85,51 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_EnforcesRequiredAssignmentContracts()
+    {
+        var task = new FlowNodeModel
+        {
+            Id = 2,
+            Name = "Review",
+            Type = BpmnFlowNodeTypes.UserTask,
+            RequiresAssignment = true,
+            AssignmentMode = AssignmentModes.FromNode,
+            InheritAssignmentFromNodeId = 2
+        };
+        var model = new WorkflowModel
+        {
+            Id = "editor-required-assignment",
+            Name = "Editor required assignment",
+            InitialEventId = 1,
+            TaskDistribution = new TaskDistributionModel
+            {
+                ClientId = "distributor",
+                ClientSecret = "secret"
+            },
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                task,
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+        Assert.Empty(Validate(model));
+
+        task.RequiresClaim = true;
+        task.AssigneeExpression = "'alice'";
+        model.TaskDistribution = null;
+        var errors = Validate(model);
+        Assert.Contains(errors, error => error.Contains("taskDistribution", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("requiresClaim", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("assignee expression", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validator_ReportsEnumIdentityAndResultConfigurationErrorsTogether()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
@@ -523,6 +568,9 @@ public sealed class EditorValidatorTests
             requiresClaim = true,
             claimMode = "fromNode",
             inheritClaimFromNodeId = 9,
+            requiresAssignment = true,
+            assignmentMode = "fromNode",
+            inheritAssignmentFromNodeId = 9,
             roles = new[] { "Manager" },
             variables = new[] { new { id = 1, name = "secret" } },
             assignee = "'alice'",
@@ -550,6 +598,7 @@ public sealed class EditorValidatorTests
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent', MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
+            const ASSIGNMENT_MODE = { FRESH: 'fresh', PREVIOUS: 'previous', FROM_NODE: 'fromNode' };
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
             function isMessageStartEventType(type) { return type === NODE_TYPE.MESSAGE_START_EVENT; }
             function isUserTaskType(type) { return type === NODE_TYPE.USER_TASK; }
@@ -572,6 +621,9 @@ public sealed class EditorValidatorTests
         Assert.False(root.GetProperty("requiresClaim").GetBoolean());
         Assert.Equal("fresh", root.GetProperty("claimMode").GetString());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("inheritClaimFromNodeId").ValueKind);
+        Assert.False(root.GetProperty("requiresAssignment").GetBoolean());
+        Assert.Equal("fresh", root.GetProperty("assignmentMode").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("inheritAssignmentFromNodeId").ValueKind);
         Assert.Empty(root.GetProperty("roles").EnumerateArray());
         Assert.Empty(root.GetProperty("variables").EnumerateArray());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("assignee").ValueKind);

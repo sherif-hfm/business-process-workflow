@@ -332,6 +332,9 @@ public static class WorkflowModelMigrator
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
             node.MultiInstance = null;
+            node.RequiresAssignment = false;
+            node.AssignmentMode = AssignmentModes.Fresh;
+            node.InheritAssignmentFromNodeId = null;
         }
 
         if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
@@ -523,9 +526,20 @@ public static class WorkflowModelMigrator
                 node.ClaimMode = ClaimModes.Fresh;
             }
 
+            // Tolerant load: older documents have no assignmentMode.
+            if (string.IsNullOrWhiteSpace(node.AssignmentMode))
+            {
+                node.AssignmentMode = AssignmentModes.Fresh;
+            }
+
             if (node.ClaimMode != ClaimModes.FromNode)
             {
                 node.InheritClaimFromNodeId = null;
+            }
+
+            if (node.AssignmentMode != AssignmentModes.FromNode)
+            {
+                node.InheritAssignmentFromNodeId = null;
             }
 
             node.Service = null;

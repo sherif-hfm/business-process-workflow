@@ -689,6 +689,12 @@ const CLAIM_MODE_OPTIONS = [
   { value: CLAIM_MODE.PREVIOUS, label: "Previous (last actor)" },
   { value: CLAIM_MODE.FROM_NODE, label: "From node (specific step)" }
 ];
+const ASSIGNMENT_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
+const ASSIGNMENT_MODE_OPTIONS = [
+  { value: ASSIGNMENT_MODE.FRESH, label: "Fresh (external assignment)" },
+  { value: ASSIGNMENT_MODE.PREVIOUS, label: "Previous (last completed task)" },
+  { value: ASSIGNMENT_MODE.FROM_NODE, label: "From node (specific task)" }
+];
 const SCRIPT_FORMAT = { NCALC: "ncalc", JAVASCRIPT: "javascript" };
 const SCRIPT_FORMAT_OPTIONS = [
   { value: SCRIPT_FORMAT.NCALC, label: "NCalc assignments" },
@@ -1097,6 +1103,11 @@ function isPassThroughType(type) {
 }
 function applyTypeInvariants(node) {
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
+  if (!isUserTaskType(node.type)) {
+    node.requiresAssignment = false;
+    node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+    node.inheritAssignmentFromNodeId = null;
+  }
   if (isErrorEndEventType(node.type)) {
     if (typeof node.errorCode !== "string") node.errorCode = "";
     if (typeof node.errorDescription !== "string" || !node.errorDescription.trim()) {
@@ -1242,13 +1253,32 @@ function applyTypeInvariants(node) {
     normalizeLegacyMessageStartNode(node);
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
+    node.requiresAssignment = !!node.requiresAssignment;
     node.assignee = typeof node.assignee === "string" && node.assignee.trim()
       ? node.assignee.trim() : null;
     if (!CLAIM_MODE_OPTIONS.some(o => o.value === node.claimMode)) node.claimMode = CLAIM_MODE.FRESH;
     if (node.claimMode !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+    if (!ASSIGNMENT_MODE_OPTIONS.some(o => o.value === node.assignmentMode)) {
+      node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+    }
+    if (!node.requiresAssignment) {
+      node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+      node.inheritAssignmentFromNodeId = null;
+    } else {
+      node.requiresClaim = false;
+      node.claimMode = CLAIM_MODE.FRESH;
+      node.inheritClaimFromNodeId = null;
+      if (node.assignmentMode !== ASSIGNMENT_MODE.FROM_NODE) {
+        node.inheritAssignmentFromNodeId = null;
+      }
+      if (node.assignmentMode !== ASSIGNMENT_MODE.FRESH) node.assignee = null;
+    }
     delete node.service;
     delete node.message;
     if (node.multiInstance) {
+      node.requiresAssignment = false;
+      node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+      node.inheritAssignmentFromNodeId = null;
       node.assignee = null;
       node.multiInstance.mode = canonicalizeKnownValue(
         node.multiInstance.mode, ["parallel", "sequential"], "parallel");
@@ -1487,11 +1517,11 @@ function appendMultiInstanceMarker(g, mode) {
   appendSvgTitle(marker, mode === "sequential" ? "Sequential multi-instance" : "Parallel multi-instance");
   g.appendChild(marker);
 }
-function appendAssigneeMarker(g) {
+function appendAssigneeMarker(g, title) {
   const marker = el("g", { class: "status-icon" });
   const icon = el("use", { href: "#icon-assignee", x: NODE_W - 24, y: NODE_H - 22, width: 15, height: 15 });
   marker.appendChild(icon);
-  appendSvgTitle(marker, "Direct assignee expression configured");
+  appendSvgTitle(marker, title || "Direct assignee expression configured");
   g.appendChild(marker);
 }
 
@@ -1754,7 +1784,8 @@ function renderNodes() {
           g.appendChild(rolesText);
         }
         if (node.multiInstance) appendMultiInstanceMarker(g, node.multiInstance.mode);
-        if (node.assignee) appendAssigneeMarker(g);
+        if (node.requiresAssignment) appendAssigneeMarker(g, "Assignment required before the task is visible");
+        else if (node.assignee) appendAssigneeMarker(g);
       }
     }
 
@@ -2457,34 +2488,79 @@ function renderNodeInspector() {
 
   if (isUserTaskType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
-    inspector.appendChild(
-      variableCheckbox("Requires claim", node.requiresClaim, checked => {
-        node.requiresClaim = node.multiInstance?.source === "collection" ? false : checked;
-        outgoingFlows(node.id).forEach(applyFlowInvariants);
-        renderInspector();
-      })
-    );
-    if (node.requiresClaim) {
-      selectField("Claim mode", CLAIM_MODE_OPTIONS, node.claimMode || CLAIM_MODE.FRESH, v => {
-        node.claimMode = v;
-        if (v !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
-        renderInspector();
-      });
-      if (node.claimMode === CLAIM_MODE.FROM_NODE) {
+    if (!node.multiInstance) {
+      inspector.appendChild(
+        variableCheckbox("Requires direct assignment", node.requiresAssignment, checked => {
+          node.requiresAssignment = checked;
+          if (checked) {
+            node.requiresClaim = false;
+            node.claimMode = CLAIM_MODE.FRESH;
+            node.inheritClaimFromNodeId = null;
+          } else {
+            node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+            node.inheritAssignmentFromNodeId = null;
+          }
+          applyTypeInvariants(node);
+          outgoingFlows(node.id).forEach(applyFlowInvariants);
+          render();
+        })
+      );
+    }
+
+    if (node.requiresAssignment) {
+      const assignmentHint = document.createElement("p");
+      assignmentHint.className = "empty-note";
+      assignmentHint.textContent = "Until an assignee is resolved or supplied by the external distributor, this active task is hidden from every regular inbox.";
+      inspector.appendChild(assignmentHint);
+      selectField("Assignment mode", ASSIGNMENT_MODE_OPTIONS,
+        node.assignmentMode || ASSIGNMENT_MODE.FRESH, v => {
+          node.assignmentMode = v;
+          if (v !== ASSIGNMENT_MODE.FROM_NODE) node.inheritAssignmentFromNodeId = null;
+          if (v !== ASSIGNMENT_MODE.FRESH) node.assignee = null;
+          renderInspector();
+          renderNodes();
+        });
+      if (node.assignmentMode === ASSIGNMENT_MODE.FROM_NODE) {
         const sourceNodes = model.flowNodes.filter(n => isUserTaskType(n.type));
         const options = [{ value: "", label: "— select user task —" }].concat(
           sourceNodes.map(n => ({ value: n.id, label: `#${n.id} ${n.name}${n.id === node.id ? " (this task)" : ""}` }))
         );
-        selectField("Inherit claim from", options, node.inheritClaimFromNodeId ?? "", v => {
-          node.inheritClaimFromNodeId = v ? +v : null;
+        selectField("Inherit assignment from", options, node.inheritAssignmentFromNodeId ?? "", v => {
+          node.inheritAssignmentFromNodeId = v ? +v : null;
         });
+      }
+    } else {
+      inspector.appendChild(
+        variableCheckbox("Requires claim", node.requiresClaim, checked => {
+          node.requiresClaim = node.multiInstance?.source === "collection" ? false : checked;
+          outgoingFlows(node.id).forEach(applyFlowInvariants);
+          renderInspector();
+        })
+      );
+      if (node.requiresClaim) {
+        selectField("Claim mode", CLAIM_MODE_OPTIONS, node.claimMode || CLAIM_MODE.FRESH, v => {
+          node.claimMode = v;
+          if (v !== CLAIM_MODE.FROM_NODE) node.inheritClaimFromNodeId = null;
+          renderInspector();
+        });
+        if (node.claimMode === CLAIM_MODE.FROM_NODE) {
+          const sourceNodes = model.flowNodes.filter(n => isUserTaskType(n.type));
+          const options = [{ value: "", label: "— select user task —" }].concat(
+            sourceNodes.map(n => ({ value: n.id, label: `#${n.id} ${n.name}${n.id === node.id ? " (this task)" : ""}` }))
+          );
+          selectField("Inherit claim from", options, node.inheritClaimFromNodeId ?? "", v => {
+            node.inheritClaimFromNodeId = v ? +v : null;
+          });
+        }
       }
     }
 
-    if (!node.multiInstance) {
+    if (!node.multiInstance && (!node.requiresAssignment || node.assignmentMode === ASSIGNMENT_MODE.FRESH)) {
       const assigneeHint = document.createElement("p");
       assigneeHint.className = "empty-note";
-      assigneeHint.textContent = "Optional NCalc expression resolved once when the task is created. Use a variable name such as approverUser, or a quoted literal such as 'alice'. A runtime resolution failure creates a shared-pool task.";
+      assigneeHint.textContent = node.requiresAssignment
+        ? "Optional NCalc expression resolved once when the task is created. A missing or invalid result leaves the task hidden for the external distributor."
+        : "Optional NCalc expression resolved once when the task is created. Use a variable name such as approverUser, or a quoted literal such as 'alice'. A runtime resolution failure creates a shared-pool task.";
       inspector.appendChild(assigneeHint);
       field("Assignee expression", "text", node.assignee ?? "", v => {
         node.assignee = v.trim() ? v : null;
@@ -2503,7 +2579,12 @@ function renderNodeInspector() {
         cardinalityExpression: null, onePerActor: false,
         completionEvaluation: "afterEach", resultVariable: ""
       } : null;
-      if (checked) node.assignee = null;
+      if (checked) {
+        node.assignee = null;
+        node.requiresAssignment = false;
+        node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+        node.inheritAssignmentFromNodeId = null;
+      }
       applyTypeInvariants(node);
       outgoingFlows(node.id).forEach(applyFlowInvariants);
       render();
@@ -3110,6 +3191,9 @@ function addErrorBoundary(hostNode) {
     requiresClaim: false,
     claimMode: CLAIM_MODE.FRESH,
     inheritClaimFromNodeId: null,
+    requiresAssignment: false,
+    assignmentMode: ASSIGNMENT_MODE.FRESH,
+    inheritAssignmentFromNodeId: null,
     variables: [],
     assignee: null,
     attachedToRef: hostNode.id,
@@ -4639,6 +4723,9 @@ function addNode() {
                  requiresClaim: false,
                  claimMode: CLAIM_MODE.FRESH,
                  inheritClaimFromNodeId: null,
+                 requiresAssignment: false,
+                 assignmentMode: ASSIGNMENT_MODE.FRESH,
+                 inheritAssignmentFromNodeId: null,
                  variables: [],
                  assignee: null };
   model.flowNodes.push(node);
@@ -4728,6 +4815,7 @@ function validateModelForSave(candidate) {
   const hasText = value => typeof value === "string" && value.trim().length > 0;
   const hasMappingDefault = value => value !== null && value !== undefined;
   const countItems = value => Array.isArray(value) ? value.length : 0;
+  const assignmentModes = { fresh: "fresh", previous: "previous", fromNode: "fromNode" };
   const hasUnsupportedPassThroughMetadata = flow => flow.isSelectable === false || !!flow.isDefault ||
     !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
@@ -4980,6 +5068,43 @@ function validateModelForSave(candidate) {
     }
     if (!hasText(candidate.taskDistribution.clientSecret)) {
       errors.push("Workflow taskDistribution must have a clientSecret when enabled.");
+    }
+  }
+  const userTasksById = new Map(nodes
+    .filter(node => node && node.type === "userTask" && Number.isInteger(node.id))
+    .map(node => [node.id, node]));
+  for (const node of nodes.filter(node => node && node.type === "userTask")) {
+    const label = nodeLabel(node);
+    const assignmentMode = node.assignmentMode || assignmentModes.fresh;
+    if (!Object.values(assignmentModes).includes(assignmentMode)) {
+      errors.push(label + " has unsupported assignmentMode '" + String(assignmentMode) + "'.");
+      continue;
+    }
+    if (!node.requiresAssignment) {
+      if (assignmentMode !== assignmentModes.fresh || node.inheritAssignmentFromNodeId != null) {
+        errors.push(label + " must use assignmentMode='fresh' with no assignment source when requiresAssignment=false.");
+      }
+      continue;
+    }
+    if (candidate.taskDistribution == null) {
+      errors.push(label + " requires workflow taskDistribution credentials.");
+    }
+    if (node.multiInstance) {
+      errors.push(label + " cannot require assignment while multi-instance is enabled.");
+    }
+    if (node.requiresClaim || (node.claimMode || "fresh") !== "fresh") {
+      errors.push(label + " cannot combine requiresAssignment with requiresClaim or claim inheritance.");
+    }
+    if (assignmentMode !== assignmentModes.fresh && hasText(node.assignee)) {
+      errors.push(label + " cannot define an assignee expression with inherited assignment.");
+    }
+    if (assignmentMode === assignmentModes.fromNode) {
+      if (!Number.isInteger(node.inheritAssignmentFromNodeId) ||
+          !userTasksById.has(node.inheritAssignmentFromNodeId)) {
+        errors.push(label + " assignmentMode='fromNode' must reference an existing userTask.");
+      }
+    } else if (node.inheritAssignmentFromNodeId != null) {
+      errors.push(label + " can define inheritAssignmentFromNodeId only with assignmentMode='fromNode'.");
     }
   }
   validateVariableNames(processVariables, "process variables");
@@ -5758,6 +5883,12 @@ async function save() {
     if (node.idempotency && typeof node.idempotency === "object") {
       node.idempotency = normalizeIdempotencyForLoad(node.idempotency);
     }
+    if (isUserTaskType(node.type)) {
+      node.assignmentMode = canonicalizeKnownValue(
+        node.assignmentMode,
+        [ASSIGNMENT_MODE.FRESH, ASSIGNMENT_MODE.PREVIOUS, ASSIGNMENT_MODE.FROM_NODE],
+        undefined);
+    }
     if (node.multiInstance) {
       node.multiInstance.mode = canonicalizeKnownValue(
         node.multiInstance.mode, ["parallel", "sequential"], "parallel");
@@ -5897,6 +6028,9 @@ function migrateLegacyToNew(obj) {
       y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
       roles: normalizeRoles(s.roles ?? s.role),
       requiresClaim: !!s.requiresClaim,
+      requiresAssignment: false,
+      assignmentMode: ASSIGNMENT_MODE.FRESH,
+      inheritAssignmentFromNodeId: null,
       variables,
       assignee: null
     });
@@ -5946,6 +6080,10 @@ function loadFromObject(obj) {
         requiresClaim: !!s.requiresClaim,
         claimMode: CLAIM_MODE_OPTIONS.some(o => o.value === s.claimMode) ? s.claimMode : CLAIM_MODE.FRESH,
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
+        requiresAssignment: !!s.requiresAssignment,
+        assignmentMode: ASSIGNMENT_MODE_OPTIONS.some(o => o.value === s.assignmentMode)
+          ? s.assignmentMode : ASSIGNMENT_MODE.FRESH,
+        inheritAssignmentFromNodeId: s.inheritAssignmentFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
         assignee: (typeof s.assignee === "string" && s.assignee.trim()) ? s.assignee : null,
         multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,

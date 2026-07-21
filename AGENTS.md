@@ -525,10 +525,30 @@ Storage follows the hybrid design:
   `sys.*`/configuration context; a valid non-empty string (maximum 300 characters)
   is snapshotted to `user_tasks.Assignee`. Assigned tasks require no claim, but
   node and flow roles still apply. Missing/unresolvable/non-string results log a
-  warning and create a shared-pool task using the node's `requiresClaim` setting.
+  warning and create a shared-pool task using the node's `requiresClaim` setting,
+  unless the node also uses `requiresAssignment`, in which case the unassigned
+  task remains hidden for distribution.
   Assignment matching is case-insensitive and is enforced by inbox, flow, claim,
   and task action endpoints. Existing collection multi-instance assignment is
   unchanged; assignee expressions are rejected on every multi-instance task.
+- **Required assignment and assignment inheritance.** A normal `userTask` may set
+  `requiresAssignment=true`. While its active work item has no `Assignee`, regular
+  inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
+  assignment managers and the external distributor can still list and assign it.
+  Unassigning hides it again and does not rerun automatic ownership resolution.
+  This mode is separate from claiming and cannot be combined with `requiresClaim`,
+  non-fresh `claimMode`, or a multi-instance target. The workflow must configure
+  top-level `taskDistribution` credentials.
+  `assignmentMode` is `fresh` (default), `previous`, or `fromNode` with
+  `inheritAssignmentFromNodeId`. Fresh mode may use the normal `assignee`
+  expression. Previous/fromNode mode evaluates once on entry and selects the most
+  recent completed source work item (including a multi-instance child); its
+  recorded `Assignee` wins, otherwise `CompletedBy` is used. If that one selected
+  row has neither, the task remains hidden rather than scanning older rows.
+  Successful inheritance writes a `taskAssignment` audit row performed by
+  `system` with `authority=assignmentInheritance` and source/candidate metadata.
+  Starts and default-version changes are guarded so running required-assignment
+  work cannot be stranded without current family distributor credentials.
 - **Manager-controlled task assignment.** A workflow definition may declare
   top-level `taskAssignmentRoles`. An authenticated actor holding at least one
   configured role can list every active work item for that workflow through the
@@ -537,8 +557,9 @@ Storage follows the hybrid design:
   case-insensitive actor id in `user_tasks.Assignee`, clears any claim, and makes
   the item directly assigned; the manager does not need the task's node role.
   Unassigning clears both assignee and claimant and restores the authored node's
-  `requiresClaim` behavior without re-evaluating an assignee expression or claim
-  inheritance. Mutations require the task's expected `UpdatedAt`; stale writes
+  `requiresClaim` behavior without re-evaluating an assignee expression, claim
+  inheritance, or assignment inheritance. A required-assignment task therefore
+  returns to the hidden distributor queue. Mutations require the task's expected `UpdatedAt`; stale writes
   return 409, while an exact desired-state retry is an unchanged 200 response.
   Each real change writes a `taskAssignment` instance-history row with the
   manager, previous/new ownership, and optional reason. A missing or empty
@@ -558,7 +579,9 @@ Storage follows the hybrid design:
   changes record the client id as `PerformedBy` and `authority=taskDistribution`
   in the audit payload. Missing configuration disables this machine API for the
   workflow family. Settings are freshly read during machine authentication so
-  credential rotation takes effect on the next request.
+  credential rotation takes effect on the next request. Its task list includes
+  unassigned `requiresAssignment` work even though regular inboxes omit it.
+  Instance-facing workflow details redact `taskDistribution.clientSecret`.
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
@@ -789,6 +812,9 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "requiresClaim": false,      // if true, one user must claim before acting (userTask only)
   "claimMode": "fresh",        // userTask + requiresClaim: fresh | previous | fromNode (claim inheritance)
   "inheritClaimFromNodeId": null, // fromNode mode only: user-task node whose claimant is reused
+  "requiresAssignment": false, // if true, hide until explicitly/automatically assigned (normal userTask only)
+  "assignmentMode": "fresh",   // requiresAssignment: fresh | previous | fromNode
+  "inheritAssignmentFromNodeId": null, // assignment fromNode mode only
   "assignee": null,            // normal userTask only: optional NCalc username expression
   "variables": [ /* Variable[] */ ], // startEvent / messageStartEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)

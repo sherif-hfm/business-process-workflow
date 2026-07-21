@@ -133,6 +133,7 @@ public sealed class WorkflowEngineService(
                 ?? throw new WorkflowDomainException($"No default workflow found for workflowKey '{workflowKey}'.");
 
         await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
+        await EnsureRequiredAssignmentFamilyStartableAsync(workflow, cancellationToken);
 
         logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
 
@@ -259,7 +260,7 @@ public sealed class WorkflowEngineService(
         instance = await ResolvePassThroughAsync(
             instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
-        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
+        instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -306,6 +307,7 @@ public sealed class WorkflowEngineService(
             message,
             cancellationToken);
         await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
+        await EnsureRequiredAssignmentFamilyStartableAsync(workflow, cancellationToken);
 
         logger.LogInformation("Starting workflow instance by message on workflowKey {WorkflowKey} using start node #{StartNodeId} ({StartNodeName})",
             workflowKey, startEvent.Id, startEvent.Name);
@@ -433,7 +435,7 @@ public sealed class WorkflowEngineService(
         instance = await ResolvePassThroughAsync(
             instance, definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, definition, actor, cancellationToken);
-        instance = await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
+        instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var ack = BuildStartAck(instance, definition);
         await transaction.CommitAsync(cancellationToken);
@@ -592,6 +594,7 @@ public sealed class WorkflowEngineService(
     private static UserTaskRecord ToInboxUserTaskRecord(InstanceListItem row) =>
         new(row.UserTaskId!.Value, row.Id, row.TokenId, row.CurrentNodeId, row.CurrentNodeName,
             row.CurrentNodeExternalId, row.CurrentNodeRoles, row.CurrentRequiresClaim,
+            row.CurrentRequiresAssignment,
             UserTaskRecordStatuses.Active, row.ClaimedBy, row.MultiInstanceExecutionId,
             row.ItemIndex, row.ItemValue, row.Assignee, null, null, null, null,
             row.CreatedAt, row.UpdatedAt, null);
@@ -612,6 +615,11 @@ public sealed class WorkflowEngineService(
 
         var canClaim = row.CurrentRequiresClaim && !claimedByMe && !claimedByOther && roleMatch;
         var canAct = claimedByMe || (!row.CurrentRequiresClaim && roleMatch);
+        if (row.CurrentRequiresAssignment && row.Assignee is null)
+        {
+            canClaim = false;
+            canAct = false;
+        }
 
         // If the task has a bypass-claim flow and the user has the role to take it,
         // they can act directly on it even if it requires a claim and is unclaimed
@@ -654,6 +662,7 @@ public sealed class WorkflowEngineService(
             row.CurrentNodeExternalId,
             row.CurrentNodeRoles,
             row.CurrentRequiresClaim,
+            row.CurrentRequiresAssignment,
             row.ClaimedBy,
             claimedByMe,
             canClaim,
@@ -853,6 +862,8 @@ public sealed class WorkflowEngineService(
                          || task.NodeId != instance.CurrentStepId
                          || task.Status != UserTaskRecordStatuses.Active)
             throw new WorkflowConflictException("The user task is no longer current.");
+        if (task.RequiresAssignment && task.Assignee is null)
+            throw new WorkflowDomainException("The user task must be directly assigned before it can be claimed.");
         if (task.Assignee is not null)
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
         if (!task.RequiresClaim)
@@ -1188,6 +1199,7 @@ public sealed class WorkflowEngineService(
                 previousOwnership,
                 previousOwner,
                 task.RequiresClaim,
+                task.RequiresAssignment,
                 false,
                 task.UpdatedAt);
         }
@@ -1261,6 +1273,7 @@ public sealed class WorkflowEngineService(
             currentOwnership,
             targetActor,
             newRequiresClaim,
+            task.RequiresAssignment,
             true,
             updatedAt);
     }
@@ -1690,7 +1703,7 @@ public sealed class WorkflowEngineService(
         lockedInstance = await ResolvePassThroughAsync(
             lockedInstance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(lockedInstance, workflow.Definition, actor, cancellationToken);
-        lockedInstance = await ApplyClaimInheritanceAsync(lockedInstance, workflow.Definition, cancellationToken);
+        lockedInstance = await ApplyUserTaskOwnershipInheritanceAsync(lockedInstance, workflow.Definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return lockedInstance;
     }
@@ -1874,7 +1887,7 @@ public sealed class WorkflowEngineService(
         instance = await ResolvePassThroughAsync(
             instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
-        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
+        instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -2084,7 +2097,7 @@ public sealed class WorkflowEngineService(
         instance = await ResolvePassThroughAsync(
             instance, workflow.Definition, actor, flowInfo, cancellationToken);
         await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
-        instance = await ApplyClaimInheritanceAsync(instance, workflow.Definition, cancellationToken);
+        instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
 
         var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         var ack = new MessageDeliveryAckDto(
@@ -3257,6 +3270,112 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task<WorkflowInstanceRecord> ApplyUserTaskOwnershipInheritanceAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        instance = await ApplyAssignmentInheritanceAsync(instance, definition, cancellationToken);
+        return await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
+    }
+
+    // Auto-assigns a resting requiresAssignment user task from a completed work
+    // item. The assignee expression is resolved while the task snapshot is built;
+    // inheritance therefore runs only when the new task still has no assignee.
+    private async Task<WorkflowInstanceRecord> ApplyAssignmentInheritanceAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            return instance;
+        }
+
+        var node = GetFlowNode(definition, instance.CurrentStepId);
+        if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
+            || !node.RequiresAssignment
+            || node.AssignmentMode == AssignmentModes.Fresh
+            || node.MultiInstance is not null)
+        {
+            return instance;
+        }
+
+        var task = await runtime.GetActiveUserTaskAsync(instance.Id, false, cancellationToken);
+        if (task is null || !task.RequiresAssignment || task.Assignee is not null)
+        {
+            return instance;
+        }
+
+        var sourceNodeId = node.AssignmentMode == AssignmentModes.FromNode
+            ? node.InheritAssignmentFromNodeId
+            : null;
+        var source = await runtime.GetAssignmentInheritanceSourceAsync(
+            instance.Id, sourceNodeId, cancellationToken);
+        if (source is null)
+        {
+            logger.LogDebug(
+                "Instance {InstanceId}: assignment mode '{AssignmentMode}' found no completed source task for node #{NodeId}; leaving task unassigned.",
+                instance.Id, node.AssignmentMode, node.Id);
+            return instance;
+        }
+
+        string? candidate;
+        string candidateField;
+        if (!string.IsNullOrWhiteSpace(source.Assignee))
+        {
+            candidate = source.Assignee.Trim();
+            candidateField = "assignee";
+        }
+        else if (!string.IsNullOrWhiteSpace(source.CompletedBy))
+        {
+            candidate = source.CompletedBy.Trim();
+            candidateField = "completedBy";
+        }
+        else
+        {
+            logger.LogDebug(
+                "Instance {InstanceId}: assignment mode '{AssignmentMode}' source task #{SourceTaskId} has neither an assignee nor completing actor; leaving task unassigned.",
+                instance.Id, node.AssignmentMode, source.UserTaskId);
+            return instance;
+        }
+
+        var updatedAt = await runtime.UpdateUserTaskAssignmentAsync(
+            task.Id, candidate, false, cancellationToken);
+        var auditPayload = new Dictionary<string, JsonElement>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement(UserTaskAssignmentOperations.Assigned),
+            ["previousOwnership"] = JsonSerializer.SerializeToElement(UserTaskOwnershipKinds.Unassigned),
+            ["previousOwner"] = JsonSerializer.SerializeToElement<string?>(null),
+            ["newOwnership"] = JsonSerializer.SerializeToElement(UserTaskOwnershipKinds.Assigned),
+            ["newOwner"] = JsonSerializer.SerializeToElement(candidate),
+            ["previousRequiresClaim"] = JsonSerializer.SerializeToElement(task.RequiresClaim),
+            ["newRequiresClaim"] = JsonSerializer.SerializeToElement(false),
+            ["reason"] = JsonSerializer.SerializeToElement<string?>(null),
+            ["authority"] = JsonSerializer.SerializeToElement("assignmentInheritance"),
+            ["assignmentMode"] = JsonSerializer.SerializeToElement(node.AssignmentMode),
+            ["sourceTaskId"] = JsonSerializer.SerializeToElement(source.UserTaskId),
+            ["sourceNodeId"] = JsonSerializer.SerializeToElement(source.NodeId),
+            ["candidateField"] = JsonSerializer.SerializeToElement(candidateField)
+        };
+        await runtime.AddUserTaskHistoryAsync(
+            instance.Id,
+            task.TokenId,
+            task.Id,
+            task.MultiInstanceExecutionId,
+            task.ItemIndex,
+            task.NodeId,
+            "system",
+            auditPayload,
+            "taskAssignment",
+            cancellationToken);
+        var instanceUpdatedAt = await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
+        logger.LogDebug(
+            "Instance {InstanceId}: assignment mode '{AssignmentMode}' assigned node #{NodeId} task #{TaskId} to '{Assignee}' from task #{SourceTaskId}.",
+            instance.Id, node.AssignmentMode, node.Id, task.Id, candidate, source.UserTaskId);
+        return instance with { UpdatedAt = instanceUpdatedAt > updatedAt ? instanceUpdatedAt : updatedAt };
+    }
+
     // Auto-claims a resting user task to a prior actor when the node opts in via
     // claimMode. Resolved from instance history (each taken flow logs PerformedBy):
     // "previous" inherits the last user action's actor; "fromNode" inherits the last
@@ -3275,6 +3394,7 @@ public sealed class WorkflowEngineService(
         var node = GetFlowNode(definition, instance.CurrentStepId);
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
             || node.ClaimMode == ClaimModes.Fresh
+            || node.RequiresAssignment
             || node.MultiInstance is not null)
         {
             return instance;
@@ -4421,6 +4541,10 @@ public sealed class WorkflowEngineService(
             node.Message.ClientSecret = RedactedSecret;
             node.Message.HeaderValue = RedactedSecret;
         }
+        if (definition.TaskDistribution is not null)
+        {
+            definition.TaskDistribution.ClientSecret = RedactedSecret;
+        }
 
         return new WorkflowDetailDto(
             workflow.Id,
@@ -4462,6 +4586,26 @@ public sealed class WorkflowEngineService(
         {
             throw new WorkflowDomainException(
                 "This keyed workflow version cannot start until it becomes the default published version.");
+        }
+    }
+
+    private async Task EnsureRequiredAssignmentFamilyStartableAsync(
+        WorkflowDefinitionRecord workflow,
+        CancellationToken cancellationToken)
+    {
+        if (!workflow.Definition.FlowNodes.Any(node =>
+                BpmnFlowNodeTypes.IsUserTask(node.Type) && node.RequiresAssignment))
+        {
+            return;
+        }
+
+        var currentDefault = await definitions.GetDefaultByWorkflowKeyAsync(
+            workflow.WorkflowKey,
+            cancellationToken);
+        if (currentDefault?.Definition.TaskDistribution is null)
+        {
+            throw new WorkflowDomainException(
+                "A workflow containing required-assignment tasks cannot start unless its current default published version configures taskDistribution credentials.");
         }
     }
 
@@ -4590,7 +4734,7 @@ public sealed class WorkflowEngineService(
         MultiInstanceProgressDto? progress,
         UserTaskCapabilitiesDto capabilities) =>
         new(task.Id, task.InstanceId, task.TokenId, task.NodeId, task.NodeName,
-            task.NodeExternalId, task.Roles, task.RequiresClaim, task.Status, task.ClaimedBy,
+            task.NodeExternalId, task.Roles, task.RequiresClaim, task.RequiresAssignment, task.Status, task.ClaimedBy,
             task.Assignee, task.ItemIndex, task.ItemValue, task.SelectedFlowId, task.CompletedBy,
             task.Result, capabilities, progress,
             task.CreatedAt, task.UpdatedAt, task.CompletedAt);
@@ -4745,6 +4889,7 @@ public sealed class WorkflowEngineService(
             task.NodeExternalId,
             task.NodeRoles,
             task.RequiresClaim,
+            task.RequiresAssignment,
             ownership,
             task.Assignee ?? task.ClaimedBy,
             task.MultiInstanceExecutionId,
@@ -4889,6 +5034,7 @@ public sealed class WorkflowEngineService(
     {
         var user = NormalizeUser(actor.User);
         return BpmnFlowNodeTypes.IsUserTask(node.Type)
+               && (!task.RequiresAssignment || task.Assignee is not null)
                && (task.Assignee is null
                    || string.Equals(task.Assignee, user, StringComparison.OrdinalIgnoreCase))
                && RoleAllowed(node, NormalizeRoles(actor.Roles));
@@ -4934,21 +5080,24 @@ public sealed class WorkflowEngineService(
                 if (assignee is null)
                 {
                     logger.LogWarning(
-                        "User task #{NodeId} assignee expression '{Expression}' did not resolve to a non-empty string of at most {MaxLength} characters for instance {InstanceId}; creating a shared-pool task.",
-                        node.Id, node.AssigneeExpression, UserTaskConstraints.MaxActorNameLength, instanceId);
+                        "User task #{NodeId} assignee expression '{Expression}' did not resolve to a non-empty string of at most {MaxLength} characters for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
+                        node.Id, node.AssigneeExpression, UserTaskConstraints.MaxActorNameLength, instanceId,
+                        node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
                 }
             }
             catch (WorkflowDomainException ex)
             {
                 logger.LogWarning(ex,
-                    "User task #{NodeId} assignee expression '{Expression}' failed for instance {InstanceId}; creating a shared-pool task.",
-                    node.Id, node.AssigneeExpression, instanceId);
+                    "User task #{NodeId} assignee expression '{Expression}' failed for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
+                    node.Id, node.AssigneeExpression, instanceId,
+                    node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogWarning(ex,
-                    "User task #{NodeId} assignee expression '{Expression}' failed unexpectedly for instance {InstanceId}; creating a shared-pool task.",
-                    node.Id, node.AssigneeExpression, instanceId);
+                    "User task #{NodeId} assignee expression '{Expression}' failed unexpectedly for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
+                    node.Id, node.AssigneeExpression, instanceId,
+                    node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
             }
         }
 
@@ -4959,6 +5108,7 @@ public sealed class WorkflowEngineService(
             node.Type,
             node.Roles,
             node.RequiresClaim,
+            node.RequiresAssignment,
             assignee,
             node.MultiInstance is not null,
             BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorCode : null,

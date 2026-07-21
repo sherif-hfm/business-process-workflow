@@ -150,6 +150,7 @@ public sealed record UserTaskDto(
     string? NodeExternalId,
     IReadOnlyList<string> Roles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string Status,
     string? ClaimedBy,
     string? Assignee,
@@ -216,6 +217,7 @@ public sealed record ManagedUserTaskDto(
     string? NodeExternalId,
     IReadOnlyList<string> NodeRoles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string Ownership,
     string? Owner,
     long? MultiInstanceExecutionId,
@@ -236,6 +238,7 @@ public sealed record UserTaskAssignmentAckDto(
     string CurrentOwnership,
     string? CurrentOwner,
     bool RequiresClaim,
+    bool RequiresAssignment,
     bool Changed,
     DateTimeOffset UpdatedAt);
 
@@ -458,6 +461,7 @@ public sealed record PagedResult<T>(
 /// <param name="CurrentNodeExternalId">The user-defined external ID of the current flow node.</param>
 /// <param name="NodeRoles">The roles allowed to claim/act on this userTask.</param>
 /// <param name="RequiresClaim">Indicates whether the task must be claimed before taking any actions.</param>
+/// <param name="RequiresAssignment">Indicates whether an explicit assignee is required before regular users can discover or act on the task.</param>
 /// <param name="ClaimedBy">The username of the actor who has currently claimed the task.</param>
 /// <param name="ClaimedByMe">True if the current caller is the one who claimed this task.</param>
 /// <param name="CanClaim">True if the current caller is authorized to claim this task based on role constraints.</param>
@@ -481,6 +485,7 @@ public sealed record InboxItemDto(
     string? CurrentNodeExternalId,
     IReadOnlyList<string> NodeRoles,
     bool RequiresClaim,
+    bool RequiresAssignment,
     string? ClaimedBy,
     bool ClaimedByMe,
     bool CanClaim,

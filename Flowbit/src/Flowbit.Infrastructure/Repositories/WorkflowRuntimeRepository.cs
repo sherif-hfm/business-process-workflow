@@ -248,6 +248,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        token."NodeType" AS "CurrentNodeType",
                        ut."Roles" AS "CurrentNodeRoles",
                        ut."RequiresClaim" AS "CurrentRequiresClaim",
+                       ut."RequiresAssignment" AS "CurrentRequiresAssignment",
                        w."Status" AS "Status",
                        ut."ClaimedBy" AS "ClaimedBy",
                        w."StartedBy" AS "StartedBy",
@@ -524,6 +525,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var where = new StringBuilder("""
              WHERE w."Status" = @status
               AND ut."Status" = @activeTask
+              AND (NOT ut."RequiresAssignment" OR ut."Assignee" IS NOT NULL)
               AND (
                     cardinality(ut."Roles") = 0
                  OR EXISTS (
@@ -788,6 +790,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 token.NodeType,
                 [],
                 false,
+                false,
                 e.Status,
                 taskSummary?.SoleClaimedBy,
                 e.StartedBy,
@@ -943,6 +946,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             row.CurrentNodeType,
             row.CurrentNodeRoles,
             row.CurrentRequiresClaim,
+            row.CurrentRequiresAssignment,
             row.Status,
             row.ClaimedBy,
             row.StartedBy,
@@ -1015,6 +1019,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         public string CurrentNodeType { get; set; } = string.Empty;
         public string[] CurrentNodeRoles { get; set; } = [];
         public bool CurrentRequiresClaim { get; set; }
+        public bool CurrentRequiresAssignment { get; set; }
         public string Status { get; set; } = string.Empty;
         public string? ClaimedBy { get; set; }
         public string? StartedBy { get; set; }
@@ -1090,6 +1095,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 task.NodeExternalId,
                 task.Roles,
                 task.RequiresClaim,
+                task.RequiresAssignment,
                 task.ClaimedBy,
                 task.Assignee,
                 task.MultiInstanceExecutionId,
@@ -1164,6 +1170,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 NodeExternalId = node.ExternalId,
                 Roles = node.Roles.ToList(),
                 RequiresClaim = configuration.Source == MultiInstanceSources.Cardinality && node.RequiresClaim,
+                RequiresAssignment = node.RequiresAssignment,
                 Status = configuration.Mode == MultiInstanceModes.Parallel || index == 0
                     ? UserTaskStatuses.Active
                     : UserTaskStatuses.Pending,
@@ -1300,6 +1307,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var where = new StringBuilder("""
              WHERE ut."InstanceId" = @instanceId
                AND (ut."Assignee" IS NULL OR lower(ut."Assignee") = lower(@user))
+               AND (NOT ut."RequiresAssignment" OR ut."Assignee" IS NOT NULL)
                AND (
                     cardinality(ut."Roles") = 0
                     OR EXISTS (
@@ -1348,6 +1356,31 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .Where(t => t.MultiInstanceExecutionId == executionId)
             .OrderBy(t => t.ItemIndex)
             .ToListAsync(cancellationToken)).Select(ToRecord).ToList();
+
+    public async Task<AssignmentInheritanceSourceRecord?> GetAssignmentInheritanceSourceAsync(
+        long instanceId,
+        int? nodeId,
+        CancellationToken cancellationToken)
+    {
+        var query = dbContext.UserTasks.AsNoTracking()
+            .Where(task => task.InstanceId == instanceId
+                           && task.Status == UserTaskStatuses.Completed
+                           && task.CompletedAt != null);
+        if (nodeId is not null)
+        {
+            query = query.Where(task => task.NodeId == nodeId.Value);
+        }
+
+        return await query
+            .OrderByDescending(task => task.CompletedAt)
+            .ThenByDescending(task => task.Id)
+            .Select(task => new AssignmentInheritanceSourceRecord(
+                task.Id,
+                task.NodeId,
+                task.Assignee,
+                task.CompletedBy))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyDictionary<long, UserTaskWorkSummaryRecord>> GetUserTaskWorkSummariesAsync(
         IReadOnlyCollection<long> instanceIds,
@@ -2239,7 +2272,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
     private static UserTaskRecord ToRecord(UserTaskEntity entity) =>
         new(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.NodeName,
-            entity.NodeExternalId, entity.Roles, entity.RequiresClaim, entity.Status,
+            entity.NodeExternalId, entity.Roles, entity.RequiresClaim, entity.RequiresAssignment, entity.Status,
             entity.ClaimedBy, entity.MultiInstanceExecutionId, entity.ItemIndex,
             entity.ItemValueJson?.RootElement.Clone(), entity.Assignee, entity.SelectedFlowId,
             JsonMapping.ToDictionary(entity.ResultJson), entity.CompletedBy, entity.CompletedByRoles,
@@ -2279,6 +2312,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeExternalId = node.ExternalId,
             Roles = node.Roles.ToList(),
             RequiresClaim = node.Assignee is null && node.RequiresClaim,
+            RequiresAssignment = node.RequiresAssignment,
             Status = UserTaskStatuses.Active,
             ClaimedBy = claimedBy,
             Assignee = node.Assignee,

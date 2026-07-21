@@ -14,6 +14,7 @@ public sealed class UserTaskEntity
     public string? NodeExternalId { get; set; }
     public List<string> Roles { get; set; } = [];
     public bool RequiresClaim { get; set; }
+    public bool RequiresAssignment { get; set; }
     public string Status { get; set; } = UserTaskStatuses.Active;
     public string? ClaimedBy { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

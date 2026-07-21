@@ -336,6 +336,13 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
 
         if (isDefault)
         {
+            if (entity.Definition.TaskDistribution is null
+                && await HasRunningRequiredAssignmentInstancesAsync(entity.WorkflowKey, cancellationToken))
+            {
+                throw new WorkflowDomainException(
+                    "Cannot set this version as default while running instances contain required-assignment tasks because it has no taskDistribution credentials.");
+            }
+
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
                 .AnyAsync(scope => scope.WorkflowKey == entity.WorkflowKey, cancellationToken);
             var hasBusinessKeys = HasBusinessKeys(entity.Definition);
@@ -410,28 +417,49 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         var workflowKey = entity.WorkflowKey;
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
             .AnyAsync(scope => scope.WorkflowKey == workflowKey, cancellationToken);
+        var requiresDistributor = entity.IsDefault
+            && await HasRunningRequiredAssignmentInstancesAsync(workflowKey, cancellationToken);
         long? successorId = null;
+
+        List<WorkflowDefinitionEntity>? successorCandidates = null;
+        if (entity.IsDefault)
+        {
+            successorCandidates = await dbContext.WorkflowDefinitions.AsNoTracking()
+                .Where(w => w.WorkflowKey == entity.WorkflowKey && w.Id != id)
+                .OrderByDescending(w => w.Version)
+                .ToListAsync(cancellationToken);
+            if (scopeActive)
+            {
+                successorCandidates = successorCandidates
+                    .Where(candidate => HasBusinessKeys(candidate.Definition))
+                    .ToList();
+            }
+            if (requiresDistributor)
+            {
+                successorCandidates = successorCandidates
+                    .Where(candidate => candidate.Definition.TaskDistribution is not null)
+                    .ToList();
+            }
+
+            if (requiresDistributor && successorCandidates.All(candidate => !candidate.IsPublished))
+            {
+                throw new WorkflowDomainException(
+                    "Cannot delete the default version while running instances contain required-assignment tasks unless another published version configures taskDistribution credentials.");
+            }
+        }
 
         var affected = await dbContext.WorkflowDefinitions
             .Where(w => w.Id == id)
             .ExecuteDeleteAsync(cancellationToken);
 
-        if (affected > 0 && entity is not null)
+        if (affected > 0)
         {
             // If the deleted row was the default, auto-assign the default to the
             // highest-version remaining published row for the same key. If none
             // are published the family intentionally has no effective default.
             if (entity.IsDefault)
             {
-                var candidates = await dbContext.WorkflowDefinitions.AsNoTracking()
-                    .Where(w => w.WorkflowKey == entity.WorkflowKey)
-                    .OrderByDescending(w => w.Version)
-                    .ToListAsync(cancellationToken);
-                if (scopeActive)
-                {
-                    candidates = candidates.Where(candidate => HasBusinessKeys(candidate.Definition)).ToList();
-                }
-                var successor = candidates.FirstOrDefault(candidate => candidate.IsPublished);
+                var successor = successorCandidates!.FirstOrDefault(candidate => candidate.IsPublished);
 
                 if (successor is not null)
                 {
@@ -458,6 +486,29 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         }
 
         return affected > 0;
+    }
+
+    private async Task<bool> HasRunningRequiredAssignmentInstancesAsync(
+        string workflowKey,
+        CancellationToken cancellationToken)
+    {
+        var definitionIds = await dbContext.WorkflowInstances.AsNoTracking()
+            .Where(instance => instance.WorkflowKey == workflowKey
+                && instance.Status == WorkflowInstanceStatuses.Running)
+            .Select(instance => instance.WorkflowDefinitionId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        if (definitionIds.Count == 0)
+        {
+            return false;
+        }
+
+        var activeDefinitions = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(definition => definitionIds.Contains(definition.Id))
+            .Select(definition => definition.Definition)
+            .ToListAsync(cancellationToken);
+        return activeDefinitions.Any(definition => definition.FlowNodes.Any(node =>
+            BpmnFlowNodeTypes.IsUserTask(node.Type) && node.RequiresAssignment));
     }
 
     private void InvalidateDefinition(long id, string _)

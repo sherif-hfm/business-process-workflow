@@ -88,6 +88,93 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
+    public async Task CreateAsync_AcceptsRequiredAssignmentFromUserTaskNode()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = "distributor",
+            ClientSecret = "secret"
+        };
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.RequiresAssignment = true;
+        task.AssignmentMode = AssignmentModes.FromNode;
+        task.InheritAssignmentFromNodeId = 2;
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 2);
+        Assert.True(saved.RequiresAssignment);
+        Assert.Equal(AssignmentModes.FromNode, saved.AssignmentMode);
+        Assert.Equal(2, saved.InheritAssignmentFromNodeId);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsFreshRequiredAssignmentWithAssigneeExpression()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = "distributor",
+            ClientSecret = "secret"
+        };
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.RequiresAssignment = true;
+        task.AssignmentMode = AssignmentModes.Fresh;
+        task.AssigneeExpression = "'alice'";
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 2);
+        Assert.True(saved.RequiresAssignment);
+        Assert.Equal(AssignmentModes.Fresh, saved.AssignmentMode);
+        Assert.Equal("'alice'", saved.AssigneeExpression);
+    }
+
+    [Theory]
+    [InlineData("missingDistribution")]
+    [InlineData("claimConflict")]
+    [InlineData("assigneeConflict")]
+    [InlineData("multiInstance")]
+    [InlineData("missingSource")]
+    [InlineData("modeWithoutRequirement")]
+    public async Task CreateAsync_RejectsInvalidRequiredAssignmentConfiguration(string invalid)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = "distributor",
+            ClientSecret = "secret"
+        };
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.RequiresAssignment = true;
+
+        switch (invalid)
+        {
+            case "missingDistribution": model.TaskDistribution = null; break;
+            case "claimConflict": task.RequiresClaim = true; break;
+            case "assigneeConflict":
+                task.AssignmentMode = AssignmentModes.Previous;
+                task.AssigneeExpression = "'alice'";
+                break;
+            case "multiInstance": task.MultiInstance = new MultiInstanceModel(); break;
+            case "missingSource":
+                task.AssignmentMode = AssignmentModes.FromNode;
+                task.InheritAssignmentFromNodeId = 999;
+                break;
+            case "modeWithoutRequirement":
+                task.RequiresAssignment = false;
+                task.AssignmentMode = AssignmentModes.Previous;
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("assignment", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsDuplicateNodeIdsBeforeSingleLookups()
     {
         var model = LoadModel("votes-users-list.json");
@@ -216,6 +303,9 @@ public sealed class DefinitionValidationTests
         terminal.RequiresClaim = true;
         terminal.ClaimMode = ClaimModes.FromNode;
         terminal.InheritClaimFromNodeId = 2;
+        terminal.RequiresAssignment = true;
+        terminal.AssignmentMode = AssignmentModes.FromNode;
+        terminal.InheritAssignmentFromNodeId = 2;
         terminal.Roles = ["Manager"];
         terminal.Variables =
         [
@@ -250,6 +340,9 @@ public sealed class DefinitionValidationTests
         Assert.False(terminal.RequiresClaim);
         Assert.Equal(ClaimModes.Fresh, terminal.ClaimMode);
         Assert.Null(terminal.InheritClaimFromNodeId);
+        Assert.False(terminal.RequiresAssignment);
+        Assert.Equal(AssignmentModes.Fresh, terminal.AssignmentMode);
+        Assert.Null(terminal.InheritAssignmentFromNodeId);
         Assert.Empty(terminal.Roles);
         Assert.Empty(terminal.Variables);
         Assert.Null(terminal.Service);

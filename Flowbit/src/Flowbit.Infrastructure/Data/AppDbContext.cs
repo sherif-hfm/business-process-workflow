@@ -114,6 +114,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.RequiresAssignment).HasDefaultValue(false);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ClaimedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.Assignee).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
@@ -125,6 +126,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.InstanceId, e.Status, e.CompletedAt, e.Id });
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.Status, e.ItemIndex });

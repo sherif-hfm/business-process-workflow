@@ -19,6 +19,159 @@ public sealed class TaskDistributionApiTests(PostgresApiFixture fixture)
     private const string ClientSecret = "workforce-secret";
 
     [Fact]
+    public async Task RequiredAssignmentTaskIsHiddenUntilAssignedAndHiddenAgainAfterUnassign()
+    {
+        var model = CreateSimpleModel("required-assignment", ClientId, ClientSecret);
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
+        var workflow = await CreateWorkflowAsync(model);
+        var instance = await StartAsync(workflow.Id);
+        Assert.Equal("[redacted]", instance.Workflow.Definition.TaskDistribution!.ClientSecret);
+
+        Assert.Empty((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
+        Assert.Empty((await GetInboxAsync(instance.Id, "bob", "Worker")).Items);
+        Assert.Empty((await GetActorTasksAsync(instance.Id, "bob", "Worker")).Items);
+
+        var distributed = await GetSingleTaskAsync(workflow.WorkflowKey, instance.Id);
+        Assert.True(distributed.RequiresAssignment);
+        Assert.Equal(UserTaskOwnershipKinds.Unassigned, distributed.Ownership);
+        Assert.Null(distributed.Owner);
+
+        using var claimWhileHidden = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{distributed.UserTaskId}/claim",
+            null,
+            "bob",
+            "Worker");
+        Assert.Equal(HttpStatusCode.BadRequest, claimWhileHidden.StatusCode);
+
+        var assigned = await AssignAsync(workflow.WorkflowKey, distributed, "bob", null);
+        Assert.True(assigned.RequiresAssignment);
+        Assert.Empty((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
+        var bobItem = Assert.Single((await GetInboxAsync(instance.Id, "bob", "Worker")).Items);
+        Assert.True(bobItem.RequiresAssignment);
+        Assert.Equal("bob", bobItem.Assignee);
+        Assert.Single((await GetActorTasksAsync(instance.Id, "bob", "Worker")).Items);
+
+        var assignedTask = await GetSingleTaskAsync(workflow.WorkflowKey, instance.Id);
+        using var unassignResponse = await SendDistributorAsync(
+            HttpMethod.Post,
+            TasksPath(workflow.WorkflowKey, $"/{assignedTask.UserTaskId}/unassign"),
+            new UnassignUserTaskRequest(assignedTask.UpdatedAt, null));
+        Assert.Equal(HttpStatusCode.OK, unassignResponse.StatusCode);
+        var unassigned = await ReadAsync<UserTaskAssignmentAckDto>(unassignResponse);
+        Assert.True(unassigned.RequiresAssignment);
+
+        Assert.Empty((await GetInboxAsync(instance.Id, "bob", "Worker")).Items);
+        Assert.Empty((await GetInboxAsync(instance.Id, "carol", "Worker")).Items);
+        Assert.Null((await GetSingleTaskAsync(workflow.WorkflowKey, instance.Id)).Owner);
+    }
+
+    [Fact]
+    public async Task FromNodeAssignmentInheritsRecordedAssigneeInsteadOfMostRecentActor()
+    {
+        var workflow = await CreateWorkflowAsync(CreateAssignmentInheritanceModel());
+        var instance = await StartAsync(workflow.Id);
+
+        using var first = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/instances/{instance.Id}/flows/201",
+            new TakeFlowRequest(null),
+            "alice",
+            "Worker");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        using var second = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/instances/{instance.Id}/flows/301",
+            new TakeFlowRequest(null),
+            "bob",
+            "Worker");
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        var inherited = await GetSingleTaskAsync(workflow.WorkflowKey, instance.Id);
+        Assert.True(inherited.RequiresAssignment);
+        Assert.Equal("alice", inherited.Owner);
+        Assert.Single((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
+        Assert.Empty((await GetInboxAsync(instance.Id, "bob", "Worker")).Items);
+
+        var detail = await GetInstanceAsync(instance.Id);
+        var audit = Assert.Single(detail.History, row =>
+            row.Note == "taskAssignment"
+            && row.Payload is not null
+            && row.Payload.TryGetValue("authority", out var authority)
+            && authority.GetString() == "assignmentInheritance");
+        Assert.Equal("system", audit.PerformedBy);
+        Assert.Equal(AssignmentModes.FromNode, audit.Payload!["assignmentMode"].GetString());
+        Assert.Equal(2, audit.Payload["sourceNodeId"].GetInt32());
+        Assert.Equal("assignee", audit.Payload["candidateField"].GetString());
+    }
+
+    [Fact]
+    public async Task PreviousAssignmentFallsBackToCompletingActorForSharedPoolSource()
+    {
+        var workflow = await CreateWorkflowAsync(CreatePreviousAssignmentInheritanceModel());
+        var instance = await StartAsync(workflow.Id);
+
+        using var completeSource = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/instances/{instance.Id}/flows/201",
+            new TakeFlowRequest(null),
+            "casey",
+            "Worker");
+        Assert.Equal(HttpStatusCode.OK, completeSource.StatusCode);
+
+        var inherited = await GetSingleTaskAsync(workflow.WorkflowKey, instance.Id);
+        Assert.True(inherited.RequiresAssignment);
+        Assert.Equal("casey", inherited.Owner);
+        Assert.Single((await GetInboxAsync(instance.Id, "casey", "Worker")).Items);
+
+        var detail = await GetInstanceAsync(instance.Id);
+        var audit = Assert.Single(detail.History, row =>
+            row.Note == "taskAssignment"
+            && row.Payload is not null
+            && row.Payload.TryGetValue("authority", out var authority)
+            && authority.GetString() == "assignmentInheritance");
+        Assert.Equal(AssignmentModes.Previous, audit.Payload!["assignmentMode"].GetString());
+        Assert.Equal("completedBy", audit.Payload["candidateField"].GetString());
+    }
+
+    [Fact]
+    public async Task DefaultAndStartGuardsKeepDistributorCredentialsAvailable()
+    {
+        var model = CreateSimpleModel("required-assignment-family", ClientId, ClientSecret);
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
+        var requiredVersion = await CreateWorkflowAsync(model);
+
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = false;
+        model.TaskDistribution = null;
+        var versionWithoutDistributor = await CreateVersionAsync(requiredVersion.Id, model);
+
+        var running = await StartAsync(requiredVersion.Id);
+        using var blockedDefault = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/workflows/{versionWithoutDistributor.Id}/set-default");
+        Assert.Equal(HttpStatusCode.BadRequest, blockedDefault.StatusCode);
+
+        var hiddenTask = await GetSingleTaskAsync(requiredVersion.WorkflowKey, running.Id);
+        await AssignAsync(requiredVersion.WorkflowKey, hiddenTask, "bob", null);
+        using var complete = await SendJwtAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{hiddenTask.UserTaskId}/flows/201",
+            new TakeFlowRequest(null),
+            "bob",
+            "Worker");
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+
+        await SetDefaultAsync(versionWithoutDistributor.Id);
+        using var blockedStart = await SendJwtAsync(
+            HttpMethod.Post,
+            "/api/instances?detail=full",
+            new StartInstanceRequest(requiredVersion.Id, null, null, null),
+            "starter",
+            "Worker");
+        Assert.Equal(HttpStatusCode.BadRequest, blockedStart.StatusCode);
+    }
+
+    [Fact]
     public async Task DistributorListsVariablesMutatesAndAuditsWithoutJwtRoles()
     {
         var workflow = await CreateWorkflowAsync(CreateSimpleModel(
@@ -380,6 +533,36 @@ public sealed class TaskDistributionApiTests(PostgresApiFixture fixture)
         return await ReadAsync<InstanceDetailDto>(response);
     }
 
+    private async Task<PagedResult<InboxItemDto>> GetInboxAsync(
+        long instanceId,
+        string user,
+        params string[] roles)
+    {
+        using var response = await SendJwtAsync(
+            HttpMethod.Get,
+            $"/api/instances/inbox?instanceId={instanceId}&pageSize=200",
+            null,
+            user,
+            roles);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadAsync<PagedResult<InboxItemDto>>(response);
+    }
+
+    private async Task<PagedResult<UserTaskDto>> GetActorTasksAsync(
+        long instanceId,
+        string user,
+        params string[] roles)
+    {
+        using var response = await SendJwtAsync(
+            HttpMethod.Get,
+            $"/api/instances/{instanceId}/user-tasks?status=active&pageSize=200",
+            null,
+            user,
+            roles);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadAsync<PagedResult<UserTaskDto>>(response);
+    }
+
     private async Task SetWorkflowSettingAsync(string? settingNamespace, string name, string value)
     {
         await using var db = fixture.CreateDbContext();
@@ -484,6 +667,102 @@ public sealed class TaskDistributionApiTests(PostgresApiFixture fixture)
             [
                 new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
                 new SequenceFlowModel { Id = 201, Name = "Complete", SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateAssignmentInheritanceModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = $"tests-assignment-inheritance-{suffix}",
+            Name = $"Tests assignment inheritance {suffix}",
+            InitialEventId = 1,
+            TaskDistribution = new TaskDistributionModel
+            {
+                ClientId = ClientId,
+                ClientSecret = ClientSecret
+            },
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Named owner",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["Worker"],
+                    AssigneeExpression = "'alice'"
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Intervening review",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["Worker"]
+                },
+                new FlowNodeModel
+                {
+                    Id = 4,
+                    Name = "Return to named owner",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["Worker"],
+                    RequiresAssignment = true,
+                    AssignmentMode = AssignmentModes.FromNode,
+                    InheritAssignmentFromNodeId = 2
+                },
+                new FlowNodeModel { Id = 5, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, Name = "Continue", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 301, Name = "Continue", SourceRef = 3, TargetRef = 4 },
+                new SequenceFlowModel { Id = 401, Name = "Complete", SourceRef = 4, TargetRef = 5 }
+            ]
+        };
+    }
+
+    private static WorkflowModel CreatePreviousAssignmentInheritanceModel()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = $"tests-previous-assignment-{suffix}",
+            Name = $"Tests previous assignment {suffix}",
+            InitialEventId = 1,
+            TaskDistribution = new TaskDistributionModel
+            {
+                ClientId = ClientId,
+                ClientSecret = ClientSecret
+            },
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Shared review",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["Worker"]
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Continue with actor",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["Worker"],
+                    RequiresAssignment = true,
+                    AssignmentMode = AssignmentModes.Previous
+                },
+                new FlowNodeModel { Id = 4, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, Name = "Continue", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 301, Name = "Complete", SourceRef = 3, TargetRef = 4 }
             ]
         };
     }

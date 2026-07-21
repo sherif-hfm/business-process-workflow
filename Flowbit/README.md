@@ -33,6 +33,11 @@
   distributor across every active version of the stable workflow key. Credential
   values may be literal or `${setting.*}` / `${config.*}` references; prefer
   references because literal secrets are visible in versioned definition JSON.
+- A normal user task with `requiresAssignment=true` is stored as active but is
+  omitted from regular inbox/task reads until it has an assignee. Assignment
+  managers and the external distributor can still see it. `assignmentMode`
+  supports `fresh`, `previous`, and `fromNode` ownership inheritance; this gate
+  is intentionally separate from `requiresClaim` and cannot be combined with it.
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -148,8 +153,10 @@ continues through the selected flow.
 Task assignment mutations use `expectedUpdatedAt` for optimistic concurrency and
 accept an optional audit reason. Assignment clears any existing claim and creates
 direct ownership; unassignment clears both ownership fields and restores the
-node's authored `requiresClaim` setting. Every real change is recorded in instance
-history. Workflows without `taskAssignmentRoles` expose no manageable tasks.
+node's authored `requiresClaim` setting. For `requiresAssignment` tasks, unassign
+returns the work item to the hidden external-assignment queue without rerunning
+inheritance. Every real change is recorded in instance history. Workflows without
+`taskAssignmentRoles` expose no manageable tasks.
 
 The task-distribution endpoints are machine-facing and do not use JWT roles.
 They authenticate `X-Client-Id` / `X-Client-Secret` against `taskDistribution`
@@ -158,7 +165,10 @@ across all versions of that workflow family. They preserve the same optimistic
 concurrency and audit behavior as manager actions. The list is minimal by
 default; `includeVariables=true` adds latest instance variables for the returned
 page. Missing configuration disables external distribution. Production callers
-must use TLS and should be rate-limited at the gateway.
+must use TLS and should be rate-limited at the gateway. The distributor list is
+also the authoritative queue for unassigned `requiresAssignment` tasks; regular
+users cannot discover, claim, or act on those tasks. Instance detail responses
+redact `taskDistribution.clientSecret`.
 
 Example configuration:
 
