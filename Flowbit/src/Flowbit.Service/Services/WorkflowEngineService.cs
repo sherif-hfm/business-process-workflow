@@ -38,6 +38,15 @@ public sealed class WorkflowEngineService(
         _settingsCache = (Dictionary<string, JsonElement>)await settings.LoadAllAsync(cancellationToken);
     }
 
+    private async Task RefreshSettingsAsync(CancellationToken cancellationToken)
+    {
+        var freshSettings = await settings.LoadAllFreshAsync(cancellationToken);
+        _settingsCache = freshSettings.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.Clone(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
     public async Task<InstanceDetailDto> StartInstanceAsync(
         long? workflowId,
         string? workflowKey,
@@ -266,45 +275,37 @@ public sealed class WorkflowEngineService(
         IncomingMessage message,
         CancellationToken cancellationToken)
     {
-        await LoadSettingsAsync(cancellationToken);
-
-        // Resolve the default version by the stable, cross-version key so
-        // a webhook caller addresses the workflow without knowing per-version ids.
+        // Resolve and authenticate a preview before taking the family lock so an
+        // unauthenticated caller cannot serialize legitimate starts. The locked,
+        // authoritative definition is authenticated again below to cover a
+        // concurrent default-version or credential change.
         var workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
             ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
+        var definition = workflow.Definition;
+        var startEvent = SelectMessageStartEvent(definition, startEventExternalId);
+        EnsureEntryRuntimeContract(definition, startEvent);
+        _ = await AuthenticateMessageStartAsync(
+            workflowKey,
+            definition,
+            startEvent,
+            message,
+            cancellationToken);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         await definitions.LockFamilyForStartAsync(workflow.WorkflowKey, cancellationToken);
         workflow = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken)
             ?? throw new WorkflowDomainException($"No default workflow found for workflowKey {workflowKey}.");
-        await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
-
-        // Select the messageStartEvent: match the requested externalId when given;
-        // else the single message-start node; else reject as ambiguous/absent.
-        var definition = workflow.Definition;
-        var startEvents = definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsMessageStart(n.Type)).ToList();
-        FlowNodeModel startEvent;
-        if (!string.IsNullOrWhiteSpace(startEventExternalId))
-        {
-            startEvent = startEvents.SingleOrDefault(n => string.Equals(n.ExternalId, startEventExternalId, StringComparison.Ordinal))
-                ?? throw new WorkflowDomainException($"No message start event with externalId '{startEventExternalId}' was found in workflow '{definition.Name}'.");
-        }
-        else
-        {
-            if (startEvents.Count == 0)
-            {
-                throw new WorkflowDomainException($"Workflow '{definition.Name}' has no message start event.");
-            }
-
-            if (startEvents.Count > 1)
-            {
-                throw new WorkflowDomainException($"Workflow '{definition.Name}' has multiple message start events; specify one via the 'startEvent' query parameter (its externalId).");
-            }
-
-            startEvent = startEvents[0];
-        }
-
+        definition = workflow.Definition;
+        startEvent = SelectMessageStartEvent(definition, startEventExternalId);
         EnsureEntryRuntimeContract(definition, startEvent);
+
+        var authentication = await AuthenticateMessageStartAsync(
+            workflowKey,
+            definition,
+            startEvent,
+            message,
+            cancellationToken);
+        await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
 
         logger.LogInformation("Starting workflow instance by message on workflowKey {WorkflowKey} using start node #{StartNodeId} ({StartNodeName})",
             workflowKey, startEvent.Id, startEvent.Name);
@@ -312,62 +313,9 @@ public sealed class WorkflowEngineService(
         var messageConfig = startEvent.Message
             ?? throw new WorkflowDomainException($"Message start event #{startEvent.Id} has no message configuration.");
 
-        // Resolve templated expected credentials + required header against an
-        // instance-less auth context (config/setting + non-caller-influenced sys.*).
-        var actor = message.Actor;
+        var actor = authentication.Actor;
         var performedBy = actor.User;
-        var authContext = BuildAuthContext(
-            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-            instance: null,
-            definition,
-            startEvent);
-
-        var expectedClientId = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientId, authContext);
-        var expectedClientSecret = ServiceTaskTemplating.SubstituteScalar(messageConfig.ClientSecret, authContext);
-        var expectedHeaderName = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderName, authContext);
-        var expectedHeaderValue = ServiceTaskTemplating.SubstituteScalar(messageConfig.HeaderValue, authContext);
-
-        // Authenticate the caller against the node's expected client id/secret.
-        if (!string.Equals(message.ClientId ?? string.Empty, expectedClientId, StringComparison.Ordinal)
-            || !ConstantTimeEquals(message.ClientSecret ?? string.Empty, expectedClientSecret))
-        {
-            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: invalid client credentials (client id '{ClientId}').", workflowKey, message.ClientId);
-            throw new WorkflowUnauthorizedException("Invalid client credentials.");
-        }
-
-        // Validate the required custom header (a domain error, 400, since the
-        // caller has authenticated via the client id/secret): present, equal to the
-        // resolved expected value, and (when set) satisfying the NCalc headerValidation.
-        if (!message.Headers.TryGetValue(expectedHeaderName, out var incomingHeaderValues)
-            || incomingHeaderValues.Count == 0
-            || incomingHeaderValues[0] is not { } incomingHeaderValue)
-        {
-            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: required header '{HeaderName}' is missing.", workflowKey, expectedHeaderName);
-            throw new WorkflowDomainException($"Required header '{expectedHeaderName}' is missing.");
-        }
-
-        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
-        {
-            logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: header '{HeaderName}' value mismatch.", workflowKey, expectedHeaderName);
-            throw new WorkflowDomainException($"Header '{expectedHeaderName}' does not match the expected value.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
-        {
-            // headerValidation may reference sys.* context (the caller is by now
-            // authenticated); there is no instance yet, so the context is the auth
-            // context plus the incoming header bound as `header`.
-            var validationCtx = new Dictionary<string, JsonElement>(authContext, StringComparer.OrdinalIgnoreCase)
-            {
-                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
-            };
-            if (!SequenceFlowConditionEvaluator.Evaluate(messageConfig.HeaderValidation, validationCtx))
-            {
-                logger.LogWarning("Message start on workflowKey {WorkflowKey} rejected: header '{HeaderName}' failed validation '{Validation}'.", workflowKey, expectedHeaderName, messageConfig.HeaderValidation);
-                throw new WorkflowDomainException(
-                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
-            }
-        }
+        var authContext = authentication.AuthContext;
 
         var idempotency = ResolveIdempotencyInput(startEvent, message.Headers);
 
@@ -487,22 +435,22 @@ public sealed class WorkflowEngineService(
         await EnsureMultiInstanceInitializedAsync(instance, definition, actor, cancellationToken);
         instance = await ApplyClaimInheritanceAsync(instance, definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
+        var ack = BuildStartAck(instance, definition);
         await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation("Successfully started workflow instance {InstanceId} by message correlation. Status: {Status}, resting on node {CurrentStepId}",
             instance.Id, instance.Status, instance.CurrentStepId);
 
-        return await BuildStartAckAsync(instance.Id, cancellationToken);
+        return ack;
     }
 
     // Builds the slim start ack: only the resting node identity + status, no
     // definition/variables/history (the message-start endpoint is AllowAnonymous).
-    private async Task<MessageStartAckDto> BuildStartAckAsync(long id, CancellationToken cancellationToken)
+    private static MessageStartAckDto BuildStartAck(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition)
     {
-        var instance = await runtime.GetInstanceAsync(id, cancellationToken)
-            ?? throw new WorkflowDomainException($"Instance #{id} was not found after start.");
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+        var node = GetFlowNode(definition, instance.CurrentStepId);
         return new MessageStartAckDto(
             instance.Id,
             node.Id,
@@ -511,6 +459,39 @@ public sealed class WorkflowEngineService(
             instance.Status,
             instance.CreatedAt,
             ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name));
+    }
+
+    private static FlowNodeModel SelectMessageStartEvent(
+        WorkflowModel definition,
+        string? externalId)
+    {
+        var startEvents = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            .ToList();
+        if (string.IsNullOrWhiteSpace(externalId))
+        {
+            return startEvents.Count switch
+            {
+                0 => throw new WorkflowDomainException(
+                    $"Workflow '{definition.Name}' has no message start event."),
+                1 => startEvents[0],
+                _ => throw new WorkflowDomainException(
+                    $"Workflow '{definition.Name}' has multiple message start events; specify one via the 'startEvent' query parameter (its externalId).")
+            };
+        }
+
+        var matches = startEvents
+            .Where(node => string.Equals(node.ExternalId, externalId, StringComparison.Ordinal))
+            .Take(2)
+            .ToList();
+        return matches.Count switch
+        {
+            1 => matches[0],
+            > 1 => throw new WorkflowDomainException(
+                $"Workflow '{definition.Name}' has multiple message start events with externalId '{externalId}'."),
+            _ => throw new WorkflowDomainException(
+                $"No message start event with externalId '{externalId}' was found in workflow '{definition.Name}'.")
+        };
     }
 
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
@@ -2205,6 +2186,90 @@ public sealed class WorkflowEngineService(
         return merged;
     }
 
+    private async Task<MessageStartAuthentication> AuthenticateMessageStartAsync(
+        string workflowKey,
+        WorkflowModel definition,
+        FlowNodeModel node,
+        IncomingMessage message,
+        CancellationToken cancellationToken)
+    {
+        await RefreshSettingsAsync(cancellationToken);
+
+        var messageConfig = node.Message
+            ?? throw new WorkflowDomainException(
+                $"Message start event #{node.Id} has no message configuration.");
+        var authContext = BuildAuthContext(
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            instance: null,
+            definition,
+            node);
+        if (!TryResolveRequiredScalar(messageConfig.ClientId, authContext, out var expectedClientId)
+            || !TryResolveRequiredScalar(messageConfig.ClientSecret, authContext, out var expectedClientSecret))
+        {
+            logger.LogError(
+                "Message start node {NodeId} on workflowKey {WorkflowKey} has unresolved client credentials.",
+                node.Id,
+                workflowKey);
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        var clientId = ReadSingleCredentialHeader(message.Headers, "X-Client-Id");
+        var clientSecret = ReadSingleCredentialHeader(message.Headers, "X-Client-Secret");
+        if (clientId.EnumerateRunes().Take(UserTaskConstraints.MaxActorNameLength + 1).Count()
+                > UserTaskConstraints.MaxActorNameLength
+            || !string.Equals(clientId, expectedClientId, StringComparison.Ordinal)
+            || !ConstantTimeEquals(clientSecret, expectedClientSecret))
+        {
+            logger.LogWarning(
+                "Message start on workflowKey {WorkflowKey} rejected: invalid client credentials (client id '{ClientId}').",
+                workflowKey,
+                clientId);
+            throw new WorkflowUnauthorizedException("Invalid client credentials.");
+        }
+
+        if (!TryResolveRequiredScalar(messageConfig.HeaderName, authContext, out var expectedHeaderName)
+            || !TryResolveRequiredScalar(messageConfig.HeaderValue, authContext, out var expectedHeaderValue))
+        {
+            logger.LogError(
+                "Message start node {NodeId} on workflowKey {WorkflowKey} has unresolved correlation configuration.",
+                node.Id,
+                workflowKey);
+            throw new WorkflowDomainException("The message correlation configuration is invalid.");
+        }
+
+        expectedHeaderName = expectedHeaderName.Trim();
+        ValidateResolvedMessageHeaderName(
+            expectedHeaderName,
+            GetReservedMessageHeaderNames(node.Idempotency?.HeaderName));
+        var incomingHeaderValue = ReadSingleCorrelationHeader(message.Headers, expectedHeaderName);
+        if (!ConstantTimeEquals(incomingHeaderValue, expectedHeaderValue))
+        {
+            throw new WorkflowDomainException(
+                $"Header '{expectedHeaderName}' does not match the expected value.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(messageConfig.HeaderValidation))
+        {
+            var validationContext = new Dictionary<string, JsonElement>(
+                authContext,
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["header"] = JsonSerializer.SerializeToElement(incomingHeaderValue)
+            };
+            if (!SequenceFlowConditionEvaluator.Evaluate(
+                    messageConfig.HeaderValidation,
+                    validationContext))
+            {
+                throw new WorkflowDomainException(
+                    $"Header '{expectedHeaderName}' failed validation: '{messageConfig.HeaderValidation}'.");
+            }
+        }
+
+        return new MessageStartAuthentication(
+            new ActorContext(clientId, [], message.Actor.Claims),
+            authContext);
+    }
+
     private async Task<MessageCatchAuthentication> AuthenticateMessageCatchAsync(
         WorkflowInstanceRecord instance,
         WorkflowModel definition,
@@ -2213,11 +2278,7 @@ public sealed class WorkflowEngineService(
         IncomingMessage message,
         CancellationToken cancellationToken)
     {
-        var freshSettings = await settings.LoadAllFreshAsync(cancellationToken);
-        _settingsCache = freshSettings.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.Clone(),
-            StringComparer.OrdinalIgnoreCase);
+        await RefreshSettingsAsync(cancellationToken);
 
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var authContext = BuildAuthContext(stored, instance, definition, node);
@@ -2258,7 +2319,7 @@ public sealed class WorkflowEngineService(
         expectedHeaderName = expectedHeaderName.Trim();
         ValidateResolvedMessageHeaderName(
             expectedHeaderName,
-            GetDeliveryIdempotencyHeaderName(messageConfig));
+            GetReservedMessageHeaderNames(GetDeliveryIdempotencyHeaderName(messageConfig)));
         var incomingHeaderValue = ReadSingleCorrelationHeader(
             message.Headers,
             expectedHeaderName);
@@ -2363,7 +2424,7 @@ public sealed class WorkflowEngineService(
 
     private static void ValidateResolvedMessageHeaderName(
         string name,
-        string? deliveryIdempotencyHeaderName)
+        IReadOnlyCollection<string> reservedHeaderNames)
     {
         if (name.Length > 300
             || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
@@ -2374,12 +2435,24 @@ public sealed class WorkflowEngineService(
 
         if (name.Equals("X-Client-Id", StringComparison.OrdinalIgnoreCase)
             || name.Equals("X-Client-Secret", StringComparison.OrdinalIgnoreCase)
-            || (deliveryIdempotencyHeaderName is not null
-                && name.Equals(deliveryIdempotencyHeaderName, StringComparison.OrdinalIgnoreCase)))
+            || reservedHeaderNames.Contains(name, StringComparer.OrdinalIgnoreCase))
         {
             throw new WorkflowDomainException(
                 "The resolved message correlation header name is reserved.");
         }
+    }
+
+    private static string[] GetReservedMessageHeaderNames(string? idempotencyHeaderName)
+    {
+        if (string.IsNullOrWhiteSpace(idempotencyHeaderName))
+        {
+            return [];
+        }
+
+        var normalized = idempotencyHeaderName.Trim();
+        return string.Equals(normalized, IdempotencyHeaders.Standard, StringComparison.OrdinalIgnoreCase)
+            ? [IdempotencyHeaders.Standard, IdempotencyHeaders.LegacyAlias]
+            : [normalized];
     }
 
     private async Task<MessageDeliveryReceiptRecord?> FindCommittedMessageDeliveryAsync(
@@ -2627,6 +2700,10 @@ public sealed class WorkflowEngineService(
     private const int MessageDeliveryProofIterations = 100_000;
     private const int MessageDeliveryProofSaltBytes = 16;
     private const int MessageDeliveryProofHashBytes = 32;
+
+    private sealed record MessageStartAuthentication(
+        ActorContext Actor,
+        Dictionary<string, JsonElement> AuthContext);
 
     private sealed record MessageCatchAuthentication(
         ActorContext Actor,

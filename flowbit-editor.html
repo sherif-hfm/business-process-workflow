@@ -892,6 +892,7 @@ function normalizeLegacyMessageStartNode(node) {
   const legacyVariables = Array.isArray(node.variables) ? node.variables : [];
 
   if (message.idempotencyVariable) {
+    message.idempotencyVariable = message.idempotencyVariable.trim();
     const declaredIdempotency = legacyVariables.find(variable =>
       String(variable.name || "").toLowerCase() === message.idempotencyVariable.toLowerCase());
     if (declaredIdempotency) message.idempotencyVariable = declaredIdempotency.name;
@@ -2917,7 +2918,7 @@ function renderMessageSection(node) {
   const hint = document.createElement("p");
   hint.className = "empty-note";
   hint.textContent = isStart
-    ? "Starts a new instance when a message is delivered to POST /api/workflows/{workflowKey}/message-start. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below."
+    ? "Starts a new instance when a message is delivered to POST /api/workflows/{workflowKey}/message-start. Credential/header templates can use ${config.*}, ${setting.*}, and non-caller-controlled system values; no instance or caller variables exist yet. The caller authenticates with X-Client-Id, X-Client-Secret, and the required header below."
     : "Rests until a message is delivered to POST /api/instances/{id}/message. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below.";
   inspector.appendChild(hint);
 
@@ -5336,7 +5337,23 @@ function validateModelForSave(candidate) {
       true);
   }
 
-  for (const node of nodes.filter(candidate => candidate && candidate.type === "messageStartEvent")) {
+  const messageStarts = nodes.filter(candidate => candidate && candidate.type === "messageStartEvent");
+  if (messageStarts.length > 1) {
+    const externalIds = new Set();
+    for (const node of messageStarts) {
+      if (!hasText(node.externalId)) {
+        errors.push("Message start event #" + String(node.id) +
+          " must have an externalId when a workflow has multiple message start events.");
+      } else if (externalIds.has(node.externalId)) {
+        errors.push("Message start event externalId '" + node.externalId +
+          "' is duplicated; matching is case-sensitive.");
+      } else {
+        externalIds.add(node.externalId);
+      }
+    }
+  }
+
+  for (const node of messageStarts) {
     const label = "Message start event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
     validateMessageAuthentication(label, message, false);
@@ -5345,6 +5362,9 @@ function validateModelForSave(candidate) {
 
     if (hasText(message.idempotencyVariable)) {
       errors.push(label + " cannot configure both legacy message.idempotencyVariable and node idempotency.");
+    }
+    if (message.deliveryIdempotency === true || hasText(message.deliveryIdempotencyHeaderName)) {
+      errors.push(label + " cannot define deliveryIdempotency; use node-level idempotency instead.");
     }
   }
 

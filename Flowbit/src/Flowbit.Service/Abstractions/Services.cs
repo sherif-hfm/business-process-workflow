@@ -54,7 +54,7 @@ public sealed class ServiceTaskOptions
 }
 
 /// <summary>
-/// Deployment-wide limits for anonymous intermediate message deliveries.
+/// Deployment-wide limits for anonymous message-start and intermediate message deliveries.
 /// </summary>
 public sealed class MessageDeliveryOptions
 {
@@ -291,13 +291,13 @@ public interface IWorkflowEngineService
 
 /// <summary>
 /// An inbound message delivered to an instance resting on an
-/// <c>intermediateMessageCatchEvent</c>. <see cref="ClientId"/>/<see cref="ClientSecret"/>
-/// are taken from the <c>X-Client-Id</c>/<c>X-Client-Secret</c> request headers;
-/// <see cref="Headers"/> is the full request header collection (the catch node names
-/// its required header in configuration); <see cref="Payload"/> is the raw JSON body
-/// from which typed <c>outputMappings</c> atomically resolve and validate values.
-/// <see cref="Actor"/> carries the
-/// resolved client id as the user for attribution/context (no JWT roles).
+/// <c>intermediateMessageCatchEvent</c> or a message start event.
+/// <see cref="ClientId"/>/<see cref="ClientSecret"/> are convenience projections of
+/// the first transport values for diagnostics; authentication reads <see cref="Headers"/>
+/// and requires exactly one value for each credential. <see cref="Payload"/> is the raw
+/// JSON body from which typed <c>outputMappings</c> atomically resolve and validate values.
+/// The engine replaces the unverified <see cref="Actor"/> user with the verified client id
+/// before attribution or runtime context is created.
 /// </summary>
 public sealed record IncomingMessage(
     string? ClientId,

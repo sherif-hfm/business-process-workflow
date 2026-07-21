@@ -63,6 +63,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
+        ValidateAuthoredMessageStartMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = definition.Name.Trim();
@@ -88,6 +89,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
+        ValidateAuthoredMessageStartMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
@@ -175,6 +177,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         ValidateUniqueIdentifiers(definition);
+        ValidateMessageStartExternalIds(definition);
         ValidateFlowInfoUsage(definition);
 
         // initialEventId is optional: a workflow whose only entry is a
@@ -646,6 +649,29 @@ public sealed class WorkflowDefinitionService(
             if (!flow.IsSelectable)
                 throw new WorkflowDomainException(
                     $"Engine-only sequence flow #{flow.Id} cannot define claim-bypass metadata.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects catch-only delivery-idempotency metadata on newly authored message
+    /// starts before the tolerant migrator removes it. Persisted legacy snapshots
+    /// continue to normalize without failing at runtime.
+    /// </summary>
+    private static void ValidateAuthoredMessageStartMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is null || !BpmnFlowNodeTypes.IsMessageStart(node.Type) || node.Message is null)
+            {
+                continue;
+            }
+
+            if (node.Message.DeliveryIdempotency
+                || !string.IsNullOrWhiteSpace(node.Message.DeliveryIdempotencyHeaderName))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} cannot define deliveryIdempotency; use node-level idempotency instead.");
+            }
         }
     }
 
@@ -1441,7 +1467,8 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsMessageStart(entry.Type))
             {
                 var mapping = entry.Message?.OutputMappings.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Variable, businessKey.Variable, StringComparison.Ordinal));
+                    candidate is not null
+                    && string.Equals(candidate.Variable, businessKey.Variable, StringComparison.Ordinal));
                 if (mapping is null)
                 {
                     throw new WorkflowDomainException(
@@ -1522,8 +1549,8 @@ public sealed class WorkflowDefinitionService(
                 $"entry event #{entry.Id} idempotency variable");
 
             var collidesWithEntryVariable = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-                ? entry.Message?.OutputMappings.Any(mapping =>
-                    string.Equals(mapping.Variable, variableName, StringComparison.OrdinalIgnoreCase)) == true
+                ? entry.Message?.OutputMappings.Any(mapping => mapping is not null
+                    && string.Equals(mapping.Variable, variableName, StringComparison.OrdinalIgnoreCase)) == true
                 : entry.Variables.Any(variable =>
                     string.Equals(variable.Name, variableName, StringComparison.OrdinalIgnoreCase));
             if (collidesWithEntryVariable)
@@ -1573,7 +1600,9 @@ public sealed class WorkflowDefinitionService(
         foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
         {
             var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-                ? entry.Message?.OutputMappings.Select(mapping => mapping.Variable) ?? []
+                ? entry.Message?.OutputMappings
+                    .Where(mapping => mapping is not null)
+                    .Select(mapping => mapping.Variable) ?? []
                 : entry.Variables.Select(variable => variable.Name);
 
             var reservedEntryNames = entryNames
@@ -1727,6 +1756,33 @@ public sealed class WorkflowDefinitionService(
         if (duplicateFlowId is not null)
         {
             throw new WorkflowDomainException($"Sequence flow id #{duplicateFlowId} is duplicated.");
+        }
+    }
+
+    private static void ValidateMessageStartExternalIds(WorkflowModel definition)
+    {
+        var messageStarts = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            .ToList();
+        if (messageStarts.Count <= 1)
+        {
+            return;
+        }
+
+        var missing = messageStarts.FirstOrDefault(node => string.IsNullOrWhiteSpace(node.ExternalId));
+        if (missing is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Message start event #{missing.Id} must have an externalId when a workflow has multiple message start events.");
+        }
+
+        var duplicate = messageStarts
+            .GroupBy(node => node.ExternalId!, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Message start event externalId '{duplicate.Key}' is duplicated; matching is case-sensitive.");
         }
     }
 

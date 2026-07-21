@@ -579,7 +579,7 @@ public static class WorkflowModelMigrator
         message.OutputMappings ??= [];
         var legacyVariables = node.Variables ?? [];
 
-        var legacyIdempotencyVariable = message.IdempotencyVariable;
+        var legacyIdempotencyVariable = message.IdempotencyVariable?.Trim();
         if (!string.IsNullOrWhiteSpace(legacyIdempotencyVariable))
         {
             var declaredIdempotency = legacyVariables.FirstOrDefault(variable =>
@@ -600,14 +600,21 @@ public static class WorkflowModelMigrator
 
                 // Historical definitions could also map the header-owned variable
                 // from the body. Remove only during unambiguous legacy conversion.
-                message.OutputMappings.RemoveAll(mapping =>
-                    string.Equals(mapping.Variable, legacyIdempotencyVariable, StringComparison.OrdinalIgnoreCase));
+                message.OutputMappings.RemoveAll(mapping => mapping is not null
+                    && string.Equals(mapping.Variable, legacyIdempotencyVariable, StringComparison.OrdinalIgnoreCase));
             }
         }
 
         var represented = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var mapping in message.OutputMappings)
         {
+            if (mapping is null)
+            {
+                // Preserve the invalid entry so authored-definition validation can
+                // return a domain error instead of normalization throwing first.
+                continue;
+            }
+
             var declared = legacyVariables.FirstOrDefault(variable =>
                 string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
             if (declared is not null)

@@ -103,6 +103,8 @@ try
                     - 404 Not Found when a referenced instance or definition id does not exist
                     - 409 Conflict when a task/instance is no longer active or a multi-instance
                       execution was concurrently completed
+                    - 413 Payload Too Large when an anonymous message body exceeds its configured limit
+                    - 415 Unsupported Media Type when a non-empty message body is not JSON
                     """,
             };
 

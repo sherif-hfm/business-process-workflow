@@ -420,15 +420,19 @@ Storage follows the hybrid design:
   config is shared with an intermediate catch:
   `clientId`/`clientSecret`/`headerName`/`headerValue`/`headerValidation`/
   `outputMappings`. The caller addresses
-  the workflow by its stable cross-version `workflowKey` (the latest published
-  version is resolved); an optional `?startEvent={externalId}` selects a specific
-  message-start event when the workflow has more than one (400 if ambiguous and
-  none is given). Auth mirrors the intermediate catch: client id/secret via
+  the workflow by its stable cross-version `workflowKey` (the published default
+  version is resolved); an optional, single-valued `?startEvent={externalId}`
+  selects a specific message-start event when the workflow has more than one.
+  Multiple message starts must have nonblank, case-sensitive unique external ids;
+  missing, repeated, ambiguous, or unknown selectors return 400. Auth mirrors the
+  intermediate catch: exactly one client id/secret via
   `X-Client-Id`/`X-Client-Secret` (401 on mismatch) + required header (400 on
   missing/mismatch/validation failure), all `${var}`-templatable against an
   instance-less context (`config.*`/`setting.*` + non-caller-influenced `sys.*`;
   no `sys.user`/`sys.roles`/`sys.instanceId` since there is no caller/instance
-  yet). Each mapping declares `variable`, optional `path`, `dataType`, `isArray`,
+  yet). Credential and correlation templates are resolved from fresh settings and
+  fail closed when a required placeholder is missing. Each mapping declares
+  `variable`, optional `path`, `dataType`, `isArray`,
   `required`, optional `defaultValue`, and optional NCalc `validation`. Supplied
   values are strictly typed; a missing path uses its default before the final
   required check. It is pass-through: after
@@ -436,8 +440,11 @@ Storage follows the hybrid design:
   `messageStart`), like a `startEvent`. Entry-level transport idempotency uses the
   generic `flowNode.idempotency` contract described below; it is no longer part
   of `message`.
+  Non-empty request bodies must use a JSON media type, malformed JSON returns 400,
+  and `WorkflowMessageDelivery.MaxPayloadBytes` bounds the request (default 1 MiB).
   A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
-  `CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
+  `CurrentNodeExternalId`, `Status`, `CreatedAt`, and an optional `Fault`) is
+  returned (never the full
   definition/variables/history, since the endpoint is `AllowAnonymous`). Its
   node type fits the 32-character execution-token `NodeType` column.
 - **Generic start idempotency.** A `startEvent` or `messageStartEvent` may
@@ -1190,8 +1197,11 @@ A permanent duplicate returns 409 with `code: "idempotency_conflict"`, its
 duplicate domain business key similarly returns 409 with
 `code: "business_key_conflict"` and the owning `instanceId`.
 A slim `MessageStartAckDto` (`InstanceId`, `CurrentNodeId`, `CurrentNodeName`,
-`CurrentNodeExternalId`, `Status`, `CreatedAt`) is returned (never the full
+`CurrentNodeExternalId`, `Status`, `CreatedAt`, and an optional `Fault`) is
+returned (never the full
 definition/variables/history, since the endpoint is `AllowAnonymous`).
+The published default definition is selected. Non-empty bodies require a JSON
+media type and are bounded by `WorkflowMessageDelivery.MaxPayloadBytes`.
 
 ### Context sources (`sys.*` / `config.*` / `setting.*`)
 

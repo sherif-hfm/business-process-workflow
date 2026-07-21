@@ -1,14 +1,14 @@
 {
   "id": "message-start",
   "name": "Message Start Workflow",
-  "initialEventId": 1,
+  "initialEventId": null,
   "variables": [],
   "lanes": [],
   "flowNodes": [
     {
       "id": 1,
       "name": "Start",
-      "externalId": null,
+      "externalId": "message-start",
       "type": "messageStartEvent",
       "laneId": null,
       "x": 100,
@@ -46,8 +46,11 @@
             "defaultValue": null,
             "validation": null
           }
-        ],
-        "idempotencyVariable": "X-Idempotency-Key"
+        ]
+      },
+      "idempotency": {
+        "headerName": "Idempotency-Key",
+        "variable": "requestId"
       },
       "businessKey": {
         "variable": "requestRef",

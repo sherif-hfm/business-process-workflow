@@ -232,6 +232,38 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_RequiresUniqueMessageStartExternalIdsAndRejectsCatchIdempotency()
+    {
+        var model = DefinitionValidationTests.LoadModel("workflow-message-start.json");
+        var first = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        var second = JsonSerializer.Deserialize<FlowNodeModel>(JsonSerializer.Serialize(first))!;
+        second.Id = 90;
+        second.ExternalId = "MESSAGE-START";
+        model.FlowNodes.Add(second);
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 900,
+            SourceRef = second.Id,
+            TargetRef = model.SequenceFlows.Single(flow => flow.SourceRef == first.Id).TargetRef
+        });
+
+        Assert.Empty(Validate(model));
+
+        second.ExternalId = null;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("must have an externalId", StringComparison.OrdinalIgnoreCase));
+
+        second.ExternalId = first.ExternalId;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("duplicated", StringComparison.OrdinalIgnoreCase));
+
+        second.ExternalId = "MESSAGE-START";
+        first.Message!.DeliveryIdempotency = true;
+        Assert.Contains(Validate(model), error =>
+            error.Contains("node-level idempotency", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Validator_ValidatesTypedServiceAndMessageCatchMappings()
     {
         var model = DefinitionValidationTests.CreateOutputMappingModel();

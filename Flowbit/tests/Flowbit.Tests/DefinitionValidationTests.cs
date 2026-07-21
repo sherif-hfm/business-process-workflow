@@ -644,7 +644,7 @@ public sealed class DefinitionValidationTests
                 DataType = WorkflowVariableTypes.String
             }
         ];
-        start.Message!.IdempotencyVariable = "requestId";
+        start.Message!.IdempotencyVariable = " requestId ";
         start.Message.OutputMappings =
         [
             new MessageOutputMappingModel { Variable = "AMOUNT", Path = "order.amount" },
@@ -675,6 +675,110 @@ public sealed class DefinitionValidationTests
         Assert.False(canonicalJson.RootElement.TryGetProperty("variables", out _));
         Assert.True(canonicalJson.RootElement.TryGetProperty("idempotency", out _));
         Assert.False(canonicalJson.RootElement.GetProperty("message").TryGetProperty("idempotencyVariable", out _));
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsTrimmedLegacyIdempotencyVariableCollisionWithProcessVariable()
+    {
+        var model = CreateMessageStartModel();
+        var start = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        start.Variables.Add(new VariableModel
+        {
+            Id = 90,
+            Name = "requestId",
+            DataType = WorkflowVariableTypes.String,
+            Required = true
+        });
+        start.Message!.IdempotencyVariable = " requestId ";
+        model.Variables.Add(new VariableModel
+        {
+            Id = 91,
+            Name = "requestId",
+            DataType = WorkflowVariableTypes.String,
+            DefaultValue = JsonSerializer.SerializeToElement("seed")
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("collides with a process variable", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsNullMessageStartMappingAsDomainError()
+    {
+        var model = CreateMessageStartModel();
+        model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            .Message!.OutputMappings.Add(null!);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("null output mapping", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(true, null)]
+    [InlineData(false, "X-Delivery-Id")]
+    public async Task CreateAsync_RejectsCatchOnlyIdempotencyMetadataOnMessageStart(
+        bool enabled,
+        string? headerName)
+    {
+        var model = CreateMessageStartModel();
+        var message = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type)).Message!;
+        message.DeliveryIdempotency = enabled;
+        message.DeliveryIdempotencyHeaderName = headerName;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("node-level idempotency", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresCaseSensitiveUniqueExternalIdsForMultipleMessageStarts()
+    {
+        var model = CreateMessageStartModel();
+        var first = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        first.ExternalId = "webhook";
+        var second = Clone(first);
+        second.Id = 90;
+        second.ExternalId = "WEBHOOK";
+        model.FlowNodes.Add(second);
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 900,
+            SourceRef = second.Id,
+            TargetRef = model.SequenceFlows.Single(flow => flow.SourceRef == first.Id).TargetRef
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+
+        second.ExternalId = null;
+        var missing = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("must have an externalId", missing.Message, StringComparison.OrdinalIgnoreCase);
+
+        second.ExternalId = first.ExternalId;
+        var duplicate = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("duplicated", duplicate.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MessageStartSample_IsCanonicalAndValid()
+    {
+        var model = LoadModel("workflow-message-start.json");
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition;
+        var start = saved.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        Assert.Null(saved.InitialEventId);
+        Assert.Equal("message-start", start.ExternalId);
+        Assert.Equal(IdempotencyHeaders.Standard, start.Idempotency!.HeaderName);
+        Assert.Equal("requestId", start.Idempotency.Variable);
+        Assert.Null(start.Message!.IdempotencyVariable);
     }
 
     [Theory]

@@ -123,8 +123,11 @@ public static class WorkflowDefinitionEndpoints
 
         group.MapPost("/{workflowKey}/message-start", StartWorkflowByMessage)
             .AllowAnonymous()
+            .Accepts<JsonElement>("application/json")
             .Produces<MessageStartAckDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType)
             .Produces<StartConflictDto>(StatusCodes.Status409Conflict)
             .Produces(StatusCodes.Status401Unauthorized);
 
@@ -323,6 +326,7 @@ public static class WorkflowDefinitionEndpoints
     /// <param name="context">The HTTP request context containing custom correlation headers.</param>
     /// <param name="workflowKey">The stable cross-version key identifying the workflow.</param>
     /// <param name="service">The workflow engine service.</param>
+    /// <param name="options">Deployment-wide anonymous message payload limits.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// This endpoint is <c>AllowAnonymous</c> - authentication is the message-start node's
@@ -337,6 +341,9 @@ public static class WorkflowDefinitionEndpoints
     /// from its configured HTTP header. The trimmed value is permanently unique for the
     /// stable workflow key across versions and both start routes; a retry returns 409 with
     /// <c>idempotency_conflict</c>, the existing instance id, and a <c>Location</c> header.
+    /// A nonempty body must use a JSON media type; malformed JSON returns 400, an oversized
+    /// payload returns 413, and another media type returns 415. Empty bodies and JSON
+    /// <c>null</c> are accepted and are then subject to the mapping requirements.
     ///
     /// Returns a slim <see cref="MessageStartAckDto"/> (no definition/variables/history, since
     /// the endpoint is anonymous). A 401 is returned on a client id/secret mismatch; a 400
@@ -350,9 +357,20 @@ public static class WorkflowDefinitionEndpoints
         HttpContext context,
         string workflowKey,
         IWorkflowEngineService service,
+        MessageDeliveryOptions options,
         CancellationToken cancellationToken)
     {
-        var startEventExternalId = context.Request.Query["startEvent"].FirstOrDefault();
+        var startEventValues = context.Request.Query["startEvent"];
+        if (startEventValues.Count > 1)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "The 'startEvent' query parameter must contain exactly one value.");
+        }
+
+        var startEventExternalId = startEventValues.Count == 1
+            ? startEventValues[0]
+            : null;
         var clientId = context.Request.Headers["X-Client-Id"].FirstOrDefault();
         var clientSecret = context.Request.Headers["X-Client-Secret"].FirstOrDefault();
         var headers = context.Request.Headers
@@ -364,23 +382,17 @@ public static class WorkflowDefinitionEndpoints
         Log.Information("Message-start request for workflowKey {WorkflowKey} from client '{ClientId}' (startEvent={StartEvent})",
             workflowKey, clientId, startEventExternalId ?? "(default)");
 
-        JsonElement? payload = null;
-        if (context.Request.HasJsonContentType()
-            && (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")))
+        var payloadRead = await MessagePayloadReader.ReadAsync(
+            context.Request,
+            options.MaxPayloadBytes,
+            cancellationToken);
+        if (payloadRead.Error is not null)
         {
-            try
-            {
-                payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            }
-            catch (JsonException ex)
-            {
-                Log.Warning(ex, "Failed to parse incoming JSON payload on message-start endpoint for workflowKey {WorkflowKey}.", workflowKey);
-                payload = null;
-            }
+            return payloadRead.Error;
         }
 
         var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-        var message = new IncomingMessage(clientId, clientSecret, headers, payload, actor);
+        var message = new IncomingMessage(clientId, clientSecret, headers, payloadRead.Payload, actor);
         try
         {
             var ack = await service.StartByMessageAsync(workflowKey, startEventExternalId, message, cancellationToken);
