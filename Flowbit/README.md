@@ -16,11 +16,15 @@
 
 ## Storage
 
-- Workflow definitions are versioned JSONB snapshots in `workflow_definitions`.
-- Runtime state is normalized in `workflow_instances`, `execution_tokens`,
-  `user_tasks`, `multi_instance_executions`, `multi_instance_flow_counts`,
-  `instance_variables`, `instance_history`, `sequence_flow_occurrences`, and
-  `sequence_flow_summaries`.
+- All Flowbit tables, owned sequences, indexes, constraints, and EF migration
+  history live in the fixed PostgreSQL `flowbit` schema.
+- Workflow definitions are versioned JSONB snapshots in
+  `flowbit.workflow_definitions`.
+- Runtime state is normalized in `flowbit.workflow_instances`,
+  `flowbit.execution_tokens`, `flowbit.user_tasks`,
+  `flowbit.multi_instance_executions`, `flowbit.multi_instance_flow_counts`,
+  `flowbit.instance_variables`, `flowbit.instance_history`,
+  `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
 - Runtime mutations use one lock order: instance, multi-instance execution, then
   user tasks. Stale competing actions return 409 instead of advancing twice.
 - Instance summary/detail projections include grouped active, pending, claimed,
@@ -96,6 +100,10 @@ Start PostgreSQL:
 ```powershell
 docker compose up -d
 ```
+
+Databases created before the `flowbit` schema was introduced must be recreated
+once during development. The application intentionally does not relocate an
+existing `public."__EFMigrationsHistory"` table automatically.
 
 Run the API:
 
@@ -186,7 +194,7 @@ Cardinality and collection fan-out are bounded before allocation by
 `Workflow.MultiInstance.MaxInstances`.
 
 The JWT claim used as the canonical workflow actor can be configured in
-`public.engine_settings` with namespace `Authentication`, key
+`flowbit.engine_settings` with namespace `Authentication`, key
 `UserIdentityClaim`, and a stable claim name such as `sub` or `oid`. The value is
 loaded once at API startup. If the row is absent, the API retains the legacy
 `Identity.Name`/`NameIdentifier` selection; a configured claim that is missing or

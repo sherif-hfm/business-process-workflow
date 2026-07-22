@@ -31,8 +31,8 @@ public sealed class IdempotencyMigrationTests(PostgresApiFixture fixture)
             await connection.OpenAsync();
             await using var command = new NpgsqlCommand("""
                 SELECT claim."InstanceId", claim."IdempotencyKey", instance."IdempotencyKey"
-                FROM workflow_idempotency_claims AS claim
-                JOIN workflow_instances AS instance ON instance."Id" = claim."InstanceId"
+                FROM flowbit.workflow_idempotency_claims AS claim
+                JOIN flowbit.workflow_instances AS instance ON instance."Id" = claim."InstanceId"
                 WHERE claim."WorkflowKey" = 'legacy-family'
                 """, connection);
             await using var reader = await command.ExecuteReaderAsync();
@@ -113,7 +113,7 @@ public sealed class IdempotencyMigrationTests(PostgresApiFixture fixture)
     private static async Task MigrateAsync(string connectionString, string? targetMigration = null)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(connectionString)
+            .UseNpgsql(connectionString, FlowbitDatabase.ConfigureProvider)
             .Options;
         await using var context = new AppDbContext(options);
         var migrator = context.GetService<IMigrator>();

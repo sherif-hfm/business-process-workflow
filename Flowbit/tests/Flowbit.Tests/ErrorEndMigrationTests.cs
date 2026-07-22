@@ -27,7 +27,7 @@ public sealed class ErrorEndMigrationTests(PostgresApiFixture fixture)
             await connection.OpenAsync();
             await using var command = new NpgsqlCommand("""
                 SELECT "FaultCode", "FaultDescription"
-                FROM execution_tokens
+                FROM flowbit.execution_tokens
                 WHERE "Id" = @tokenId
                 """, connection);
             command.Parameters.AddWithValue("tokenId", tokenId);
@@ -74,7 +74,7 @@ public sealed class ErrorEndMigrationTests(PostgresApiFixture fixture)
     private static async Task MigrateAsync(string connectionString, string? targetMigration = null)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(connectionString)
+            .UseNpgsql(connectionString, FlowbitDatabase.ConfigureProvider)
             .Options;
         await using var context = new AppDbContext(options);
         var migrator = context.GetService<IMigrator>();

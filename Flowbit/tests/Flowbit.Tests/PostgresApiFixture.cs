@@ -59,7 +59,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         await using (var migrationDataSource = migrationDataSourceBuilder.Build())
         {
             var migrationOptions = new DbContextOptionsBuilder<AppDbContext>()
-                .UseNpgsql(migrationDataSource)
+                .UseNpgsql(migrationDataSource, FlowbitDatabase.ConfigureProvider)
                 .Options;
             await using var migrationDb = new AppDbContext(migrationOptions);
             await migrationDb.Database.MigrateAsync();
@@ -89,7 +89,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     public AppDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(DataSource)
+            .UseNpgsql(DataSource, FlowbitDatabase.ConfigureProvider)
             .Options;
         return new AppDbContext(options);
     }

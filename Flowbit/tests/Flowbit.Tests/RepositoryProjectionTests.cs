@@ -84,7 +84,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
 
         var baselineCounter = new ReaderCommandCounter();
         var baselineOptions = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(fixture.DataSource)
+            .UseNpgsql(fixture.DataSource, FlowbitDatabase.ConfigureProvider)
             .AddInterceptors(baselineCounter)
             .Options;
         await using var baselineContext = new AppDbContext(baselineOptions);
@@ -98,7 +98,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
 
         var includedCounter = new ReaderCommandCounter();
         var includedOptions = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(fixture.DataSource)
+            .UseNpgsql(fixture.DataSource, FlowbitDatabase.ConfigureProvider)
             .AddInterceptors(includedCounter)
             .Options;
         await using var includedContext = new AppDbContext(includedOptions);
@@ -217,7 +217,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
 
         var counter = new ReaderCommandCounter();
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(fixture.DataSource)
+            .UseNpgsql(fixture.DataSource, FlowbitDatabase.ConfigureProvider)
             .AddInterceptors(counter)
             .Options;
         await using var measured = new AppDbContext(options);

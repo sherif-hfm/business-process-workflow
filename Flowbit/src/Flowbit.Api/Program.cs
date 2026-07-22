@@ -192,7 +192,7 @@ try
     builder.Services.AddSingleton(workflowContextOptions);
     builder.Services.AddSingleton(TimeProvider.System);
 
-    // The actor identity claim is read from engine_settings once during startup.
+    // The actor identity claim is read from flowbit.engine_settings once during startup.
     // Keeping it process-latched prevents active work ownership from changing in
     // the middle of a request or workflow execution.
     var actorIdentityConfiguration = new ActorIdentityConfiguration();

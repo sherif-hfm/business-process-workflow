@@ -38,6 +38,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
+
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
         {
             entity.ToTable("workflow_definitions");

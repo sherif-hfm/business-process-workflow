@@ -4,7 +4,7 @@ namespace Flowbit.Api.Auth;
 
 /// <summary>
 /// Process-lifetime configuration for the JWT claim that identifies an authenticated
-/// workflow actor. The value is loaded from <c>engine_settings</c> during API startup
+/// workflow actor. The value is loaded from <c>flowbit.engine_settings</c> during API startup
 /// and deliberately remains fixed until the process is restarted.
 /// </summary>
 public sealed class ActorIdentityConfiguration

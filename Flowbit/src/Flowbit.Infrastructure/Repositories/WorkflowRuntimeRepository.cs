@@ -88,7 +88,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where}",
+                $"SELECT COUNT(*) AS \"Value\" FROM flowbit.workflow_instances w JOIN LATERAL (SELECT * FROM flowbit.execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where}",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
@@ -101,7 +101,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var orderBy = BuildInstanceOrderBy(sort);
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT w.* FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where} ORDER BY {orderBy} LIMIT @take OFFSET @skip",
+                $"SELECT w.* FROM flowbit.workflow_instances w JOIN LATERAL (SELECT * FROM flowbit.execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where} ORDER BY {orderBy} LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -155,10 +155,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                                ut."UpdatedAt" DESC,
                                ut."Id" DESC
                        ) AS inbox_rank
-                FROM user_tasks ut
-                JOIN workflow_instances w ON ut."InstanceId" = w."Id"
-                JOIN workflow_definitions wd ON w."WorkflowDefinitionId" = wd."Id"
-                LEFT JOIN multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
+                FROM flowbit.user_tasks ut
+                JOIN flowbit.workflow_instances w ON ut."InstanceId" = w."Id"
+                JOIN flowbit.workflow_definitions wd ON w."WorkflowDefinitionId" = wd."Id"
+                LEFT JOIN flowbit.multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
                 {where}
             )
             """;
@@ -204,7 +204,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 latest_variables AS (
                     SELECT DISTINCT ON (v."InstanceId", v."VariableName")
                            v."InstanceId", v."VariableName", v."ValueJson"
-                    FROM instance_variables v
+                    FROM flowbit.instance_variables v
                     JOIN page_instances page ON page."InstanceId" = v."InstanceId"
                     ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
                 ),
@@ -224,7 +224,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                            (COUNT(*) FILTER (WHERE task."Status" = @activeTask))::integer AS "ActiveCount",
                            (COUNT(*) FILTER (WHERE task."Status" = @pendingTask))::integer AS "PendingCount",
                            (COUNT(*) FILTER (WHERE task."Status" = @cancelledTask))::integer AS "CancelledCount"
-                    FROM user_tasks task
+                    FROM flowbit.user_tasks task
                     JOIN page_executions page
                       ON page."ExecutionId" = task."MultiInstanceExecutionId"
                     GROUP BY task."MultiInstanceExecutionId"
@@ -235,7 +235,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                                flow."FlowId"::text,
                                flow."CompletedCount"
                                ORDER BY flow."FlowId") AS "FlowCountsJson"
-                    FROM multi_instance_flow_counts flow
+                    FROM flowbit.multi_instance_flow_counts flow
                     JOIN page_executions page ON page."ExecutionId" = flow."ExecutionId"
                     GROUP BY flow."ExecutionId"
                 )
@@ -289,12 +289,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        COALESCE(task_counts."CancelledCount", 0) AS "MiCancelledTaskCount",
                        COALESCE(flow_counts."FlowCountsJson", jsonb_build_object())::text AS "MiFlowCountsJson"
                 FROM page_task_ids page
-                JOIN user_tasks ut ON ut."Id" = page."Id"
-                JOIN workflow_instances w ON w."Id" = ut."InstanceId"
-                JOIN workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
-                JOIN execution_tokens token ON token."Id" = ut."TokenId"
+                JOIN flowbit.user_tasks ut ON ut."Id" = page."Id"
+                JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+                JOIN flowbit.workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
+                JOIN flowbit.execution_tokens token ON token."Id" = ut."TokenId"
                 LEFT JOIN variable_values values ON values."InstanceId" = w."Id"
-                LEFT JOIN multi_instance_executions mie
+                LEFT JOIN flowbit.multi_instance_executions mie
                        ON mie."Id" = ut."MultiInstanceExecutionId"
                 LEFT JOIN mi_task_counts task_counts
                        ON task_counts."ExecutionId" = mie."Id"
@@ -388,11 +388,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         const string from = """
-            FROM user_tasks ut
-            JOIN workflow_instances w ON w."Id" = ut."InstanceId"
-            JOIN workflow_definitions d ON d."Id" = w."WorkflowDefinitionId"
-            JOIN execution_tokens token ON token."Id" = ut."TokenId"
-            LEFT JOIN multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
+            FROM flowbit.user_tasks ut
+            JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+            JOIN flowbit.workflow_definitions d ON d."Id" = w."WorkflowDefinitionId"
+            JOIN flowbit.execution_tokens token ON token."Id" = ut."TokenId"
+            LEFT JOIN flowbit.multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
             """;
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
@@ -483,10 +483,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         const string from = """
-            FROM user_tasks ut
-            JOIN workflow_instances w ON w."Id" = ut."InstanceId"
-            JOIN execution_tokens token ON token."Id" = ut."TokenId"
-            LEFT JOIN multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
+            FROM flowbit.user_tasks ut
+            JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+            JOIN flowbit.execution_tokens token ON token."Id" = ut."TokenId"
+            LEFT JOIN flowbit.multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
             """;
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
@@ -573,7 +573,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     NOT COALESCE(mie."OnePerActor", FALSE)
                  OR NOT EXISTS (
                       SELECT 1
-                      FROM user_tasks completed
+                      FROM flowbit.user_tasks completed
                       WHERE completed."MultiInstanceExecutionId" = mie."Id"
                         AND completed."Status" = @completedTask
                         AND completed."CompletedBy" IS NOT NULL
@@ -651,7 +651,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         args.Add(("workflowKey", workflowKey));
         where.Append(
-            " AND EXISTS (SELECT 1 FROM workflow_definitions d" +
+            " AND EXISTS (SELECT 1 FROM flowbit.workflow_definitions d" +
             " WHERE d.\"Id\" = w.\"WorkflowDefinitionId\" AND d.\"WorkflowKey\" = @workflowKey)");
     }
 
@@ -727,7 +727,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             where.Append(
                 $" AND (SELECT CASE WHEN jsonb_typeof(v.\"ValueJson\") NOT IN ('array', 'object')" +
                 $" THEN lower(v.\"ValueJson\" #>> ARRAY[]::text[]) END" +
-                $" FROM instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
+                $" FROM flowbit.instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
                 $" AND v.\"VariableName\" = @vn{i} ORDER BY v.\"Id\" DESC LIMIT 1) = lower(@vv{i})");
         }
     }
@@ -885,7 +885,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var rows = await dbContext.InstanceVariables
             .FromSqlInterpolated($"""
                 SELECT DISTINCT ON (v."InstanceId", v."VariableName") v.*
-                FROM instance_variables AS v
+                FROM flowbit.instance_variables AS v
                 WHERE v."InstanceId" = ANY ({ids})
                 ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
                 """)
@@ -930,7 +930,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         var entity = await dbContext.WorkflowInstances
-            .FromSqlInterpolated($"SELECT * FROM workflow_instances WHERE \"Id\" = {id} FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_instances WHERE \"Id\" = {id} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
         if (entity is null)
         {
@@ -938,11 +938,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         var token = await dbContext.ExecutionTokens
-            .FromSqlInterpolated($"SELECT * FROM execution_tokens WHERE \"InstanceId\" = {id} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.execution_tokens WHERE \"InstanceId\" = {id} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
         var task = lockActiveUserTask
             ? await dbContext.UserTasks
-                .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"InstanceId\" = {id} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {id} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken)
             : null;
         return token is null ? null : ToRecord(entity, token, task);
@@ -1270,7 +1270,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         if (forUpdate)
         {
             entity = await dbContext.MultiInstanceExecutions
-                .FromSqlInterpolated($"SELECT * FROM multi_instance_executions WHERE \"InstanceId\" = {instanceId} AND \"NodeId\" = {nodeId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"InstanceId\" = {instanceId} AND \"NodeId\" = {nodeId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
@@ -1290,7 +1290,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         if (forUpdate)
         {
             entity = await dbContext.UserTasks
-                .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"Id\" = {taskId} FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"Id\" = {taskId} FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
@@ -1319,7 +1319,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         if (forUpdate)
         {
             entity = await dbContext.UserTasks
-                .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
@@ -1342,7 +1342,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         if (forUpdate)
         {
             entity = await dbContext.MultiInstanceExecutions
-                .FromSqlInterpolated($"SELECT * FROM multi_instance_executions WHERE \"Id\" = {executionId} FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"Id\" = {executionId} FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
@@ -1406,7 +1406,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 #pragma warning disable EF1002
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM user_tasks ut {where}",
+                $"SELECT COUNT(*) AS \"Value\" FROM flowbit.user_tasks ut {where}",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
         var pageArgs = new List<(string Name, object Value)>(args)
@@ -1416,7 +1416,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         };
         var tasks = await dbContext.UserTasks
             .FromSqlRaw(
-                $"SELECT ut.* FROM user_tasks ut {where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
+                $"SELECT ut.* FROM flowbit.user_tasks ut {where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -1717,7 +1717,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == executionId);
         var remainingCandidates = await dbContext.UserTasks
-            .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"MultiInstanceExecutionId\" = {executionId} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"MultiInstanceExecutionId\" = {executionId} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         // The current item can already be marked completed in the change tracker
         // while the database still reports it active until SaveChanges. Re-check
@@ -1745,7 +1745,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task CancelActiveMultiInstanceAsync(long instanceId, CancellationToken cancellationToken)
     {
         var executions = await dbContext.MultiInstanceExecutions
-            .FromSqlInterpolated($"SELECT * FROM multi_instance_executions WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         foreach (var execution in executions)
         {
@@ -1758,7 +1758,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task CancelOpenUserTasksAsync(long instanceId, CancellationToken cancellationToken)
     {
         var tasks = await dbContext.UserTasks
-            .FromSqlInterpolated($"SELECT * FROM user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         var now = DateTimeOffset.UtcNow;
         foreach (var task in tasks.Where(task =>
@@ -2222,14 +2222,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         var inserted = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO workflow_idempotency_claims
+            INSERT INTO flowbit.workflow_idempotency_claims
                 ("WorkflowKey", "IdempotencyKey", "InstanceId", "CreatedAt")
             VALUES ({workflowKey}, {idempotencyKey}, NULL, now())
             ON CONFLICT ("WorkflowKey", "IdempotencyKey") DO NOTHING
             """, cancellationToken);
 
         var claim = await dbContext.WorkflowIdempotencyClaims
-            .FromSqlInterpolated($"SELECT * FROM workflow_idempotency_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"IdempotencyKey\" = {idempotencyKey} FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_idempotency_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"IdempotencyKey\" = {idempotencyKey} FOR UPDATE")
             .SingleAsync(cancellationToken);
         if (inserted == 0)
         {
@@ -2263,14 +2263,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         var permanent = uniqueness == BusinessKeyUniqueness.All;
         var inserted = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO workflow_business_key_claims
+            INSERT INTO flowbit.workflow_business_key_claims
                 ("WorkflowKey", "BusinessKey", "IsPermanent", "ActiveInstanceId", "LastInstanceId")
             VALUES ({workflowKey}, {businessKey}, {permanent}, NULL, NULL)
             ON CONFLICT ("WorkflowKey", "BusinessKey") DO NOTHING
             """, cancellationToken);
 
         var claim = await dbContext.WorkflowBusinessKeyClaims
-            .FromSqlInterpolated($"SELECT * FROM workflow_business_key_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"BusinessKey\" = {businessKey} FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_business_key_claims WHERE \"WorkflowKey\" = {workflowKey} AND \"BusinessKey\" = {businessKey} FOR UPDATE")
             .SingleAsync(cancellationToken);
 
         if (inserted == 0
@@ -2309,7 +2309,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var claim = dbContext.WorkflowBusinessKeyClaims.Local.SingleOrDefault(c =>
             c.WorkflowKey == instance.WorkflowKey && c.BusinessKey == instance.BusinessKey);
         claim ??= await dbContext.WorkflowBusinessKeyClaims
-            .FromSqlInterpolated($"SELECT * FROM workflow_business_key_claims WHERE \"WorkflowKey\" = {instance.WorkflowKey} AND \"BusinessKey\" = {instance.BusinessKey} FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_business_key_claims WHERE \"WorkflowKey\" = {instance.WorkflowKey} AND \"BusinessKey\" = {instance.BusinessKey} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
         if (claim?.ActiveInstanceId == instance.Id)
         {

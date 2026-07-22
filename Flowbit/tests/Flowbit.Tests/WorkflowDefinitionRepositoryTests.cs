@@ -49,7 +49,7 @@ public sealed class WorkflowDefinitionRepositoryTests(PostgresApiFixture fixture
 
         var counter = new ReaderCommandCounter();
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(fixture.DataSource)
+            .UseNpgsql(fixture.DataSource, FlowbitDatabase.ConfigureProvider)
             .AddInterceptors(counter)
             .Options;
         await using var measured = new AppDbContext(options);

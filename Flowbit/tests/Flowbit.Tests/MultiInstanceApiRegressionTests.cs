@@ -1882,7 +1882,7 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
             await barrierConnection.OpenAsync();
             await using var barrierTransaction = await barrierConnection.BeginTransactionAsync();
             await using (var barrierCommand = new NpgsqlCommand(
-                             "SELECT \"Id\" FROM workflow_instances WHERE \"Id\" = @id FOR UPDATE",
+                             "SELECT \"Id\" FROM flowbit.workflow_instances WHERE \"Id\" = @id FOR UPDATE",
                              barrierConnection,
                              barrierTransaction))
             {

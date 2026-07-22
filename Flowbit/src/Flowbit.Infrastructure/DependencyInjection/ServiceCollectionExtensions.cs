@@ -31,7 +31,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new ScriptOptions());
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(dataSource));
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider));
         services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();

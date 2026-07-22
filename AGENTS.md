@@ -88,6 +88,10 @@ Projects:
 
 Storage follows the hybrid design:
 
+- All Flowbit tables, owned sequences, indexes, constraints, and EF migration
+  history live in the fixed PostgreSQL `flowbit` schema. Table names below are
+  shown without that schema qualifier for readability.
+
 - Workflow definitions are immutable/versioned JSONB snapshots in
   `workflow_definitions`. Each row also carries `WorkflowKey`, an indexed integer
   stamped from the editor JSON model `id` on every save; it is the same across all
@@ -592,7 +596,7 @@ Storage follows the hybrid design:
   the fly; `AuthTokenHandler` attaches it as a `Bearer` header. For production,
   swap `AddJwtBearer` to a real OIDC identity provider and remove the UI minting
   page. The canonical workflow actor may be selected with the process-latched
-  `public.engine_settings` row `Authentication.UserIdentityClaim` (namespace
+  `flowbit.engine_settings` row `Authentication.UserIdentityClaim` (namespace
   `Authentication`, key `UserIdentityClaim`, value such as `sub` or `oid`). The
   setting is loaded at API startup; when absent, identity retains the legacy
   `Identity.Name` then `NameIdentifier` behavior. When configured, the token must

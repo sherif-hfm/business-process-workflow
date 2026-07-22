@@ -16,7 +16,7 @@ public sealed class DesignTimeAppDbContextFactory : IDesignTimeDbContextFactory<
         dataSourceBuilder.EnableDynamicJson();
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(dataSourceBuilder.Build())
+            .UseNpgsql(dataSourceBuilder.Build(), FlowbitDatabase.ConfigureProvider)
             .Options;
 
         return new AppDbContext(options);
