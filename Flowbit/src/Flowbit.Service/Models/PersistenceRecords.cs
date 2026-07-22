@@ -187,6 +187,68 @@ public sealed record MessageDeliveryReceiptRecord(
 // Exact-match filter over an instance variable's scalar value (name = value).
 public sealed record VariableFilter(string Name, string Value);
 
+public enum SortDirection
+{
+    Ascending,
+    Descending
+}
+
+public enum InstanceSortField
+{
+    Id,
+    CreatedAt,
+    UpdatedAt
+}
+
+public sealed record InstanceSortCriterion(
+    InstanceSortField Field,
+    SortDirection Direction);
+
+public enum InboxSortField
+{
+    UserTaskId,
+    InstanceId,
+    TaskCreatedAt,
+    TaskUpdatedAt,
+    InstanceCreatedAt,
+    InstanceUpdatedAt
+}
+
+public sealed record InboxSortCriterion(
+    InboxSortField Field,
+    SortDirection Direction);
+
+public sealed record InboxListItem(
+    long InstanceId,
+    long WorkflowId,
+    long WorkflowDefinitionId,
+    string WorkflowName,
+    int WorkflowVersion,
+    string? BusinessKey,
+    string? BusinessKeyUniqueness,
+    long TokenId,
+    long UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    JsonElement? ItemValue,
+    string? Assignee,
+    int CurrentNodeId,
+    string CurrentNodeName,
+    string? CurrentNodeExternalId,
+    string CurrentNodeType,
+    IReadOnlyList<string> CurrentNodeRoles,
+    bool CurrentRequiresClaim,
+    bool CurrentRequiresAssignment,
+    string Status,
+    string? ClaimedBy,
+    string? StartedBy,
+    DateTimeOffset TaskCreatedAt,
+    DateTimeOffset TaskUpdatedAt,
+    DateTimeOffset InstanceCreatedAt,
+    DateTimeOffset InstanceUpdatedAt,
+    IReadOnlyDictionary<string, JsonElement>? Variables,
+    MultiInstanceProgressRecord? MultiInstanceProgress = null);
+
 public sealed record AssignmentInheritanceSourceRecord(
     long UserTaskId,
     int NodeId,

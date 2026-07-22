@@ -112,8 +112,11 @@ Storage follows the hybrid design:
   deliberately independent contracts.
 - **Token/task projections.** Instance list node filters and current-node display
   are projected from the latest execution token. Inbox reads query active
-  `user_tasks` directly and apply claim/role predicates there, ordered by task
-  `UpdatedAt DESC, Id DESC`; they do not infer work from `workflow_instances`.
+  `user_tasks` directly and apply claim/role predicates there; they do not infer
+  work from `workflow_instances`. Inbox ordering defaults to task
+  `UpdatedAt DESC, Id DESC`, but callers may select the documented task or
+  instance fields and direction. Sorting remains in PostgreSQL and is applied
+  after one-per-actor representative selection, before paging and enrichment.
   Database membership, count, ordering, and paging remain authoritative. The
   returned page batch-loads latest instance variables and multi-instance state;
   flow roles, claim-bypass roles, and stored-state conditions then refine only
@@ -619,8 +622,8 @@ what the cross-version `workflowKey` instance search matches.
 - `WorkflowInstanceEndpoints` (`/api/instances`): `POST /` (start; optional
   `startEventId`; a configured idempotency value is accepted only through its
   HTTP header and a duplicate returns `StartConflictDto` with 409/`Location`),
-  `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&page=&pageSize=` (paged),
-  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged),
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
@@ -631,13 +634,26 @@ what the cross-version `workflowKey` instance search matches.
   `POST /{id}/cancel`. The two list endpoints return
   `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `page` defaults
   to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
-  offset-based; results are ordered by `UpdatedAt DESC, Id DESC` so the
-  repository can later switch to keyset paging without an API change.
+  offset-based. Each endpoint accepts up to three repeated `sort=field:direction`
+  clauses, with case-insensitive `asc` or `desc` directions. Instance sortable
+  fields are `id`, `createdAt`, and `updatedAt`; inbox sortable fields are
+  `userTaskId`, `instanceId`, `taskCreatedAt`, `taskUpdatedAt`,
+  `instanceCreatedAt`, and `instanceUpdatedAt`. Instance ordering defaults to
+  `updatedAt:desc`; inbox ordering defaults to `taskUpdatedAt:desc`. Unknown,
+  malformed, blank, or duplicate clauses and more than three clauses return 400.
+  If instance `id` or inbox `userTaskId` is not an explicit clause, the
+  repository appends it in the final clause's direction as a deterministic
+  paging tie-breaker. Composite timestamp/id indexes support the default and
+  common single-field timestamp order paths; other multi-field combinations may
+  still require PostgreSQL to sort the filtered result.
   `includeVariables=true` adds a compact `variables` dictionary with only the
   latest JSON value per name; otherwise that property is omitted. The instance
   list loads variables in one page-bounded query only when requested. The inbox
   always projects page-bounded latest variables to evaluate stored-state action
   visibility, so returning them adds no database query.
+  `InboxItemDto` exposes `TaskCreatedAt`, `TaskUpdatedAt`, `InstanceCreatedAt`,
+  and `InstanceUpdatedAt`; its legacy `CreatedAt` and `UpdatedAt` properties remain
+  aliases for the task timestamps.
   Inbox role/assignment/claim filtering, counting, ordering, and paging all run
   in PostgreSQL. The service loads definitions only for the returned page to
   calculate outgoing-flow `CanAct`/`CanClaim` flags.
@@ -723,10 +739,12 @@ what the cross-version `workflowKey` instance search matches.
   instance id (`instanceId=`), workflow id (`workflowId=`), workflow key
   (`workflowKey=`), node id (`nodeId=`), node external id (`nodeExternalId=`), and
   by variables (a comma-separated `name:value` box mapped to repeated `var=`
-  params).
+  params). A reusable sort toolbar applies up to three instance sort clauses and
+  resets to `updatedAt:desc`.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
   workflow id, workflow key, node id, node external id, and comma-separated
-  `name:value` variable filter boxes.
+  `name:value` variable filter boxes. Its sort toolbar exposes the six inbox sort
+  fields and resets to `taskUpdatedAt:desc`.
 - `/task-management` (`TaskManagement.razor`) - workflow-role-scoped manager
   view for filtering active tasks and assigning, reassigning, or unassigning an
   item with optimistic concurrency and an optional audit reason.

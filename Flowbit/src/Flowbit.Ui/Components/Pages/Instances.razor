@@ -49,6 +49,12 @@
     }
 </section>
 
+<SortToolbar Id="instance-sort"
+             Options="InstanceSortOptions"
+             DefaultField="updatedAt"
+             DefaultDirection="desc"
+             Applied="ApplySortAsync" />
+
 <section class="panel panel-flush" aria-labelledby="instance-results-heading">
     <div class="section-heading">
         <div><h2 id="instance-results-heading">Results</h2><p>@(result is null ? "Loading instances…" : $"{result.TotalCount:N0} matching instances")</p></div>
@@ -119,6 +125,13 @@
     private bool advancedOpen;
     private int page = 1;
     private const int PageSize = 50;
+    private IReadOnlyList<string> sortClauses = ["updatedAt:desc"];
+    private static readonly IReadOnlyList<SortFieldOption> InstanceSortOptions =
+    [
+        new("id", "Instance ID"),
+        new("createdAt", "Created"),
+        new("updatedAt", "Updated")
+    ];
 
     private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
         .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
@@ -163,13 +176,14 @@
 
     private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
     private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
+    private async Task ApplySortAsync(IReadOnlyList<string> value) { sortClauses = value; page = 1; await LoadAsync(); }
 
     private async Task LoadAsync()
     {
         try
         {
             error = null;
-            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey);
+            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey, sort: sortClauses);
         }
         catch (Exception ex)
         {

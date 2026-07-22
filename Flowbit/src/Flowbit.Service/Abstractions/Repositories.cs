@@ -59,12 +59,13 @@ public interface IWorkflowRuntimeRepository
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        IReadOnlyList<InstanceSortCriterion> sort,
         bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken);
 
-    Task<PagedResult<InstanceListItem>> ListInboxAsync(
+    Task<PagedResult<InboxListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
         long? instanceId,
@@ -74,6 +75,7 @@ public interface IWorkflowRuntimeRepository
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        IReadOnlyList<InboxSortCriterion> sort,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

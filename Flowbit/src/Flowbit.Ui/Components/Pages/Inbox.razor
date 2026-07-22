@@ -76,6 +76,12 @@ else
         }
     </section>
 
+    <SortToolbar Id="inbox-sort"
+                 Options="InboxSortOptions"
+                 DefaultField="taskUpdatedAt"
+                 DefaultDirection="desc"
+                 Applied="ApplySortAsync" />
+
     <section class="panel panel-flush" aria-labelledby="inbox-results-heading">
         <div class="section-heading">
             <div><h2 id="inbox-results-heading">Work items</h2><p>@(result is null ? "Loading your inbox…" : $"{result.TotalCount:N0} visible tasks")</p></div>
@@ -94,7 +100,7 @@ else
             <div class="table-responsive">
                 <table class="table align-middle">
                     <caption class="visually-hidden">Work items visible to the current test identity</caption>
-                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th><th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                     <tbody>
                         @foreach (var item in result.Items)
                         {
@@ -104,7 +110,7 @@ else
                                 <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>
                                 <td>@if (item.MultiInstance is not null) { <span>@item.MultiInstance.Completed / @item.MultiInstance.Total</span><span class="data-subtitle">Multi-instance</span> } else { <span>Single task</span> }</td>
                                 <td><StatusBadge Status="@Readiness(item)" Text="@Readiness(item)" /></td>
-                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td>@item.TaskUpdatedAt.ToLocalTime().ToString("g")</td>
                                 <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a></td>
                             </tr>
                         }
@@ -136,6 +142,16 @@ else
     private bool filtersOpen;
     private int page = 1;
     private const int PageSize = 50;
+    private IReadOnlyList<string> sortClauses = ["taskUpdatedAt:desc"];
+    private static readonly IReadOnlyList<SortFieldOption> InboxSortOptions =
+    [
+        new("userTaskId", "User task ID"),
+        new("instanceId", "Instance ID"),
+        new("taskCreatedAt", "Task created"),
+        new("taskUpdatedAt", "Task updated"),
+        new("instanceCreatedAt", "Instance created"),
+        new("instanceUpdatedAt", "Instance updated")
+    ];
 
     private string IdentityInitial => (Token.CurrentUser ?? "A")[..1].ToUpperInvariant();
     private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
@@ -161,6 +177,7 @@ else
     }
     private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
     private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
+    private async Task ApplySortAsync(IReadOnlyList<string> value) { sortClauses = value; page = 1; await LoadAsync(); }
 
     private async Task LoadAsync()
     {
@@ -169,7 +186,7 @@ else
         {
             error = null;
             result = null;
-            result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey);
+            result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey, sort: sortClauses);
         }
         catch (Exception ex) { error = ex.Message; }
     }

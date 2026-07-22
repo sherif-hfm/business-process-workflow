@@ -187,6 +187,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="nodeId">Optional. Filter by the ID of the current resting flow node.</param>
     /// <param name="nodeExternalId">Optional. Filter by the external ID of the current resting flow node (case-insensitive).</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
+    /// <param name="sort">Optional. Up to three repeated <c>sort=field:direction</c> clauses. Fields: <c>id</c>, <c>createdAt</c>, <c>updatedAt</c>; directions: <c>asc</c>, <c>desc</c>.</param>
     /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each summary (default false).</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
@@ -196,9 +197,9 @@ public static class WorkflowInstanceEndpoints
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// Returns a <see cref="PagedResult{T}"/> of <see cref="InstanceSummaryDto"/> ordered by
-    /// <c>UpdatedAt DESC, Id DESC</c>. All filters AND-combine. A 400 is returned for a
-    /// malformed <c>var</c> entry (missing <c>:</c> or empty name). Array/object variables
-    /// never match the <c>var</c> filter.
+    /// <c>UpdatedAt DESC, Id DESC</c> when no sort is supplied. All filters AND-combine.
+    /// A 400 is returned for a malformed <c>var</c> entry or sort clause. Array/object
+    /// variables never match the <c>var</c> filter.
     /// </remarks>
     public static async Task<IResult> ListInstances(
         string? status,
@@ -209,6 +210,7 @@ public static class WorkflowInstanceEndpoints
         int? nodeId,
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
+        [FromQuery(Name = "sort")] string[]? sort,
         bool? includeVariables,
         int? page,
         int? pageSize,
@@ -219,7 +221,7 @@ public static class WorkflowInstanceEndpoints
     {
         _ = actorResolver.Resolve(principal);
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, includeVariables ?? false, p, s, cancellationToken));
+        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, sort, includeVariables ?? false, p, s, cancellationToken));
     }
 
     /// <summary>
@@ -232,6 +234,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="nodeId">Optional. Filter by flow node ID.</param>
     /// <param name="nodeExternalId">Optional. Filter by flow node external ID (case-insensitive).</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
+    /// <param name="sort">Optional. Up to three repeated <c>sort=field:direction</c> clauses over task/instance IDs and creation/update timestamps.</param>
     /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each inbox item (default false).</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
@@ -256,6 +259,7 @@ public static class WorkflowInstanceEndpoints
         int? nodeId,
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
+        [FromQuery(Name = "sort")] string[]? sort,
         bool? includeVariables,
         int? page,
         int? pageSize,
@@ -265,7 +269,7 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, includeVariables ?? false, p, s, cancellationToken));
+        return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, sort, includeVariables ?? false, p, s, cancellationToken));
     }
 
     /// <summary>

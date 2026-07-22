@@ -68,6 +68,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             // Supports the paged instance list ordered by UpdatedAt.
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.WorkflowKey, e.IdempotencyKey });
             entity.HasIndex(e => new { e.WorkflowKey, e.BusinessKey, e.Status });
             entity.HasOne(e => e.WorkflowDefinition)
@@ -99,6 +101,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.InstanceId, e.Id }).IsDescending(false, true);
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
             entity.HasOne(e => e.Instance)
@@ -125,6 +128,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.Status, e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.InstanceId, e.Status, e.CompletedAt, e.Id });
             entity.HasIndex(e => new { e.NodeId, e.Status });

@@ -85,6 +85,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         string? workflowKey = null,
         string? businessKey = null,
         bool includeVariables = false,
+        IReadOnlyList<string>? sort = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
@@ -129,6 +130,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         url += BuildVariableQuery(variables);
+        url += BuildSortQuery(sort);
 
         return await httpClient.GetFromJsonAsync<PagedResult<InstanceSummaryDto>>(url, cancellationToken)
             ?? new PagedResult<InstanceSummaryDto>([], page, pageSize, 0);
@@ -145,6 +147,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         string? workflowKey = null,
         string? businessKey = null,
         bool includeVariables = false,
+        IReadOnlyList<string>? sort = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances/inbox?page={page}&pageSize={pageSize}";
@@ -184,6 +187,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         url += BuildVariableQuery(variables);
+        url += BuildSortQuery(sort);
 
         return await httpClient.GetFromJsonAsync<PagedResult<InboxItemDto>>(url, cancellationToken)
             ?? new PagedResult<InboxItemDto>([], page, pageSize, 0);
@@ -239,6 +243,16 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         return query;
+    }
+
+    private static string BuildSortQuery(IReadOnlyList<string>? sort)
+    {
+        if (sort is null || sort.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Concat(sort.Select(clause => $"&sort={Uri.EscapeDataString(clause)}"));
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>

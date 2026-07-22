@@ -63,6 +63,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        IReadOnlyList<InstanceSortCriterion> sort,
         bool includeVariables,
         int page,
         int pageSize,
@@ -97,9 +98,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ("take", pageSize),
             ("skip", skip)
         };
+        var orderBy = BuildInstanceOrderBy(sort);
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT w.* FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where} ORDER BY w.\"UpdatedAt\" DESC, w.\"Id\" DESC LIMIT @take OFFSET @skip",
+                $"SELECT w.* FROM workflow_instances w JOIN LATERAL (SELECT * FROM execution_tokens et WHERE et.\"InstanceId\" = w.\"Id\" ORDER BY et.\"Id\" DESC LIMIT 1) t ON TRUE{where} ORDER BY {orderBy} LIMIT @take OFFSET @skip",
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -108,7 +110,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
     }
 
-    public async Task<PagedResult<InstanceListItem>> ListInboxAsync(
+    public async Task<PagedResult<InboxListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
         long? instanceId,
@@ -118,6 +120,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
+        IReadOnlyList<InboxSortCriterion> sort,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -125,12 +128,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
         var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters);
+        var eligibleOrderBy = BuildInboxOrderBy(sort, "e");
+        var pageOrderBy = BuildInboxOrderBy(sort, "page");
         var eligibleCte = $"""
             WITH eligible AS (
                 SELECT ut."Id",
                        ut."InstanceId",
                        ut."MultiInstanceExecutionId",
-                       ut."UpdatedAt",
+                       ut."CreatedAt" AS "TaskCreatedAt",
+                       ut."UpdatedAt" AS "TaskUpdatedAt",
+                       w."CreatedAt" AS "InstanceCreatedAt",
+                       w."UpdatedAt" AS "InstanceUpdatedAt",
                        ROW_NUMBER() OVER (
                            PARTITION BY CASE
                                WHEN COALESCE(mie."OnePerActor", FALSE) THEN mie."Id"
@@ -165,7 +173,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // so avoid issuing the projection query for an empty inbox.
         if (totalCount == 0)
         {
-            return new PagedResult<InstanceListItem>([], page, pageSize, totalCount);
+            return new PagedResult<InboxListItem>([], page, pageSize, totalCount);
         }
 
         var skip = (page - 1) * pageSize;
@@ -181,10 +189,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 $"""
                 {eligibleCte},
                 page_task_ids AS MATERIALIZED (
-                    SELECT e."Id", e."InstanceId", e."MultiInstanceExecutionId", e."UpdatedAt"
+                    SELECT e."Id", e."InstanceId", e."MultiInstanceExecutionId",
+                           e."TaskCreatedAt", e."TaskUpdatedAt",
+                           e."InstanceCreatedAt", e."InstanceUpdatedAt"
                     FROM eligible e
                     WHERE e.inbox_rank = 1
-                    ORDER BY e."UpdatedAt" DESC, e."Id" DESC
+                    ORDER BY {eligibleOrderBy}
                     LIMIT @take OFFSET @skip
                 ),
                 page_instances AS (
@@ -252,8 +262,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        w."Status" AS "Status",
                        ut."ClaimedBy" AS "ClaimedBy",
                        w."StartedBy" AS "StartedBy",
-                       ut."CreatedAt" AS "CreatedAt",
-                       ut."UpdatedAt" AS "UpdatedAt",
+                       ut."CreatedAt" AS "TaskCreatedAt",
+                       ut."UpdatedAt" AS "TaskUpdatedAt",
+                       w."CreatedAt" AS "InstanceCreatedAt",
+                       w."UpdatedAt" AS "InstanceUpdatedAt",
                        COALESCE(values."VariablesJson", jsonb_build_object())::text AS "VariablesJson",
                        mie."Id" AS "MiId",
                        mie."InstanceId" AS "MiInstanceId",
@@ -288,13 +300,13 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        ON task_counts."ExecutionId" = mie."Id"
                 LEFT JOIN mi_flow_counts flow_counts
                        ON flow_counts."ExecutionId" = mie."Id"
-                ORDER BY ut."UpdatedAt" DESC, ut."Id" DESC
+                ORDER BY {pageOrderBy}
                 """,
                 BuildParameters(pageArgs))
             .ToListAsync(cancellationToken);
 
         var items = rows.Select(ToInboxListItem).ToList();
-        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+        return new PagedResult<InboxListItem>(items, page, pageSize, totalCount);
     }
 
     public async Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
@@ -723,6 +735,66 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     private static NpgsqlParameter[] BuildParameters(IEnumerable<(string Name, object Value)> args) =>
         args.Select(a => new NpgsqlParameter(a.Name, a.Value)).ToArray();
 
+    private static string BuildInstanceOrderBy(IReadOnlyList<InstanceSortCriterion> requested)
+    {
+        IReadOnlyList<InstanceSortCriterion> sort = requested.Count == 0
+            ? [new InstanceSortCriterion(InstanceSortField.UpdatedAt, SortDirection.Descending)]
+            : requested;
+        var parts = sort.Select(criterion =>
+        {
+            var column = criterion.Field switch
+            {
+                InstanceSortField.Id => "w.\"Id\"",
+                InstanceSortField.CreatedAt => "w.\"CreatedAt\"",
+                InstanceSortField.UpdatedAt => "w.\"UpdatedAt\"",
+                _ => throw new ArgumentOutOfRangeException(nameof(requested), criterion.Field, "Unsupported instance sort field.")
+            };
+            return $"{column} {ToSqlDirection(criterion.Direction)}";
+        }).ToList();
+
+        if (!sort.Any(criterion => criterion.Field == InstanceSortField.Id))
+        {
+            parts.Add($"w.\"Id\" {ToSqlDirection(sort[^1].Direction)}");
+        }
+
+        return string.Join(", ", parts);
+    }
+
+    private static string BuildInboxOrderBy(IReadOnlyList<InboxSortCriterion> requested, string alias)
+    {
+        IReadOnlyList<InboxSortCriterion> sort = requested.Count == 0
+            ? [new InboxSortCriterion(InboxSortField.TaskUpdatedAt, SortDirection.Descending)]
+            : requested;
+        var parts = sort.Select(criterion =>
+        {
+            var column = criterion.Field switch
+            {
+                InboxSortField.UserTaskId => $"{alias}.\"Id\"",
+                InboxSortField.InstanceId => $"{alias}.\"InstanceId\"",
+                InboxSortField.TaskCreatedAt => $"{alias}.\"TaskCreatedAt\"",
+                InboxSortField.TaskUpdatedAt => $"{alias}.\"TaskUpdatedAt\"",
+                InboxSortField.InstanceCreatedAt => $"{alias}.\"InstanceCreatedAt\"",
+                InboxSortField.InstanceUpdatedAt => $"{alias}.\"InstanceUpdatedAt\"",
+                _ => throw new ArgumentOutOfRangeException(nameof(requested), criterion.Field, "Unsupported inbox sort field.")
+            };
+            return $"{column} {ToSqlDirection(criterion.Direction)}";
+        }).ToList();
+
+        if (!sort.Any(criterion => criterion.Field == InboxSortField.UserTaskId))
+        {
+            parts.Add($"{alias}.\"Id\" {ToSqlDirection(sort[^1].Direction)}");
+        }
+
+        return string.Join(", ", parts);
+    }
+
+    private static string ToSqlDirection(SortDirection direction) => direction switch
+    {
+        SortDirection.Ascending => "ASC",
+        SortDirection.Descending => "DESC",
+        _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unsupported sort direction.")
+    };
+
     private async Task<IReadOnlyList<InstanceListItem>> ToListItemsAsync(
         IReadOnlyList<WorkflowInstanceEntity> entities,
         bool includeVariables,
@@ -876,7 +948,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return token is null ? null : ToRecord(entity, token, task);
     }
 
-    private static InstanceListItem ToInboxListItem(InboxPageRow row)
+    private static InboxListItem ToInboxListItem(InboxPageRow row)
     {
         MultiInstanceProgressRecord? progress = null;
         if (row.MultiInstanceExecutionId is not null)
@@ -926,7 +998,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 ParseFlowCounts(row.MiFlowCountsJson));
         }
 
-        return new InstanceListItem(
+        return new InboxListItem(
             row.InstanceId,
             row.WorkflowId,
             row.WorkflowDefinitionId,
@@ -950,9 +1022,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             row.Status,
             row.ClaimedBy,
             row.StartedBy,
-            row.CreatedAt,
-            row.UpdatedAt,
-            null,
+            row.TaskCreatedAt,
+            row.TaskUpdatedAt,
+            row.InstanceCreatedAt,
+            row.InstanceUpdatedAt,
             ParseVariables(row.VariablesJson),
             progress);
     }
@@ -1023,8 +1096,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         public string Status { get; set; } = string.Empty;
         public string? ClaimedBy { get; set; }
         public string? StartedBy { get; set; }
-        public DateTimeOffset CreatedAt { get; set; }
-        public DateTimeOffset UpdatedAt { get; set; }
+        public DateTimeOffset TaskCreatedAt { get; set; }
+        public DateTimeOffset TaskUpdatedAt { get; set; }
+        public DateTimeOffset InstanceCreatedAt { get; set; }
+        public DateTimeOffset InstanceUpdatedAt { get; set; }
         public string VariablesJson { get; set; } = string.Empty;
         public long? MiId { get; set; }
         public long? MiInstanceId { get; set; }

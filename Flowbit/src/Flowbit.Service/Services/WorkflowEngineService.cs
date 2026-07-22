@@ -505,13 +505,15 @@ public sealed class WorkflowEngineService(
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
+        IReadOnlyList<string>? sort,
         bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
         var variableFilters = ParseVariableFilters(variables);
-        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, includeVariables, page, pageSize, cancellationToken);
+        var sortCriteria = ParseInstanceSort(sort);
+        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, sortCriteria, includeVariables, page, pageSize, cancellationToken);
         var items = paged.Items.Select(ToSummary).ToList();
         return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
@@ -525,6 +527,7 @@ public sealed class WorkflowEngineService(
         int? nodeId,
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
+        IReadOnlyList<string>? sort,
         bool includeVariables,
         int page,
         int pageSize,
@@ -534,9 +537,10 @@ public sealed class WorkflowEngineService(
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
         var variableFilters = ParseVariableFilters(variables);
+        var sortCriteria = ParseInboxSort(sort);
         var paged = await runtime.ListInboxAsync(
             normalizedUser, normalizedRoles, instanceId, workflowId, workflowKey, businessKey, nodeId,
-            nodeExternalId, variableFilters, page, pageSize, cancellationToken);
+            nodeExternalId, variableFilters, sortCriteria, page, pageSize, cancellationToken);
 
         if (paged.Items.Count == 0)
         {
@@ -558,7 +562,6 @@ public sealed class WorkflowEngineService(
         foreach (var row in paged.Items)
         {
             var taskKey = InboxAuthorizationKey(row);
-            if (row.UserTaskId is null) continue;
             var workflow = definitionsById[row.WorkflowDefinitionId];
             var node = GetFlowNode(workflow.Definition, row.CurrentNodeId);
             var task = ToInboxUserTaskRecord(row);
@@ -582,25 +585,25 @@ public sealed class WorkflowEngineService(
         return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
-    private static long InboxAuthorizationKey(InstanceListItem row) => row.UserTaskId ?? row.Id;
+    private static long InboxAuthorizationKey(InboxListItem row) => row.UserTaskId;
 
     private static WorkflowInstanceRecord ToInboxInstanceRecord(
-        InstanceListItem row,
+        InboxListItem row,
         WorkflowDefinitionRecord workflow) =>
-        new(row.Id, row.WorkflowDefinitionId, workflow.WorkflowKey, null, row.BusinessKey,
+        new(row.InstanceId, row.WorkflowDefinitionId, workflow.WorkflowKey, null, row.BusinessKey,
             row.BusinessKeyUniqueness, row.TokenId, row.CurrentNodeId, row.UserTaskId,
-            row.Status, row.ClaimedBy, row.StartedBy, row.CreatedAt, row.UpdatedAt);
+            row.Status, row.ClaimedBy, row.StartedBy, row.InstanceCreatedAt, row.InstanceUpdatedAt);
 
-    private static UserTaskRecord ToInboxUserTaskRecord(InstanceListItem row) =>
-        new(row.UserTaskId!.Value, row.Id, row.TokenId, row.CurrentNodeId, row.CurrentNodeName,
+    private static UserTaskRecord ToInboxUserTaskRecord(InboxListItem row) =>
+        new(row.UserTaskId, row.InstanceId, row.TokenId, row.CurrentNodeId, row.CurrentNodeName,
             row.CurrentNodeExternalId, row.CurrentNodeRoles, row.CurrentRequiresClaim,
             row.CurrentRequiresAssignment,
             UserTaskRecordStatuses.Active, row.ClaimedBy, row.MultiInstanceExecutionId,
             row.ItemIndex, row.ItemValue, row.Assignee, null, null, null, null,
-            row.CreatedAt, row.UpdatedAt, null);
+            row.TaskCreatedAt, row.TaskUpdatedAt, null);
 
     private static InboxItemDto ToInboxItem(
-        InstanceListItem row,
+        InboxListItem row,
         string normalizedUser,
         IReadOnlySet<string> normalizedRoles,
         Dictionary<long, bool>? canActByTask = null,
@@ -646,8 +649,8 @@ public sealed class WorkflowEngineService(
         }
 
         return new InboxItemDto(
-            row.Id,
-            row.UserTaskId ?? 0,
+            row.InstanceId,
+            row.UserTaskId,
             row.MultiInstanceExecutionId,
             row.ItemIndex,
             row.ItemValue,
@@ -667,8 +670,12 @@ public sealed class WorkflowEngineService(
             claimedByMe,
             canClaim,
             canAct,
-            row.CreatedAt,
-            row.UpdatedAt)
+            row.TaskCreatedAt,
+            row.TaskUpdatedAt,
+            row.TaskCreatedAt,
+            row.TaskUpdatedAt,
+            row.InstanceCreatedAt,
+            row.InstanceUpdatedAt)
         {
             Variables = includeVariables ? row.Variables : null
         };
@@ -4696,6 +4703,104 @@ public sealed class WorkflowEngineService(
         }
 
         return filters;
+    }
+
+    private static IReadOnlyList<InstanceSortCriterion> ParseInstanceSort(IReadOnlyList<string>? sort)
+    {
+        if (sort is null || sort.Count == 0)
+        {
+            return [new InstanceSortCriterion(InstanceSortField.UpdatedAt, SortDirection.Descending)];
+        }
+
+        return ParseSort(
+            sort,
+            field => field.ToLowerInvariant() switch
+            {
+                "id" => InstanceSortField.Id,
+                "createdat" => InstanceSortField.CreatedAt,
+                "updatedat" => InstanceSortField.UpdatedAt,
+                _ => throw new WorkflowDomainException(
+                    $"Unknown instance sort field '{field}'. Allowed fields: id, createdAt, updatedAt.")
+            },
+            static (field, direction) => new InstanceSortCriterion(field, direction));
+    }
+
+    private static IReadOnlyList<InboxSortCriterion> ParseInboxSort(IReadOnlyList<string>? sort)
+    {
+        if (sort is null || sort.Count == 0)
+        {
+            return [new InboxSortCriterion(InboxSortField.TaskUpdatedAt, SortDirection.Descending)];
+        }
+
+        return ParseSort(
+            sort,
+            field => field.ToLowerInvariant() switch
+            {
+                "usertaskid" => InboxSortField.UserTaskId,
+                "instanceid" => InboxSortField.InstanceId,
+                "taskcreatedat" => InboxSortField.TaskCreatedAt,
+                "taskupdatedat" => InboxSortField.TaskUpdatedAt,
+                "instancecreatedat" => InboxSortField.InstanceCreatedAt,
+                "instanceupdatedat" => InboxSortField.InstanceUpdatedAt,
+                _ => throw new WorkflowDomainException(
+                    $"Unknown inbox sort field '{field}'. Allowed fields: userTaskId, instanceId, taskCreatedAt, taskUpdatedAt, instanceCreatedAt, instanceUpdatedAt.")
+            },
+            static (field, direction) => new InboxSortCriterion(field, direction));
+    }
+
+    private static IReadOnlyList<TCriterion> ParseSort<TField, TCriterion>(
+        IReadOnlyList<string> sort,
+        Func<string, TField> parseField,
+        Func<TField, SortDirection, TCriterion> createCriterion)
+        where TField : struct, Enum
+    {
+        const int maxSortCriteria = 3;
+        if (sort.Count > maxSortCriteria)
+        {
+            throw new WorkflowDomainException($"At most {maxSortCriteria} sort clauses are allowed.");
+        }
+
+        var result = new List<TCriterion>(sort.Count);
+        var fields = new HashSet<TField>();
+        foreach (var raw in sort)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                throw new WorkflowDomainException("Sort clauses must not be blank. Expected format 'field:asc' or 'field:desc'.");
+            }
+
+            var separator = raw.IndexOf(':');
+            if (separator <= 0 || separator == raw.Length - 1 || raw.IndexOf(':', separator + 1) >= 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Invalid sort clause '{raw}'. Expected format 'field:asc' or 'field:desc'.");
+            }
+
+            var fieldText = raw[..separator].Trim();
+            var directionText = raw[(separator + 1)..].Trim();
+            if (fieldText.Length == 0 || directionText.Length == 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Invalid sort clause '{raw}'. Expected format 'field:asc' or 'field:desc'.");
+            }
+
+            var field = parseField(fieldText);
+            if (!fields.Add(field))
+            {
+                throw new WorkflowDomainException($"Sort field '{fieldText}' was specified more than once.");
+            }
+
+            var direction = directionText.ToLowerInvariant() switch
+            {
+                "asc" => SortDirection.Ascending,
+                "desc" => SortDirection.Descending,
+                _ => throw new WorkflowDomainException(
+                    $"Unknown sort direction '{directionText}'. Allowed directions: asc, desc.")
+            };
+            result.Add(createCriterion(field, direction));
+        }
+
+        return result;
     }
 
     private static InstanceSummaryDto ToSummary(InstanceListItem row) =>

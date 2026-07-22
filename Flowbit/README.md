@@ -223,6 +223,28 @@ property is omitted when the parameter is absent or false. The instance list
 loads variables only when requested; the inbox already projects them for its
 stored-state capability checks, so including them adds no database query.
 
+### Instance and inbox sorting
+
+The instance list and inbox accept up to three repeated `sort=field:direction`
+parameters in priority order. Directions are `asc` and `desc`.
+
+```text
+GET /api/instances?sort=createdAt:asc&sort=id:desc
+GET /api/instances/inbox?sort=instanceCreatedAt:desc&sort=userTaskId:asc
+```
+
+Instance fields are `id`, `createdAt`, and `updatedAt`. Inbox fields are
+`userTaskId`, `instanceId`, `taskCreatedAt`, `taskUpdatedAt`,
+`instanceCreatedAt`, and `instanceUpdatedAt`. Without an explicit sort, the
+existing defaults remain `updatedAt DESC, id DESC` and
+`taskUpdatedAt DESC, userTaskId DESC`, respectively. An implicit unique-ID
+tie-breaker keeps offset pages deterministic. Invalid, duplicate, or excessive
+sort clauses return 400.
+
+Inbox responses expose explicit task and instance creation/update timestamps.
+The older `createdAt` and `updatedAt` properties remain compatibility aliases
+for `taskCreatedAt` and `taskUpdatedAt`.
+
 ## User tasks
 
 Each token resting on a `userTask` owns a persisted work item. Task-addressed routes are authoritative when an instance may have more than one active work item:

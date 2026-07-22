@@ -466,8 +466,12 @@ public sealed record PagedResult<T>(
 /// <param name="ClaimedByMe">True if the current caller is the one who claimed this task.</param>
 /// <param name="CanClaim">True if the current caller is authorized to claim this task based on role constraints.</param>
 /// <param name="CanAct">True if the current caller is authorized to act on this task.</param>
-/// <param name="CreatedAt">The timestamp when the instance was started.</param>
-/// <param name="UpdatedAt">The timestamp when the instance was last updated.</param>
+/// <param name="CreatedAt">Deprecated alias for <paramref name="TaskCreatedAt"/>.</param>
+/// <param name="UpdatedAt">Deprecated alias for <paramref name="TaskUpdatedAt"/>.</param>
+/// <param name="TaskCreatedAt">The timestamp when this user-task work item was created.</param>
+/// <param name="TaskUpdatedAt">The timestamp when this user-task work item was last updated.</param>
+/// <param name="InstanceCreatedAt">The timestamp when the owning workflow instance was created.</param>
+/// <param name="InstanceUpdatedAt">The timestamp when the owning workflow instance was last updated.</param>
 public sealed record InboxItemDto(
     long InstanceId,
     long UserTaskId,
@@ -490,8 +494,14 @@ public sealed record InboxItemDto(
     bool ClaimedByMe,
     bool CanClaim,
     bool CanAct,
+    [property: Obsolete("Use TaskCreatedAt. This compatibility alias will be removed in a future version.")]
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt)
+    [property: Obsolete("Use TaskUpdatedAt. This compatibility alias will be removed in a future version.")]
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset TaskCreatedAt,
+    DateTimeOffset TaskUpdatedAt,
+    DateTimeOffset InstanceCreatedAt,
+    DateTimeOffset InstanceUpdatedAt)
 {
     /// <summary>
     /// Gets the latest instance variable values when explicitly requested.

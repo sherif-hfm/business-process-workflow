@@ -8,6 +8,7 @@
     {
       "id": 1,
       "name": "New Node",
+      "externalId": null,
       "type": "startEvent",
       "laneId": null,
       "x": 100,
@@ -26,6 +27,7 @@
     {
       "id": 2,
       "name": "review",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 269,
@@ -41,11 +43,15 @@
       "assignmentMode": "fresh",
       "inheritAssignmentFromNodeId": null,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
       "name": "prepare",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 1017,
@@ -60,11 +66,15 @@
       "assignmentMode": "fromNode",
       "inheritAssignmentFromNodeId": 2,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 5,
       "name": "End",
+      "externalId": null,
       "type": "endEvent",
       "laneId": null,
       "x": 1084,
@@ -83,6 +93,7 @@
     {
       "id": 6,
       "name": "confirm",
+      "externalId": null,
       "type": "userTask",
       "laneId": null,
       "x": 641,
@@ -97,13 +108,17 @@
       "assignmentMode": "fresh",
       "inheritAssignmentFromNodeId": null,
       "variables": [],
-      "assignee": null
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
       "name": "",
+      "externalId": null,
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -121,6 +136,7 @@
     {
       "id": 104,
       "name": "done",
+      "externalId": null,
       "sourceRef": 4,
       "targetRef": 5,
       "roles": [],
@@ -138,6 +154,7 @@
     {
       "id": 105,
       "name": "review",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 6,
       "roles": [],
@@ -155,6 +172,7 @@
     {
       "id": 106,
       "name": "confirm",
+      "externalId": null,
       "sourceRef": 6,
       "targetRef": 4,
       "roles": [],
@@ -170,9 +188,15 @@
       "cancelRemainingInstances": false
     }
   ],
-  "cancelRoles": [],
-  "unclaimRoles": [],
-  "taskAssignmentRoles": [],
+  "cancelRoles": [
+    "Manager"
+  ],
+  "unclaimRoles": [
+    "Manager"
+  ],
+  "taskAssignmentRoles": [
+    "Manager"
+  ],
   "taskDistribution": {
     "clientId": "user",
     "clientSecret": "123"

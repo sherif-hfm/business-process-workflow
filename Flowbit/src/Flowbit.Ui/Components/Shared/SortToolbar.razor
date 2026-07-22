@@ -1,0 +1,147 @@
+<section class="filter-panel" aria-labelledby="@($"{Id}-heading")">
+    <div class="section-heading mb-0">
+        <div>
+            <h2 id="@($"{Id}-heading")">Sort results</h2>
+            <p>Earlier rows have higher priority. Add up to three fields.</p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ResetAsync">Reset</button>
+    </div>
+
+    <div class="d-grid gap-2 mt-3">
+        @for (var i = 0; i < clauses.Count; i++)
+        {
+            var index = i;
+            var clause = clauses[index];
+            <div class="d-flex flex-wrap align-items-end gap-2">
+                <div class="flex-grow-1" style="min-width: 12rem;">
+                    <label class="form-label" for="@($"{Id}-field-{index}")">@(index == 0 ? "Primary field" : $"Then by #{index + 1}")</label>
+                    <select id="@($"{Id}-field-{index}")" class="form-select" value="@clause.Field" @onchange="eventArgs => ChangeField(index, eventArgs.Value?.ToString())">
+                        @foreach (var option in AvailableOptions(index))
+                        {
+                            <option value="@option.Value">@option.Label</option>
+                        }
+                    </select>
+                </div>
+                <div style="min-width: 9rem;">
+                    <label class="form-label" for="@($"{Id}-direction-{index}")">Direction</label>
+                    <select id="@($"{Id}-direction-{index}")" class="form-select" value="@clause.Direction" @onchange="eventArgs => ChangeDirection(index, eventArgs.Value?.ToString())">
+                        <option value="asc">Ascending</option>
+                        <option value="desc">Descending</option>
+                    </select>
+                </div>
+                <div class="btn-group" role="group" aria-label="Change sort priority">
+                    <button type="button" class="btn btn-outline-secondary" disabled="@(index == 0)" @onclick="() => Move(index, -1)">Up</button>
+                    <button type="button" class="btn btn-outline-secondary" disabled="@(index == clauses.Count - 1)" @onclick="() => Move(index, 1)">Down</button>
+                    <button type="button" class="btn btn-outline-danger" disabled="@(clauses.Count == 1)" @onclick="() => Remove(index)">Remove</button>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 mt-3">
+        <button type="button" class="btn btn-outline-secondary" disabled="@(clauses.Count >= MaxClauses || clauses.Count >= Options.Count)" @onclick="Add">Add field</button>
+        <button type="button" class="btn btn-primary" @onclick="ApplyAsync">Apply sorting</button>
+    </div>
+</section>
+
+@code {
+    private const int MaxClauses = 3;
+    private readonly List<SortDraftClause> clauses = [];
+    private bool initialized;
+
+    [Parameter, EditorRequired]
+    public string Id { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SortFieldOption> Options { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public string DefaultField { get; set; } = string.Empty;
+
+    [Parameter]
+    public string DefaultDirection { get; set; } = "desc";
+
+    [Parameter]
+    public EventCallback<IReadOnlyList<string>> Applied { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (initialized)
+        {
+            return;
+        }
+
+        initialized = true;
+        clauses.Add(new SortDraftClause(DefaultField, DefaultDirection));
+    }
+
+    private IEnumerable<SortFieldOption> AvailableOptions(int currentIndex)
+    {
+        var selectedElsewhere = clauses
+            .Where((_, index) => index != currentIndex)
+            .Select(clause => clause.Field)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Options.Where(option => !selectedElsewhere.Contains(option.Value));
+    }
+
+    private void ChangeField(int index, string? value)
+    {
+        if (index < clauses.Count && Options.Any(option => string.Equals(option.Value, value, StringComparison.OrdinalIgnoreCase)))
+        {
+            clauses[index].Field = value!;
+        }
+    }
+
+    private void ChangeDirection(int index, string? value)
+    {
+        if (index < clauses.Count && value is "asc" or "desc")
+        {
+            clauses[index].Direction = value;
+        }
+    }
+
+    private void Add()
+    {
+        if (clauses.Count >= MaxClauses)
+        {
+            return;
+        }
+
+        var next = Options.FirstOrDefault(option => clauses.All(clause => !string.Equals(clause.Field, option.Value, StringComparison.OrdinalIgnoreCase)));
+        if (next is not null)
+        {
+            clauses.Add(new SortDraftClause(next.Value, "asc"));
+        }
+    }
+
+    private void Remove(int index)
+    {
+        if (clauses.Count > 1 && index >= 0 && index < clauses.Count)
+        {
+            clauses.RemoveAt(index);
+        }
+    }
+
+    private void Move(int index, int offset)
+    {
+        var target = index + offset;
+        if (index < 0 || index >= clauses.Count || target < 0 || target >= clauses.Count)
+        {
+            return;
+        }
+
+        (clauses[index], clauses[target]) = (clauses[target], clauses[index]);
+    }
+
+    private Task ApplyAsync() => Applied.InvokeAsync(BuildClauses());
+
+    private async Task ResetAsync()
+    {
+        clauses.Clear();
+        clauses.Add(new SortDraftClause(DefaultField, DefaultDirection));
+        await Applied.InvokeAsync(BuildClauses());
+    }
+
+    private IReadOnlyList<string> BuildClauses() =>
+        clauses.Select(clause => $"{clause.Field}:{clause.Direction}").ToArray();
+}

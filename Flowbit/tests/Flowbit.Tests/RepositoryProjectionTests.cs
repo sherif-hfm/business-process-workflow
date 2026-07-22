@@ -90,7 +90,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var baselineContext = new AppDbContext(baselineOptions);
         var baselineRepository = new WorkflowRuntimeRepository(baselineContext);
         var baseline = await baselineRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], false, 1, 2, CancellationToken.None);
+            null, null, null, workflowKey, null, null, null, [], [], false, 1, 2, CancellationToken.None);
 
         Assert.Equal(2, baseline.Items.Count);
         Assert.All(baseline.Items, item => Assert.Null(item.Variables));
@@ -104,7 +104,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var includedContext = new AppDbContext(includedOptions);
         var includedRepository = new WorkflowRuntimeRepository(includedContext);
         var included = await includedRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], true, 1, 2, CancellationToken.None);
+            null, null, null, workflowKey, null, null, null, [], [], true, 1, 2, CancellationToken.None);
 
         Assert.Equal(baselineCounter.ReaderCommands + 1, includedCounter.ReaderCommands);
         Assert.Equal(baseline.Items.Select(item => item.Id), included.Items.Select(item => item.Id));
