@@ -108,6 +108,37 @@
     outline-offset: 2px;
   }
   .button-icon { width: 15px; height: 15px; margin-right: 5px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .toolbar-select {
+    height: 34px;
+    padding: 5px 30px 5px 10px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .toolbar-opacity {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .toolbar-opacity input {
+    width: 88px;
+    accent-color: var(--accent-2);
+    cursor: pointer;
+  }
+  .toolbar-opacity output {
+    min-width: 34px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
   .spacer { flex: 1; }
 
   main { flex: 1; display: flex; min-height: 0; }
@@ -148,6 +179,152 @@
   .canvas-controls button { min-width: 34px; min-height: 32px; padding: 5px 9px; }
   .canvas-controls .zoom-readout { min-width: 62px; color: #bfdbfe; font-variant-numeric: tabular-nums; }
   .canvas-controls .fit-view { min-width: 48px; }
+  .diagram-tools {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 15;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    width: min(620px, calc(100% - 24px));
+    pointer-events: none;
+  }
+  .diagram-tools > * { pointer-events: auto; }
+  .diagram-search {
+    position: relative;
+    width: min(330px, 100%);
+  }
+  .diagram-search-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px;
+    background: rgba(17,29,48,.96);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .diagram-search input {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 6px 9px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-size: 12px;
+  }
+  .diagram-search input::placeholder { color: #8292a8; }
+  .diagram-search-clear {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 4px 8px;
+    color: var(--muted);
+  }
+  .diagram-search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 100%;
+    max-height: min(360px, calc(100vh - 180px));
+    overflow-y: auto;
+    padding: 5px;
+    background: rgba(17,29,48,.98);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+  }
+  .diagram-search-results[hidden] { display: none; }
+  .diagram-search-result {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 8px;
+    min-height: 0;
+    padding: 7px 9px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+  .diagram-search-result.active,
+  .diagram-search-result:hover {
+    background: rgba(59,130,246,.18);
+  }
+  .diagram-search-kind {
+    color: #93c5fd;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .diagram-search-copy { min-width: 0; }
+  .diagram-search-name,
+  .diagram-search-detail {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .diagram-search-name { color: var(--text); font-size: 12px; }
+  .diagram-search-detail { margin-top: 2px; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .diagram-nav {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 5px;
+    background: rgba(17,29,48,.96);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .diagram-nav button,
+  .diagram-nav select {
+    min-height: 30px;
+    height: 30px;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  .diagram-nav select {
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+  }
+  .trace-modes {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid rgba(72,97,127,.55);
+    border-radius: 8px;
+    background: rgba(9,17,31,.35);
+  }
+  .trace-modes button {
+    border-color: transparent;
+    background: transparent;
+  }
+  .trace-modes button[aria-pressed="true"] {
+    color: #dbeafe;
+    background: rgba(37,99,235,.72);
+    border-color: #60a5fa;
+  }
+  .sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
 
   /* Sidebar */
   aside {
@@ -276,7 +453,7 @@
   .node.intermediateMessageCatchEvent circle.body { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 2; }
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
   .node.messageStartEvent circle.body { fill: #14532d; stroke: #38bdf8; stroke-width: 2; }
-  .node { transition: filter .15s; }
+  .node { transition: filter .15s, opacity .15s; }
   .node:hover { filter: drop-shadow(0 6px 10px rgba(2,8,23,.38)); }
   .node.selected { filter: drop-shadow(0 0 8px rgba(255,255,255,.24)); }
   .node.selected rect,
@@ -347,23 +524,67 @@
     stroke-width: 1;
     cursor: nwse-resize;
   }
-
-  .edge .edge-line { fill: none; stroke: #93a8c2; stroke-width: 2.2; pointer-events: none; transition: stroke .15s, stroke-width .15s; }
-  .edge .edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; pointer-events: stroke; }
+  .edge { transition: opacity .15s; }
+  .edge .edge-line { fill: none; stroke: #93a8c2; stroke-width: 2.2; pointer-events: none; transition: stroke .15s, stroke-width .15s, opacity .15s; }
+  .edge .edge-hit { fill: none; stroke: transparent; stroke-width: 16; cursor: pointer; pointer-events: stroke; vector-effect: non-scaling-stroke; }
   .edge.auto .edge-line { stroke-dasharray: 7 5; }
   .edge:hover .edge-line, .edge.hovered .edge-line { stroke: var(--accent-2); stroke-width: 3; }
   .edge.selected .edge-line { stroke: var(--amber); stroke-width: 3.2; }
   .edge.error .edge-line { stroke: #f87171; stroke-dasharray: 6 5; }
-  .edge-label { cursor: pointer; }
-  .edge-label .label-bg { fill: rgba(9,17,31,.96); stroke: #3d526d; stroke-width: 1; }
-  .edge:hover .edge-label .label-bg, .edge.hovered .edge-label .label-bg { stroke: var(--accent-2); }
-  .edge.selected .edge-label .label-bg { stroke: var(--amber); }
-  .edge.error .edge-label .label-bg { stroke: #f87171; }
-  .edge-label .label-main { fill: #f1f5f9; font-size: 11px; font-weight: 650; }
-  .edge-label .label-meta { fill: #afbdd0; font-size: 9.5px; }
-  .edge-label .condition-indicator path { fill: rgba(245,158,11,.2); stroke: #fbbf24; stroke-width: 1.2; }
-  .edge-label .condition-indicator circle { fill: #fbbf24; }
-  .edge.error .edge-label .label-meta { fill: #fca5a5; }
+  .node.trace-muted, .edge.trace-muted {
+    opacity: var(--trace-muted-opacity, 1);
+  }
+  .node.trace-muted:hover,
+  .edge.trace-muted:hover,
+  .edge.trace-muted.hovered {
+    opacity: 1;
+  }
+  .node.trace-context { filter: drop-shadow(0 0 8px rgba(251,113,133,.32)); }
+  .edge.trace-active:not(.selected) .edge-line { stroke: #60a5fa; stroke-width: 2.8; }
+  .edge-label { cursor: pointer; pointer-events: visiblePainted; }
+  .edge-label-guide { fill: none; stroke: none; pointer-events: none; }
+  .edge-label-text {
+    fill: #f1f5f9;
+    stroke: #07111f;
+    stroke-width: 3.2px;
+    paint-order: stroke fill;
+    stroke-linejoin: round;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: .01em;
+    pointer-events: visiblePainted;
+    transition: opacity .15s, fill .15s;
+  }
+  .edge.hovered .edge-label-text { fill: #bfdbfe; }
+  .edge.selected .edge-label-text { fill: #fde68a; }
+  .flow-marker-condition { fill: #fbbf24; }
+  .flow-marker-default { fill: #67e8f9; }
+  .flow-marker-interrupt { fill: #fb7185; }
+  #svg[data-label-mode="off"] .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
+  #svg[data-label-mode="smart"][data-zoom-level="medium"]
+    .edge:not(.trace-active):not(.selected):not(.hovered) .flow-label-name { display: none; }
+  #svg[data-label-mode="smart"][data-zoom-level="overview"]
+    .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
+  #svg[data-label-mode="off"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  #svg[data-label-mode="smart"][data-zoom-level="medium"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  #svg[data-label-mode="smart"][data-zoom-level="overview"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  #svg[data-zoom-level="medium"] .node .nid:not(.shape-caption),
+  #svg[data-zoom-level="medium"] .node .roles,
+  #svg[data-zoom-level="medium"] .node .node-separator,
+  #svg[data-zoom-level="overview"] .node .nid:not(.shape-caption),
+  #svg[data-zoom-level="overview"] .node .roles,
+  #svg[data-zoom-level="overview"] .node .node-separator,
+  #svg[data-zoom-level="overview"] .node .status-icon,
+  #svg[data-zoom-level="overview"] .node .mi-marker { display: none; }
   #connectionPreview { pointer-events: none; }
   #connectionPreview .preview-line {
     fill: none;
@@ -513,6 +734,7 @@
     .toolbar-identity { flex-basis: 100%; }
     .toolbar-group { flex: 1 1 auto; }
     aside { width: 310px; }
+    .diagram-tools { width: min(520px, calc(100% - 24px)); }
   }
   @media (max-width: 820px) {
     .js-editor-layout { flex-direction: column; overflow-y: auto; }
@@ -521,6 +743,11 @@
     .modal-container { width: 94vw; height: 92vh; }
     .button-label { display: none; }
     .button-icon { margin-right: 0; }
+    .diagram-tools { top: 8px; right: 8px; width: calc(100% - 16px); }
+    .diagram-search { width: min(290px, 100%); }
+    .diagram-nav { max-width: 100%; }
+    .diagram-nav .compact-hide { display: none; }
+    .toolbar-opacity input { width: 68px; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
@@ -542,6 +769,22 @@
     <button id="connectBtn" title="Connect two nodes with a sequence flow"><svg class="button-icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg><span class="button-label">Connect Flow</span></button>
   </div>
   <div class="spacer"></div>
+  <div class="toolbar-group" aria-label="View options">
+    <label class="sr-only" for="labelModeSelect">Flow label visibility</label>
+    <select id="labelModeSelect" class="toolbar-select"
+            title="Flow label visibility" aria-label="Flow label visibility">
+      <option value="smart">Labels: Smart</option>
+      <option value="all">Labels: Show</option>
+      <option value="off">Labels: Hide</option>
+    </select>
+    <label class="toolbar-opacity" for="traceOpacityInput"
+           title="Opacity of nodes and flows outside the active path">
+      <span>Others</span>
+      <input id="traceOpacityInput" type="range" min="10" max="100" step="5"
+             value="100" aria-label="Untraced item opacity" />
+      <output id="traceOpacityValue" for="traceOpacityInput">100%</output>
+    </label>
+  </div>
   <div class="toolbar-group" aria-label="File actions">
     <button id="newBtn" title="Create a new workflow"><svg class="button-icon" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg><span class="button-label">New</span></button>
     <button id="loadBtn" title="Load workflow JSON"><svg class="button-icon" viewBox="0 0 24 24"><path d="M4 19h16V8h-8l-2-3H4z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg><span class="button-label">Load JSON</span></button>
@@ -595,6 +838,30 @@
       <g id="nodes"></g>
     </svg>
     <div class="hint" id="hint"></div>
+    <div class="diagram-tools" aria-label="Diagram navigation">
+      <div class="diagram-search">
+        <div class="diagram-search-row">
+          <label class="sr-only" for="diagramSearchInput">Search workflow diagram</label>
+          <input id="diagramSearchInput" type="search" autocomplete="off"
+                 placeholder="Search nodes, flows, lanes…  (/)"
+                 aria-controls="diagramSearchResults" aria-expanded="false" />
+          <button id="diagramSearchClear" class="diagram-search-clear" type="button"
+                  title="Clear diagram search" aria-label="Clear diagram search">×</button>
+        </div>
+        <div id="diagramSearchResults" class="diagram-search-results"
+             role="listbox" aria-label="Diagram search results" hidden></div>
+      </div>
+      <div class="diagram-nav">
+        <div class="trace-modes" role="group" aria-label="Trace selected workflow path">
+          <button type="button" data-trace-mode="local" aria-pressed="true">Local</button>
+          <button type="button" data-trace-mode="upstream" aria-pressed="false">Upstream</button>
+          <button type="button" data-trace-mode="downstream" aria-pressed="false">Downstream</button>
+          <button type="button" data-trace-mode="route" aria-pressed="false">Route</button>
+        </div>
+        <button id="fitSelectionBtn" type="button" title="Fit the selected item">Fit selection</button>
+        <button id="fitLaneBtn" type="button" title="Fit the selected node's lane">Fit lane</button>
+      </div>
+    </div>
     <div class="canvas-controls" aria-label="Canvas zoom controls">
       <button id="zoomOutBtn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
       <button id="zoomResetBtn" type="button" class="zoom-readout" title="Reset zoom to 100%">100%</button>
@@ -699,6 +966,339 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" }
 ];
+
+// BEGIN DIAGRAM NAVIGATION HELPERS
+function buildDiagramTraceContext(candidate, selection, mode) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  const nodeById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+  const flowById = new Map(flows.filter(Boolean).map(flow => [flow.id, flow]));
+  const incoming = new Map();
+  const outgoing = new Map();
+  for (const flow of flows) {
+    if (!flow) continue;
+    if (!incoming.has(flow.targetRef)) incoming.set(flow.targetRef, []);
+    if (!outgoing.has(flow.sourceRef)) outgoing.set(flow.sourceRef, []);
+    incoming.get(flow.targetRef).push(flow);
+    outgoing.get(flow.sourceRef).push(flow);
+  }
+
+  const nodeIds = new Set();
+  const flowIds = new Set();
+  const contextNodeIds = new Set();
+  const addFlow = flow => {
+    if (!flow) return;
+    flowIds.add(flow.id);
+    if (nodeById.has(flow.sourceRef)) nodeIds.add(flow.sourceRef);
+    if (nodeById.has(flow.targetRef)) nodeIds.add(flow.targetRef);
+  };
+  const walk = (seedId, direction) => {
+    const queue = [seedId];
+    const visited = new Set();
+    while (queue.length) {
+      const nodeId = queue.shift();
+      if (visited.has(nodeId) || !nodeById.has(nodeId)) continue;
+      visited.add(nodeId);
+      nodeIds.add(nodeId);
+      const adjacent = direction === "upstream"
+        ? (incoming.get(nodeId) || [])
+        : (outgoing.get(nodeId) || []);
+      for (const flow of adjacent) {
+        addFlow(flow);
+        const nextId = direction === "upstream" ? flow.sourceRef : flow.targetRef;
+        if (!visited.has(nextId)) queue.push(nextId);
+      }
+    }
+  };
+
+  const effectiveMode = ["local", "upstream", "downstream", "route"].includes(mode)
+    ? mode : "local";
+  if (selection && selection.kind === "node" && nodeById.has(selection.nodeId)) {
+    const nodeId = selection.nodeId;
+    if (effectiveMode === "local") {
+      nodeIds.add(nodeId);
+      for (const flow of incoming.get(nodeId) || []) addFlow(flow);
+      for (const flow of outgoing.get(nodeId) || []) addFlow(flow);
+    } else {
+      if (effectiveMode === "upstream" || effectiveMode === "route") walk(nodeId, "upstream");
+      if (effectiveMode === "downstream" || effectiveMode === "route") walk(nodeId, "downstream");
+    }
+  } else if (selection && selection.kind === "flow" && flowById.has(selection.flowId)) {
+    const flow = flowById.get(selection.flowId);
+    addFlow(flow);
+    if (effectiveMode === "upstream" || effectiveMode === "route") walk(flow.sourceRef, "upstream");
+    if (effectiveMode === "downstream" || effectiveMode === "route") walk(flow.targetRef, "downstream");
+  } else if (selection && selection.kind === "lane") {
+    const laneNodeIds = new Set(nodes
+      .filter(node => node && node.laneId === selection.laneId)
+      .map(node => node.id));
+    laneNodeIds.forEach(id => nodeIds.add(id));
+    for (const flow of flows) {
+      if (flow && (laneNodeIds.has(flow.sourceRef) || laneNodeIds.has(flow.targetRef))) addFlow(flow);
+    }
+  }
+
+  // Attachments and interrupt-scope references are contextual relationships,
+  // not sequence flows. Highlight them without letting traversal cross them.
+  for (const nodeId of [...nodeIds]) {
+    const node = nodeById.get(nodeId);
+    if (!node) continue;
+    if (node.type === "errorBoundaryEvent" && nodeById.has(node.attachedToRef)) {
+      contextNodeIds.add(node.attachedToRef);
+    }
+    if (node.type === "parallelInterruptEvent" && nodeById.has(node.parallelGatewayRef)) {
+      contextNodeIds.add(node.parallelGatewayRef);
+    }
+    for (const candidateNode of nodes) {
+      if (!candidateNode) continue;
+      if (candidateNode.type === "errorBoundaryEvent" && candidateNode.attachedToRef === nodeId) {
+        contextNodeIds.add(candidateNode.id);
+      }
+      if (candidateNode.type === "parallelInterruptEvent" && candidateNode.parallelGatewayRef === nodeId) {
+        contextNodeIds.add(candidateNode.id);
+      }
+    }
+  }
+  for (const nodeId of nodeIds) contextNodeIds.delete(nodeId);
+  const sorted = values => [...values].sort((left, right) =>
+    typeof left === "number" && typeof right === "number"
+      ? left - right : String(left).localeCompare(String(right)));
+  return {
+    nodeIds: sorted(nodeIds),
+    flowIds: sorted(flowIds),
+    contextNodeIds: sorted(contextNodeIds)
+  };
+}
+
+function classifySemanticZoom(zoom) {
+  if (zoom < .6) return "overview";
+  if (zoom < .9) return "medium";
+  return "detail";
+}
+
+function searchDiagram(candidate, query, limit = 20) {
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  if (!normalizedQuery) return [];
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  const lanes = Array.isArray(candidate && candidate.lanes) ? candidate.lanes : [];
+  const nodeById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+  const typeNames = {
+    startEvent: "Start Event",
+    messageStartEvent: "Message Start Event",
+    userTask: "User Task",
+    task: "Task",
+    serviceTask: "Service Task",
+    scriptTask: "Script Task",
+    exclusiveGateway: "Exclusive Gateway",
+    parallelGateway: "Parallel Gateway",
+    parallelInterruptEvent: "Parallel Interrupt Event",
+    endEvent: "End Event",
+    terminateEndEvent: "Terminate End Event",
+    errorEndEvent: "Error End Event",
+    errorBoundaryEvent: "Error Boundary Event",
+    intermediateMessageCatchEvent: "Message Catch Event"
+  };
+  const candidates = [];
+  const addCandidate = (kind, id, label, detail, rawFields) => {
+    const fields = rawFields
+      .filter(value => value !== null && value !== undefined)
+      .map(value => String(value).trim().toLowerCase())
+      .filter(Boolean);
+    let score = Infinity;
+    for (const field of fields) {
+      if (field === normalizedQuery || `#${field}` === normalizedQuery) score = Math.min(score, 0);
+      else if (field.startsWith(normalizedQuery)) score = Math.min(score, 10);
+      else if (field.split(/[\s._-]+/).some(word => word.startsWith(normalizedQuery))) score = Math.min(score, 20);
+      else if (field.includes(normalizedQuery)) score = Math.min(score, 30);
+    }
+    if (Number.isFinite(score)) candidates.push({ kind, id, label, detail, score });
+  };
+  for (const node of nodes) {
+    if (!node) continue;
+    const lane = lanes.find(item => item && item.id === node.laneId);
+    const typeName = typeNames[node.type] || node.type || "Node";
+    addCandidate("node", node.id, node.name || `Node #${node.id}`,
+      `#${node.id} · ${typeName}${lane ? ` · ${lane.name}` : ""}`,
+      [node.id, `#${node.id}`, node.name, node.externalId, node.type, typeName]);
+  }
+  for (const flow of flows) {
+    if (!flow) continue;
+    const source = nodeById.get(flow.sourceRef);
+    const target = nodeById.get(flow.targetRef);
+    const endpointText = `${source?.name || `#${flow.sourceRef}`} → ${target?.name || `#${flow.targetRef}`}`;
+    addCandidate("flow", flow.id, flow.name || `Flow #${flow.id}`,
+      `#${flow.id} · ${endpointText}`,
+      [flow.id, `#${flow.id}`, flow.name, flow.externalId, endpointText,
+       source && source.name, source && source.externalId, target && target.name, target && target.externalId]);
+  }
+  for (const lane of lanes) {
+    if (!lane) continue;
+    addCandidate("lane", lane.id, lane.name || `Lane #${lane.id}`, `Lane #${lane.id}`,
+      [lane.id, `#${lane.id}`, lane.name, lane.externalId, "lane"]);
+  }
+  const kindOrder = { node: 0, flow: 1, lane: 2 };
+  candidates.sort((left, right) =>
+    left.score - right.score ||
+    (kindOrder[left.kind] ?? 9) - (kindOrder[right.kind] ?? 9) ||
+    (typeof left.id === "number" && typeof right.id === "number"
+      ? left.id - right.id : String(left.id).localeCompare(String(right.id))));
+  const numericLimit = Number.isFinite(Number(limit)) ? Math.max(0, Number(limit)) : 20;
+  return candidates.slice(0, numericLimit);
+}
+
+function shouldReverseLabelDirection(before, after) {
+  const dx = Number(after && after.x) - Number(before && before.x);
+  const dy = Number(after && after.y) - Number(before && before.y);
+  return Math.abs(dx) >= Math.abs(dy) ? dx < -1e-6 : dy < -1e-6;
+}
+
+function truncateFlowLabel(text, availableLength, averageCharWidth = 6.2) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  const glyphs = Array.from(value);
+  const width = Math.max(0, Number(availableLength) || 0);
+  const glyphWidth = Math.max(.1, Number(averageCharWidth) || 6.2);
+  if (glyphs.length * glyphWidth <= width) return value;
+  const maxGlyphs = Math.floor(width / glyphWidth);
+  if (maxGlyphs <= 0) return "";
+  if (maxGlyphs === 1) return "…";
+  return glyphs.slice(0, maxGlyphs - 1).join("").trimEnd() + "…";
+}
+
+function flowLabelPresentation(pathLength, curvatureDegrees, renderedTextLength) {
+  const length = Number(pathLength) || 0;
+  const curvature = Math.abs(Number(curvatureDegrees) || 0);
+  const textLength = Math.max(0, Number(renderedTextLength) || 0);
+  if (length < 1) return "hidden";
+  if (curvature > 35 || length < textLength + 28) return "tangent";
+  return "path";
+}
+
+function calculateFitTransform(bounds, canvasWidth, canvasHeight, padding, minZoom, maxZoom) {
+  if (!bounds) return null;
+  const width = Math.max(1, Number(canvasWidth) || 1);
+  const height = Math.max(1, Number(canvasHeight) || 1);
+  const inset = Math.max(0, Number(padding) || 0);
+  const contentWidth = Math.max(1, bounds.right - bounds.left + inset * 2);
+  const contentHeight = Math.max(1, bounds.bottom - bounds.top + inset * 2);
+  const minimum = Number.isFinite(Number(minZoom)) ? Number(minZoom) : 0;
+  const maximum = Number.isFinite(Number(maxZoom)) ? Number(maxZoom) : Infinity;
+  const zoom = Math.min(maximum, Math.max(minimum, Math.min(width / contentWidth, height / contentHeight)));
+  return {
+    zoom,
+    x: (bounds.left + bounds.right) / 2 - width / zoom / 2,
+    y: (bounds.top + bounds.bottom) / 2 - height / zoom / 2
+  };
+}
+
+function edgeGeometryPointAt(geometry, t) {
+  const ratio = Math.min(1, Math.max(0, t));
+  const inverse = 1 - ratio;
+  if (geometry.kind === "quadratic") {
+    return {
+      x: inverse * inverse * geometry.start.x +
+        2 * inverse * ratio * geometry.control.x + ratio * ratio * geometry.end.x,
+      y: inverse * inverse * geometry.start.y +
+        2 * inverse * ratio * geometry.control.y + ratio * ratio * geometry.end.y
+    };
+  }
+  if (geometry.kind === "cubic") {
+    return {
+      x: inverse ** 3 * geometry.start.x +
+        3 * inverse * inverse * ratio * geometry.control1.x +
+        3 * inverse * ratio * ratio * geometry.control2.x + ratio ** 3 * geometry.end.x,
+      y: inverse ** 3 * geometry.start.y +
+        3 * inverse * inverse * ratio * geometry.control1.y +
+        3 * inverse * ratio * ratio * geometry.control2.y + ratio ** 3 * geometry.end.y
+    };
+  }
+  return {
+    x: geometry.start.x + (geometry.end.x - geometry.start.x) * ratio,
+    y: geometry.start.y + (geometry.end.y - geometry.start.y) * ratio
+  };
+}
+
+function edgeGeometryTangentAt(geometry, t) {
+  const ratio = Math.min(1, Math.max(0, t));
+  const inverse = 1 - ratio;
+  if (geometry.kind === "quadratic") {
+    return {
+      x: 2 * inverse * (geometry.control.x - geometry.start.x) +
+        2 * ratio * (geometry.end.x - geometry.control.x),
+      y: 2 * inverse * (geometry.control.y - geometry.start.y) +
+        2 * ratio * (geometry.end.y - geometry.control.y)
+    };
+  }
+  if (geometry.kind === "cubic") {
+    return {
+      x: 3 * inverse * inverse * (geometry.control1.x - geometry.start.x) +
+        6 * inverse * ratio * (geometry.control2.x - geometry.control1.x) +
+        3 * ratio * ratio * (geometry.end.x - geometry.control2.x),
+      y: 3 * inverse * inverse * (geometry.control1.y - geometry.start.y) +
+        6 * inverse * ratio * (geometry.control2.y - geometry.control1.y) +
+        3 * ratio * ratio * (geometry.end.y - geometry.control2.y)
+    };
+  }
+  return {
+    x: geometry.end.x - geometry.start.x,
+    y: geometry.end.y - geometry.start.y
+  };
+}
+
+function edgeGeometryPathD(geometry, reversed = false) {
+  const start = reversed ? geometry.end : geometry.start;
+  const end = reversed ? geometry.start : geometry.end;
+  if (geometry.kind === "quadratic") {
+    return `M ${start.x} ${start.y} Q ${geometry.control.x} ${geometry.control.y} ${end.x} ${end.y}`;
+  }
+  if (geometry.kind === "cubic") {
+    const control1 = reversed ? geometry.control2 : geometry.control1;
+    const control2 = reversed ? geometry.control1 : geometry.control2;
+    return `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${end.x} ${end.y}`;
+  }
+  return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+}
+
+function edgeGeometryMetrics(geometry, samples = 80) {
+  const count = Math.max(8, Math.floor(samples));
+  const points = [];
+  const cumulative = [0];
+  let totalLength = 0;
+  for (let index = 0; index <= count; index++) {
+    const point = edgeGeometryPointAt(geometry, index / count);
+    points.push(point);
+    if (index > 0) {
+      totalLength += Math.hypot(point.x - points[index - 1].x, point.y - points[index - 1].y);
+      cumulative.push(totalLength);
+    }
+  }
+  return { count, points, cumulative, totalLength };
+}
+
+function edgeArcFractionAtT(geometry, t, metrics) {
+  const data = metrics || edgeGeometryMetrics(geometry);
+  if (data.totalLength <= 1e-9) return .5;
+  const scaled = Math.min(1, Math.max(0, t)) * data.count;
+  const lower = Math.floor(scaled);
+  const upper = Math.min(data.count, lower + 1);
+  const mix = scaled - lower;
+  const length = data.cumulative[lower] +
+    (data.cumulative[upper] - data.cumulative[lower]) * mix;
+  return length / data.totalLength;
+}
+
+function edgeGeometryCurvature(geometry, t) {
+  const before = edgeGeometryTangentAt(geometry, Math.max(0, t - .12));
+  const after = edgeGeometryTangentAt(geometry, Math.min(1, t + .12));
+  const beforeAngle = Math.atan2(before.y, before.x) * 180 / Math.PI;
+  const afterAngle = Math.atan2(after.y, after.x) * 180 / Math.PI;
+  let difference = Math.abs(afterAngle - beforeAngle) % 360;
+  if (difference > 180) difference = 360 - difference;
+  return difference;
+}
+// END DIAGRAM NAVIGATION HELPERS
+
 const CLAIM_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
 const CLAIM_MODE_OPTIONS = [
   { value: CLAIM_MODE.FRESH, label: "Fresh (claim each time)" },
@@ -991,6 +1591,12 @@ let connectionDrag = null;    // {pointerId, sourceId, side, start, current, hov
 let drag = null;              // {id, dx, dy}
 let laneDrag = null;          // {id, dx, dy, nodeOffsets}
 let laneResize = null;        // {id, dx, dy}
+let traceMode = "local";
+let labelMode = "smart";
+let untracedOpacity = 1;
+let activeTraceContext = null;
+let diagramSearchMatches = [];
+let diagramSearchIndex = -1;
 
 const svg = document.getElementById('svg');
 const canvasWrap = document.querySelector('.canvas-wrap');
@@ -1007,6 +1613,15 @@ const zoomOutBtn = document.getElementById('zoomOutBtn');
 const zoomResetBtn = document.getElementById('zoomResetBtn');
 const zoomInBtn = document.getElementById('zoomInBtn');
 const fitViewBtn = document.getElementById('fitViewBtn');
+const fitSelectionBtn = document.getElementById('fitSelectionBtn');
+const fitLaneBtn = document.getElementById('fitLaneBtn');
+const labelModeSelect = document.getElementById('labelModeSelect');
+const traceOpacityInput = document.getElementById('traceOpacityInput');
+const traceOpacityValue = document.getElementById('traceOpacityValue');
+const diagramSearchInput = document.getElementById('diagramSearchInput');
+const diagramSearchClear = document.getElementById('diagramSearchClear');
+const diagramSearchResults = document.getElementById('diagramSearchResults');
+const traceModeButtons = [...document.querySelectorAll("[data-trace-mode]")];
 
 let viewState = { x: 0, y: 0, zoom: 1 };
 let canvasPan = null;
@@ -1046,6 +1661,42 @@ function getNode(id) { return model.flowNodes.find(s => s.id === id); }
 function getFlow(id) { return model.sequenceFlows.find(f => f.id === id); }
 function outgoingFlows(nodeId) { return model.sequenceFlows.filter(f => f.sourceRef === nodeId); }
 function incomingFlows(nodeId) { return model.sequenceFlows.filter(f => f.targetRef === nodeId); }
+function refreshTraceContext() {
+  activeTraceContext = selected
+    ? buildDiagramTraceContext(model, selected, traceMode)
+    : null;
+}
+function traceClass(kind, id) {
+  if (!activeTraceContext) return "";
+  if (kind === "node") {
+    if (activeTraceContext.nodeIds.includes(id)) return "trace-active";
+    if (activeTraceContext.contextNodeIds.includes(id)) return "trace-context";
+    return "trace-muted";
+  }
+  if (kind === "flow") {
+    return activeTraceContext.flowIds.includes(id) ? "trace-active" : "trace-muted";
+  }
+  if (kind === "lane") {
+    const laneHasActiveNode = model.flowNodes.some(node =>
+      node.laneId === id &&
+      (activeTraceContext.nodeIds.includes(node.id) ||
+       activeTraceContext.contextNodeIds.includes(node.id)));
+    return laneHasActiveNode ? "trace-active" : "";
+  }
+  return "";
+}
+function selectedLane() {
+  if (!selected) return null;
+  if (selected.kind === "lane") return getLane(selected.laneId);
+  if (selected.kind === "node") return getLane(getNode(selected.nodeId)?.laneId);
+  if (selected.kind === "flow") {
+    const flow = getFlow(selected.flowId);
+    const sourceLaneId = getNode(flow?.sourceRef)?.laneId;
+    const targetLaneId = getNode(flow?.targetRef)?.laneId;
+    return sourceLaneId != null && sourceLaneId === targetLaneId ? getLane(sourceLaneId) : null;
+  }
+  return null;
+}
 function findErrorBoundary(hostNodeId) {
   return model.flowNodes.find(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
 }
@@ -1802,17 +2453,23 @@ function render() {
   model.flowNodes.forEach(applyTypeInvariants);
   normalizeExclusiveGatewayPriorities();
   model.sequenceFlows.forEach(applyFlowInvariants);
+  renderDiagramLayers();
+  renderInspector();
+  renderHint();
+}
+
+function renderDiagramLayers() {
+  refreshTraceContext();
   renderLanes();
   renderEdges();
   renderNodes();
-  renderInspector();
-  renderHint();
+  updateDiagramNavigation();
 }
 
 function renderLanes() {
   lanesG.innerHTML = "";
   for (const lane of model.lanes) {
-    const g = el("g", { class: `lane ${isSel('lane', lane.id) ? 'selected' : ''}`,
+    const g = el("g", { class: `lane ${isSel('lane', lane.id) ? 'selected' : ''} ${traceClass('lane', lane.id)}`,
                         transform: `translate(${lane.x},${lane.y})`, "data-id": lane.id });
     g.appendChild(el("rect", { class: "body", width: lane.w, height: lane.h, rx: 12, ry: 12 }));
     const idText = el("text", { x: 12, y: 20, class: "pid" });
@@ -1835,7 +2492,7 @@ function renderNodes() {
   for (const node of model.flowNodes) {
     const pos = nodePosition(node);
     const g = el("g", {
-      class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''}`,
+      class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''} ${traceClass('node', node.id)}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
@@ -1857,16 +2514,21 @@ function renderNodes() {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 7 }));
       }
       appendNodeIcon(g, node.type, r - 11, r - 11, 22);
-      const idText = el("text", { x: r, y: EVENT_D + 15, class: "nid", "text-anchor": "middle" });
+      const idText = el("text", {
+        x: r, y: EVENT_D + 15, class: "nid shape-caption", "text-anchor": "middle"
+      });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}${marker}`;
       g.appendChild(idText);
       const nameLines = wrapTextLines(node.name, 18, 2);
       appendTextLines(g, nameLines, {
-        x: r, y: EVENT_D + 32, class: "event-name", "text-anchor": "middle", "font-weight": "600"
+        x: r, y: EVENT_D + 32, class: "event-name shape-caption",
+        "text-anchor": "middle", "font-weight": "600"
       }, 14);
       if (isStartEventType(node.type) && roles) {
         const rolesY = EVENT_D + 32 + (nameLines.length - 1) * 14 + 14;
-        const rolesText = el("text", { x: r, y: rolesY, class: "roles", "text-anchor": "middle" });
+        const rolesText = el("text", {
+          x: r, y: rolesY, class: "roles shape-caption", "text-anchor": "middle"
+        });
         rolesText.textContent = roles;
         g.appendChild(rolesText);
       }
@@ -1874,11 +2536,14 @@ function renderNodes() {
       const d = GATEWAY_D, h = d / 2;
       g.appendChild(el("polygon", { class: "body", points: `${h},0 ${d},${h} ${h},${d} 0,${h}` }));
       appendNodeIcon(g, node.type, h - 12, h - 12, 24);
-      const idText = el("text", { x: h, y: d + 15, class: "nid", "text-anchor": "middle" });
+      const idText = el("text", {
+        x: h, y: d + 15, class: "nid shape-caption", "text-anchor": "middle"
+      });
       idText.textContent = `#${node.id} · ${typeLabel(node.type)}`;
       g.appendChild(idText);
       appendTextLines(g, wrapTextLines(node.name, 18, 2), {
-        x: h, y: d + 32, class: "event-name", "text-anchor": "middle", "font-weight": "600"
+        x: h, y: d + 32, class: "event-name shape-caption",
+        "text-anchor": "middle", "font-weight": "600"
       }, 14);
     } else {
       g.appendChild(el("rect", { width: NODE_W, height: NODE_H, rx: 12, ry: 12 }));
@@ -1922,6 +2587,57 @@ function renderNodes() {
 }
 
 function flowLabelInfo(flow, source) {
+  const target = getNode(flow.targetRef);
+  const name = typeof flow.name === "string" ? flow.name.trim() : "";
+  const metadata = [];
+  const roles = normalizeRoles(flow.roles);
+  if (isUserTaskType(source.type) && flow.isSelectable === false) metadata.push("engine-only");
+  if (flow.cancelRemainingInstances) metadata.push("interrupt");
+  if (roles.length) metadata.push(`roles: ${roles.join(", ")}`);
+  if (flow.isDefault) metadata.push("default");
+  else if (isExclusiveGatewayType(source.type) && Number.isInteger(flow.conditionPriority)) {
+    metadata.push(`priority ${flow.conditionPriority}`);
+  }
+  if (Number.isInteger(flow.completionPriority)) metadata.push(`completion priority ${flow.completionPriority}`);
+  const condition = typeof flow.condition === "string" ? flow.condition.trim() : "";
+  const completionCondition = typeof flow.completionCondition === "string"
+    ? flow.completionCondition.trim() : "";
+  const markers = [];
+  if (condition || completionCondition) {
+    markers.push({ text: "◆", className: "flow-marker-condition", label: "Condition configured" });
+  }
+  if (flow.isDefault) {
+    markers.push({ text: "D", className: "flow-marker-default", label: "Default flow" });
+  }
+  if (flow.cancelRemainingInstances) {
+    markers.push({ text: "!", className: "flow-marker-interrupt", label: "Interrupt flow" });
+  }
+  const variables = Array.isArray(flow.variables)
+    ? flow.variables.map(variable => variable && variable.name).filter(Boolean) : [];
+  const titleLines = [
+    `Flow #${flow.id}${name ? `: ${name}` : ""}`,
+    `${source?.name || `#${flow.sourceRef}`} → ${target?.name || `#${flow.targetRef}`}`
+  ];
+  if (flow.externalId) titleLines.push(`External ID: ${flow.externalId}`);
+  if (metadata.length) titleLines.push(metadata.join(" · "));
+  if (condition) titleLines.push(`Condition: ${condition}`);
+  if (completionCondition) titleLines.push(`Completion: ${completionCondition}`);
+  if (variables.length) titleLines.push(`Variables: ${variables.join(", ")}`);
+  const markerWidth = markers.length * 12;
+  const estimatedNameWidth = Math.min(220, Array.from(name).length * 6.2);
+  return {
+    name,
+    markers,
+    markerWidth,
+    width: Math.max(markers.length ? markerWidth : 0, markerWidth + estimatedNameWidth),
+    height: 18,
+    title: titleLines.join("\n")
+  };
+}
+
+// Preserve the pre-redesign routing and collision measurements. These metrics
+// affect connector geometry only; the visible label uses flowLabelInfo above.
+function flowRoutingLabelMetrics(flow, source) {
   const fallback = flowLabel(flow, source);
   const main = fallback || `Flow #${flow.id}`;
   const mainLines = wrapTextLines(main, 30, 2);
@@ -1935,19 +2651,14 @@ function flowLabelInfo(flow, source) {
     metadata.push(`priority ${flow.conditionPriority}`);
   }
   const hasCondition = typeof flow.condition === "string" && flow.condition.trim() !== "";
-  const metaFull = metadata.join(" · ");
-  const metaDisplay = truncateText(metaFull, 46);
-  const maxLineLength = Math.max(...mainLines.map(line => line.length), metaDisplay.length + (hasCondition ? 3 : 0), 9);
+  const metaDisplay = truncateText(metadata.join(" · "), 46);
+  const maxLineLength = Math.max(
+    ...mainLines.map(line => line.length),
+    metaDisplay.length + (hasCondition ? 3 : 0),
+    9);
   const width = Math.min(230, Math.max(74, maxLineLength * 6.2 + 20));
-  const hasFooter = !!metaDisplay || hasCondition;
-  const metaTextWidth = Math.min(width - 20, metaDisplay.length * 5.2);
-  const footerWidth = metaTextWidth + (hasCondition ? 8 : 0) + (hasCondition && metaDisplay ? 6 : 0);
-  const height = 12 + mainLines.length * 13 + (hasFooter ? 14 : 0);
-  const tooltipMeta = [...metadata, ...(hasCondition ? ["condition configured"] : [])].join(" · ");
-  return {
-    mainLines, metaDisplay, hasCondition, hasFooter, metaTextWidth, footerWidth, width, height,
-    title: `Flow #${flow.id}: ${main}${tooltipMeta ? ` · ${tooltipMeta}` : ""}`
-  };
+  const height = 12 + mainLines.length * 13 + ((metaDisplay || hasCondition) ? 14 : 0);
+  return { width, height };
 }
 function normalizeBusinessKeyForLoad(businessKey) {
   if (!businessKey || typeof businessKey !== "object") return businessKey;
@@ -1966,66 +2677,118 @@ function normalizeIdempotencyForLoad(idempotency) {
   };
 }
 
-function appendFlowLabel(g, info, x, y) {
-  const labelG = el("g", { class: "edge-label", transform: `translate(${x},${y})` });
+function appendFlowLabelContent(parent, info, visibleName) {
+  info.markers.forEach((marker, index) => {
+    const markerText = el("tspan", {
+      class: marker.className,
+      "aria-hidden": "true",
+      dx: index === 0 ? 0 : 4
+    });
+    markerText.textContent = marker.text;
+    parent.appendChild(markerText);
+  });
+  if (visibleName) {
+    const nameText = el("tspan", {
+      class: "flow-label-name",
+      dx: info.markers.length ? 6 : 0
+    });
+    nameText.textContent = visibleName;
+    parent.appendChild(nameText);
+  }
+}
+
+function normalizedTangentAngle(tangent) {
+  const dx = Number(tangent?.x) || 0;
+  const dy = Number(tangent?.y) || 0;
+  if (Math.abs(dy) > Math.abs(dx)) return 90;
+  let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  if (angle > 90) angle -= 180;
+  if (angle < -90) angle += 180;
+  return angle;
+}
+
+function appendFlowLabel(g, flow, info, geometry, placement, guideId) {
+  if (!info.name && info.markers.length === 0) return;
+  const t = Math.min(.86, Math.max(.14, placement?.t ?? geometry.labelT ?? .5));
+  const metrics = edgeGeometryMetrics(geometry);
+  const arcFraction = edgeArcFractionAtT(geometry, t, metrics);
+  const centerDistance = arcFraction * metrics.totalLength;
+  const availableLength = Math.max(0, Math.min(
+    220,
+    2 * Math.min(Math.max(0, centerDistance - 18), Math.max(0, metrics.totalLength - centerDistance - 18))
+  ));
+  const desiredTextLength = info.markerWidth + Math.min(220, Array.from(info.name).length * 6.2);
+  const curvature = edgeGeometryCurvature(geometry, t);
+  const presentation = geometry.isSelfLoop
+    ? "tangent"
+    : flowLabelPresentation(metrics.totalLength, curvature, desiredTextLength);
+  if (presentation === "hidden") return;
+  const textBudget = presentation === "path" ? availableLength : 220;
+  const visibleName = truncateFlowLabel(
+    info.name,
+    Math.max(0, textBudget - info.markerWidth),
+    6.2);
+  if (!visibleName && info.markers.length === 0) return;
+
+  const labelG = el("g", { class: "edge-label", "aria-hidden": "true" });
   appendSvgTitle(labelG, info.title);
-  labelG.appendChild(el("rect", {
-    class: "label-bg", x: -info.width / 2, y: -info.height / 2,
-    width: info.width, height: info.height, rx: 7, ry: 7
-  }));
-  const top = -info.height / 2;
-  appendTextLines(labelG, info.mainLines, {
-    x: 0, y: top + 15, class: "label-main", "text-anchor": "middle"
-  }, 13);
-  if (info.hasFooter) {
-    const metaY = top + 15 + (info.mainLines.length - 1) * 13 + 14;
-    let footerX = -info.footerWidth / 2;
-    if (info.hasCondition) {
-      const icon = el("g", {
-        class: "condition-indicator",
-        transform: `translate(${footerX + 4},${metaY - 3})`
-      });
-      appendSvgTitle(icon, "Condition configured");
-      icon.appendChild(el("path", { d: "M 0 -4 L 4 0 L 0 4 L -4 0 Z" }));
-      icon.appendChild(el("circle", { cx: 0, cy: 0, r: 1.1 }));
-      labelG.appendChild(icon);
-      footerX += 8 + (info.metaDisplay ? 6 : 0);
-    }
-    if (info.metaDisplay) {
-      const meta = el("text", { x: footerX, y: metaY, class: "label-meta", "text-anchor": "start" });
-      meta.textContent = info.metaDisplay;
-      labelG.appendChild(meta);
-    }
+  if (presentation === "path") {
+    const before = geometry.pointAt(Math.max(0, t - .01));
+    const after = geometry.pointAt(Math.min(1, t + .01));
+    const reversed = shouldReverseLabelDirection(before, after);
+    const guide = el("path", {
+      id: guideId,
+      class: "edge-label-guide",
+      d: edgeGeometryPathD(geometry, reversed)
+    });
+    labelG.appendChild(guide);
+    const text = el("text", {
+      class: "edge-label-text",
+      dy: -6,
+      "text-anchor": "middle"
+    });
+    const textPath = el("textPath", {
+      href: `#${guideId}`,
+      startOffset: `${((reversed ? 1 - arcFraction : arcFraction) * 100).toFixed(3)}%`
+    });
+    textPath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${guideId}`);
+    appendFlowLabelContent(textPath, info, visibleName);
+    text.appendChild(textPath);
+    labelG.appendChild(text);
+  } else {
+    const point = placement?.point || geometry.pointAt(t);
+    const angle = Number.isFinite(placement?.angle)
+      ? placement.angle
+      : normalizedTangentAngle(geometry.tangentAt(t));
+    const text = el("text", {
+      class: "edge-label-text",
+      transform: `translate(${point.x},${point.y}) rotate(${angle})`,
+      y: -6,
+      "text-anchor": "middle"
+    });
+    appendFlowLabelContent(text, info, visibleName);
+    labelG.appendChild(text);
   }
   g.appendChild(labelG);
 }
 
-function edgeLinePoint(start, end, t) {
-  return { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+function finalizeEdgeGeometry(geometry, extras = {}) {
+  const result = Object.assign(geometry, extras);
+  result.d = edgeGeometryPathD(result);
+  result.pointAt = t => edgeGeometryPointAt(result, t);
+  result.tangentAt = t => edgeGeometryTangentAt(result, t);
+  return result;
 }
 
-function edgeQuadraticPoint(start, control, end, t) {
-  const inverseT = 1 - t;
+function edgeLabelBounds(point, info, angle = 0) {
+  const radians = angle * Math.PI / 180;
+  const width = Math.abs(info.width * Math.cos(radians)) + Math.abs(info.height * Math.sin(radians));
+  const height = Math.abs(info.width * Math.sin(radians)) + Math.abs(info.height * Math.cos(radians));
   return {
-    x: inverseT * inverseT * start.x + 2 * inverseT * t * control.x + t * t * end.x,
-    y: inverseT * inverseT * start.y + 2 * inverseT * t * control.y + t * t * end.y
-  };
-}
-
-function edgeCubicPoint(start, control1, control2, end, t) {
-  const inverseT = 1 - t;
-  return {
-    x: inverseT ** 3 * start.x + 3 * inverseT * inverseT * t * control1.x + 3 * inverseT * t * t * control2.x + t ** 3 * end.x,
-    y: inverseT ** 3 * start.y + 3 * inverseT * inverseT * t * control1.y + 3 * inverseT * t * t * control2.y + t ** 3 * end.y
-  };
-}
-
-function edgeLabelBounds(point, info) {
-  return {
-    left: point.x - info.width / 2,
-    right: point.x + info.width / 2,
-    top: point.y - info.height / 2,
-    bottom: point.y + info.height / 2
+    left: point.x - width / 2 - 3,
+    right: point.x + width / 2 + 3,
+    top: point.y - height / 2 - 3,
+    bottom: point.y + height / 2 + 3
   };
 }
 
@@ -2067,7 +2830,7 @@ function buildEdgeGeometry(flow, group, selfGroup) {
   if (!source || !target) return null;
 
   if (source.id === target.id) {
-    const info = flowLabelInfo(flow, source);
+    const info = flowRoutingLabelMetrics(flow, source);
     const pos = nodePosition(source);
     const size = nodeSize(source);
     const loopIndex = selfGroup ? selfGroup.flows.findIndex(item => item.id === flow.id) : 0;
@@ -2082,11 +2845,13 @@ function buildEdgeGeometry(flow, group, selfGroup) {
     const control1 = { x: right + controlReach, y: start.y - 54 + stackOffset };
     const control2 = { x: right + controlReach, y: end.y + 54 + stackOffset };
     const targetPoint = pullPointToward(end, control2, 5);
-    return {
-      d: `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${targetPoint.x} ${targetPoint.y}`,
-      pointAt: t => edgeCubicPoint(start, control1, control2, targetPoint, t),
+    return finalizeEdgeGeometry({
+      kind: "cubic", start, control1, control2, end: targetPoint
+    }, {
+      isSelfLoop: true,
+      labelT: .5,
       labelPoint: { x: right + labelReach, y: pos.y + size.h / 2 + stackOffset }
-    };
+    });
   }
 
   const canonicalSource = getNode(group.a);
@@ -2111,10 +2876,7 @@ function buildEdgeGeometry(flow, group, selfGroup) {
     const start = borderPoint(source, targetCenter.x, targetCenter.y);
     const end = borderPoint(target, sourceCenter.x, sourceCenter.y);
     const targetPoint = pullPointToward(end, start, 5);
-    return {
-      d: `M ${start.x} ${start.y} L ${targetPoint.x} ${targetPoint.y}`,
-      pointAt: t => edgeLinePoint(start, targetPoint, t)
-    };
+    return finalizeEdgeGeometry({ kind: "line", start, end: targetPoint });
   }
 
   const control = {
@@ -2124,10 +2886,9 @@ function buildEdgeGeometry(flow, group, selfGroup) {
   const start = borderPoint(source, control.x, control.y);
   const end = borderPoint(target, control.x, control.y);
   const targetPoint = pullPointToward(end, control, 5);
-  return {
-    d: `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${targetPoint.x} ${targetPoint.y}`,
-    pointAt: t => edgeQuadraticPoint(start, control, targetPoint, t)
-  };
+  return finalizeEdgeGeometry({
+    kind: "quadratic", start, control, end: targetPoint
+  });
 }
 
 function edgePointInsideBox(point, box) {
@@ -2214,7 +2975,13 @@ function buildPairLabelLayout(group, geometries, tStep, tDirection, centerOffset
     const geometry = geometries.get(flow.id);
     const point = geometry.pointAt(actualT);
     const info = group.labelInfos.get(flow.id);
-    placements.set(flow.id, { point, box: edgeLabelBounds(point, info) });
+    const angle = normalizedTangentAngle(geometry.tangentAt(actualT));
+    placements.set(flow.id, {
+      point,
+      t: actualT,
+      angle,
+      box: edgeLabelBounds(point, info, angle)
+    });
   }
   return placements;
 }
@@ -2273,7 +3040,7 @@ function renderEdges() {
   selfGroups.forEach(group => {
     group.flows.sort((left, right) => left.id - right.id);
     group.maxLabelHeight = Math.max(...group.flows.map(flow =>
-      flowLabelInfo(flow, getNode(flow.sourceRef)).height));
+      flowRoutingLabelMetrics(flow, getNode(flow.sourceRef)).height));
   });
 
   const geometries = new Map();
@@ -2285,7 +3052,7 @@ function renderEdges() {
   for (const group of orderedGroups) {
     group.flows.sort((left, right) => left.id - right.id);
     group.labelInfos = new Map(group.flows.map(flow =>
-      [flow.id, flowLabelInfo(flow, getNode(flow.sourceRef))]));
+      [flow.id, flowRoutingLabelMetrics(flow, getNode(flow.sourceRef))]));
     const maxHeight = Math.max(...[...group.labelInfos.values()].map(info => info.height));
     const baseSpacing = Math.min(64, Math.max(46, maxHeight + 10));
     const laneCandidates = group.flows.length > 1 ? [] : [0];
@@ -2327,21 +3094,27 @@ function renderEdges() {
     if (chosen) {
       chosen.geometries.forEach((geometry, flowId) => geometries.set(flowId, geometry));
       chosen.placements.forEach((placement, flowId) => {
-        labelPlacements.set(flowId, placement.point);
+        labelPlacements.set(flowId, placement);
         reservedBoxes.push(placement.box);
       });
     }
   }
 
   for (const group of selfGroups.values()) {
-    for (const flow of group.flows) {
+    for (const [loopIndex, flow] of group.flows.entries()) {
       const geometry = buildEdgeGeometry(flow, null, group);
+      const point = geometry.labelPoint || geometry.pointAt(.5);
+      const columnOffset = (loopIndex - (group.flows.length - 1) / 2) * 28;
       geometries.set(flow.id, geometry);
-      labelPlacements.set(flow.id, geometry.labelPoint);
+      labelPlacements.set(flow.id, {
+        point: { x: point.x + columnOffset, y: point.y },
+        t: geometry.labelT ?? .5,
+        angle: normalizedTangentAngle(geometry.tangentAt(geometry.labelT ?? .5))
+      });
     }
   }
 
-  for (const flow of model.sequenceFlows) {
+  for (const [flowIndex, flow] of model.sequenceFlows.entries()) {
     const source = getNode(flow.sourceRef);
     const target = getNode(flow.targetRef);
     const geometry = geometries.get(flow.id);
@@ -2350,25 +3123,53 @@ function renderEdges() {
     const dashed = isPassThroughType(source.type);
     const isError = isBoundaryEventType(source.type);
     const selectedFlow = isSel('flow', flow.id);
-    const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""}`;
-    const pathGroup = el("g", { class: edgeClass, "data-flow": flow.id });
+    const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""} ${traceClass('flow', flow.id)}`;
+    const labelInfo = flowLabelInfo(flow, source);
+    const pathGroup = el("g", {
+      class: edgeClass,
+      "data-flow": flow.id,
+      role: "button",
+      tabindex: "0",
+      "aria-label": labelInfo.title.replace(/\s*\n\s*/g, ". ")
+    });
     const labelGroup = el("g", { class: edgeClass, "data-flow": flow.id });
     const markerId = selectedFlow ? "arrowSel" : (isError ? "arrowError" : "arrow");
     pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-hit" }));
     pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-line", "marker-end": `url(#${markerId})` }));
+    appendSvgTitle(pathGroup, labelInfo.title);
 
-    const labelInfo = flowLabelInfo(flow, source);
-    const labelPoint = labelPlacements.get(flow.id) || geometry.labelPoint || geometry.pointAt(.5);
-    appendFlowLabel(labelGroup, labelInfo, labelPoint.x, labelPoint.y);
+    const labelPlacement = labelPlacements.get(flow.id) || {
+      point: geometry.labelPoint || geometry.pointAt(.5),
+      t: geometry.labelT ?? .5
+    };
+    appendFlowLabel(
+      labelGroup,
+      flow,
+      labelInfo,
+      geometry,
+      labelPlacement,
+      `flow-label-guide-${flowIndex}`);
     const selectFlow = (event) => { event.stopPropagation(); select("flow", flow.id); };
     pathGroup.addEventListener("click", selectFlow);
-    labelGroup.addEventListener("click", selectFlow);
+    pathGroup.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectFlow(event);
+      requestAnimationFrame(() => {
+        const replacement = [...pathLayer.querySelectorAll(".edge")]
+          .find(candidate => Number(candidate.dataset.flow) === flow.id);
+        replacement?.focus();
+      });
+    });
     const setHover = hovered => {
       pathGroup.classList.toggle("hovered", hovered);
       labelGroup.classList.toggle("hovered", hovered);
     };
     pathGroup.addEventListener("mouseenter", () => setHover(true));
     pathGroup.addEventListener("mouseleave", () => setHover(false));
+    pathGroup.addEventListener("focus", () => setHover(true));
+    pathGroup.addEventListener("blur", () => setHover(false));
+    labelGroup.addEventListener("click", selectFlow);
     labelGroup.addEventListener("mouseenter", () => setHover(true));
     labelGroup.addEventListener("mouseleave", () => setHover(false));
     pathLayer.appendChild(pathGroup);
@@ -2632,6 +3433,7 @@ function renderNodeInspector() {
     }
     selectField("Interrupt fork", options, node.parallelGatewayRef ?? "", v => {
       node.parallelGatewayRef = v ? +v : null;
+      renderDiagramLayers();
     });
 
     const interruptHint = document.createElement("p");
@@ -3863,7 +4665,7 @@ function renderFlowInspector() {
       !parallelInterruptTargetProblem(source, candidate, false));
   }
   selectField("Goes to node", targetNodes.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
-              flow.targetRef, v => { flow.targetRef = +v; renderEdges(); });
+              flow.targetRef, v => { flow.targetRef = +v; renderDiagramLayers(); });
 
   if (exclusiveGateway) {
     inspector.appendChild(
@@ -4399,6 +5201,8 @@ function applyViewBox() {
   const viewWidth = width / viewState.zoom;
   const viewHeight = height / viewState.zoom;
   svg.setAttribute("viewBox", `${viewState.x} ${viewState.y} ${viewWidth} ${viewHeight}`);
+  svg.dataset.zoomLevel = classifySemanticZoom(viewState.zoom);
+  svg.dataset.labelMode = labelMode;
   zoomResetBtn.textContent = `${Math.round(viewState.zoom * 100)}%`;
   zoomOutBtn.disabled = viewState.zoom <= ZOOM_MIN + .001;
   zoomInBtn.disabled = viewState.zoom >= ZOOM_MAX - .001;
@@ -4421,29 +5225,182 @@ function resetViewport() {
   applyViewBox();
 }
 
+function combineBounds(boundsList) {
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const bounds of boundsList) {
+    if (!bounds || !Number.isFinite(bounds.left) || !Number.isFinite(bounds.top) ||
+        !Number.isFinite(bounds.right) || !Number.isFinite(bounds.bottom)) continue;
+    left = Math.min(left, bounds.left);
+    top = Math.min(top, bounds.top);
+    right = Math.max(right, bounds.right);
+    bottom = Math.max(bottom, bounds.bottom);
+  }
+  return Number.isFinite(left) ? { left, top, right, bottom } : null;
+}
+
+function domBounds(element) {
+  if (!element) return null;
+  try {
+    const bounds = element.getBBox();
+    if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return null;
+    return {
+      left: bounds.x,
+      top: bounds.y,
+      right: bounds.x + bounds.width,
+      bottom: bounds.y + bounds.height
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+function fitBounds(bounds, padding = 64, maxZoom = ZOOM_MAX) {
+  const { width, height } = canvasDimensions();
+  const transform = calculateFitTransform(
+    bounds,
+    width,
+    height,
+    padding,
+    ZOOM_MIN,
+    Math.min(ZOOM_MAX, maxZoom));
+  if (!transform) return false;
+  viewState.zoom = transform.zoom;
+  viewState.x = transform.x;
+  viewState.y = transform.y;
+  applyViewBox();
+  return true;
+}
+
 function fitView() {
   const layers = [lanesG, edgesG, nodesG].filter(layer => layer.childElementCount > 0);
-  if (!layers.length) { resetViewport(); return; }
-  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-  for (const layer of layers) {
-    try {
-      const bounds = layer.getBBox();
-      if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) continue;
-      left = Math.min(left, bounds.x);
-      top = Math.min(top, bounds.y);
-      right = Math.max(right, bounds.x + bounds.width);
-      bottom = Math.max(bottom, bounds.y + bounds.height);
-    } catch (err) {}
+  const bounds = combineBounds(layers.map(domBounds));
+  if (!fitBounds(bounds, 64, ZOOM_MAX)) resetViewport();
+}
+
+function fitSelection() {
+  if (!selected) return;
+  let bounds = null;
+  if (selected.kind === "node") {
+    const node = getNode(selected.nodeId);
+    bounds = node ? edgeNodeBounds(node, 10) : null;
+  } else if (selected.kind === "lane") {
+    const lane = getLane(selected.laneId);
+    bounds = lane ? {
+      left: lane.x, top: lane.y, right: lane.x + lane.w, bottom: lane.y + lane.h
+    } : null;
+  } else {
+    const flow = getFlow(selected.flowId);
+    const source = getNode(flow?.sourceRef);
+    const target = getNode(flow?.targetRef);
+    const flowElement = [...edgesG.querySelectorAll(".edge-path-layer > .edge")]
+      .find(element => String(element.dataset.flow) === String(selected.flowId));
+    bounds = combineBounds([
+      source && edgeNodeBounds(source, 8),
+      target && edgeNodeBounds(target, 8),
+      domBounds(flowElement)
+    ]);
   }
-  if (!Number.isFinite(left)) { resetViewport(); return; }
-  const padding = 64;
-  const contentWidth = Math.max(1, right - left + padding * 2);
-  const contentHeight = Math.max(1, bottom - top + padding * 2);
-  const { width, height } = canvasDimensions();
-  viewState.zoom = clampZoom(Math.min(width / contentWidth, height / contentHeight));
-  viewState.x = (left + right) / 2 - width / viewState.zoom / 2;
-  viewState.y = (top + bottom) / 2 - height / viewState.zoom / 2;
-  applyViewBox();
+  fitBounds(bounds, 48, 1.35);
+}
+
+function fitSelectedLane() {
+  const lane = selectedLane();
+  if (!lane) return;
+  fitBounds({
+    left: lane.x,
+    top: lane.y,
+    right: lane.x + lane.w,
+    bottom: lane.y + lane.h
+  }, 48, 1.25);
+}
+
+function closeDiagramSearchResults() {
+  diagramSearchResults.hidden = true;
+  diagramSearchInput.setAttribute("aria-expanded", "false");
+  diagramSearchInput.removeAttribute("aria-activedescendant");
+  diagramSearchIndex = -1;
+}
+
+function chooseDiagramSearchResult(result) {
+  if (!result) return;
+  closeDiagramSearchResults();
+  select(result.kind, result.id);
+  requestAnimationFrame(fitSelection);
+}
+
+function renderDiagramSearchResults() {
+  diagramSearchResults.innerHTML = "";
+  const query = diagramSearchInput.value;
+  diagramSearchMatches = searchDiagram(model, query, 20);
+  if (!String(query || "").trim()) {
+    closeDiagramSearchResults();
+    return;
+  }
+  diagramSearchResults.hidden = false;
+  diagramSearchInput.setAttribute("aria-expanded", "true");
+  if (!diagramSearchMatches.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-note";
+    empty.style.padding = "8px 10px";
+    empty.textContent = "No matching diagram items.";
+    diagramSearchResults.appendChild(empty);
+    diagramSearchIndex = -1;
+    return;
+  }
+  diagramSearchIndex = Math.min(
+    Math.max(0, diagramSearchIndex),
+    diagramSearchMatches.length - 1);
+  diagramSearchMatches.forEach((result, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = `diagram-search-result-${index}`;
+    button.className = `diagram-search-result ${index === diagramSearchIndex ? "active" : ""}`;
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(index === diagramSearchIndex));
+    const kind = document.createElement("span");
+    kind.className = "diagram-search-kind";
+    kind.textContent = result.kind;
+    const copy = document.createElement("span");
+    copy.className = "diagram-search-copy";
+    const name = document.createElement("span");
+    name.className = "diagram-search-name";
+    name.textContent = result.label;
+    const detail = document.createElement("span");
+    detail.className = "diagram-search-detail";
+    detail.textContent = result.detail;
+    copy.append(name, detail);
+    button.append(kind, copy);
+    button.addEventListener("mouseenter", () => {
+      diagramSearchIndex = index;
+      updateDiagramSearchActiveResult();
+    });
+    button.addEventListener("click", () => chooseDiagramSearchResult(result));
+    diagramSearchResults.appendChild(button);
+  });
+  updateDiagramSearchActiveResult();
+}
+
+function updateDiagramSearchActiveResult() {
+  const options = [...diagramSearchResults.querySelectorAll(".diagram-search-result")];
+  options.forEach((option, index) => {
+    const active = index === diagramSearchIndex;
+    option.classList.toggle("active", active);
+    option.setAttribute("aria-selected", String(active));
+  });
+  const active = options[diagramSearchIndex];
+  if (active) {
+    diagramSearchInput.setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block: "nearest" });
+  } else {
+    diagramSearchInput.removeAttribute("aria-activedescendant");
+  }
+}
+
+function clearDiagramSearch() {
+  diagramSearchInput.value = "";
+  diagramSearchMatches = [];
+  closeDiagramSearchResults();
+  diagramSearchInput.focus();
 }
 
 function startCanvasPan(e, clearOnClick) {
@@ -4492,12 +5449,40 @@ function isSel(kind, id) {
   return selected.flowId === id;
 }
 function select(kind, id) {
+  if (!isSel(kind, id)) traceMode = "local";
   if (kind === 'lane') selected = { kind, laneId: id };
   else if (kind === 'node') selected = { kind, nodeId: id };
   else selected = { kind, flowId: id };
   render();
 }
-function clearSelection() { selected = null; render(); }
+function clearSelection() {
+  selected = null;
+  traceMode = "local";
+  render();
+}
+function setTraceMode(mode) {
+  if (!selected || selected.kind === "lane" ||
+      !["local", "upstream", "downstream", "route"].includes(mode)) return;
+  traceMode = mode;
+  render();
+}
+function updateDiagramNavigation() {
+  const canTrace = !!selected && selected.kind !== "lane";
+  traceModeButtons.forEach(button => {
+    const active = button.dataset.traceMode === traceMode;
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = !canTrace;
+  });
+  fitSelectionBtn.disabled = !selected;
+  fitLaneBtn.disabled = !selectedLane();
+  labelModeSelect.value = labelMode;
+  svg.dataset.labelMode = labelMode;
+  const opacityPercent = Math.round(untracedOpacity * 100);
+  traceOpacityInput.value = String(opacityPercent);
+  traceOpacityInput.setAttribute("aria-valuetext", `${opacityPercent}%`);
+  traceOpacityValue.textContent = `${opacityPercent}%`;
+  svg.style.setProperty("--trace-muted-opacity", String(untracedOpacity));
+}
 
 /* ---------- Node interaction ---------- */
 function connectionSourceProblem(node) {
@@ -6491,9 +7476,62 @@ zoomOutBtn.onclick = () => zoomTo(viewState.zoom / 1.2);
 zoomResetBtn.onclick = () => zoomTo(1);
 zoomInBtn.onclick = () => zoomTo(viewState.zoom * 1.2);
 fitViewBtn.onclick = fitView;
+fitSelectionBtn.onclick = fitSelection;
+fitLaneBtn.onclick = fitSelectedLane;
+traceModeButtons.forEach(button => {
+  button.addEventListener("click", () => setTraceMode(button.dataset.traceMode));
+});
+labelModeSelect.addEventListener("change", () => {
+  labelMode = ["smart", "all", "off"].includes(labelModeSelect.value)
+    ? labelModeSelect.value : "smart";
+  applyViewBox();
+  updateDiagramNavigation();
+});
+traceOpacityInput.addEventListener("input", () => {
+  const percent = Number(traceOpacityInput.value);
+  untracedOpacity = Number.isFinite(percent)
+    ? Math.min(1, Math.max(.1, percent / 100))
+    : 1;
+  updateDiagramNavigation();
+});
+diagramSearchInput.addEventListener("input", () => {
+  diagramSearchIndex = 0;
+  renderDiagramSearchResults();
+});
+diagramSearchInput.addEventListener("focus", () => {
+  if (diagramSearchInput.value.trim()) renderDiagramSearchResults();
+});
+diagramSearchInput.addEventListener("keydown", event => {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (diagramSearchResults.hidden) renderDiagramSearchResults();
+    if (!diagramSearchMatches.length) return;
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    diagramSearchIndex = (diagramSearchIndex + direction + diagramSearchMatches.length) %
+      diagramSearchMatches.length;
+    updateDiagramSearchActiveResult();
+    return;
+  }
+  if (event.key === "Enter" && diagramSearchMatches.length) {
+    event.preventDefault();
+    chooseDiagramSearchResult(diagramSearchMatches[Math.max(0, diagramSearchIndex)]);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeDiagramSearchResults();
+    diagramSearchInput.blur();
+  }
+});
+diagramSearchClear.addEventListener("click", clearDiagramSearch);
+document.addEventListener("pointerdown", event => {
+  if (!event.target.closest(".diagram-search")) closeDiagramSearchResults();
+});
 document.getElementById("newBtn").onclick = () => {
   if (confirm("Start a new empty workflow? Unsaved changes will be lost.")) {
     model = newModel();
+    diagramSearchInput.value = "";
+    closeDiagramSearchResults();
     resetViewport();
     clearSelection();
   }
@@ -6504,7 +7542,11 @@ document.getElementById("fileInput").onchange = (e) => {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    try { loadFromObject(JSON.parse(reader.result)); }
+    try {
+      diagramSearchInput.value = "";
+      closeDiagramSearchResults();
+      loadFromObject(JSON.parse(reader.result));
+    }
     catch (err) { alert("Invalid JSON file: " + err.message); }
   };
   reader.readAsText(file);
@@ -6518,6 +7560,13 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   const t = e.target;
+  if (e.key === "/" && !(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+      || t.tagName === "SELECT" || t.isContentEditable))) {
+    e.preventDefault();
+    diagramSearchInput.focus();
+    diagramSearchInput.select();
+    return;
+  }
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
             || t.tagName === "SELECT" || t.isContentEditable)) return;
   if (e.code === "Space") {
