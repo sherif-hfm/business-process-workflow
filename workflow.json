@@ -1,33 +1,57 @@
 {
   "id": "purchase-request-approval",
-  "name": "Purchase Request Approval",
+  "name": "Parallel Purchase Review",
   "initialEventId": 1,
   "taskAssignmentRoles": [
     "Manager"
+  ],
+  "taskDistribution": null,
+  "variables": [
+    {
+      "id": 1,
+      "name": "total",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "total >= 0"
+    }
   ],
   "lanes": [
     {
       "id": 1,
       "name": "Submission",
+      "externalId": "LANE_SUBMISSION",
       "x": 40,
       "y": 20,
-      "w": 520,
-      "h": 200
+      "w": 1380,
+      "h": 180
     },
     {
       "id": 2,
-      "name": "Approval",
+      "name": "Parallel Review",
+      "externalId": "LANE_PARALLEL_REVIEW",
       "x": 40,
-      "y": 240,
-      "w": 900,
-      "h": 200
+      "y": 220,
+      "w": 1380,
+      "h": 360
     },
     {
       "id": 3,
-      "name": "Resolution",
+      "name": "Override",
+      "externalId": "LANE_OVERRIDE",
       "x": 40,
-      "y": 460,
-      "w": 900,
+      "y": 600,
+      "w": 1380,
+      "h": 220
+    },
+    {
+      "id": 4,
+      "name": "Resolution",
+      "externalId": "LANE_RESOLUTION",
+      "x": 40,
+      "y": 840,
+      "w": 1380,
       "h": 180
     }
   ],
@@ -35,97 +59,191 @@
     {
       "id": 1,
       "name": "Request Submitted",
+      "externalId": "START_REQUEST",
       "type": "startEvent",
       "laneId": 1,
       "x": 90,
-      "y": 80,
+      "y": 70,
       "roles": [],
       "requiresClaim": false,
+      "assignee": null,
       "variables": [
         {
           "id": 1,
           "name": "requester",
           "dataType": "string",
           "isArray": false,
-          "required": true
+          "required": false,
+          "defaultValue": "${sys.user}"
         },
         {
           "id": 2,
           "name": "amount",
           "dataType": "number",
           "isArray": false,
-          "required": true
+          "required": true,
+          "validation": "amount > 0 and amount <= 100000"
         }
       ]
     },
     {
       "id": 2,
-      "name": "Auto Validate",
-      "type": "task",
+      "name": "Compute Total",
+      "type": "scriptTask",
       "laneId": 1,
-      "x": 320,
-      "y": 82,
+      "x": 260,
+      "y": 58,
       "roles": [],
       "requiresClaim": false,
-      "variables": []
+      "assignee": null,
+      "variables": [],
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "total",
+          "expression": "amount * 1.1"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
     },
     {
       "id": 3,
-      "name": "Manager Review",
-      "type": "userTask",
-      "laneId": 2,
-      "x": 90,
-      "y": 300,
-      "roles": [
-        "Manager"
-      ],
+      "name": "Start Parallel Review",
+      "externalId": "GATEWAY_REVIEW_FORK",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 520,
+      "y": 64,
+      "roles": [],
       "requiresClaim": false,
+      "assignee": null,
       "variables": []
     },
     {
       "id": 4,
-      "name": "Amount Check",
-      "type": "exclusiveGateway",
+      "name": "Manager Review",
+      "externalId": "TASK_MANAGER_REVIEW",
+      "type": "userTask",
       "laneId": 2,
-      "x": 360,
-      "y": 296,
-      "roles": [],
+      "x": 650,
+      "y": 250,
+      "roles": [
+        "Manager"
+      ],
       "requiresClaim": false,
+      "assignee": null,
       "variables": []
     },
     {
       "id": 5,
       "name": "Finance Review",
+      "externalId": "TASK_FINANCE_REVIEW",
       "type": "userTask",
       "laneId": 2,
-      "x": 520,
-      "y": 300,
+      "x": 650,
+      "y": 380,
       "roles": [
         "Finance"
       ],
-      "requiresClaim": true,
+      "requiresClaim": false,
+      "assignee": null,
       "variables": []
     },
     {
       "id": 6,
-      "name": "Approved",
-      "type": "endEvent",
-      "laneId": 3,
-      "x": 560,
-      "y": 520,
-      "roles": [],
+      "name": "Legal Review",
+      "externalId": "TASK_LEGAL_REVIEW",
+      "type": "userTask",
+      "laneId": 2,
+      "x": 650,
+      "y": 510,
+      "roles": [
+        "Legal"
+      ],
       "requiresClaim": false,
+      "assignee": null,
       "variables": []
     },
     {
       "id": 7,
-      "name": "Rejected",
-      "type": "endEvent",
-      "laneId": 3,
-      "x": 120,
-      "y": 520,
+      "name": "All Reviews Complete",
+      "externalId": "GATEWAY_REVIEW_JOIN",
+      "type": "parallelGateway",
+      "laneId": 2,
+      "x": 1100,
+      "y": 380,
       "roles": [],
       "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Manager Override",
+      "externalId": "EVENT_MANAGER_OVERRIDE",
+      "type": "parallelInterruptEvent",
+      "parallelGatewayRef": 3,
+      "laneId": 2,
+      "x": 900,
+      "y": 250,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Terminate Request",
+      "externalId": "END_TERMINATE_REQUEST",
+      "type": "terminateEndEvent",
+      "laneId": 2,
+      "x": 920,
+      "y": 320,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 10,
+      "name": "Emergency Review",
+      "externalId": "TASK_EMERGENCY_REVIEW",
+      "type": "userTask",
+      "laneId": 3,
+      "x": 1080,
+      "y": 660,
+      "roles": [
+        "Manager"
+      ],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 11,
+      "name": "Approved",
+      "externalId": "END_APPROVED",
+      "type": "endEvent",
+      "laneId": 4,
+      "x": 1260,
+      "y": 890,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 12,
+      "name": "Override Resolved",
+      "externalId": "END_OVERRIDE_RESOLVED",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 1300,
+      "y": 670,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
       "variables": []
     }
   ],
@@ -138,86 +256,98 @@
       "roles": [],
       "variables": [],
       "condition": null,
+      "conditionPriority": null,
       "isDefault": false
     },
     {
-      "id": 102,
+      "id": 201,
       "name": "",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": false
-    },
-    {
-      "id": 201,
-      "name": "Approve",
-      "sourceRef": 3,
-      "targetRef": 4,
-      "roles": [
-        "Manager"
-      ],
-      "variables": [],
-      "condition": null,
-      "isDefault": false
-    },
-    {
-      "id": 202,
-      "name": "Reject",
-      "sourceRef": 3,
-      "targetRef": 7,
-      "roles": [
-        "Manager"
-      ],
-      "variables": [
-        {
-          "id": 1,
-          "name": "rejectReason",
-          "dataType": "string",
-          "isArray": false,
-          "required": true
-        }
-      ],
-      "condition": null,
+      "conditionPriority": null,
       "isDefault": false
     },
     {
       "id": 301,
-      "name": "High amount",
-      "sourceRef": 4,
-      "targetRef": 5,
+      "name": "Manager branch",
+      "sourceRef": 3,
+      "targetRef": 4,
       "roles": [],
       "variables": [],
-      "condition": "amount > 1000",
-      "conditionPriority": 1,
+      "condition": null,
+      "conditionPriority": null,
       "isDefault": false
     },
     {
       "id": 302,
-      "name": "Low amount",
-      "sourceRef": 4,
+      "name": "Finance branch",
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 303,
+      "name": "Legal branch",
+      "sourceRef": 3,
       "targetRef": 6,
       "roles": [],
       "variables": [],
       "condition": null,
-      "isDefault": true
+      "conditionPriority": null,
+      "isDefault": false
     },
     {
       "id": 401,
-      "name": "Approve",
-      "sourceRef": 5,
-      "targetRef": 6,
+      "name": "Continue",
+      "externalId": "FLOW_MANAGER_CONTINUE",
+      "sourceRef": 4,
+      "targetRef": 7,
       "roles": [
-        "Finance"
+        "Manager"
       ],
       "variables": [],
       "condition": null,
+      "conditionPriority": null,
       "isDefault": false
     },
     {
       "id": 402,
-      "name": "Reject",
+      "name": "Override",
+      "externalId": "FLOW_MANAGER_OVERRIDE",
+      "sourceRef": 4,
+      "targetRef": 8,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 403,
+      "name": "Terminate",
+      "externalId": "FLOW_MANAGER_TERMINATE",
+      "sourceRef": 4,
+      "targetRef": 9,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 501,
+      "name": "Complete",
       "sourceRef": 5,
       "targetRef": 7,
       "roles": [
@@ -225,6 +355,55 @@
       ],
       "variables": [],
       "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 601,
+      "name": "Complete",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [
+        "Legal"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 701,
+      "name": "",
+      "sourceRef": 7,
+      "targetRef": 11,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 801,
+      "name": "",
+      "sourceRef": 8,
+      "targetRef": 10,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false
+    },
+    {
+      "id": 1001,
+      "name": "Resolve",
+      "sourceRef": 10,
+      "targetRef": 12,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
       "isDefault": false
     }
   ]

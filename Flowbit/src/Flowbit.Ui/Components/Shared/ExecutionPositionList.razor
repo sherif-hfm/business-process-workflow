@@ -1,0 +1,104 @@
+@if (OrderedPositions.Count > 0)
+{
+    <div class="execution-position-list @(Compact ? "compact" : null)" role="list" aria-label="Execution positions">
+        @foreach (var position in VisiblePositions)
+        {
+            <div class="execution-position execution-position-@NormalizeCss(position.TokenStatus)" role="listitem">
+                <div class="execution-position-heading">
+                    @if (position.UserTaskId is long taskId)
+                    {
+                        <a class="data-title" href="@($"user-tasks/{taskId}")">@position.NodeName</a>
+                    }
+                    else
+                    {
+                        <strong>@position.NodeName</strong>
+                    }
+                    <StatusBadge Status="@position.TokenStatus" />
+                </div>
+                <span class="execution-position-meta">
+                    Token #@position.TokenId · Node #@position.NodeId · @NodeTypeLabel(position.NodeType)
+                </span>
+                @if (!string.IsNullOrWhiteSpace(position.NodeExternalId))
+                {
+                    <span class="execution-position-meta">@position.NodeExternalId</span>
+                }
+                @if (!Compact && position.ArrivedViaFlowId is int flowId)
+                {
+                    <span class="execution-position-meta">Arrived via flow #@flowId</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(position.TerminationReason))
+                {
+                    <span class="execution-position-reason">@TerminationReasonLabel(position.TerminationReason)</span>
+                }
+            </div>
+        }
+        @if (HiddenCount > 0)
+        {
+            <span class="execution-position-overflow">+@HiddenCount more position@(HiddenCount == 1 ? null : "s")</span>
+        }
+    </div>
+}
+else
+{
+    <div class="execution-position-list compact" role="list" aria-label="Execution position">
+        <div class="execution-position execution-position-legacy" role="listitem">
+            <div class="execution-position-heading"><strong>@LegacyNodeName</strong></div>
+            <span class="execution-position-meta">Node #@LegacyNodeId · legacy projection</span>
+            @if (!string.IsNullOrWhiteSpace(LegacyNodeExternalId))
+            {
+                <span class="execution-position-meta">@LegacyNodeExternalId</span>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<ExecutionPositionDto> Positions { get; set; } = [];
+    [Parameter] public int LegacyNodeId { get; set; }
+    [Parameter] public string LegacyNodeName { get; set; } = "Unknown position";
+    [Parameter] public string? LegacyNodeExternalId { get; set; }
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public int MaxItems { get; set; }
+
+    private IReadOnlyList<ExecutionPositionDto> OrderedPositions => Positions
+        .OrderBy(position => IsActive(position.TokenStatus) ? 0 : 1)
+        .ThenBy(position => position.TokenId)
+        .ToList();
+
+    private IReadOnlyList<ExecutionPositionDto> VisiblePositions =>
+        MaxItems > 0 ? OrderedPositions.Take(MaxItems).ToList() : OrderedPositions;
+
+    private int HiddenCount => Math.Max(0, OrderedPositions.Count - VisiblePositions.Count);
+
+    private static bool IsActive(string status) =>
+        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeCss(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "unknown"
+            : new(value.Trim().ToLowerInvariant()
+                .Select(character => char.IsLetterOrDigit(character) ? character : '-')
+                .ToArray());
+
+    private static string NodeTypeLabel(string type) => type switch
+    {
+        BpmnFlowNodeTypes.UserTask => "User task",
+        BpmnFlowNodeTypes.IntermediateMessageCatchEvent => "Message wait",
+        BpmnFlowNodeTypes.ParallelGateway => "Parallel gateway",
+        BpmnFlowNodeTypes.ParallelInterruptEvent => "Parallel interrupt",
+        BpmnFlowNodeTypes.TerminateEndEvent => "Terminate end",
+        BpmnFlowNodeTypes.ErrorEndEvent => "Error end",
+        BpmnFlowNodeTypes.EndEvent => "End event",
+        _ => type
+    };
+
+    private static string TerminationReasonLabel(string reason) => reason switch
+    {
+        "parallelScopeCancelled" => "Cancelled by a scoped parallel interrupt",
+        "parallelJoinMerged" => "Merged at a parallel join",
+        "terminateEnd" => "Cancelled by a terminate end event",
+        "errorEnd" => "Cancelled when the instance faulted",
+        "instanceCancelled" => "Cancelled with the instance",
+        _ => reason
+    };
+}

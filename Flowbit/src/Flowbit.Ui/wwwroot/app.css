@@ -193,6 +193,22 @@ code { color: #4338ca; }
 .summary-item span { color: var(--fb-muted); font-size: .63rem; }
 .summary-item strong { margin-top: .15rem; color: var(--fb-ink); font-size: .8rem; overflow-wrap: anywhere; }
 
+.execution-position-list { display: grid; gap: .55rem; }
+.execution-position-list.compact { gap: .35rem; }
+.execution-position { min-width: 12rem; padding: .72rem; background: var(--fb-surface-soft); border: 1px solid var(--fb-border); border-inline-start: 3px solid #94a3b8; border-radius: .65rem; }
+.execution-position-active { border-inline-start-color: var(--fb-success); background: var(--fb-success-soft); }
+.execution-position-completed { border-inline-start-color: var(--fb-primary); }
+.execution-position-faulted, .execution-position-cancelled { border-inline-start-color: var(--fb-danger); background: var(--fb-danger-soft); }
+.execution-position-heading { display: flex; align-items: center; justify-content: space-between; gap: .55rem; }
+.execution-position-heading strong, .execution-position-heading a { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fb-ink); font-size: .78rem; white-space: nowrap; }
+.execution-position-meta, .execution-position-reason { display: block; margin-top: .16rem; color: var(--fb-muted); font-size: .64rem; line-height: 1.4; }
+.execution-position-reason { color: #9f1239; font-weight: 700; }
+.execution-position-overflow { color: var(--fb-muted); font-size: .66rem; font-weight: 700; }
+.execution-position-list.compact .execution-position { min-width: 10rem; padding: .5rem .6rem; }
+.execution-position-list.compact .execution-position-heading strong,
+.execution-position-list.compact .execution-position-heading a { font-size: .72rem; }
+.execution-position-list.compact .execution-position-meta { font-size: .6rem; }
+
 .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; align-items: start; }
 .action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; }
 .action-card { padding: 1rem; background: #fff; border: 1px solid var(--fb-border); border-radius: var(--fb-radius); }

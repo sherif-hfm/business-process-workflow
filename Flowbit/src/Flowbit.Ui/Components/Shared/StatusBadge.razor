@@ -14,9 +14,9 @@
     private string Tone => Normalized switch
     {
         "running" or "active" or "published" or "ready" or "ready to act" => "success",
-        "pending" or "can claim" or "unpublished" or "warning" => "warning",
+        "pending" or "can claim" or "unpublished" or "warning" or "interrupted" => "warning",
         "faulted" or "failed" or "error" or "cancelled" or "danger" => "danger",
-        "completed" or "default" or "assigned" or "primary" => "primary",
+        "completed" or "merged" or "default" or "assigned" or "primary" => "primary",
         _ => "neutral"
     };
 }

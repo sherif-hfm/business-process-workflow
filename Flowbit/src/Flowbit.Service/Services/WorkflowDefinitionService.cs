@@ -60,6 +60,7 @@ public sealed class WorkflowDefinitionService(
         bool publish,
         CancellationToken cancellationToken)
     {
+        ValidateAuthoredParallelControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
@@ -86,6 +87,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         definition.Id = source.WorkflowKey;
+        ValidateAuthoredParallelControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
@@ -268,9 +270,10 @@ public sealed class WorkflowDefinitionService(
                     $"Flow isSelectable=false is supported only on multi-instance user task #{node.Id}.");
             }
 
-            // errorEndEvent is covered by IsEnd (incoming and no outgoing). errorBoundaryEvent
-            // has exactly one outgoing (the error path) and no incoming flows
-            // (it is attached, not reached via a normal sequence flow).
+            // errorEndEvent and terminateEndEvent are covered by IsEnd (incoming
+            // and no outgoing). errorBoundaryEvent has exactly one outgoing (the
+            // error path) and no incoming flows (it is attached, not reached via
+            // a normal sequence flow).
             if (BpmnFlowNodeTypes.IsEnd(node.Type) && incoming.Count == 0)
             {
                 throw new WorkflowDomainException($"End event #{node.Id} must have at least one incoming sequence flow.");
@@ -284,6 +287,16 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
             {
                 ValidateErrorEnd(node);
+            }
+
+            if (BpmnFlowNodeTypes.IsParallelGateway(node.Type))
+            {
+                ValidateParallelGateway(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+            {
+                ValidateParallelInterrupt(node, definition, incoming, outgoing);
             }
 
             if ((BpmnFlowNodeTypes.IsStart(node.Type)
@@ -397,7 +410,7 @@ public sealed class WorkflowDefinitionService(
                 }
             }
 
-            if (BpmnFlowNodeTypes.IsGateway(node.Type))
+            if (BpmnFlowNodeTypes.IsExclusiveGateway(node.Type))
             {
                 if (outgoing.Count < 2)
                 {
@@ -677,6 +690,33 @@ public sealed class WorkflowDefinitionService(
     }
 
     /// <summary>
+    /// Parallel gateways and scoped interrupt events route automatically. Reject
+    /// authored flow metadata before tolerant normalization can obscure it.
+    /// Incoming flows remain unrestricted because they may be user actions.
+    /// </summary>
+    private static void ValidateAuthoredParallelControlFlowMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null
+                || (!BpmnFlowNodeTypes.IsParallelGateway(source.Type)
+                    && !BpmnFlowNodeTypes.IsParallelInterrupt(source.Type))
+                || !HasUnsupportedPassThroughMetadata(flow))
+            {
+                continue;
+            }
+
+            var kind = BpmnFlowNodeTypes.IsParallelGateway(source.Type)
+                ? "Parallel gateway"
+                : "Parallel interrupt event";
+            throw new WorkflowDomainException(
+                $"Sequence flow #{flow.Id} from {kind.ToLowerInvariant()} #{source.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+    }
+
+    /// <summary>
     /// Rejects gateway metadata that the tolerant migrator may otherwise clear.
     /// Existing persisted definitions still normalize without this authored-input
     /// check, while create/update requests receive an actionable validation error.
@@ -687,7 +727,7 @@ public sealed class WorkflowDefinitionService(
         foreach (var flow in definition.SequenceFlows ?? [])
         {
             var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
-            var isGateway = source is not null && BpmnFlowNodeTypes.IsGateway(source.Type);
+            var isGateway = source is not null && BpmnFlowNodeTypes.IsExclusiveGateway(source.Type);
             if (!isGateway)
             {
                 if (flow.ConditionPriority is not null)
@@ -835,13 +875,175 @@ public sealed class WorkflowDefinitionService(
         !flow.IsSelectable
         || flow.IsDefault
         || !string.IsNullOrWhiteSpace(flow.Condition)
-        || flow.Roles.Count > 0
-        || flow.Variables.Count > 0
+        || flow.ConditionPriority is not null
+        || flow.Roles is { Count: > 0 }
+        || flow.Variables is { Count: > 0 }
         || flow.CanActWithoutClaim
-        || flow.CanActWithoutClaimRoles.Count > 0
+        || flow.CanActWithoutClaimRoles is { Count: > 0 }
         || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
         || flow.CompletionPriority is not null
         || flow.CancelRemainingInstances;
+
+    private static void ValidateParallelGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isFork = IsParallelForkTopology(incoming.Count, outgoing.Count);
+        var isJoin = IsParallelJoinTopology(incoming.Count, outgoing.Count);
+        if (!isFork && !isJoin)
+        {
+            throw new WorkflowDomainException(
+                $"Parallel gateway #{node.Id} must be a fork with at least one incoming and at least two outgoing sequence flows, or a join with at least two incoming and exactly one outgoing sequence flow.");
+        }
+
+        var invalidFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+        if (invalidFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidFlow.Id} from parallel gateway #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateParallelInterrupt(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count != 1 || outgoing.Count != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} must have exactly one incoming and exactly one outgoing sequence flow.");
+        }
+
+        if (node.ParallelGatewayRef is null)
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} must reference a parallel fork via parallelGatewayRef.");
+        }
+
+        var fork = definition.FlowNodes.SingleOrDefault(candidate =>
+            candidate.Id == node.ParallelGatewayRef.Value);
+        if (fork is null)
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{node.ParallelGatewayRef} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsParallelGateway(fork.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{fork.Id} must reference a parallel gateway.");
+        }
+
+        var forkIncomingCount = definition.SequenceFlows.Count(flow => flow.TargetRef == fork.Id);
+        var forkOutgoingCount = definition.SequenceFlows.Count(flow => flow.SourceRef == fork.Id);
+        if (!IsParallelForkTopology(forkIncomingCount, forkOutgoingCount))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{fork.Id} must reference a parallel fork with at least two outgoing sequence flows.");
+        }
+
+        var continuation = outgoing.Single();
+        if (HasUnsupportedPassThroughMetadata(continuation))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        var target = definition.FlowNodes.Single(candidate =>
+            candidate.Id == continuation.TargetRef);
+        if (BpmnFlowNodeTypes.IsEntry(target.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} cannot continue directly to entry event #{target.Id}.");
+        }
+
+        if (BpmnFlowNodeTypes.IsErrorBoundary(target.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} cannot continue directly to error boundary event #{target.Id}.");
+        }
+
+        if (target.Id == node.Id)
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} cannot continue directly to itself.");
+        }
+
+        if (BpmnFlowNodeTypes.IsParallelGateway(target.Type))
+        {
+            var targetIncomingCount = definition.SequenceFlows.Count(flow => flow.TargetRef == target.Id);
+            var targetOutgoingCount = definition.SequenceFlows.Count(flow => flow.SourceRef == target.Id);
+            if (IsParallelJoinTopology(targetIncomingCount, targetOutgoingCount))
+            {
+                throw new WorkflowDomainException(
+                    $"Parallel interrupt event #{node.Id} cannot continue directly to parallel join #{target.Id}.");
+            }
+        }
+
+        if (!HasStructuralPath(definition, fork.Id, node.Id))
+        {
+            throw new WorkflowDomainException(
+                $"Parallel interrupt event #{node.Id} must be structurally reachable from referenced parallel fork #{fork.Id}.");
+        }
+    }
+
+    private static bool IsParallelForkTopology(int incomingCount, int outgoingCount) =>
+        incomingCount >= 1 && outgoingCount >= 2;
+
+    private static bool IsParallelJoinTopology(int incomingCount, int outgoingCount) =>
+        incomingCount >= 2 && outgoingCount == 1;
+
+    private static bool HasStructuralPath(
+        WorkflowModel definition,
+        int sourceNodeId,
+        int targetNodeId)
+    {
+        // A boundary event is structurally reached through its attachment rather
+        // than an authored incoming sequence flow. Include that implicit edge so
+        // a fork branch whose service/script failure enters an interrupt event
+        // satisfies the same reachability rule as every other supported trigger.
+        var structuralEdges = definition.SequenceFlows
+            .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
+            .Concat(definition.FlowNodes
+                .Where(node =>
+                    BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                    && node.AttachedToRef is not null)
+                .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)));
+        var targetsBySource = structuralEdges
+            .GroupBy(edge => edge.Source)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(edge => edge.Target).Distinct().ToArray());
+        var visited = new HashSet<int> { sourceNodeId };
+        var queue = new Queue<int>();
+        queue.Enqueue(sourceNodeId);
+
+        while (queue.TryDequeue(out var current))
+        {
+            if (!targetsBySource.TryGetValue(current, out var targets))
+            {
+                continue;
+            }
+
+            foreach (var target in targets)
+            {
+                if (target == targetNodeId)
+                {
+                    return true;
+                }
+
+                if (visited.Add(target))
+                {
+                    queue.Enqueue(target);
+                }
+            }
+        }
+
+        return false;
+    }
 
     private static void ValidateTaskDistribution(WorkflowModel definition)
     {
@@ -1885,7 +2087,7 @@ public sealed class WorkflowDefinitionService(
             nodesById.TryGetValue(flow.SourceRef, out var source);
             Check(
                 flow.Condition,
-                source is not null && BpmnFlowNodeTypes.IsGateway(source.Type) && !flow.IsDefault,
+                source is not null && BpmnFlowNodeTypes.IsExclusiveGateway(source.Type) && !flow.IsDefault,
                 $"Sequence flow #{flow.Id} condition");
             Check(
                 flow.CompletionCondition,

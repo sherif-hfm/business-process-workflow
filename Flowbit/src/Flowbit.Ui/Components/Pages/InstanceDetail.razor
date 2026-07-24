@@ -34,15 +34,11 @@ else
 
     <section class="panel mb-3" aria-labelledby="instance-summary-heading">
         <div class="section-heading">
-            <div><h2 id="instance-summary-heading">@instance.CurrentNodeName</h2><p>Current execution position</p></div>
+            <div><h2 id="instance-summary-heading">@ExecutionHeading</h2><p>Workflow lifecycle and token positions</p></div>
             <StatusBadge Status="@instance.Status" />
         </div>
         <div class="summary-grid">
-            @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
-            {
-                <div class="summary-item"><span>External node ID</span><strong>@instance.CurrentNodeExternalId</strong></div>
-            }
-            <div class="summary-item"><span>Node ID</span><strong>#@instance.CurrentNodeId</strong></div>
+            <div class="summary-item"><span>Execution positions</span><strong>@EffectivePositionCount</strong></div>
             @if (!string.IsNullOrWhiteSpace(instance.BusinessKey))
             {
                 <div class="summary-item"><span>Business key</span><strong>@instance.BusinessKey · @instance.BusinessKeyUniqueness</strong></div>
@@ -53,15 +49,24 @@ else
             }
             <div class="summary-item"><span>Started by</span><strong>@(instance.StartedBy ?? "—")</strong></div>
             <div class="summary-item"><span>Created</span><strong>@instance.CreatedAt.ToLocalTime().ToString("g")</strong></div>
-            @if (instance.MultiInstance is not null)
+            @if (HasMultiInstances)
             {
-                var progress = instance.MultiInstance;
-                <div class="summary-item"><span>Multi-instance</span><strong>@progress.Completed / @progress.Total completed · @progress.Active active</strong></div>
+                <div class="summary-item"><span>Multi-instance</span><strong>@FormatMultiInstanceSummary()</strong></div>
+            }
+            @if (instance.Completion is not null)
+            {
+                <div class="summary-item"><span>Completion</span><strong>@CompletionLabel(instance.Completion)</strong></div>
             }
             <div class="summary-item"><span>Acting as</span><strong>@ActingUser · @(Token.CurrentRoles.Count == 0 ? "No roles" : string.Join(", ", Token.CurrentRoles))</strong></div>
         </div>
 
-            @if (instance.Status == "running" && currentNode?.RequiresClaim == true && instance.MultiInstance is null)
+        <h3 class="h6 mt-3 mb-2">Execution positions</h3>
+        <ExecutionPositionList Positions="@instance.ExecutionPositions"
+                               LegacyNodeId="@instance.CurrentNodeId"
+                               LegacyNodeName="@instance.CurrentNodeName"
+                               LegacyNodeExternalId="@instance.CurrentNodeExternalId" />
+
+            @if (instance.Status == "running" && currentNode?.RequiresClaim == true && !HasMultiInstances)
             {
                 <div class="d-flex flex-wrap gap-2 mt-3">
                     <button class="btn btn-outline-primary" @onclick="ClaimAsync">Claim as @ActingUser</button>
@@ -86,15 +91,74 @@ else
             <div><strong>Description:</strong> @instance.Fault.Description</div>
         </section>
     }
+    else if (instance.Completion is { } completion &&
+             string.Equals(completion.Kind, WorkflowCompletionKinds.Terminate, StringComparison.OrdinalIgnoreCase))
+    {
+        <section class="alert alert-success mb-3" aria-labelledby="instance-completion-heading">
+            <h2 id="instance-completion-heading" class="h5 mb-1">Instance terminated successfully</h2>
+            <div>Triggered by token #@completion.TokenId at @completion.NodeName (#@completion.NodeId) on @completion.CompletedAt.ToLocalTime().ToString("g").</div>
+        </section>
+    }
 
     <nav class="status-tabs" aria-label="Instance sections">
         <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
-        @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
+        @if (instance.ParallelGatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#parallel-scopes" @onclick='() => ScrollToSectionAsync("parallel-scopes")' @onclick:preventDefault>Parallel scopes</a> }
+        @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
 
-    @if (instance.MultiInstance is not null || completedMultiInstanceItems.Count > 0)
+    @if (instance.ParallelGatewayExecutions.Count > 0)
+    {
+        <section id="parallel-scopes" class="panel mb-3">
+            <div class="section-heading">
+                <div><h2>Parallel scopes</h2><p>Fork activations, branch state, and scoped interruption outcomes</p></div>
+                <span class="mono-id">@instance.ParallelGatewayExecutions.Count scope@(instance.ParallelGatewayExecutions.Count == 1 ? null : "s")</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr>
+                            <th scope="col">Scope</th>
+                            <th scope="col">Fork</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Branches</th>
+                            <th scope="col">Outcome</th>
+                            <th scope="col">Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var scope in instance.ParallelGatewayExecutions.OrderByDescending(item => item.Id))
+                        {
+                            <tr>
+                                <td><span class="mono-id">#@scope.Id</span>@if (scope.ParentExecutionId is long parentId) { <span class="data-subtitle">Parent #@parentId</span> }</td>
+                                <td>@ParallelForkLabel(scope.ForkNodeId)</td>
+                                <td><StatusBadge Status="@scope.Status" /></td>
+                                <td>
+                                    @scope.TotalBranchCount total
+                                    <span class="data-subtitle">
+                                        @scope.ActiveBranchCount active · @scope.CompletedBranchCount completed ·
+                                        @scope.MergedBranchCount merged · @scope.InterruptedBranchCount interrupted ·
+                                        @scope.CancelledBranchCount cancelled
+                                    </span>
+                                </td>
+                                <td>
+                                    @(string.IsNullOrWhiteSpace(scope.CompletionReason) ? "—" : ParallelCompletionReason(scope.CompletionReason))
+                                    @if (scope.InterruptingTokenId is long tokenId)
+                                    {
+                                        <span class="data-subtitle">Token #@tokenId@if (scope.InterruptingNodeId is int nodeId) { <text> · Node #@nodeId</text> }</span>
+                                    }
+                                </td>
+                                <td>@scope.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
+    @if (HasMultiInstances || completedMultiInstanceItems.Count > 0)
     {
         <section id="multi-instance-results" class="panel mb-3">
             <h2 class="h4">Multi-instance result</h2>
@@ -135,7 +199,7 @@ else
         </section>
     }
 
-    @if (instance.MultiInstance is not null)
+    @if (HasMultiInstances)
     {
         <div class="alert alert-info">Open a specific work item from the Inbox to claim or take an action.</div>
     }
@@ -183,7 +247,13 @@ else
     }
     <section id="actions" class="panel mb-3">
         <h2 class="h4">Available actions</h2>
-        @if (instance.MultiInstance is not null)
+        @if (HasAmbiguousActivePositions)
+        {
+            <div class="alert alert-info mb-0">
+                This instance has multiple active branches. Open a linked user task in the execution-position list to act on its exact work item.
+            </div>
+        }
+        else if (HasMultiInstances)
         {
             <p>Personal work-item actions are available from the Inbox.</p>
         }
@@ -281,6 +351,7 @@ else
                 <thead>
                     <tr>
                         <th scope="col">When</th>
+                        <th scope="col">Token</th>
                         <th scope="col">From</th>
                         <th scope="col">To</th>
                         <th scope="col">Flow</th>
@@ -293,6 +364,7 @@ else
                     {
                         <tr>
                             <td>@item.PerformedAt.LocalDateTime</td>
+                            <td>@(item.TokenId is long tokenId ? $"#{tokenId}" : "—")</td>
                             <td>#@item.FromNodeId</td>
                             <td>#@item.ToNodeId</td>
                             <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
@@ -330,13 +402,93 @@ else
     // claimant only when the current active task is unambiguous.
     private string? CurrentClaimedBy => instance?.UserTasks?.SoleClaimedBy;
 
-    private FlowNodeModel? CurrentNode =>
-        instance?.Workflow.Definition.FlowNodes.SingleOrDefault(n => n.Id == instance.CurrentNodeId);
+    private IReadOnlyList<ExecutionPositionDto> ExecutionPositions =>
+        instance?.ExecutionPositions ?? [];
+
+    private IReadOnlyList<ExecutionPositionDto> ActivePositions =>
+        ExecutionPositions
+            .Where(position => string.Equals(
+                position.TokenStatus, "active", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(position => position.TokenId)
+            .ToList();
+
+    private IReadOnlyList<MultiInstanceProgressDto> MultiInstanceExecutions
+    {
+        get
+        {
+            if (instance is null) return [];
+            if (instance.MultiInstances.Count > 0) return instance.MultiInstances;
+            return instance.MultiInstance is null ? [] : [instance.MultiInstance];
+        }
+    }
+
+    private MultiInstanceProgressDto? SoleActiveMultiInstance
+    {
+        get
+        {
+            var active = MultiInstanceExecutions
+                .Where(progress => string.Equals(
+                    progress.Status, "active", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            return active.Count == 1 ? active[0] : null;
+        }
+    }
+
+    private bool HasMultiInstances => MultiInstanceExecutions.Count > 0;
+    private bool HasAmbiguousActivePositions => ActivePositions.Count > 1;
+    private bool CanUseLegacyInstanceActions =>
+        ExecutionPositions.Count == 0 || ActivePositions.Count == 1;
+    private int EffectivePositionCount =>
+        ExecutionPositions.Count > 0 ? ExecutionPositions.Count : 1;
+
+    private string ExecutionHeading
+    {
+        get
+        {
+            if (ActivePositions.Count > 1)
+            {
+                return $"{ActivePositions.Count} active execution positions";
+            }
+            if (ActivePositions.Count == 1)
+            {
+                return ActivePositions[0].NodeName;
+            }
+            if (instance?.Completion is { } completion)
+            {
+                return string.Equals(
+                    completion.Kind, WorkflowCompletionKinds.Terminate,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? $"Terminated at {completion.NodeName}"
+                    : $"Completed at {completion.NodeName}";
+            }
+            if (ExecutionPositions.Count == 1)
+            {
+                return ExecutionPositions[0].NodeName;
+            }
+            return instance?.CurrentNodeName ?? "Execution positions";
+        }
+    }
+
+    private FlowNodeModel? CurrentNode
+    {
+        get
+        {
+            if (instance is null) return null;
+            var nodeId = ExecutionPositions.Count == 0
+                ? instance.CurrentNodeId
+                : ActivePositions.Count == 1 ? ActivePositions[0].NodeId : (int?)null;
+            return nodeId is null
+                ? null
+                : instance.Workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == nodeId);
+        }
+    }
 
     private bool IsWaitingForMessage =>
         instance?.Status == "running"
-        && CurrentNode is { } node
-        && BpmnFlowNodeTypes.IsMessageCatch(node.Type);
+        && (ExecutionPositions.Count > 0
+            ? ActivePositions.Any(position =>
+                BpmnFlowNodeTypes.IsMessageCatch(position.NodeType))
+            : CurrentNode is { } node && BpmnFlowNodeTypes.IsMessageCatch(node.Type));
 
     private IReadOnlyList<InstanceHistoryDto> CompletedMultiInstanceItems =>
         instance?.History
@@ -440,8 +592,81 @@ else
         return string.Join(", ", parts);
     }
 
+    private string FormatMultiInstanceSummary()
+    {
+        if (MultiInstanceExecutions.Count == 1)
+        {
+            var progress = MultiInstanceExecutions[0];
+            return $"{progress.Completed} / {progress.Total} completed · {progress.Active} active";
+        }
+
+        return $"{MultiInstanceExecutions.Count} executions · " +
+               $"{MultiInstanceExecutions.Sum(progress => progress.Active)} active · " +
+               $"{MultiInstanceExecutions.Sum(progress => progress.Completed)} completed";
+    }
+
+    private static string CompletionLabel(CompletionInfoDto completion)
+    {
+        var kind = string.Equals(
+            completion.Kind, WorkflowCompletionKinds.Terminate,
+            StringComparison.OrdinalIgnoreCase)
+            ? "Terminated successfully"
+            : "Completed normally";
+        return $"{kind} at {completion.NodeName} · {completion.CompletedAt.ToLocalTime():g}";
+    }
+
+    private string ParallelForkLabel(int nodeId)
+    {
+        var node = instance?.Workflow.Definition.FlowNodes
+            .SingleOrDefault(candidate => candidate.Id == nodeId);
+        return node is null ? $"Node #{nodeId}" : $"{node.Name} (#{nodeId})";
+    }
+
+    private static string ParallelCompletionReason(string reason) => reason switch
+    {
+        "join" => "Joined",
+        "interrupt" or "parallelInterrupt" => "Scoped interrupt",
+        "terminateEnd" => "Terminate end",
+        "errorEnd" => "Workflow fault",
+        "instanceCancelled" => "Instance cancellation",
+        "allEnded" => "All branches ended",
+        _ => reason
+    };
+
     private static string HistoryDetails(InstanceHistoryDto item)
     {
+        if (item.Note is "parallelFork")
+        {
+            return item.TokenId is long tokenId
+                ? $"Parallel branch forked for token #{tokenId}"
+                : "Parallel branch forked";
+        }
+        if (item.Note is "parallelJoin")
+        {
+            return item.TokenId is long tokenId
+                ? $"Parallel join released token #{tokenId}"
+                : "Parallel join released";
+        }
+        if (item.Note is "parallelInterrupt")
+        {
+            return item.TokenId is long tokenId
+                ? $"Parallel scope interrupted by token #{tokenId}; active sibling work was cancelled"
+                : "Parallel scope interrupted; active sibling work was cancelled";
+        }
+        if (item.Note is "parallelInterruptSkipped")
+        {
+            return "No matching active parallel scope remained; continuation ran without cancellation";
+        }
+        if (item.Note is "parallelScopeCancelled")
+        {
+            return "Token cancelled by a scoped parallel interrupt";
+        }
+        if (item.Note is "terminateEnd")
+        {
+            return item.TokenId is long tokenId
+                ? $"Terminate end completed the instance from token #{tokenId}"
+                : "Terminate end completed the instance";
+        }
         if (!string.Equals(item.Note, "taskAssignment", StringComparison.Ordinal))
         {
             return item.Note ?? "-";
@@ -526,7 +751,7 @@ else
 
     private async Task TakeInterruptFlowAsync(SequenceFlowModel flow)
     {
-        var executionId = instance?.MultiInstance?.ExecutionId;
+        var executionId = SoleActiveMultiInstance?.ExecutionId;
         if (executionId is null || interruptSubmitting)
         {
             return;
@@ -578,8 +803,9 @@ else
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
-                if (instance?.MultiInstance is not { Status: "active" }
-                    && !IsWaitingForMessage)
+                if (SoleActiveMultiInstance is null
+                    && !IsWaitingForMessage
+                    && ActivePositions.Count <= 1)
                 {
                     continue;
                 }
@@ -627,10 +853,10 @@ else
 
     private async Task LoadAvailableActionsAsync(CancellationToken cancellationToken = default)
     {
-        availableFlows = instance is null || instance.MultiInstance is not null
+        availableFlows = instance is null || HasMultiInstances || !CanUseLegacyInstanceActions
             ? []
             : await Api.GetAvailableFlowsAsync(InstanceId, cancellationToken);
-        interruptFlows = instance?.MultiInstance is { Status: "active" } progress
+        interruptFlows = SoleActiveMultiInstance is { } progress
             ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId, cancellationToken)
             : [];
     }

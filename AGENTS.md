@@ -7,8 +7,11 @@ edges), attach typed **variables**, and save/load the whole model as JSON.
 
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`, or
-`endEvent`, drawn with BPMN-style shapes (event circles, task rounded
-rectangles, gateway diamonds).
+`endEvent`, plus `parallelGateway`, `parallelInterruptEvent`, and
+`terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
+rectangles, gateway diamonds). `parallelInterruptEvent` is a documented Flowbit
+extension; strict BPMN would normally model that scope with an interruptible
+subprocess.
 Connections are first-class `sequenceFlows` with their own ids. See
 [BPMN alignment](#bpmn-alignment) for how the vocabulary maps to the standard
 and what is intentionally simplified.
@@ -211,18 +214,48 @@ Storage follows the hybrid design:
   post-deployment evidence.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state. Mutations
-  use a consistent instance -> multi-instance execution -> user-task lock order.
+  use a consistent instance -> parallel execution/branch -> execution token ->
+  multi-instance execution -> user-task lock order.
   Instance cancellation locks the instance before discovering/cancelling active
   executions and open tasks, and child activity touches the parent `UpdatedAt` in
   the same transaction.
+- **Parallel gateways and scoped interrupts.** `execution_tokens` are the
+  authoritative execution positions and an instance may have several active
+  tokens. A `parallelGateway` with two or more outgoing flows creates a durable
+  `parallel_gateway_execution`, snapshots one branch per outgoing flow, and
+  advances them in ascending flow-id order. Outgoing cardinality takes
+  precedence, so a gateway with several incoming and several outgoing flows is
+  a fork for each arriving token (which also permits an authored jump back to
+  restart that fork). A gateway with one outgoing and two or more incoming flows
+  is an all-static-incoming join: one active token must
+  arrive through every incoming flow, the lowest-id token survives, the rest are
+  marked `merged`, and the survivor is reconciled to the deepest common parent
+  scope. A normal `endEvent` completes only its token; the instance completes
+  when no active token remains.
+  `parallelInterruptEvent` is a Flowbit extension with a required
+  `parallelGatewayRef`. On entry it resolves the nearest active activation of
+  that fork in the token's branch ancestry, cancels the other active descendants
+  (including their user tasks and multi-instance work), cancels nested scopes,
+  marks the selected scope `interrupted`, promotes the triggering token to the
+  scope's parent, and follows its single authored continuation. If the activation
+  is stale, it records `parallelInterruptSkipped` and continues without
+  cancellation. The continuation is immutable workflow data; callers never
+  provide a runtime destination. `terminateEndEvent` completes its triggering
+  token, cancels every other active token and scope, and completes the instance;
+  `errorEndEvent` faults the instance and cancels sibling work. API detail and
+  summary DTOs expose non-merged `ExecutionPositions`, parallel-scope summaries,
+  and `Completion` (`normal` or `terminate`) while retaining singular current-node
+  fields as compatibility projections.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
   `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
-  `exclusiveGateway`, and `errorBoundaryEvent` nodes are resolved in the same
+  `exclusiveGateway`, `parallelGateway`, `parallelInterruptEvent`, and
+  `errorBoundaryEvent` nodes are resolved in the same
   transaction until the instance rests on a `userTask` or
-  `intermediateMessageCatchEvent`, or terminates on an `endEvent`/`errorEndEvent`.
-  A hop limit (`flowNodes.Count + 1`) guards against cycles. History rows are
+  `intermediateMessageCatchEvent`, or reaches an end event. A per-token hop limit
+  (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
-  `gateway`, `boundary`, `error`, or `message` note. Gateway history also stores
+  `gateway`, `parallelFork`, `parallelJoin`, `parallelInterrupt`,
+  `parallelInterruptSkipped`, `boundary`, `error`, or `message` note. Gateway history also stores
   the selected sequence-flow id; automatic gateway rows are excluded from
   previous-actor claim inheritance even though that audit id is populated.
 - **Service tasks** select a connector through `service.type`; `rest` is the only
@@ -337,9 +370,9 @@ Storage follows the hybrid design:
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.
-- Instances move through `Running`, `Completed` (on entering an `endEvent`),
-  `Faulted` (on entering an `errorEndEvent`), and `Cancelled` (`POST /cancel`)
-  statuses.
+- Instances move through `Running`, `Completed` (when the last active token
+  reaches a normal `endEvent`, or immediately on `terminateEndEvent`), `Faulted`
+  (on entering an `errorEndEvent`), and `Cancelled` (`POST /cancel`) statuses.
 - **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask` or
   `scriptTask` (`attachedToRef`) and catches that task's runtime failures
   (HTTP non-2xx/timeout/network, or a script/assignment/validation error): the
@@ -1302,10 +1335,13 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; permits multiple incoming paths and routes by ascending condition priority, else the required default flow. Requires at least two outgoing flows, so a pure merge is not modeled. |
+| `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
+| `type: "parallelInterruptEvent"` | Flowbit scoped-interrupt extension | Red double-ring event with a broken-parallel marker. Cancels the nearest active activation of `parallelGatewayRef` in the triggering token's ancestry and follows one fixed authored continuation. Strict BPMN would use an interruptible subprocess scope. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
+| `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active parallel scopes, and completes the instance with completion kind `terminate`. |
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
-| `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Simplified: correlation by instance id only (no cross-instance message-name/signal matching); no timeout escape hatch (a future timer boundary could address). |
+| `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. Simplified: no cross-instance message-name/signal matching and no timeout escape hatch (a future timer boundary could address). |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -1321,9 +1357,10 @@ when extending the model so new features stay close to BPMN terminology.
 
 ### Intentional deviations from BPMN
 
-- **Only exclusive gateways.** No parallel/inclusive/event-based gateways yet;
-  branching is either a `userTask` with multiple named flows or an
-  `exclusiveGateway` routed by conditions.
+- **Exclusive and parallel gateways only.** Inclusive and event-based gateways
+  are not modeled. Parallel joins use the static set of authored incoming flows;
+  general graph-liveness analysis and dynamic inclusive-join semantics remain
+  out of scope.
 - **Service tasks are REST only.** A `serviceTask` invokes an HTTP/REST endpoint
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations

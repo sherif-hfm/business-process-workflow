@@ -77,13 +77,60 @@ public sealed record StartInstanceRequest(
     Dictionary<string, JsonElement>? Variables);
 
 /// <summary>
+/// One durable execution-token position exposed by instance APIs.
+/// </summary>
+public sealed record ExecutionPositionDto(
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    string NodeType,
+    string TokenStatus,
+    int? ArrivedViaFlowId,
+    string? TerminationReason,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId);
+
+public static class WorkflowCompletionKinds
+{
+    public const string Normal = "normal";
+    public const string Terminate = "terminate";
+}
+
+public sealed record CompletionInfoDto(
+    string Kind,
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    DateTimeOffset CompletedAt);
+
+public sealed record ParallelGatewayExecutionDto(
+    long Id,
+    int ForkNodeId,
+    long? ParentExecutionId,
+    string Status,
+    string? CompletionReason,
+    int? InterruptingNodeId,
+    long? InterruptingTokenId,
+    int TotalBranchCount,
+    int ActiveBranchCount,
+    int CompletedBranchCount,
+    int MergedBranchCount,
+    int InterruptedBranchCount,
+    int CancelledBranchCount,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+/// <summary>
 /// Slim response returned when starting a new workflow instance.
 /// </summary>
 /// <param name="Id">The database ID of the created instance.</param>
-/// <param name="CurrentNodeId">The ID of the flow node where the instance is currently resting.</param>
-/// <param name="CurrentNodeName">The name of the current resting flow node.</param>
-/// <param name="CurrentNodeExternalId">The user-defined external ID of the current resting flow node.</param>
-/// <param name="Status">The current execution status (e.g., "running", "completed", "faulted").</param>
+/// <param name="CurrentNodeId">The ID of the representative flow node where the instance is resting.</param>
+/// <param name="CurrentNodeName">The name of the representative resting flow node.</param>
+/// <param name="CurrentNodeExternalId">The external ID of the representative resting flow node.</param>
+/// <param name="Status">The current execution status.</param>
 /// <param name="BusinessKey">The normalized domain business key, when configured.</param>
 /// <param name="BusinessKeyUniqueness">The snapshotted active/all uniqueness policy.</param>
 /// <param name="StartedBy">The username of the actor who started the instance.</param>
@@ -102,7 +149,13 @@ public sealed record StartInstanceResultDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 /// <summary>
 /// Request payload for advancing a workflow instance down a sequence flow.
@@ -133,7 +186,11 @@ public sealed record UserTaskWorkSummaryDto(
     int ClaimedCount,
     int AssignedCount,
     string? SoleClaimedBy,
-    string? SoleAssignee);
+    string? SoleAssignee)
+{
+    public int NormalTaskCount { get; init; }
+    public int MultiInstanceTaskCount { get; init; }
+}
 
 public sealed record UserTaskCapabilitiesDto(
     bool ClaimedByMe,
@@ -177,7 +234,13 @@ public sealed record UserTaskActionAckDto(
     MultiInstanceProgressDto? MultiInstance,
     DateTimeOffset UpdatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 public static class UserTaskOwnershipKinds
 {
@@ -286,7 +349,13 @@ public sealed record InstanceSummaryDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyDictionary<string, JsonElement>? Variables,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 /// <summary>
 /// Represents full details of a workflow instance, including variable values and history.
@@ -324,7 +393,17 @@ public sealed record InstanceDetailDto(
     MultiInstanceProgressDto? MultiInstance,
     UserTaskWorkSummaryDto? UserTasks,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    public IReadOnlyList<MultiInstanceProgressDto> MultiInstances { get; init; } = [];
+
+    public IReadOnlyList<ParallelGatewayExecutionDto> ParallelGatewayExecutions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 /// <summary>
 /// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.
@@ -344,7 +423,13 @@ public sealed record MessageDeliveryAckDto(
     string Status,
     DateTimeOffset UpdatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 /// <summary>
 /// Conflict returned when a message delivery key has already been committed or
@@ -373,7 +458,13 @@ public sealed record MessageStartAckDto(
     string Status,
     DateTimeOffset CreatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    FaultInfoDto? Fault = null);
+    FaultInfoDto? Fault = null)
+{
+    public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CompletionInfoDto? Completion { get; init; }
+}
 
 /// <summary>
 /// Conflict returned when a start idempotency key or message-start business key is already owned.

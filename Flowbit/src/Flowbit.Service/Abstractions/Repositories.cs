@@ -119,8 +119,87 @@ public interface IWorkflowRuntimeRepository
         bool lockActiveUserTask,
         CancellationToken cancellationToken);
 
+    Task<ExecutionTokenRecord?> GetExecutionTokenAsync(
+        long tokenId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ExecutionTokenRecord>> ListExecutionTokensAsync(
+        long instanceId,
+        string? status,
+        CancellationToken cancellationToken);
+
+    Task<ExecutionTokenRecord> AddExecutionTokenAsync(
+        long instanceId,
+        CurrentNodeSnapshot node,
+        long? parallelBranchId,
+        int? arrivedViaFlowId,
+        CancellationToken cancellationToken);
+
+    Task UpdateExecutionTokenAsync(
+        long tokenId,
+        CurrentNodeSnapshot node,
+        string tokenStatus,
+        long? parallelBranchId,
+        int? arrivedViaFlowId,
+        string? terminationReason,
+        string? claimedBy,
+        CancellationToken cancellationToken);
+
+    Task SetExecutionTokenStatusAsync(
+        long tokenId,
+        string tokenStatus,
+        string? terminationReason,
+        CancellationToken cancellationToken);
+
+    Task SetInstanceStatusAsync(
+        long instanceId,
+        string status,
+        CancellationToken cancellationToken);
+
+    Task<ParallelGatewayExecutionRecord> AddParallelGatewayExecutionAsync(
+        long instanceId,
+        int forkNodeId,
+        long? parentBranchId,
+        IReadOnlyList<int> originatingFlowIds,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ParallelGatewayExecutionRecord>> ListParallelGatewayExecutionsAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelGatewayBranchesAsync(
+        long executionId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelBranchAncestryAsync(
+        long? branchId,
+        CancellationToken cancellationToken);
+
+    Task SetParallelGatewayExecutionStatusAsync(
+        long executionId,
+        string status,
+        string completionReason,
+        int? interruptingNodeId,
+        long? interruptingTokenId,
+        CancellationToken cancellationToken);
+
+    Task SetParallelGatewayBranchStatusAsync(
+        long branchId,
+        string status,
+        CancellationToken cancellationToken);
+
+    Task CancelOpenUserTasksForTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken);
+
+    Task CancelActiveMultiInstancesForTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken);
+
     Task<MultiInstanceExecutionRecord> AddMultiInstanceAsync(
         long instanceId,
+        long tokenId,
         CurrentNodeSnapshot node,
         MultiInstanceModel configuration,
         IReadOnlyList<JsonElement?> items,
@@ -128,9 +207,13 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken);
 
     Task<MultiInstanceExecutionRecord?> GetActiveMultiInstanceAsync(
-        long instanceId,
-        int nodeId,
+        long tokenId,
         bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<MultiInstanceExecutionRecord>> ListMultiInstancesAsync(
+        long instanceId,
+        string? status,
         CancellationToken cancellationToken);
 
     Task<MultiInstanceExecutionRecord?> GetMultiInstanceAsync(
@@ -271,6 +354,17 @@ public interface IWorkflowRuntimeRepository
         string? note,
         CancellationToken cancellationToken);
 
+    Task AddTokenHistoryAsync(
+        long instanceId,
+        long tokenId,
+        int? actionId,
+        int fromStepId,
+        int toStepId,
+        string? performedBy,
+        Dictionary<string, JsonElement>? payload,
+        string? note,
+        CancellationToken cancellationToken);
+
     Task AddMultiInstanceHistoryAsync(
         long instanceId,
         long tokenId,
@@ -314,6 +408,12 @@ public interface IWorkflowRuntimeRepository
 
     Task<long?> GetLatestNodeEntryHistoryIdAsync(
         long instanceId,
+        int nodeId,
+        CancellationToken cancellationToken);
+
+    Task<long?> GetLatestTokenNodeEntryHistoryIdAsync(
+        long instanceId,
+        long tokenId,
         int nodeId,
         CancellationToken cancellationToken);
 

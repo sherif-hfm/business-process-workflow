@@ -45,6 +45,45 @@ public sealed record CurrentNodeSnapshot(
     string? FaultCode = null,
     string? FaultDescription = null);
 
+public sealed record ExecutionTokenRecord(
+    long Id,
+    long InstanceId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    string NodeType,
+    string? FaultCode,
+    string? FaultDescription,
+    string Status,
+    long? ParallelBranchId,
+    int? ArrivedViaFlowId,
+    string? TerminationReason,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record ParallelGatewayExecutionRecord(
+    long Id,
+    long InstanceId,
+    int ForkNodeId,
+    long? ParentBranchId,
+    string Status,
+    string? CompletionReason,
+    int? InterruptingNodeId,
+    long? InterruptingTokenId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+public sealed record ParallelGatewayBranchRecord(
+    long Id,
+    long ExecutionId,
+    int OriginatingFlowId,
+    int Ordinal,
+    string Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
 public sealed record MultiInstanceExecutionRecord(
     long Id,
     long InstanceId,
@@ -120,7 +159,9 @@ public sealed record UserTaskWorkSummaryRecord(
     int ClaimedCount,
     int AssignedCount,
     string? SoleClaimedBy,
-    string? SoleAssignee);
+    string? SoleAssignee,
+    int NormalTaskCount,
+    int MultiInstanceTaskCount);
 
 public sealed record MultiInstanceProgressRecord(
     MultiInstanceExecutionRecord Execution,
@@ -340,6 +381,44 @@ public static class UserTaskRecordStatuses
 public static class MultiInstanceRecordStatuses
 {
     public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Interrupted = "interrupted";
+    public const string Cancelled = "cancelled";
+}
+
+public static class ExecutionTokenRecordStatuses
+{
+    public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Faulted = "faulted";
+    public const string Cancelled = "cancelled";
+    public const string Merged = "merged";
+}
+
+public static class ExecutionTokenTerminationReasons
+{
+    public const string NormalEnd = "normalEnd";
+    public const string TerminateEnd = "terminateEnd";
+    public const string ErrorEnd = "errorEnd";
+    public const string InstanceCancelled = "instanceCancelled";
+    public const string ParallelScopeCancelled = "parallelScopeCancelled";
+    public const string ParallelScopeInterrupted = ParallelScopeCancelled;
+    public const string ParallelJoinMerged = "parallelJoinMerged";
+}
+
+public static class ParallelGatewayExecutionRecordStatuses
+{
+    public const string Active = "active";
+    public const string Joined = "joined";
+    public const string Completed = "completed";
+    public const string Interrupted = "interrupted";
+    public const string Cancelled = "cancelled";
+}
+
+public static class ParallelGatewayBranchRecordStatuses
+{
+    public const string Active = "active";
+    public const string Merged = "merged";
     public const string Completed = "completed";
     public const string Interrupted = "interrupted";
     public const string Cancelled = "cancelled";

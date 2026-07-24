@@ -2035,6 +2035,375 @@ public sealed class DefinitionValidationTests
         Assert.DoesNotContain(model.SequenceFlows, flow => flow.SourceRef == 3 && flow.IsDefault);
     }
 
+    [Fact]
+    public void BpmnFlowNodeTypes_ClassifiesParallelControlAndTerminalNodes()
+    {
+        Assert.True(BpmnFlowNodeTypes.IsExclusiveGateway(BpmnFlowNodeTypes.ExclusiveGateway));
+        Assert.True(BpmnFlowNodeTypes.IsParallelGateway(BpmnFlowNodeTypes.ParallelGateway));
+        Assert.True(BpmnFlowNodeTypes.IsGateway(BpmnFlowNodeTypes.ExclusiveGateway));
+        Assert.True(BpmnFlowNodeTypes.IsGateway(BpmnFlowNodeTypes.ParallelGateway));
+        Assert.True(BpmnFlowNodeTypes.IsParallelInterrupt(BpmnFlowNodeTypes.ParallelInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsPassThrough(BpmnFlowNodeTypes.ParallelInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsTerminateEnd(BpmnFlowNodeTypes.TerminateEndEvent));
+        Assert.True(BpmnFlowNodeTypes.IsEnd(BpmnFlowNodeTypes.TerminateEndEvent));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ParallelGateway));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ParallelInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.TerminateEndEvent));
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsParallelForkJoinScopedInterruptAndTerminateEnd()
+    {
+        var model = BuildParallelControlFlowModel();
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var savedInterrupt = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 8);
+        Assert.Equal(BpmnFlowNodeTypes.ParallelInterruptEvent, savedInterrupt.Type);
+        Assert.Equal(2, savedInterrupt.ParallelGatewayRef);
+        Assert.Contains(
+            repository.Added.Definition.FlowNodes,
+            node => BpmnFlowNodeTypes.IsTerminateEnd(node.Type));
+    }
+
+    [Fact]
+    public async Task CreateAsync_AllowsInterruptToRestartReferencedFork()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 2;
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("condition")]
+    [InlineData("conditionPriority")]
+    [InlineData("default")]
+    [InlineData("roles")]
+    [InlineData("variables")]
+    [InlineData("engineOnly")]
+    [InlineData("claimBypass")]
+    [InlineData("completion")]
+    public async Task CreateAsync_RejectsMetadataOnParallelGatewayFlows(string scenario)
+    {
+        var model = BuildParallelControlFlowModel();
+        var flow = model.SequenceFlows.Single(candidate => candidate.Id == 201);
+        switch (scenario)
+        {
+            case "condition": flow.Condition = "true"; break;
+            case "conditionPriority": flow.ConditionPriority = 1; break;
+            case "default": flow.IsDefault = true; break;
+            case "roles": flow.Roles = ["Manager"]; break;
+            case "variables": flow.Variables = [new VariableModel { Id = 1, Name = "input" }]; break;
+            case "engineOnly": flow.IsSelectable = false; break;
+            case "claimBypass": flow.CanActWithoutClaim = true; break;
+            case "completion": flow.CompletionCondition = "true"; break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallel gateway", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("unconditional", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("condition")]
+    [InlineData("conditionPriority")]
+    [InlineData("default")]
+    [InlineData("roles")]
+    [InlineData("variables")]
+    [InlineData("engineOnly")]
+    [InlineData("claimBypass")]
+    [InlineData("completion")]
+    public async Task CreateAsync_RejectsMetadataOnParallelInterruptOutgoingFlow(string scenario)
+    {
+        var model = BuildParallelControlFlowModel();
+        var flow = model.SequenceFlows.Single(candidate => candidate.Id == 801);
+        switch (scenario)
+        {
+            case "condition": flow.Condition = "true"; break;
+            case "conditionPriority": flow.ConditionPriority = 1; break;
+            case "default": flow.IsDefault = true; break;
+            case "roles": flow.Roles = ["Manager"]; break;
+            case "variables": flow.Variables = [new VariableModel { Id = 1, Name = "input" }]; break;
+            case "engineOnly": flow.IsSelectable = false; break;
+            case "claimBypass": flow.CanActWithoutClaim = true; break;
+            case "completion": flow.CompletionPriority = 1; break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallel interrupt", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("unconditional", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsOneInOneOutParallelGateway()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.RemoveAll(flow => flow.Id is 202 or 203);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallel gateway #2", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fork", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("join", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsOneInOneOutParallelJoin()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 401).TargetRef = 7;
+        model.SequenceFlows.Single(flow => flow.Id == 501).TargetRef = 7;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallel gateway #6", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fork", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("join", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptWithoutForkReference()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.FlowNodes.Single(node => node.Id == 8).ParallelGatewayRef = null;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallelGatewayRef", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptReferenceToJoin()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.FlowNodes.Single(node => node.Id == 8).ParallelGatewayRef = 6;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("parallel fork", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptOutsideReferencedForkPath()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 302).TargetRef = 7;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 11,
+            Name = "Disconnected automatic trigger",
+            Type = BpmnFlowNodeTypes.Task
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 1101,
+            SourceRef = 11,
+            TargetRef = 8
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("structurally reachable", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptWithSeveralIncomingFlows()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 401).TargetRef = 8;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("exactly one incoming", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingJoin()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 6;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("cannot continue directly", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("parallel join", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingEntryEvent()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 1;
+        var start = model.FlowNodes.Single(node => node.Id == 1);
+        model.FlowNodes.Remove(start);
+        model.FlowNodes.Add(start);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("cannot continue directly", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("entry event", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingBoundaryEvent()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 11,
+            Name = "Boundary",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = 3
+        });
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 11;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 1101,
+            SourceRef = 11,
+            TargetRef = 7
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("cannot continue directly", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("error boundary", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingItself()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.SequenceFlows.RemoveAll(flow => flow.Id == 302);
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 8;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("cannot continue directly to itself", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AllowsParallelInterruptToContinueToAnotherInterrupt()
+    {
+        var model = BuildParallelControlFlowModel();
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 11,
+            Name = "Second interrupt",
+            Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
+            ParallelGatewayRef = 2
+        });
+        model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 11;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 1101,
+            SourceRef = 11,
+            TargetRef = 9
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public void Normalize_DerivesPrioritiesOnlyForExclusiveGateways()
+    {
+        var model = BuildParallelControlFlowModel();
+        var parallelFlow = model.SequenceFlows.Single(flow => flow.Id == 201);
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Null(parallelFlow.ConditionPriority);
+    }
+
+    [Fact]
+    public void Normalize_PreservesOnlyInterruptForkReferenceAndTerminateEndInvariants()
+    {
+        var model = BuildParallelControlFlowModel();
+        var interrupt = model.FlowNodes.Single(node => node.Id == 8);
+        interrupt.Roles = ["Manager"];
+        interrupt.RequiresClaim = true;
+        interrupt.Service = new ServiceTaskModel();
+        interrupt.Assignments =
+        [
+            new AssignmentModel { Variable = "ignored", Expression = "1" }
+        ];
+        var fork = model.FlowNodes.Single(node => node.Id == 2);
+        fork.ParallelGatewayRef = 999;
+        var terminate = model.FlowNodes.Single(node => node.Id == 10);
+        terminate.ParallelGatewayRef = 999;
+        terminate.Roles = ["Manager"];
+        terminate.RequiresClaim = true;
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(2, interrupt.ParallelGatewayRef);
+        Assert.Empty(interrupt.Roles);
+        Assert.False(interrupt.RequiresClaim);
+        Assert.Null(interrupt.Service);
+        Assert.Empty(interrupt.Assignments);
+        Assert.Null(fork.ParallelGatewayRef);
+        Assert.Null(terminate.ParallelGatewayRef);
+        Assert.Empty(terminate.Roles);
+        Assert.False(terminate.RequiresClaim);
+    }
+
+    private static WorkflowModel BuildParallelControlFlowModel() => new()
+    {
+        Id = "parallel-control-flow",
+        Name = "Parallel control flow",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 2, Name = "Parallel work", Type = BpmnFlowNodeTypes.ParallelGateway },
+            new FlowNodeModel { Id = 3, Name = "Manager", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 4, Name = "Finance", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 5, Name = "Legal", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 6, Name = "Parallel join", Type = BpmnFlowNodeTypes.ParallelGateway },
+            new FlowNodeModel { Id = 7, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent },
+            new FlowNodeModel
+            {
+                Id = 8,
+                Name = "Manager override",
+                Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
+                ParallelGatewayRef = 2
+            },
+            new FlowNodeModel { Id = 9, Name = "Emergency review", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 10, Name = "Terminate", Type = BpmnFlowNodeTypes.TerminateEndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, Name = "Manager", SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel { Id = 202, Name = "Finance", SourceRef = 2, TargetRef = 4 },
+            new SequenceFlowModel { Id = 203, Name = "Legal", SourceRef = 2, TargetRef = 5 },
+            new SequenceFlowModel { Id = 301, Name = "Continue", SourceRef = 3, TargetRef = 6 },
+            new SequenceFlowModel { Id = 302, Name = "Override", SourceRef = 3, TargetRef = 8 },
+            new SequenceFlowModel { Id = 401, Name = "Finance complete", SourceRef = 4, TargetRef = 6 },
+            new SequenceFlowModel { Id = 501, Name = "Legal complete", SourceRef = 5, TargetRef = 6 },
+            new SequenceFlowModel { Id = 601, Name = "Joined", SourceRef = 6, TargetRef = 7 },
+            new SequenceFlowModel { Id = 801, Name = "Escalate", SourceRef = 8, TargetRef = 9 },
+            new SequenceFlowModel { Id = 901, Name = "Terminate workflow", SourceRef = 9, TargetRef = 10 }
+        ]
+    };
+
     private static WorkflowModel BuildGatewayFlowInfoModel() => new()
     {
         Id = "flow-info-gateway",

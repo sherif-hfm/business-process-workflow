@@ -464,6 +464,10 @@ public static class WorkflowInstanceEndpoints
     /// </summary>
     /// <param name="context">The HTTP request context containing correlation and credential headers.</param>
     /// <param name="id">The database ID of the workflow instance waiting for the message.</param>
+    /// <param name="catchEvent">
+    /// Optional exact, case-sensitive catch-event external ID. It is required when
+    /// more than one active branch is waiting for a message on the instance.
+    /// </param>
     /// <param name="service">The workflow engine service.</param>
     /// <param name="options">Deployment-wide inbound message payload limits.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -480,8 +484,9 @@ public static class WorkflowInstanceEndpoints
     /// node's single outgoing flow.
     ///
     /// Returns a slim <see cref="MessageDeliveryAckDto"/> (no definition/variables/history,
-    /// since the endpoint is anonymous). Correlation is by instance id only - the instance
-    /// must be <c>running</c> and currently resting on the catch node. A 401 is returned on a
+    /// since the endpoint is anonymous). Correlation is by instance id and, when parallel
+    /// execution makes that ambiguous, the exact <c>catchEvent</c> external ID - the instance
+    /// must be <c>running</c> with an active token resting on the catch node. A 401 is returned on a
     /// client id/secret mismatch; a 400 for a missing/mismatched header, a failed
     /// <c>headerValidation</c> rule, a required-mapping failure, or a not-running/not-waiting
     /// instance; 404 when the instance does not exist. A catch configured with
@@ -492,6 +497,7 @@ public static class WorkflowInstanceEndpoints
     public static async Task<IResult> DeliverMessage(
         HttpContext context,
         long id,
+        string? catchEvent,
         IWorkflowEngineService service,
         MessageDeliveryOptions options,
         CancellationToken cancellationToken)
@@ -513,7 +519,7 @@ public static class WorkflowInstanceEndpoints
 
         var actor = new ActorContext(clientId, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
         var message = new IncomingMessage(clientId, clientSecret, headers, payloadRead.Payload, actor);
-        var ack = await service.DeliverMessageAsync(id, message, cancellationToken);
+        var ack = await service.DeliverMessageAsync(id, message, cancellationToken, catchEvent);
         if (ack is null)
         {
             Log.Information("Message delivery to instance {InstanceId}: instance not found.", id);

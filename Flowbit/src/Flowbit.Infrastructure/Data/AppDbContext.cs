@@ -27,6 +27,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
+    public DbSet<ParallelGatewayExecutionEntity> ParallelGatewayExecutions => Set<ParallelGatewayExecutionEntity>();
+    public DbSet<ParallelGatewayBranchEntity> ParallelGatewayBranches => Set<ParallelGatewayBranchEntity>();
 
     public DbSet<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences => Set<SequenceFlowOccurrenceEntity>();
 
@@ -99,17 +101,24 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
             entity.Property(e => e.FaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
             entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
+            entity.Property(e => e.TerminationReason).HasMaxLength(64);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.InstanceId, e.Id }).IsDescending(false, true);
+            entity.HasIndex(e => new { e.InstanceId, e.NodeId, e.Status, e.ArrivedViaFlowId, e.Id });
+            entity.HasIndex(e => new { e.ParallelBranchId, e.Status });
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Tokens)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.ParallelBranch)
+                .WithMany(e => e.Tokens)
+                .HasForeignKey(e => e.ParallelBranchId)
+                .OnDelete(DeleteBehavior.NoAction);
         });
 
         modelBuilder.Entity<UserTaskEntity>(entity =>
@@ -249,6 +258,47 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<ParallelGatewayExecutionEntity>(entity =>
+        {
+            entity.ToTable("parallel_gateway_executions");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CompletionReason).HasMaxLength(64);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.Status });
+            entity.HasIndex(e => new { e.InstanceId, e.ForkNodeId, e.Status });
+            entity.HasIndex(e => new { e.ParentBranchId, e.Status });
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.ParallelGatewayExecutions)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.ParentBranch)
+                .WithMany(e => e.ChildExecutions)
+                .HasForeignKey(e => e.ParentBranchId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(e => e.InterruptingToken)
+                .WithMany(e => e.InterruptedParallelGatewayExecutions)
+                .HasForeignKey(e => e.InterruptingTokenId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        modelBuilder.Entity<ParallelGatewayBranchEntity>(entity =>
+        {
+            entity.ToTable("parallel_gateway_branches");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.ExecutionId, e.Status });
+            entity.HasIndex(e => new { e.ExecutionId, e.OriginatingFlowId }).IsUnique();
+            entity.HasIndex(e => new { e.ExecutionId, e.Ordinal }).IsUnique();
+            entity.HasOne(e => e.Execution)
+                .WithMany(e => e.Branches)
+                .HasForeignKey(e => e.ExecutionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<SequenceFlowOccurrenceEntity>(entity =>
         {
             entity.ToTable("sequence_flow_occurrences", table =>
@@ -318,6 +368,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Note).HasMaxLength(1000);
             entity.Property(e => e.PerformedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.InstanceId);
+            entity.HasIndex(e => new { e.InstanceId, e.TokenId, e.ToStepId, e.Id })
+                .IsDescending(false, false, false, true);
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.History)
                 .HasForeignKey(e => e.InstanceId)

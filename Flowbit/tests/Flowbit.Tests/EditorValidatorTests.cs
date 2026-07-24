@@ -551,6 +551,64 @@ public sealed class EditorValidatorTests
             && error.Contains("unconditional", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Validator_AcceptsBoundaryTriggeredParallelInterrupt()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "editor-boundary-parallel-interrupt",
+            Name = "Editor boundary parallel interrupt",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Fork", Type = BpmnFlowNodeTypes.ParallelGateway },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Call service",
+                    Type = BpmnFlowNodeTypes.ServiceTask,
+                    Service = new ServiceTaskModel
+                    {
+                        Url = "https://tests.local/service",
+                        Method = "POST",
+                        TimeoutSeconds = 10
+                    }
+                },
+                new FlowNodeModel { Id = 4, Name = "Sibling", Type = BpmnFlowNodeTypes.Task },
+                new FlowNodeModel
+                {
+                    Id = 5,
+                    Name = "Service error",
+                    Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                    AttachedToRef = 3
+                },
+                new FlowNodeModel
+                {
+                    Id = 6,
+                    Name = "Interrupt",
+                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
+                    ParallelGatewayRef = 2
+                },
+                new FlowNodeModel { Id = 7, Name = "Service end", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 8, Name = "Sibling end", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 9, Name = "Recovery end", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 4 },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 7 },
+                new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 8 },
+                new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 6 },
+                new SequenceFlowModel { Id = 601, SourceRef = 6, TargetRef = 9 }
+            ]
+        };
+
+        Assert.Empty(Validate(model));
+    }
+
     [Theory]
     [InlineData(BpmnFlowNodeTypes.EndEvent)]
     [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]

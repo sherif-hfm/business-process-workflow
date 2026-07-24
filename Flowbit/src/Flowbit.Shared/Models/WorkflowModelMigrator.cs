@@ -161,7 +161,7 @@ public static class WorkflowModelMigrator
     /// </summary>
     private static void NormalizeExclusiveGatewayPriorities(WorkflowModel model)
     {
-        foreach (var gateway in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsGateway(node.Type)))
+        foreach (var gateway in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsExclusiveGateway(node.Type)))
         {
             var conditional = model.SequenceFlows
                 .Where(flow => flow.SourceRef == gateway.Id && !flow.IsDefault)
@@ -274,10 +274,13 @@ public static class WorkflowModelMigrator
         "end" => BpmnFlowNodeTypes.EndEvent,
         "endEvent" => BpmnFlowNodeTypes.EndEvent,
         "errorEndEvent" => BpmnFlowNodeTypes.ErrorEndEvent,
+        "terminateEndEvent" => BpmnFlowNodeTypes.TerminateEndEvent,
         "task" when step.AutoAdvance => BpmnFlowNodeTypes.Task,
         "task" => BpmnFlowNodeTypes.UserTask,
         "userTask" => BpmnFlowNodeTypes.UserTask,
         "exclusiveGateway" => BpmnFlowNodeTypes.ExclusiveGateway,
+        "parallelGateway" => BpmnFlowNodeTypes.ParallelGateway,
+        "parallelInterruptEvent" => BpmnFlowNodeTypes.ParallelInterruptEvent,
         _ => BpmnFlowNodeTypes.UserTask
     };
 
@@ -308,6 +311,11 @@ public static class WorkflowModelMigrator
         if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
         {
             node.UsesFlowInfo = null;
+        }
+
+        if (!BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+        {
+            node.ParallelGatewayRef = null;
         }
 
         if (!BpmnFlowNodeTypes.IsEntry(node.Type))
@@ -364,6 +372,25 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
+        else if (BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+        {
+            // A parallel interrupt is a Flowbit pass-through control event. Its
+            // only authored behavior is the fork reference; routing lives on its
+            // sole unconditional outgoing sequence flow.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.ScriptFormat = ScriptFormats.NCalc;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
+        }
         else if (BpmnFlowNodeTypes.IsAutomatic(node.Type) || BpmnFlowNodeTypes.IsGateway(node.Type))
         {
             node.RequiresClaim = false;
@@ -373,6 +400,12 @@ public static class WorkflowModelMigrator
             node.Variables = [];
             node.Service = null;
             node.Message = null;
+            node.ScriptFormat = ScriptFormats.NCalc;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
         }
         else if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
         {

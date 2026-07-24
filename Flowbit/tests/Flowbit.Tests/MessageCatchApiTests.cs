@@ -262,7 +262,7 @@ public sealed class MessageCatchApiTests(PostgresApiFixture fixture)
         Assert.Equal(HttpStatusCode.OK, delivered.StatusCode);
         using var ackJson = JsonDocument.Parse(await delivered.Content.ReadAsStringAsync());
         Assert.Equal(
-            ["currentNodeExternalId", "currentNodeId", "currentNodeName", "id", "status", "updatedAt"],
+            ["completion", "currentNodeExternalId", "currentNodeId", "currentNodeName", "executionPositions", "id", "status", "updatedAt"],
             ackJson.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray());
     }
 

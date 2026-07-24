@@ -286,7 +286,8 @@ public interface IWorkflowEngineService
     Task<MessageDeliveryAckDto?> DeliverMessageAsync(
         long id,
         IncomingMessage message,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? catchEventExternalId = null);
 
     Task<bool> CancelAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 }

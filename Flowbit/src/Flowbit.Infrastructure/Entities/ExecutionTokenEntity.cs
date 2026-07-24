@@ -11,11 +11,16 @@ public sealed class ExecutionTokenEntity
     public string NodeType { get; set; } = string.Empty;
     public string? FaultCode { get; set; }
     public string? FaultDescription { get; set; }
+    public long? ParallelBranchId { get; set; }
+    public ParallelGatewayBranchEntity? ParallelBranch { get; set; }
+    public int? ArrivedViaFlowId { get; set; }
+    public string? TerminationReason { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<UserTaskEntity> UserTasks { get; set; } = [];
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
+    public List<ParallelGatewayExecutionEntity> InterruptedParallelGatewayExecutions { get; set; } = [];
 }
 
 public static class ExecutionTokenStatuses
@@ -24,4 +29,5 @@ public static class ExecutionTokenStatuses
     public const string Completed = "completed";
     public const string Faulted = "faulted";
     public const string Cancelled = "cancelled";
+    public const string Merged = "merged";
 }

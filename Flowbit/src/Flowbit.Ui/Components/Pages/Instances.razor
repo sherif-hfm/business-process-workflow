@@ -4,7 +4,7 @@
 <PageTitle>Instances · Flowbit</PageTitle>
 
 <PageHeader Eyebrow="Operations" Title="Workflow instances"
-            Description="Monitor every process run, investigate its current step, and filter by technical or business context.">
+            Description="Monitor every process run, inspect all execution positions, and filter by technical or business context.">
     <Actions>
         <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
         <a class="btn btn-primary" href="workflows"><AppIcon Name="plus" /> Start workflow</a>
@@ -26,7 +26,7 @@
 
 <section class="filter-panel" aria-labelledby="instance-filter-heading">
     <div class="section-heading mb-0">
-        <div><h2 id="instance-filter-heading">Advanced filters</h2><p>Search identifiers, current nodes, business keys, or variable values.</p></div>
+        <div><h2 id="instance-filter-heading">Advanced filters</h2><p>Search identifiers, execution-position nodes, business keys, or variable values.</p></div>
         <button class="btn btn-sm btn-outline-secondary" @onclick="() => advancedOpen = !advancedOpen" aria-expanded="@(advancedOpen ? "true" : "false")" aria-controls="instance-filter-fields">
             @(advancedOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
         </button>
@@ -73,7 +73,7 @@
         <div class="table-responsive">
             <table class="table align-middle">
                 <caption class="visually-hidden">Workflow instances matching the selected filters</caption>
-                <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Current step</th><th scope="col">Status</th><th scope="col">Work state</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Execution positions</th><th scope="col">Status</th><th scope="col">Work state</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                 <tbody>
                     @foreach (var instance in result.Items)
                     {
@@ -81,17 +81,24 @@
                             <td><span class="mono-id">#@instance.Id</span><span class="data-subtitle">@(instance.BusinessKey ?? "No business key")</span></td>
                             <td><a class="data-title" href="@($"instances/{instance.Id}")">@instance.WorkflowName</a><span class="data-subtitle">Version @instance.WorkflowVersion</span></td>
                             <td>
-                                @instance.CurrentNodeName
-                                @if (!string.IsNullOrWhiteSpace(instance.CurrentNodeExternalId))
-                                {
-                                    <span class="data-subtitle">@instance.CurrentNodeExternalId</span>
-                                }
+                                <ExecutionPositionList Positions="@instance.ExecutionPositions"
+                                                       LegacyNodeId="@instance.CurrentNodeId"
+                                                       LegacyNodeName="@instance.CurrentNodeName"
+                                                       LegacyNodeExternalId="@instance.CurrentNodeExternalId"
+                                                       Compact="true"
+                                                       MaxItems="3" />
                                 @if (instance.Fault is not null)
                                 {
-                                    <span class="data-subtitle"><strong>@(instance.Fault.Code ?? "Unspecified fault")</strong> Â· @instance.Fault.Description</span>
+                                    <span class="data-subtitle"><strong>@(instance.Fault.Code ?? "Unspecified fault")</strong> · @instance.Fault.Description</span>
                                 }
                             </td>
-                            <td><StatusBadge Status="@instance.Status" /></td>
+                            <td>
+                                <StatusBadge Status="@instance.Status" />
+                                @if (instance.Completion is not null)
+                                {
+                                    <span class="data-subtitle">@CompletionLabel(instance.Completion.Kind)</span>
+                                }
+                            </td>
                             <td>@FormatTaskState(instance.UserTasks)</td>
                             <td><span title="@instance.UpdatedAt.ToString("O")">@instance.UpdatedAt.ToLocalTime().ToString("g")</span></td>
                             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a></td>
@@ -160,6 +167,11 @@
         if (tasks.AssignedCount > 0) parts.Add($"{tasks.AssignedCount} assigned");
         return string.Join(", ", parts);
     }
+
+    private static string CompletionLabel(string kind) =>
+        string.Equals(kind, WorkflowCompletionKinds.Terminate, StringComparison.OrdinalIgnoreCase)
+            ? "Terminated successfully"
+            : "Completed normally";
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 

@@ -67,15 +67,28 @@ else if (snapshot is not null)
                     <div class="table-responsive">
                         <table class="table align-middle">
                             <caption class="visually-hidden">Most recently updated workflow instances</caption>
-                            <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Current step</th><th scope="col">Status</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                            <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Execution positions</th><th scope="col">Status</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                             <tbody>
                                 @foreach (var item in snapshot.RecentInstances)
                                 {
                                     <tr>
                                         <td><span class="mono-id">#@item.Id</span>@if (!string.IsNullOrWhiteSpace(item.BusinessKey)) { <span class="data-subtitle">@item.BusinessKey</span> }</td>
                                         <td><a class="data-title" href="@($"instances/{item.Id}")">@item.WorkflowName</a><span class="data-subtitle">Version @item.WorkflowVersion</span></td>
-                                        <td>@item.CurrentNodeName@if (!string.IsNullOrWhiteSpace(item.CurrentNodeExternalId)) { <span class="data-subtitle">@item.CurrentNodeExternalId</span> }</td>
-                                        <td><StatusBadge Status="@item.Status" /></td>
+                                        <td>
+                                            <ExecutionPositionList Positions="@item.ExecutionPositions"
+                                                                   LegacyNodeId="@item.CurrentNodeId"
+                                                                   LegacyNodeName="@item.CurrentNodeName"
+                                                                   LegacyNodeExternalId="@item.CurrentNodeExternalId"
+                                                                   Compact="true"
+                                                                   MaxItems="2" />
+                                        </td>
+                                        <td>
+                                            <StatusBadge Status="@item.Status" />
+                                            @if (item.Completion is not null)
+                                            {
+                                                <span class="data-subtitle">@CompletionLabel(item.Completion.Kind)</span>
+                                            }
+                                        </td>
                                         <td><span title="@item.UpdatedAt.ToString("O")">@RelativeTime(item.UpdatedAt)</span></td>
                                         <td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="@($"instances/{item.Id}")">Open</a></td>
                                     </tr>
@@ -232,6 +245,11 @@ else if (snapshot is not null)
     }
 
     private static string TaskState(InboxItemDto item) => item.CanAct ? "Ready to act" : item.CanClaim ? "Can claim" : "View only";
+
+    private static string CompletionLabel(string kind) =>
+        string.Equals(kind, WorkflowCompletionKinds.Terminate, StringComparison.OrdinalIgnoreCase)
+            ? "Terminated successfully"
+            : "Completed normally";
 
     public void Dispose()
     {

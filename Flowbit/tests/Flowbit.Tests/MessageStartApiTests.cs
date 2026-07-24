@@ -312,7 +312,7 @@ public sealed class MessageStartApiTests(PostgresApiFixture fixture)
         var responseBody = await response.Content.ReadAsStringAsync();
         using var responseJson = JsonDocument.Parse(responseBody);
         Assert.Equal(
-            ["createdAt", "currentNodeExternalId", "currentNodeId", "currentNodeName", "instanceId", "status"],
+            ["createdAt", "currentNodeExternalId", "currentNodeId", "currentNodeName", "executionPositions", "instanceId", "status"],
             responseJson.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray());
         Assert.DoesNotContain("tests-secret", responseBody, StringComparison.Ordinal);
 

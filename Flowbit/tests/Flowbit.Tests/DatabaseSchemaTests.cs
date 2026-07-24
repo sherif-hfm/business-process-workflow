@@ -22,8 +22,10 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(16, mappedTables.Length);
+        Assert.Equal(18, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
+        Assert.Contains(mappedTables, table => table.Name == "parallel_gateway_executions");
+        Assert.Contains(mappedTables, table => table.Name == "parallel_gateway_branches");
 
         var expectedNames = mappedTables
             .Select(table => table.Name!)

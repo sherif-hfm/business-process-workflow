@@ -402,6 +402,14 @@ public sealed class FlowNodeModel
     [JsonPropertyName("errorDescription")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorDescription { get; set; }
+
+    /// <summary>
+    /// The parallel fork whose nearest active runtime activation is interrupted
+    /// when this parallelInterruptEvent is entered.
+    /// </summary>
+    [JsonPropertyName("parallelGatewayRef")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ParallelGatewayRef { get; set; }
 }
 
 public static class ErrorEndConstraints
@@ -1189,10 +1197,20 @@ public static class BpmnFlowNodeTypes
     public const string ServiceTask = "serviceTask";
     public const string ScriptTask = "scriptTask";
     public const string ExclusiveGateway = "exclusiveGateway";
+    // A parallel gateway with two or more outgoing flows is a fork for every
+    // arriving token (including when it has several incoming flows). A gateway
+    // with exactly one outgoing and two or more incoming flows is a join.
+    public const string ParallelGateway = "parallelGateway";
+    // Flowbit extension that interrupts the nearest active activation of its
+    // referenced parallel fork, then continues down its sole outgoing flow.
+    public const string ParallelInterruptEvent = "parallelInterruptEvent";
     // Terminal event that ends the instance with the Faulted status (vs the
     // Completed status set by a plain endEvent). Typically reached via an
     // errorBoundaryEvent's error path, directly or through a handler task.
     public const string ErrorEndEvent = "errorEndEvent";
+    // Terminal event that completes the instance and cancels every other active
+    // token, user task, message wait, and multi-instance execution.
+    public const string TerminateEndEvent = "terminateEndEvent";
     // Boundary event attached to a serviceTask/scriptTask (attachedToRef). When
     // the host fails at runtime, the token routes out the boundary's single
     // outgoing "error" flow instead of failing the transition.
@@ -1213,14 +1231,19 @@ public static class BpmnFlowNodeTypes
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
 
-    // A plain endEvent completes the instance; an errorEndEvent faults it. Both
-    // are terminal (no outgoing flows) and share the end-like invariants.
+    // A plain endEvent completes one branch, an errorEndEvent faults the
+    // instance, and a terminateEndEvent completes the instance while cancelling
+    // its other work. All are terminal and share the end-like invariants.
     public static bool IsEnd(string type) =>
         string.Equals(type, EndEvent, StringComparison.Ordinal)
-        || string.Equals(type, ErrorEndEvent, StringComparison.Ordinal);
+        || string.Equals(type, ErrorEndEvent, StringComparison.Ordinal)
+        || string.Equals(type, TerminateEndEvent, StringComparison.Ordinal);
 
     public static bool IsErrorEnd(string type) =>
         string.Equals(type, ErrorEndEvent, StringComparison.Ordinal);
+
+    public static bool IsTerminateEnd(string type) =>
+        string.Equals(type, TerminateEndEvent, StringComparison.Ordinal);
 
     public static bool IsErrorBoundary(string type) =>
         string.Equals(type, ErrorBoundaryEvent, StringComparison.Ordinal);
@@ -1237,8 +1260,17 @@ public static class BpmnFlowNodeTypes
     public static bool IsScriptTask(string type) =>
         string.Equals(type, ScriptTask, StringComparison.Ordinal);
 
-    public static bool IsGateway(string type) =>
+    public static bool IsExclusiveGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
+
+    public static bool IsParallelGateway(string type) =>
+        string.Equals(type, ParallelGateway, StringComparison.Ordinal);
+
+    public static bool IsGateway(string type) =>
+        IsExclusiveGateway(type) || IsParallelGateway(type);
+
+    public static bool IsParallelInterrupt(string type) =>
+        string.Equals(type, ParallelInterruptEvent, StringComparison.Ordinal);
 
     public static bool IsMessageCatch(string type) =>
         string.Equals(type, IntermediateMessageCatchEvent, StringComparison.Ordinal);
@@ -1258,10 +1290,15 @@ public static class BpmnFlowNodeTypes
     // A message start event IS pass-through: the engine creates the instance on
     // it then auto-advances, exactly like a plain startEvent.
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsMessageStart(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type);
+        IsStart(type) || IsMessageStart(type) || IsAutomatic(type) || IsServiceTask(type)
+        || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
+        || IsParallelInterrupt(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask or ExclusiveGateway or ErrorEndEvent or ErrorBoundaryEvent or IntermediateMessageCatchEvent or MessageStartEvent;
+        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
+            or ExclusiveGateway or ParallelGateway or ParallelInterruptEvent
+            or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent
+            or IntermediateMessageCatchEvent or MessageStartEvent;
 }
 
 public static class WorkflowVariableTypes
