@@ -1,5 +1,5 @@
 
-
+- api/instances/{id}/message should has node id or external node id 
 - add Parallel Gateways
 - terminateEndEvent
 - add quorum/complex gateway
