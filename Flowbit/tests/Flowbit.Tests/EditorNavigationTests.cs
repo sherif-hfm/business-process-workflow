@@ -371,7 +371,7 @@ public sealed class EditorNavigationTests
         Assert.Contains("main.inspector-revealed .diagram-tools", html, StringComparison.Ordinal);
         Assert.Contains("transform: translateX(calc(100% - 38px));", html, StringComparison.Ordinal);
         Assert.Contains("class=\"inspector-peek-label\"", html, StringComparison.Ordinal);
-        Assert.Contains("text-orientation: upright;", html, StringComparison.Ordinal);
+        Assert.Contains("transform: translate(-50%, -50%) rotate(90deg);", html, StringComparison.Ordinal);
         Assert.Contains(
             "main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin",
             html,

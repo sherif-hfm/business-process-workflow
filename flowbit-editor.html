@@ -486,21 +486,17 @@
   }
   .inspector-peek-label {
     position: absolute;
-    top: 16px;
-    bottom: 12px;
-    left: 7px;
-    width: 31px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    padding-top: 0;
+    top: 50%;
+    left: 22px;
+    width: max-content;
     color: #93c5fd;
-    font-size: 8px;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: .08em;
+    letter-spacing: .14em;
     text-transform: uppercase;
-    writing-mode: vertical-rl;
-    text-orientation: upright;
+    white-space: nowrap;
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center;
     pointer-events: none;
     opacity: 1;
     transition: opacity .1s ease, visibility 0s;
