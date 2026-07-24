@@ -2,8 +2,6 @@
   "id": "parallel-gateway-simple-demo",
   "name": "Simple Parallel Review",
   "initialEventId": 1,
-  "taskAssignmentRoles": [],
-  "taskDistribution": null,
   "variables": [],
   "lanes": [
     {
@@ -45,8 +43,14 @@
       "y": 70,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "assignments": []
     },
     {
       "id": 2,
@@ -58,8 +62,14 @@
       "y": 64,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "assignments": []
     },
     {
       "id": 3,
@@ -71,8 +81,16 @@
       "y": 270,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
@@ -84,8 +102,16 @@
       "y": 400,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 5,
@@ -97,8 +123,14 @@
       "y": 330,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "assignments": []
     },
     {
       "id": 6,
@@ -106,12 +138,18 @@
       "externalId": "TASK_CONSOLIDATE_RESULTS",
       "type": "task",
       "laneId": 3,
-      "x": 1080,
-      "y": 580,
+      "x": 967,
+      "y": 582,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "assignments": []
     },
     {
       "id": 7,
@@ -123,14 +161,21 @@
       "y": 590,
       "roles": [],
       "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
       "assignee": null,
-      "variables": []
+      "assignments": []
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
       "name": "Start",
+      "externalId": null,
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -138,11 +183,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 201,
       "name": "Content branch",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -150,11 +201,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 202,
       "name": "Budget branch",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
@@ -162,11 +219,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 301,
       "name": "Content complete",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 5,
       "roles": [],
@@ -174,11 +237,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 401,
       "name": "Budget complete",
+      "externalId": null,
       "sourceRef": 4,
       "targetRef": 5,
       "roles": [],
@@ -186,11 +255,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 501,
       "name": "All reviews complete",
+      "externalId": null,
       "sourceRef": 5,
       "targetRef": 6,
       "roles": [],
@@ -198,11 +273,17 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 601,
       "name": "Finish",
+      "externalId": null,
       "sourceRef": 6,
       "targetRef": 7,
       "roles": [],
@@ -210,7 +291,16 @@
       "condition": null,
       "conditionPriority": null,
       "isDefault": false,
-      "isSelectable": true
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     }
-  ]
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
 }

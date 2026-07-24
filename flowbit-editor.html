@@ -768,6 +768,10 @@
     <button id="addPhaseBtn" title="Add a swimlane"><svg class="button-icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg><span class="button-label">Add Lane</span></button>
     <button id="connectBtn" title="Connect two nodes with a sequence flow"><svg class="button-icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg><span class="button-label">Connect Flow</span></button>
   </div>
+  <div class="toolbar-group" aria-label="Edit history">
+    <button id="undoBtn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg class="button-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/></svg><span class="button-label">Undo</span></button>
+    <button id="redoBtn" type="button" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" aria-label="Redo" disabled><svg class="button-icon" viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6"/></svg><span class="button-label">Redo</span></button>
+  </div>
   <div class="spacer"></div>
   <div class="toolbar-group" aria-label="View options">
     <label class="sr-only" for="labelModeSelect">Flow label visibility</label>
@@ -1627,6 +1631,99 @@ let viewState = { x: 0, y: 0, zoom: 1 };
 let canvasPan = null;
 let spacePressed = false;
 let suppressCanvasClick = false;
+const HISTORY_LIMIT = 100;
+const HISTORY_INPUT_DELAY = 500;
+const undoBtn = document.getElementById("undoBtn");
+const redoBtn = document.getElementById("redoBtn");
+let undoHistory = [];
+let redoHistory = [];
+let historySnapshot = "";
+let historyCommitTimer = null;
+let historyRestoring = false;
+
+function serializeHistoryModel() {
+  return JSON.stringify(model);
+}
+
+function updateHistoryControls() {
+  undoBtn.disabled = undoHistory.length === 0;
+  redoBtn.disabled = redoHistory.length === 0;
+}
+
+function commitHistory() {
+  if (historyCommitTimer !== null) {
+    clearTimeout(historyCommitTimer);
+    historyCommitTimer = null;
+  }
+  if (historyRestoring) return;
+  const nextSnapshot = serializeHistoryModel();
+  if (!historySnapshot) {
+    historySnapshot = nextSnapshot;
+    updateHistoryControls();
+    return;
+  }
+  if (nextSnapshot === historySnapshot) return;
+  undoHistory.push(historySnapshot);
+  if (undoHistory.length > HISTORY_LIMIT) undoHistory.shift();
+  historySnapshot = nextSnapshot;
+  redoHistory = [];
+  updateHistoryControls();
+}
+
+function scheduleHistoryCommit() {
+  if (historyRestoring) return;
+  if (historyCommitTimer !== null) clearTimeout(historyCommitTimer);
+  historyCommitTimer = setTimeout(commitHistory, HISTORY_INPUT_DELAY);
+}
+
+function resetHistory() {
+  if (historyCommitTimer !== null) clearTimeout(historyCommitTimer);
+  historyCommitTimer = null;
+  undoHistory = [];
+  redoHistory = [];
+  historySnapshot = serializeHistoryModel();
+  updateHistoryControls();
+}
+
+function selectionStillExists() {
+  if (!selected) return true;
+  if (selected.kind === "node") return !!getNode(selected.nodeId);
+  if (selected.kind === "lane") return !!getLane(selected.laneId);
+  return model.sequenceFlows.some(flow => flow.id === selected.flowId);
+}
+
+function restoreHistorySnapshot(snapshot) {
+  historyRestoring = true;
+  if (connectionDrag) clearConnectionGesture();
+  drag = null;
+  laneDrag = null;
+  laneResize = null;
+  setConnectMode(false);
+  model = JSON.parse(snapshot);
+  if (!selectionStillExists()) selected = null;
+  render();
+  historySnapshot = serializeHistoryModel();
+  historyRestoring = false;
+  updateHistoryControls();
+}
+
+function undo() {
+  commitHistory();
+  if (undoHistory.length === 0) return;
+  const snapshot = undoHistory.pop();
+  redoHistory.push(historySnapshot);
+  if (redoHistory.length > HISTORY_LIMIT) redoHistory.shift();
+  restoreHistorySnapshot(snapshot);
+}
+
+function redo() {
+  commitHistory();
+  if (redoHistory.length === 0) return;
+  const snapshot = redoHistory.pop();
+  undoHistory.push(historySnapshot);
+  if (undoHistory.length > HISTORY_LIMIT) undoHistory.shift();
+  restoreHistorySnapshot(snapshot);
+}
 
 function newModel() {
   return {
@@ -4590,6 +4687,7 @@ function saveJsEditor() {
       const textarea = document.getElementById("js-editor-textarea");
       node.script = textarea.value;
       renderInspector();
+      commitHistory();
     }
   }
   
@@ -7458,6 +7556,7 @@ function loadFromObject(obj) {
   migrateLegacyUserTaskDefaultFlows();
   normalizeExclusiveGatewayPriorities();
   clearSelection();
+  resetHistory();
 }
 
 /* ---------- DOM helper ---------- */
@@ -7471,6 +7570,8 @@ function el(tag, attrs) {
 document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addNode(); };
 document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
 document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
+undoBtn.onclick = undo;
+redoBtn.onclick = redo;
 document.getElementById("saveBtn").onclick = save;
 zoomOutBtn.onclick = () => zoomTo(viewState.zoom / 1.2);
 zoomResetBtn.onclick = () => zoomTo(1);
@@ -7534,6 +7635,7 @@ document.getElementById("newBtn").onclick = () => {
     closeDiagramSearchResults();
     resetViewport();
     clearSelection();
+    resetHistory();
   }
 };
 document.getElementById("loadBtn").onclick = () => document.getElementById("fileInput").click();
@@ -7554,7 +7656,36 @@ document.getElementById("fileInput").onchange = (e) => {
 };
 wfNameInput.oninput = () => { model.name = wfNameInput.value; };
 
+document.addEventListener("pointerdown", () => {
+  if (historyCommitTimer !== null) commitHistory();
+}, true);
+document.addEventListener("input", event => {
+  if (event.target === diagramSearchInput ||
+      event.target === traceOpacityInput ||
+      event.target.id === "js-editor-textarea") return;
+  scheduleHistoryCommit();
+});
+document.addEventListener("change", event => {
+  if (event.target === labelModeSelect || event.target === traceOpacityInput) return;
+  commitHistory();
+});
+document.addEventListener("pointerup", () => queueMicrotask(commitHistory));
+document.addEventListener("click", event => {
+  if (event.target.closest("#undoBtn, #redoBtn")) return;
+  queueMicrotask(commitHistory);
+});
+
 window.addEventListener("keydown", (e) => {
+  const historyModifier = (e.ctrlKey || e.metaKey) && !e.altKey;
+  const historyKey = e.key.toLowerCase();
+  const isScriptEditor = e.target && e.target.id === "js-editor-textarea";
+  if (historyModifier && !isScriptEditor &&
+      (historyKey === "z" || historyKey === "y")) {
+    e.preventDefault();
+    if (historyKey === "y" || e.shiftKey) redo();
+    else undo();
+    return;
+  }
   if (e.key === "Escape" && document.getElementById("validation-modal").style.display !== "none") {
     closeValidationErrors();
     return;
@@ -7588,6 +7719,7 @@ window.addEventListener("keydown", (e) => {
       model.sequenceFlows = model.sequenceFlows.filter(f => f.id !== selected.flowId);
       clearSelection();
     }
+    commitHistory();
   }
 });
 window.addEventListener("keyup", (e) => {
@@ -7659,6 +7791,7 @@ if (typeof ResizeObserver !== "undefined") {
 /* ---------- Init ---------- */
 resetViewport();
 render();
+resetHistory();
 </script>
 </body>
 </html>
