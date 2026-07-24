@@ -8,6 +8,16 @@ namespace Flowbit.Tests;
 
 public sealed class EditorValidatorTests
 {
+    [Theory]
+    [InlineData("parallel-gateway-simple.json")]
+    [InlineData("parallel-gateway-complex.json")]
+    public void Validator_AcceptsParallelGatewayExample(string fileName)
+    {
+        var model = DefinitionValidationTests.LoadModel(fileName);
+
+        Assert.Empty(Validate(model));
+    }
+
     [Fact]
     public void EditorJavaScript_ParsesSuccessfully()
     {

@@ -1,0 +1,216 @@
+{
+  "id": "parallel-gateway-simple-demo",
+  "name": "Simple Parallel Review",
+  "initialEventId": 1,
+  "taskAssignmentRoles": [],
+  "taskDistribution": null,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Planning",
+      "externalId": "LANE_PLANNING",
+      "x": 40,
+      "y": 20,
+      "w": 1380,
+      "h": 180
+    },
+    {
+      "id": 2,
+      "name": "Parallel Review",
+      "externalId": "LANE_PARALLEL_REVIEW",
+      "x": 40,
+      "y": 220,
+      "w": 1380,
+      "h": 300
+    },
+    {
+      "id": 3,
+      "name": "Completion",
+      "externalId": "LANE_COMPLETION",
+      "x": 40,
+      "y": 540,
+      "w": 1380,
+      "h": 180
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Review Requested",
+      "externalId": "START_REVIEW",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 90,
+      "y": 70,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Fork Reviews",
+      "externalId": "GATEWAY_REVIEW_FORK",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 300,
+      "y": 64,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Content Review",
+      "externalId": "TASK_CONTENT_REVIEW",
+      "type": "userTask",
+      "laneId": 2,
+      "x": 520,
+      "y": 270,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Budget Review",
+      "externalId": "TASK_BUDGET_REVIEW",
+      "type": "userTask",
+      "laneId": 2,
+      "x": 520,
+      "y": 400,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Join Reviews",
+      "externalId": "GATEWAY_REVIEW_JOIN",
+      "type": "parallelGateway",
+      "laneId": 2,
+      "x": 850,
+      "y": 330,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Consolidate Results",
+      "externalId": "TASK_CONSOLIDATE_RESULTS",
+      "type": "task",
+      "laneId": 3,
+      "x": 1080,
+      "y": 580,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Review Completed",
+      "externalId": "END_REVIEW_COMPLETED",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 1280,
+      "y": 590,
+      "roles": [],
+      "requiresClaim": false,
+      "assignee": null,
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Start",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 201,
+      "name": "Content branch",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 202,
+      "name": "Budget branch",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 301,
+      "name": "Content complete",
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 401,
+      "name": "Budget complete",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 501,
+      "name": "All reviews complete",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    },
+    {
+      "id": 601,
+      "name": "Finish",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true
+    }
+  ]
+}

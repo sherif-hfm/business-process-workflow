@@ -11,6 +11,16 @@ namespace Flowbit.Tests;
 
 public sealed class DefinitionValidationTests
 {
+    [Theory]
+    [InlineData("parallel-gateway-simple.json")]
+    [InlineData("parallel-gateway-complex.json")]
+    public async Task CreateAsync_AcceptsParallelGatewayExample(string fileName)
+    {
+        var model = LoadModel(fileName);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
     public static IEnumerable<object[]> ValidTypedOutputDefaults()
     {
         var values = new (string Type, string Scalar, string Array)[]
