@@ -359,6 +359,33 @@ public sealed class EditorNavigationTests
     }
 
     [Fact]
+    public void NavigationPanels_AutoHideAndPersistIndependentPinStates()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("id=\"diagramToolsHandle\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"diagramToolsPin\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"inspectorPin\"", html, StringComparison.Ordinal);
+        Assert.Contains(".diagram-tools:hover .diagram-tools-content", html, StringComparison.Ordinal);
+        Assert.Contains(".inspector-dock:not(.is-pinned):hover", html, StringComparison.Ordinal);
+        Assert.Contains("main.inspector-revealed .diagram-tools", html, StringComparison.Ordinal);
+        Assert.Contains("transform: translateX(calc(100% - 38px));", html, StringComparison.Ordinal);
+        Assert.Contains("class=\"inspector-peek-label\"", html, StringComparison.Ordinal);
+        Assert.Contains("text-orientation: upright;", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains("\"flowbit.diagramToolsPinned\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"flowbit.inspectorPinned\"", html, StringComparison.Ordinal);
+        Assert.Contains("releaseUnpinnedButtonFocus(inspectorPin, pinned);", html, StringComparison.Ordinal);
+        Assert.Contains("releaseUnpinnedButtonFocus(diagramToolsPin, pinned);", html, StringComparison.Ordinal);
+        Assert.Contains("mainEl.classList.toggle(\"inspector-revealed\", revealed);", html, StringComparison.Ordinal);
+        Assert.Contains("mainEl.style.setProperty(\"--sidebar-width\"", html, StringComparison.Ordinal);
+        Assert.Contains("requestAnimationFrame(applyViewBox);", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HiddenLabelMode_HidesExternalShapeCaptionsButKeepsTaskCardTitles()
     {
         var html = ReadEditorSource();

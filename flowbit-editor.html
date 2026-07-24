@@ -141,7 +141,13 @@
   }
   .spacer { flex: 1; }
 
-  main { flex: 1; display: flex; min-height: 0; }
+  main {
+    --sidebar-width: 340px;
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    position: relative;
+  }
 
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
   #svg { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: default; touch-action: none; }
@@ -190,11 +196,80 @@
     gap: 6px;
     width: min(620px, calc(100% - 24px));
     pointer-events: none;
+    transition: right .2s ease, width .2s ease;
   }
-  .diagram-tools > * { pointer-events: auto; }
+  body.inspector-auto-hide .diagram-tools {
+    right: 50px;
+    width: min(620px, calc(100% - 62px));
+  }
+  main.inspector-revealed .diagram-tools {
+    right: calc(var(--sidebar-width) + 19px);
+    width: min(620px, calc(100% - var(--sidebar-width) - 31px));
+  }
+  .diagram-tools-content {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px) scale(.985);
+    transform-origin: top right;
+    pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease, visibility 0s linear .16s;
+  }
+  .diagram-tools:hover .diagram-tools-content,
+  .diagram-tools:focus-within .diagram-tools-content,
+  .diagram-tools.is-pinned .diagram-tools-content {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+  .diagram-tools-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+    padding: 9px;
+    color: #bfdbfe;
+    background: rgba(17,29,48,.96);
+    border-color: var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    pointer-events: auto;
+    transition: opacity .12s ease, visibility 0s;
+  }
+  .diagram-tools-handle svg,
+  .dock-pin svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .diagram-tools.is-pinned .diagram-tools-handle {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
   .diagram-search {
     position: relative;
     width: min(330px, 100%);
+  }
+  .diagram-tools:not(.is-pinned) .diagram-search {
+    width: min(330px, calc(100% - 44px));
+    margin-right: 44px;
   }
   .diagram-search-row {
     display: flex;
@@ -224,6 +299,17 @@
     min-height: 30px;
     padding: 4px 8px;
     color: var(--muted);
+  }
+  .dock-pin {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 5px;
+    color: var(--muted);
+  }
+  .dock-pin[aria-pressed="true"] {
+    color: #dbeafe;
+    background: rgba(37,99,235,.72);
+    border-color: #60a5fa;
   }
   .diagram-search-results {
     position: absolute;
@@ -327,20 +413,128 @@
   }
 
   /* Sidebar */
+  .inspector-dock {
+    position: relative;
+    width: calc(var(--sidebar-width) + 7px);
+    min-width: 287px;
+    max-width: calc(55vw + 7px);
+    flex: 0 0 auto;
+    align-self: stretch;
+    display: flex;
+    z-index: 20;
+    transition: transform .2s ease;
+  }
+  .inspector-dock:not(.is-pinned) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    min-width: 0;
+    max-width: none;
+    transform: translateX(calc(100% - 38px));
+    filter: drop-shadow(-12px 0 20px rgba(2,8,23,.2));
+  }
+  .inspector-dock:not(.is-pinned):hover,
+  .inspector-dock:not(.is-pinned):focus-within,
+  .inspector-dock:not(.is-pinned).is-resizing {
+    transform: translateX(0);
+  }
   aside {
-    width: 340px;
+    width: var(--sidebar-width);
     min-width: 280px;
     max-width: 55vw;
+    flex: 1 0 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     background: var(--panel);
-    padding: 16px;
-    overflow-y: auto;
     border-left: 1px solid rgba(72, 97, 127, .2);
     scrollbar-color: var(--border-strong) transparent;
+    transition: background .16s ease, border-color .16s ease;
+  }
+  .inspector-header {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 8px 8px 8px 16px;
+    color: var(--text);
+    background: rgba(17,29,48,.98);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 8px 16px rgba(2,8,23,.14);
+    backdrop-filter: blur(8px);
+    transition: padding .16s ease, background .16s ease;
+  }
+  .inspector-header-label {
+    overflow: hidden;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: opacity .1s ease;
+  }
+  .inspector-content {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+    overflow-y: auto;
+    transition: opacity .12s ease;
+  }
+  .inspector-peek-label {
+    position: absolute;
+    top: 16px;
+    bottom: 12px;
+    left: 7px;
+    width: 31px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding-top: 0;
+    color: #93c5fd;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity .1s ease, visibility 0s;
+  }
+  .inspector-dock.is-pinned .inspector-peek-label,
+  main.inspector-revealed .inspector-peek-label {
+    opacity: 0;
+    visibility: hidden;
+  }
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) aside {
+    background:
+      linear-gradient(180deg, rgba(24,39,61,.98), rgba(12,24,42,.98));
+    border-left-color: rgba(96,165,250,.46);
+  }
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-header {
+    gap: 0;
+    padding: 8px 0;
+    background: rgba(17,29,48,.98);
+    border-bottom-color: rgba(72,97,127,.55);
+    box-shadow: none;
+  }
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-header-label,
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-content,
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-content {
+    overflow: hidden;
   }
   .resizer {
     width: 7px;
-    margin-left: -3px;
-    margin-right: -3px;
+    margin: 0;
     background: transparent;
     cursor: col-resize;
     position: relative;
@@ -363,7 +557,12 @@
     width: 3px;
     left: 0px;
   }
-  aside > h2:first-child {
+  main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .resizer::before {
+    left: 4px;
+    width: 2px;
+    background: rgba(96,165,250,.58);
+  }
+  .inspector-content > h2:first-child {
     position: sticky;
     top: -16px;
     z-index: 5;
@@ -375,8 +574,8 @@
     box-shadow: 0 8px 16px rgba(2,8,23,.14);
     backdrop-filter: blur(8px);
   }
-  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
-  aside h3 { font-size: 12px; color: var(--text); margin: 18px 0 9px; }
+  .inspector-content h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .inspector-content h3 { font-size: 12px; color: var(--text); margin: 18px 0 9px; }
   .field { margin-bottom: 13px; }
   .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .field input, .field select, .field textarea {
@@ -733,7 +932,7 @@
     header { gap: 8px; }
     .toolbar-identity { flex-basis: 100%; }
     .toolbar-group { flex: 1 1 auto; }
-    aside { width: 310px; }
+    main { --sidebar-width: 310px; }
     .diagram-tools { width: min(520px, calc(100% - 24px)); }
   }
   @media (max-width: 820px) {
@@ -841,29 +1040,46 @@
       <g id="connectionPreview"></g>
       <g id="nodes"></g>
     </svg>
-    <div class="hint" id="hint"></div>
-    <div class="diagram-tools" aria-label="Diagram navigation">
-      <div class="diagram-search">
-        <div class="diagram-search-row">
-          <label class="sr-only" for="diagramSearchInput">Search workflow diagram</label>
-          <input id="diagramSearchInput" type="search" autocomplete="off"
-                 placeholder="Search nodes, flows, lanes…  (/)"
-                 aria-controls="diagramSearchResults" aria-expanded="false" />
-          <button id="diagramSearchClear" class="diagram-search-clear" type="button"
-                  title="Clear diagram search" aria-label="Clear diagram search">×</button>
+    <div class="hint" id="hint" hidden></div>
+    <div class="diagram-tools" id="diagramTools" aria-label="Diagram navigation">
+      <button id="diagramToolsHandle" class="diagram-tools-handle" type="button"
+              title="Show diagram tools" aria-label="Show diagram tools">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="5.5"></circle>
+          <path d="m15 15 4.5 4.5M4 5h2M18 5h2M5 19h2"></path>
+        </svg>
+      </button>
+      <div class="diagram-tools-content">
+        <div class="diagram-search">
+          <div class="diagram-search-row">
+            <label class="sr-only" for="diagramSearchInput">Search workflow diagram</label>
+            <input id="diagramSearchInput" type="search" autocomplete="off"
+                   placeholder="Search nodes, flows, lanes…  (/)"
+                   aria-controls="diagramSearchResults" aria-expanded="false" />
+            <button id="diagramSearchClear" class="diagram-search-clear" type="button"
+                    title="Clear diagram search" aria-label="Clear diagram search">×</button>
+            <button id="diagramToolsPin" class="dock-pin" type="button"
+                    title="Pin diagram tools open" aria-label="Pin diagram tools open"
+                    aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 4 6 0-.8 5 3.3 3.3v1.2h-11v-1.2L9.8 9 9 4Z"></path>
+                <path d="M12 13.5V21"></path>
+              </svg>
+            </button>
+          </div>
+          <div id="diagramSearchResults" class="diagram-search-results"
+               role="listbox" aria-label="Diagram search results" hidden></div>
         </div>
-        <div id="diagramSearchResults" class="diagram-search-results"
-             role="listbox" aria-label="Diagram search results" hidden></div>
-      </div>
-      <div class="diagram-nav">
-        <div class="trace-modes" role="group" aria-label="Trace selected workflow path">
-          <button type="button" data-trace-mode="local" aria-pressed="true">Local</button>
-          <button type="button" data-trace-mode="upstream" aria-pressed="false">Upstream</button>
-          <button type="button" data-trace-mode="downstream" aria-pressed="false">Downstream</button>
-          <button type="button" data-trace-mode="route" aria-pressed="false">Route</button>
+        <div class="diagram-nav">
+          <div class="trace-modes" role="group" aria-label="Trace selected workflow path">
+            <button type="button" data-trace-mode="local" aria-pressed="true">Local</button>
+            <button type="button" data-trace-mode="upstream" aria-pressed="false">Upstream</button>
+            <button type="button" data-trace-mode="downstream" aria-pressed="false">Downstream</button>
+            <button type="button" data-trace-mode="route" aria-pressed="false">Route</button>
+          </div>
+          <button id="fitSelectionBtn" type="button" title="Fit the selected item">Fit selection</button>
+          <button id="fitLaneBtn" type="button" title="Fit the selected node's lane">Fit lane</button>
         </div>
-        <button id="fitSelectionBtn" type="button" title="Fit the selected item">Fit selection</button>
-        <button id="fitLaneBtn" type="button" title="Fit the selected node's lane">Fit lane</button>
       </div>
     </div>
     <div class="canvas-controls" aria-label="Canvas zoom controls">
@@ -874,9 +1090,25 @@
     </div>
   </div>
 
-  <div class="resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabindex="0"></div>
-
-  <aside id="inspector"></aside>
+  <div class="inspector-dock" id="inspectorDock">
+    <div class="resizer" id="sidebar-resizer" role="separator"
+         aria-orientation="vertical" aria-label="Resize inspector" tabindex="0"></div>
+    <aside id="inspectorPanel" aria-label="Properties inspector">
+      <div class="inspector-header">
+        <span class="inspector-header-label">Inspector</span>
+        <button id="inspectorPin" class="dock-pin" type="button"
+                title="Pin inspector open" aria-label="Pin inspector open"
+                aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 4 6 0-.8 5 3.3 3.3v1.2h-11v-1.2L9.8 9 9 4Z"></path>
+            <path d="M12 13.5V21"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="inspector-content" id="inspector"></div>
+    </aside>
+    <span class="inspector-peek-label" aria-hidden="true">Inspector</span>
+  </div>
 </main>
 
 <!-- JS Editor Modal Overlay -->
@@ -1603,6 +1835,7 @@ let diagramSearchMatches = [];
 let diagramSearchIndex = -1;
 
 const svg = document.getElementById('svg');
+const mainEl = document.querySelector('main');
 const canvasWrap = document.querySelector('.canvas-wrap');
 const gridSurface = document.getElementById('gridSurface');
 const lanesG = document.getElementById('lanes');
@@ -1610,6 +1843,9 @@ const nodesG = document.getElementById('nodes');
 const edgesG = document.getElementById('edges');
 const connectionPreviewG = document.getElementById('connectionPreview');
 const inspector = document.getElementById('inspector');
+const inspectorPanel = document.getElementById('inspectorPanel');
+const inspectorDock = document.getElementById('inspectorDock');
+const inspectorPin = document.getElementById('inspectorPin');
 const hintEl = document.getElementById('hint');
 const wfNameInput = document.getElementById('wfName');
 const resizer = document.getElementById('sidebar-resizer');
@@ -1625,7 +1861,11 @@ const traceOpacityValue = document.getElementById('traceOpacityValue');
 const diagramSearchInput = document.getElementById('diagramSearchInput');
 const diagramSearchClear = document.getElementById('diagramSearchClear');
 const diagramSearchResults = document.getElementById('diagramSearchResults');
+const diagramTools = document.getElementById('diagramTools');
+const diagramToolsHandle = document.getElementById('diagramToolsHandle');
+const diagramToolsPin = document.getElementById('diagramToolsPin');
 const traceModeButtons = [...document.querySelectorAll("[data-trace-mode]")];
+let inspectorPointerInside = false;
 
 let viewState = { x: 0, y: 0, zoom: 1 };
 let canvasPan = null;
@@ -3287,6 +3527,7 @@ function flowLabel(flow, source) {
 
 function renderHint() {
   if (connectMode) {
+    hintEl.hidden = false;
     if (connectSource == null) {
       hintEl.innerHTML = "<b>Connect mode:</b> click the <b>source</b> node, or drag one of its connection handles.";
     } else {
@@ -3297,7 +3538,8 @@ function renderHint() {
       hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
     }
   } else {
-    hintEl.innerHTML = "Drag a node's blue handle to connect it. Drag nodes or lanes to move, drag empty canvas to pan, and use the wheel to zoom.";
+    hintEl.hidden = true;
+    hintEl.innerHTML = "";
   }
 }
 
@@ -5755,6 +5997,7 @@ function onConnectionHandlePointerDown(event, node, side) {
   const problem = connectionSourceProblem(node);
   if (problem) {
     setConnectMode(false);
+    hintEl.hidden = false;
     hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
     return;
   }
@@ -5774,6 +6017,7 @@ function onConnectionHandlePointerDown(event, node, side) {
   };
   svg.setPointerCapture(event.pointerId);
   updateConnectionVisualState();
+  hintEl.hidden = false;
   hintEl.innerHTML = "<b>Connect:</b> drag to a highlighted target, or release for click-to-target mode.";
 }
 
@@ -5815,6 +6059,7 @@ function finishConnectionGesture(event) {
     const flow = createFlow(completed.sourceId, target.id);
     select("flow", flow.id);
   } else {
+    hintEl.hidden = false;
     hintEl.innerHTML = completed.invalidTargetId != null
       ? "<b>Connect:</b> that node cannot accept this sequence flow."
       : "<b>Connect:</b> connection cancelled; drop on a highlighted target node.";
@@ -5974,6 +6219,7 @@ function handleConnectClick(node) {
     const problem = connectionSourceProblem(node);
     if (problem) {
       setConnectMode(false);
+      hintEl.hidden = false;
       hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
       return;
     }
@@ -5986,6 +6232,7 @@ function handleConnectClick(node) {
     const sourceId = connectSource;
     setConnectMode(false);
     if (problem) {
+      hintEl.hidden = false;
       hintEl.innerHTML = `<b>Connect:</b> ${problem}`;
       return;
     }
@@ -7566,6 +7813,62 @@ function el(tag, attrs) {
   return e;
 }
 
+/* ---------- Auto-hide panels ---------- */
+function readUiPreference(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeUiPreference(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {}
+}
+
+function updatePinButton(button, pinned, panelName) {
+  const action = pinned ? "Unpin" : "Pin";
+  const suffix = pinned ? " and auto-hide" : " open";
+  const label = `${action} ${panelName}${suffix}`;
+  button.setAttribute("aria-pressed", String(pinned));
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
+function releaseUnpinnedButtonFocus(button, pinned) {
+  if (!pinned && document.activeElement === button) button.blur();
+}
+
+function updateInspectorRevealedState() {
+  const revealed = !inspectorDock.classList.contains("is-pinned") &&
+    (inspectorPointerInside ||
+      inspectorDock.contains(document.activeElement) ||
+      inspectorDock.classList.contains("is-resizing"));
+  mainEl.classList.toggle("inspector-revealed", revealed);
+}
+
+function setInspectorPinned(pinned, persist = true) {
+  inspectorDock.classList.toggle("is-pinned", pinned);
+  document.body.classList.toggle("inspector-auto-hide", !pinned);
+  updatePinButton(inspectorPin, pinned, "inspector");
+  releaseUnpinnedButtonFocus(inspectorPin, pinned);
+  updateInspectorRevealedState();
+  if (persist) writeUiPreference("flowbit.inspectorPinned", String(pinned));
+  requestAnimationFrame(applyViewBox);
+}
+
+function setDiagramToolsPinned(pinned, persist = true) {
+  diagramTools.classList.toggle("is-pinned", pinned);
+  updatePinButton(diagramToolsPin, pinned, "diagram tools");
+  releaseUnpinnedButtonFocus(diagramToolsPin, pinned);
+  if (persist) writeUiPreference("flowbit.diagramToolsPinned", String(pinned));
+}
+
+setInspectorPinned(readUiPreference("flowbit.inspectorPinned") === "true", false);
+setDiagramToolsPinned(readUiPreference("flowbit.diagramToolsPinned") === "true", false);
+
 /* ---------- Wire up toolbar ---------- */
 document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addNode(); };
 document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
@@ -7579,6 +7882,22 @@ zoomInBtn.onclick = () => zoomTo(viewState.zoom * 1.2);
 fitViewBtn.onclick = fitView;
 fitSelectionBtn.onclick = fitSelection;
 fitLaneBtn.onclick = fitSelectedLane;
+diagramToolsHandle.onclick = () => diagramSearchInput.focus();
+diagramToolsPin.onclick = () =>
+  setDiagramToolsPinned(!diagramTools.classList.contains("is-pinned"));
+inspectorPin.onclick = () =>
+  setInspectorPinned(!inspectorDock.classList.contains("is-pinned"));
+inspectorDock.addEventListener("pointerenter", () => {
+  inspectorPointerInside = true;
+  updateInspectorRevealedState();
+});
+inspectorDock.addEventListener("pointerleave", () => {
+  inspectorPointerInside = false;
+  updateInspectorRevealedState();
+});
+inspectorDock.addEventListener("focusin", updateInspectorRevealedState);
+inspectorDock.addEventListener("focusout", () =>
+  queueMicrotask(updateInspectorRevealedState));
 traceModeButtons.forEach(button => {
   button.addEventListener("click", () => setTraceMode(button.dataset.traceMode));
 });
@@ -7736,15 +8055,26 @@ window.addEventListener("blur", () => {
 /* ---------- Sidebar Resizer ---------- */
 let isResizingSidebar = false;
 
-// Restore sidebar width on load
-const savedSidebarWidth = localStorage.getItem("sidebarWidth");
-if (savedSidebarWidth) {
-  inspector.style.width = Math.max(280, Math.min(720, +savedSidebarWidth || 340)) + "px";
+function maximumSidebarWidth() {
+  return Math.max(280, Math.min(720, window.innerWidth * .55));
 }
+
+function setSidebarWidth(width, persist = true) {
+  const clampedWidth = Math.max(280, Math.min(maximumSidebarWidth(), +width || 340));
+  mainEl.style.setProperty("--sidebar-width", clampedWidth + "px");
+  if (persist) writeUiPreference("sidebarWidth", String(clampedWidth));
+}
+
+// Restore sidebar width on load
+const savedSidebarWidth = readUiPreference("sidebarWidth");
+const defaultSidebarWidth = window.innerWidth <= 1050 ? 310 : 340;
+setSidebarWidth(savedSidebarWidth || defaultSidebarWidth, false);
 
 resizer.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   isResizingSidebar = true;
+  inspectorDock.classList.add("is-resizing");
+  updateInspectorRevealedState();
   resizer.classList.add("dragging");
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
@@ -7754,14 +8084,14 @@ resizer.addEventListener("pointerdown", (e) => {
 resizer.addEventListener("pointermove", (e) => {
   if (!isResizingSidebar) return;
   const newWidth = window.innerWidth - e.clientX;
-  const clampedWidth = Math.max(280, Math.min(720, newWidth));
-  inspector.style.width = clampedWidth + "px";
-  localStorage.setItem("sidebarWidth", clampedWidth);
+  setSidebarWidth(newWidth);
 });
 
 const stopResizing = (e) => {
   if (!isResizingSidebar) return;
   isResizingSidebar = false;
+  inspectorDock.classList.remove("is-resizing");
+  updateInspectorRevealedState();
   resizer.classList.remove("dragging");
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
@@ -7775,11 +8105,9 @@ resizer.addEventListener("pointercancel", stopResizing);
 resizer.addEventListener("keydown", (e) => {
   if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
   e.preventDefault();
-  const currentWidth = inspector.getBoundingClientRect().width;
+  const currentWidth = inspectorPanel.getBoundingClientRect().width;
   const delta = e.key === "ArrowLeft" ? 16 : -16;
-  const clampedWidth = Math.max(280, Math.min(720, currentWidth + delta));
-  inspector.style.width = clampedWidth + "px";
-  localStorage.setItem("sidebarWidth", clampedWidth);
+  setSidebarWidth(currentWidth + delta);
 });
 
 if (typeof ResizeObserver !== "undefined") {
