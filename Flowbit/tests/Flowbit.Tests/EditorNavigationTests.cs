@@ -359,6 +359,204 @@ public sealed class EditorNavigationTests
     }
 
     [Fact]
+    public void ThemeToggle_FollowsSystemAndPersistsOutsideTheWorkflowModel()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("id=\"themeToggleBtn\"", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "aria-label=\"Switch to light theme\"",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(":root[data-theme=\"light\"]", html, StringComparison.Ordinal);
+        Assert.Contains("color-scheme: dark;", html, StringComparison.Ordinal);
+        Assert.Contains("color-scheme: light;", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "const THEME_STORAGE_KEY = \"flowbit.theme\";",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "window.matchMedia(\"(prefers-color-scheme: dark)\")",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "document.documentElement.dataset.theme = theme;",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "writeUiPreference(THEME_STORAGE_KEY, theme);",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "themeMediaQuery.addEventListener(\"change\", followSystemTheme);",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains("fill=\"var(--grid-dot)\"", html, StringComparison.Ordinal);
+        Assert.Contains("fill=\"var(--edge-stroke)\"", html, StringComparison.Ordinal);
+        Assert.Contains("t.tagName === \"BUTTON\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "themeToggleBtn.setAttribute(\"aria-pressed\"",
+            html,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("model.theme", html, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("light", false, true, true, "light", "#eef2f7")]
+    [InlineData(null, false, true, true, "dark", "#09111f")]
+    [InlineData("sepia", false, true, false, "light", "#eef2f7")]
+    [InlineData(null, true, false, false, "dark", "#09111f")]
+    public void ThemeBootstrap_AppliesStoredOrSystemPreferenceBeforePaint(
+        string? storedTheme,
+        bool storageThrows,
+        bool hasMatchMedia,
+        bool systemPrefersDark,
+        string expectedTheme,
+        string expectedThemeColor)
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"<script>(?<code>[\s\S]*?)</script>");
+        Assert.True(match.Success, "The pre-paint theme bootstrap was not found.");
+
+        var engine = new Engine();
+        engine.SetValue("storedTheme", storedTheme);
+        engine.SetValue("storageThrows", storageThrows);
+        engine.SetValue("hasMatchMedia", hasMatchMedia);
+        engine.SetValue("systemPrefersDark", systemPrefersDark);
+        engine.Execute(
+            """
+            const localStorage = {
+              getItem: function() {
+                if (storageThrows) throw new Error("Storage blocked");
+                return storedTheme;
+              }
+            };
+            const window = hasMatchMedia
+              ? {
+                  matchMedia: function() {
+                    return { matches: systemPrefersDark };
+                  }
+                }
+              : {};
+            let themeColor = null;
+            const document = {
+              documentElement: { dataset: {} },
+              getElementById: function() {
+                return {
+                  setAttribute: function(name, value) {
+                    if (name === "content") themeColor = value;
+                  }
+                };
+              }
+            };
+            """);
+
+        engine.Execute(match.Groups["code"].Value);
+
+        Assert.Equal(
+            expectedTheme,
+            engine.Evaluate("document.documentElement.dataset.theme").AsString());
+        Assert.Equal(expectedThemeColor, engine.Evaluate("themeColor").AsString());
+    }
+
+    [Fact]
+    public void ThemeHelpers_ValidateAndAlternateTheSupportedThemes()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"// BEGIN THEME HELPERS(?<code>[\s\S]*?)// END THEME HELPERS");
+        Assert.True(match.Success, "The theme helpers were not found.");
+
+        var engine = new Engine();
+        engine.Execute(
+            """
+            let themeMediaQuery = { matches: false };
+            let themeWasExplicitlyChosen = false;
+            const themeAttributes = {};
+            const themeToggleBtn = {
+              title: "",
+              setAttribute: function(name, value) { themeAttributes[name] = value; }
+            };
+            const themeToggleLabel = { textContent: "" };
+            const themeColorMeta = {
+              setAttribute: function(name, value) {
+                if (name === "content") this.content = value;
+              }
+            };
+            const document = {
+              documentElement: { dataset: {} },
+              getElementById: function() { return themeColorMeta; }
+            };
+            let persistedKey = null;
+            let persistedValue = null;
+            function writeUiPreference(key, value) {
+              persistedKey = key;
+              persistedValue = value;
+            }
+            const THEME_STORAGE_KEY = "flowbit.theme";
+            """);
+        engine.Execute(match.Groups["code"].Value);
+
+        Assert.Equal("light", engine.Evaluate("nextTheme('dark')").AsString());
+        Assert.Equal("dark", engine.Evaluate("nextTheme('light')").AsString());
+        Assert.Equal("dark", engine.Evaluate("nextTheme('sepia')").AsString());
+        Assert.True(engine.Evaluate("normalizeTheme('sepia') === null").AsBoolean());
+
+        Assert.Equal("dark", engine.Evaluate("setTheme('dark', true)").AsString());
+        Assert.Equal(
+            "dark",
+            engine.Evaluate("document.documentElement.dataset.theme").AsString());
+        Assert.Equal(
+            "Switch to light theme",
+            engine.Evaluate("themeAttributes['aria-label']").AsString());
+        Assert.Equal("Light", engine.Evaluate("themeToggleLabel.textContent").AsString());
+        Assert.Equal(
+            "Switch to light theme",
+            engine.Evaluate("themeToggleBtn.title").AsString());
+        Assert.True(engine.Evaluate("themeWasExplicitlyChosen").AsBoolean());
+        Assert.Equal("flowbit.theme", engine.Evaluate("persistedKey").AsString());
+        Assert.Equal("dark", engine.Evaluate("persistedValue").AsString());
+        Assert.Equal("#09111f", engine.Evaluate("themeColorMeta.content").AsString());
+
+        Assert.Equal("light", engine.Evaluate("setTheme('light', false)").AsString());
+        Assert.Equal(
+            "Switch to dark theme",
+            engine.Evaluate("themeAttributes['aria-label']").AsString());
+        Assert.Equal("Dark", engine.Evaluate("themeToggleLabel.textContent").AsString());
+        Assert.Equal(
+            "Switch to dark theme",
+            engine.Evaluate("themeToggleBtn.title").AsString());
+        Assert.Equal("dark", engine.Evaluate("persistedValue").AsString());
+        Assert.Equal("#eef2f7", engine.Evaluate("themeColorMeta.content").AsString());
+
+        Assert.Equal(
+            "dark",
+            engine.Evaluate(
+                "themeMediaQuery.matches = true; setTheme('sepia', false)")
+                .AsString());
+
+        engine.Execute(
+            "themeWasExplicitlyChosen = false; followSystemTheme({ matches: false });");
+        Assert.Equal(
+            "light",
+            engine.Evaluate("document.documentElement.dataset.theme").AsString());
+
+        engine.Execute(
+            "themeWasExplicitlyChosen = true; followSystemTheme({ matches: true });");
+        Assert.Equal(
+            "light",
+            engine.Evaluate("document.documentElement.dataset.theme").AsString());
+
+        Assert.Equal(
+            "dark",
+            engine.Evaluate("themeMediaQuery = null; setTheme('sepia', false)")
+                .AsString());
+    }
+
+    [Fact]
     public void NavigationPanels_AutoHideAndPersistIndependentPinStates()
     {
         var html = ReadEditorSource();

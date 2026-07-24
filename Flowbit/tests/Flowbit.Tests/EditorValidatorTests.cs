@@ -22,12 +22,17 @@ public sealed class EditorValidatorTests
     public void EditorJavaScript_ParsesSuccessfully()
     {
         var html = ReadEditorSource();
-        var match = Regex.Match(html, @"<script>(?<code>[\s\S]*?)</script>");
-        Assert.True(match.Success, "The editor script was not found.");
+        var matches = Regex.Matches(
+            html,
+            @"<script(?:\s[^>]*)?>(?<code>[\s\S]*?)</script>");
+        Assert.NotEmpty(matches.Cast<Match>());
 
-        var exception = Record.Exception(() => Engine.PrepareScript(match.Groups["code"].Value));
-
-        Assert.Null(exception);
+        Assert.All(matches.Cast<Match>(), match =>
+        {
+            var exception = Record.Exception(
+                () => Engine.PrepareScript(match.Groups["code"].Value));
+            Assert.Null(exception);
+        });
     }
 
     [Fact]
