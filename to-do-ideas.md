@@ -1,11 +1,9 @@
 
-- api/instances/{id}/message should has node id or external node id 
-- add Parallel Gateways
-- terminateEndEvent
 - add quorum/complex gateway
+- async flow asyncAfter/asyncBefore and  Timers events
 - add Workflow runner simulator
-- async flow asyncAfter/asyncBefore
-- Timers events
+
+
 
 
 - add endpoint like /api/instances/{id}/flows/{flowId} but using flow External ID
@@ -15,6 +13,9 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add Parallel Gateways (done)
+- terminateEndEvent (done)
+- api/instances/{id}/message should has node id or external node id (done)
 - add Exclusive Gateways conditions priority (done)
 - add assignment and reassignment task to user (done)
 - inhance ui to be like modern dashboard (done)
