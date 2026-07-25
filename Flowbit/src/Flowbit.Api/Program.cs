@@ -127,6 +127,11 @@ try
                 },
                 new()
                 {
+                    Name = "Node Executions",
+                    Description = "Read-only, authorized activity search across workflow versions, instances, tokens, and every supported node type."
+                },
+                new()
+                {
                     Name = "Task Distribution",
                     Description = "List and assign workflow-family tasks using external distributor client credentials."
                 }
@@ -339,6 +344,7 @@ try
     app.MapUserTaskEndpoints();
     app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
+    app.MapNodeExecutionEndpoints();
 
     app.Run();
 }

@@ -29,7 +29,8 @@ public sealed record WorkflowInstanceRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     string? FaultCode = null,
-    string? FaultDescription = null);
+    string? FaultDescription = null,
+    long? CurrentNodeExecutionId = null);
 
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
@@ -59,7 +60,55 @@ public sealed record ExecutionTokenRecord(
     int? ArrivedViaFlowId,
     string? TerminationReason,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    long? CurrentNodeExecutionId = null);
+
+public sealed record NodeExecutionActorRecord(
+    string? User,
+    IReadOnlyList<string> Roles);
+
+public sealed record NodeExecutionCompletionRecord(
+    string Status,
+    string CompletionReason,
+    int? SelectedFlowId,
+    int? ExitedViaFlowId,
+    long? ExitParallelBranchId,
+    NodeExecutionActorRecord Actor,
+    string? ErrorCode = null,
+    string? ErrorDescription = null,
+    bool HasExitParallelBranchSnapshot = false);
+
+public sealed record NodeExecutionRecord(
+    long Id,
+    long InstanceId,
+    long ExecutionTokenId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int? ItemIndex,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    string NodeType,
+    string ExecutionKind,
+    string Status,
+    string? CompletionReason,
+    long? EntryParallelBranchId,
+    long? ExitParallelBranchId,
+    int? EnteredViaFlowId,
+    int? SelectedFlowId,
+    int? ExitedViaFlowId,
+    IReadOnlyList<string>? NodeRoles,
+    string? TriggeredBy,
+    IReadOnlyList<string>? TriggeredByRoles,
+    string? CompletedBy,
+    IReadOnlyList<string>? CompletedByRoles,
+    string? ErrorCode,
+    string? ErrorDescription,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt,
+    bool IsCutoverSeeded);
 
 public sealed record ParallelGatewayExecutionRecord(
     long Id,
@@ -125,7 +174,8 @@ public sealed record UserTaskRecord(
     IReadOnlyList<string>? CompletedByRoles,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    long? NodeExecutionId = null);
 
 public sealed record ManagedUserTaskRecord(
     long UserTaskId,
@@ -303,7 +353,8 @@ public sealed record InstanceVariableRecord(
     int? SourceActionId,
     string? SetBy,
     JsonElement Value,
-    DateTimeOffset SetAt);
+    DateTimeOffset SetAt,
+    long? NodeExecutionId = null);
 
 public sealed record InstanceHistoryRecord(
     long Id,
@@ -393,6 +444,43 @@ public static class ExecutionTokenRecordStatuses
     public const string Faulted = "faulted";
     public const string Cancelled = "cancelled";
     public const string Merged = "merged";
+}
+
+public static class NodeExecutionRecordKinds
+{
+    public const string Node = "node";
+    public const string UserTaskItem = "userTaskItem";
+}
+
+public static class NodeExecutionRecordStatuses
+{
+    public const string Pending = "pending";
+    public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Cancelled = "cancelled";
+    public const string Faulted = "faulted";
+    public const string Merged = "merged";
+}
+
+public static class NodeExecutionCompletionReasons
+{
+    public const string Normal = "normal";
+    public const string UserAction = "userAction";
+    public const string MessageDelivery = "messageDelivery";
+    public const string MultiInstanceItem = "multiInstanceItem";
+    public const string MultiInstanceCompleted = "multiInstanceCompleted";
+    public const string MultiInstanceInterrupt = "multiInstanceInterrupt";
+    public const string BoundaryCaught = "boundaryCaught";
+    public const string NormalEnd = "normalEnd";
+    public const string TerminateEnd = "terminateEnd";
+    public const string ErrorEnd = "errorEnd";
+    public const string InstanceCancelled = "instanceCancelled";
+    public const string ParallelScopeCancelled = "parallelScopeCancelled";
+    public const string ParallelJoinMerged = "parallelJoinMerged";
+    public const string ParallelFork = "parallelFork";
+    public const string ParallelJoin = "parallelJoin";
+    public const string ParallelInterrupt = "parallelInterrupt";
+    public const string ParallelInterruptSkipped = "parallelInterruptSkipped";
 }
 
 public static class ExecutionTokenTerminationReasons

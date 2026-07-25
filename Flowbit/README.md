@@ -23,7 +23,8 @@
 - Runtime state is normalized in `flowbit.workflow_instances`,
   `flowbit.execution_tokens`, `flowbit.user_tasks`,
   `flowbit.multi_instance_executions`, `flowbit.multi_instance_flow_counts`,
-  `flowbit.instance_variables`, `flowbit.instance_history`,
+  `flowbit.node_executions`, `flowbit.instance_variables`,
+  `flowbit.instance_history`,
   `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
 - Runtime mutations use one lock order: instance, multi-instance execution, then
   user tasks. Stale competing actions return 409 instead of advancing twice.
@@ -136,6 +137,8 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `GET /api/instances?includeVariables=true`
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/inbox?includeVariables=true` (actor-scoped)
+- `GET /api/node-executions` (authorized cross-workflow activity)
+- `GET /api/node-executions/{id}` (authorized execution detail)
 - `GET /api/instances/{id}`
 - `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`
@@ -152,6 +155,95 @@ In development, the API applies migrations and seeds the root `workflow.json` as
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
 
+## Node execution activity
+
+`GET /api/node-executions` is the read-only, cross-workflow activity resource
+used by the Blazor **Activity** page. `GET /api/node-executions/{id}` returns one
+authorized execution with its execution-local detail. These routes do not grant
+assignment, claim, cancellation, or workflow-mutation authority; the existing
+inbox and Task Assignments APIs remain the action surfaces for human work.
+
+A node execution represents one token visit to one node. Parallel forks
+therefore produce a visit for each spawned branch token. A normal user task
+shares one execution with its work item. A multi-instance user task instead
+produces one execution per child work item and deliberately has no duplicate
+parent execution row. Execution kind is `node` for a token visit and
+`userTaskItem` for a multi-instance child. The supported lifecycle statuses are
+`pending`, `active`, `completed`, `cancelled`, `faulted`, and `merged`;
+completion reasons distinguish
+normal/user/message/multi-instance work, parallel fork/join/interrupt behavior,
+caught errors, scoped or instance cancellation, and terminal end behavior. The
+reason values are `normal`, `userAction`, `messageDelivery`,
+`multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
+`boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
+`instanceCancelled`, `parallelScopeCancelled`, `parallelJoinMerged`,
+`parallelFork`, `parallelJoin`, `parallelInterrupt`, and
+`parallelInterruptSkipped`.
+
+The list returns `PagedResult<NodeExecutionSummaryDto>` and the detail route
+returns `NodeExecutionDetailDto`. Summary rows include immutable workflow,
+instance, token, node, branch, flow, actor, ownership, lifecycle, duration, and
+cutover correlation. Detail adds actor and node-role snapshots, user-task
+assignment and claim data, multi-instance item/result context, committed failure
+information (descriptions are bounded to 1,000 Unicode characters), and only
+variable changes attributed to that execution. It does not
+present current instance variables as if they were an execution-time snapshot.
+For those writes, `sourceActionId` retains the runtime source and can therefore
+identify either a selected sequence flow or an automatic/message/boundary node.
+
+List filters cover execution, instance, workflow version/key/version, business
+key, token, user-task, multi-instance, branch, item, node, lifecycle, actor,
+owner, flow, and timestamp/duration fields. Inclusive `From` and exclusive `To`
+bounds are used for created, started, updated, and completed time ranges.
+Repeated status, node-type, instance-status, and completion-reason values are
+OR-combined within their group; different groups are AND-combined.
+
+| Filter group | Query parameters |
+| --- | --- |
+| Identity/context | `executionId`, `instanceId`, `workflowId`, `workflowKey`, `workflowVersion`, `businessKey`, `tokenId`, `userTaskId`, `multiInstanceExecutionId`, `parallelBranchId`, `itemIndex` |
+| Node/lifecycle | `executionKind`, `nodeId`, `nodeName`, `nodeExternalId`, repeated `nodeType`, repeated `status`, repeated `instanceStatus`, repeated `completionReason`, `isMultiInstance`, `isCutoverSeeded` |
+| People/flows | `owner`, `startedBy`, `completedBy`, `enteredViaFlowId`, `selectedFlowId`, `exitedViaFlowId`, `aggregateFlowId` |
+| Time/duration | `createdFrom`, `createdTo`, `startedFrom`, `startedTo`, `updatedFrom`, `updatedTo`, `completedFrom`, `completedTo`, `minDurationMilliseconds`, `maxDurationMilliseconds` |
+
+Repeated `var=name:value` parameters keep the existing instance-search
+semantics: each pair tests the owning instance's **latest scalar value** using an
+exact case-insensitive comparison. Up to ten pairs may be supplied and all must
+match. They are current-instance filters, not historical values captured at
+execution time.
+
+Up to three unique `sort=field:asc|desc` clauses may select `id`, `instanceId`,
+`workflowId`, `nodeId`, `createdAt`, `startedAt`, `updatedAt`, `completedAt`, or
+`duration`. The default is `updatedAt:desc,id:desc`; nullable fields use
+`NULLS LAST`, and an ID tie-breaker is always applied. Paging defaults to page 1
+and 50 rows, permits at most 200 rows, and reports an exact database-backed
+`totalCount`. Invalid identifiers, enums, time ranges, durations, variables, or
+sort clauses return 400.
+
+Visibility is evaluated in SQL before count, ordering, and paging. A caller can
+read a row when one of their JWT roles appears either in the dynamic global
+reader setting or in that immutable workflow version's `taskAssignmentRoles`.
+Set the global reader roles in `flowbit.engine_settings` with namespace
+`NodeExecution`, key `RequiredRole`, and a comma-separated value. A missing or
+blank value defaults to `admin`. Both routes require authentication, so an
+unauthenticated caller receives 401. An authenticated caller with no visible
+workflow versions gets an empty page; an out-of-scope detail ID returns 404. UI
+code intentionally does not duplicate or hard-code these role rules.
+
+Node execution tracking is complete only for committed work from the migration
+cutover onward. The migration seeds open active/pending user-task work plus
+active non-multi-instance token visits, marks those rows with
+`isCutoverSeeded=true`, and uses the cutover time for seeded active
+`startedAt` values. It does not fabricate completed executions from legacy
+`instance_history`. A failed transition that rolls back has no committed
+execution record; a caught service/script failure is committed as a faulted host
+execution followed by its boundary execution. Execution rows are retained
+indefinitely with their owning workflow instance.
+
+`instance_history` remains a heterogeneous transition and audit log used by
+legacy instance detail and claim/assignment inheritance. It is not a complete
+node-lifecycle ledger and should not be used to derive visit cardinality,
+durations, or every cancellation.
+
 The multi-instance execution endpoints expose only selectable interrupting flows
 (`cancelRemainingInstances=true`) authorized by both the current node and flow
 roles. They let an authorized actor interrupt the parent execution even without
@@ -163,8 +255,9 @@ accept an optional audit reason. Assignment clears any existing claim and create
 direct ownership; unassignment clears both ownership fields and restores the
 node's authored `requiresClaim` setting. For `requiresAssignment` tasks, unassign
 returns the work item to the hidden external-assignment queue without rerunning
-inheritance. Every real change is recorded in instance history. Workflows without
-`taskAssignmentRoles` expose no manageable tasks.
+inheritance. Every real assignment change is recorded as an instance-history
+audit entry. Workflows without `taskAssignmentRoles` expose no manageable
+tasks.
 
 The task-distribution endpoints are machine-facing and do not use JWT roles.
 They authenticate `X-Client-Id` / `X-Client-Secret` against `taskDistribution`

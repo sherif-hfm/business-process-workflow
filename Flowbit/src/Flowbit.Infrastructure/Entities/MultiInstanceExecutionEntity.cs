@@ -23,6 +23,7 @@ public sealed class MultiInstanceExecutionEntity
     public DateTimeOffset? CompletedAt { get; set; }
     public List<MultiInstanceFlowCountEntity> FlowCounts { get; set; } = [];
     public List<UserTaskEntity> UserTasks { get; set; } = [];
+    public List<NodeExecutionEntity> NodeExecutions { get; set; } = [];
 }
 
 public static class MultiInstanceExecutionStatuses

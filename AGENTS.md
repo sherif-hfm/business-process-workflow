@@ -101,7 +101,7 @@ Storage follows the hybrid design:
   versions of a workflow, so it acts as a stable cross-version key for instance
   search (see the workflow key search below).
 - Runtime state is normalized in `workflow_instances`, `execution_tokens`,
-  `user_tasks`, `instance_variables`, `instance_history`,
+  `user_tasks`, `node_executions`, `instance_variables`, `instance_history`,
   `sequence_flow_occurrences`, `sequence_flow_summaries`, and
   `message_delivery_receipts`. An instance row
   owns lifecycle status and timestamps but no longer stores a single current
@@ -139,6 +139,53 @@ Storage follows the hybrid design:
   instance DTOs do not expose `ClaimedBy`; claim ownership belongs to task DTOs.
   Progress and work-summary projections use bounded grouped queries rather than
   loading every child item.
+- **Cross-workflow node execution activity.** `node_executions` is the
+  authoritative read-only lifecycle ledger for committed node visits from its
+  deployment cutover onward. One normal visit is correlated to an execution
+  token; parallel forks therefore produce one row per spawned branch token. A
+  normal `userTask` shares a visit with its work item, while a multi-instance
+  `userTask` produces one visit per child work item and no duplicate parent row.
+  Execution kind is `node` for token visits and `userTaskItem` for MI children.
+  Statuses are `pending`, `active`, `completed`, `cancelled`, `faulted`, and
+  `merged`. Completion reasons are `normal`, `userAction`, `messageDelivery`,
+  `multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
+  `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
+  `instanceCancelled`, `parallelScopeCancelled`, `parallelJoinMerged`,
+  `parallelFork`, `parallelJoin`, `parallelInterrupt`, and
+  `parallelInterruptSkipped`. Token `CurrentNodeExecutionId` points to the
+  current non-MI visit and remains null at a multi-instance parent. New
+  instance-variable writes may carry `NodeExecutionId`, so execution detail
+  returns only attributed changes rather than a misleading current or
+  historical instance snapshot.
+  Committed failure descriptions are bounded to 1,000 Unicode characters so a
+  caught runtime diagnostic cannot prevent the execution and boundary records
+  from committing.
+  `GET /api/node-executions` searches across workflow versions with SQL-backed
+  authorization, exact count, ordering, and paging; detail is
+  `GET /api/node-executions/{id}`. Repeated status/type/reason filters are
+  OR-combined within their group, different groups are AND-combined, date
+  `From` bounds are inclusive, and `To` bounds are exclusive. Repeated
+  `var=name:value` filters still test the owning instance's latest scalar values
+  using exact case-insensitive comparison and are not execution-time snapshots.
+  Up to three sorts are accepted; the default is
+  `updatedAt DESC, id DESC`, nullable values use `NULLS LAST`, and an ID
+  tie-breaker makes pages deterministic.
+  Visibility is applied before count/order/page: a caller sees an immutable
+  workflow version when one of their roles matches its `taskAssignmentRoles` or
+  the comma-separated dynamic engine setting `NodeExecution.RequiredRole`
+  (missing/blank defaults to `admin`). This read scope grants no assignment,
+  claim, cancellation, or workflow mutation authority. Unauthenticated requests
+  return 401; an authenticated caller with no visible versions gets an empty
+  page and an out-of-scope detail ID returns 404.
+  The migration seeds only active/pending user tasks and active tokens without
+  open work, excludes MI parent tokens, uses the cutover time as `StartedAt` for
+  seeded active rows, leaves seeded pending rows unstarted, and marks every seed.
+  It never fabricates completed visits from `instance_history`. That table
+  remains a heterogeneous transition/audit source for legacy detail and
+  inheritance, not a complete node-lifecycle ledger. Rolled-back transitions
+  create no committed execution; a caught service/script failure commits a
+  faulted host visit followed by its boundary visit. Executions are retained
+  indefinitely with their owning instance.
 - **Multi-instance user tasks.** A `userTask.multiInstance` configuration creates
   parallel or sequential work items while retaining one parent execution token.
   `collection` mode snapshots a declared `string[]` and directly assigns each
@@ -778,6 +825,16 @@ what the cross-version `workflowKey` instance search matches.
   by variables (a comma-separated `name:value` box mapped to repeated `var=`
   params). A reusable sort toolbar applies up to three instance sort clauses and
   resets to `updatedAt:desc`.
+- `/activity` (`NodeActivity.razor`) - read-only, role-authorized search across
+  node executions, with lifecycle status tabs, advanced context/node/actor/flow/
+  variable/time filters, exact totals, up to three sort clauses, and stable
+  paging. Global reader role names are never hard-coded in the UI; the API is
+  authoritative.
+- `/node-executions/{id}` (`NodeExecutionDetail.razor`) - read-only execution
+  detail with immutable role and node snapshots, task/MI/result/failure context,
+  flow and branch correlations, a visible cutover-seed warning, and only
+  execution-attributed variable writes. It links to the related instance and
+  user task when applicable.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
   workflow id, workflow key, node id, node external id, and comma-separated
   `name:value` variable filter boxes. Its sort toolbar exposes the six inbox sort

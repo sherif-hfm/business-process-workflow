@@ -205,6 +205,7 @@ public sealed class WorkflowEngineService(
             normalizedStart.Uniqueness,
             ToSnapshot(startEvent),
             startedBy,
+            SnapshotRoles(actor.Roles),
             cancellationToken);
         if (idempotency is not null)
         {
@@ -231,12 +232,20 @@ public sealed class WorkflowEngineService(
                 null,
                 startedBy,
                 idempotency.Value,
-                cancellationToken);
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
         }
         var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
         foreach (var pair in startValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, startedBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                pair.Key,
+                null,
+                startedBy,
+                pair.Value,
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
         }
 
         // Initialize process-level variables from their authored defaults so every
@@ -255,7 +264,14 @@ public sealed class WorkflowEngineService(
             materializeNullableNullDefaults: true);
         foreach (var pair in processValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, startedBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                pair.Key,
+                null,
+                startedBy,
+                pair.Value,
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
         }
 
         // Flush variables so pass-through gateways can read them within this transaction.
@@ -393,6 +409,7 @@ public sealed class WorkflowEngineService(
             normalizedStart.Uniqueness,
             ToSnapshot(startEvent),
             performedBy,
+            SnapshotRoles(actor.Roles),
             cancellationToken);
         if (idempotency is not null)
         {
@@ -414,7 +431,14 @@ public sealed class WorkflowEngineService(
             actor, instance, definition, startEvent);
         foreach (var pair in mappedValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                pair.Key,
+                null,
+                performedBy,
+                pair.Value,
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
         }
 
         // Initialize process-level variables from their authored defaults.
@@ -431,7 +455,14 @@ public sealed class WorkflowEngineService(
             materializeNullableNullDefaults: true);
         foreach (var pair in processValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, null, performedBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                pair.Key,
+                null,
+                performedBy,
+                pair.Value,
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1600,7 +1631,10 @@ public sealed class WorkflowEngineService(
         if (winning is null)
         {
             if (execution.Mode == MultiInstanceModes.Sequential)
-                await runtime.ActivateNextMultiInstanceItemAsync(execution.Id, cancellationToken);
+                await runtime.ActivateNextMultiInstanceItemAsync(
+                    execution.Id,
+                    ToNodeExecutionActor(actor),
+                    cancellationToken);
             await runtime.AddMultiInstanceHistoryAsync(instance.Id, task.TokenId, task.Id, execution.Id,
                 task.ItemIndex ?? 0, flow.Id, node.Id, node.Id, user,
                 CloneDictionary(values), "multiInstanceItem", cancellationToken);
@@ -1678,7 +1712,12 @@ public sealed class WorkflowEngineService(
             actor: actor,
             values: directParentInterrupt ? variableValues : null,
             cancellationToken: cancellationToken);
-        await runtime.CloseMultiInstanceAsync(execution.Id, winning.Id, reason, cancellationToken);
+        await runtime.CloseMultiInstanceAsync(
+            execution.Id,
+            winning.Id,
+            reason,
+            ToNodeExecutionActor(actor),
+            cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var parentInterrupt = directParentInterrupt
             ? new MultiInstanceParentInterruptResult(
@@ -1746,15 +1785,17 @@ public sealed class WorkflowEngineService(
             winning.Id,
             terminationReason,
             null,
+            ToNodeExecutionActor(actor),
+            null,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
@@ -1931,6 +1972,7 @@ public sealed class WorkflowEngineService(
             task.Id,
             flow.Id,
             performedBy ?? "anonymous",
+            SnapshotRoles(actor.Roles),
             flowValues,
             cancellationToken);
         await RecordSequenceFlowOccurrenceAsync(
@@ -1950,7 +1992,14 @@ public sealed class WorkflowEngineService(
 
         foreach (var pair in flowValues)
         {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, performedBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                pair.Key,
+                flow.Id,
+                performedBy,
+                pair.Value,
+                cancellationToken,
+                task.NodeExecutionId);
         }
 
         var payload = CloneDictionary(flowValues) ?? [];
@@ -1999,15 +2048,17 @@ public sealed class WorkflowEngineService(
             flow.Id,
             terminationReason,
             null,
+            ToNodeExecutionActor(actor),
+            null,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
@@ -2195,6 +2246,7 @@ public sealed class WorkflowEngineService(
             workflow.Definition.Variables,
             message.Payload,
             outputContext,
+            token.CurrentNodeExecutionId,
             cancellationToken);
         foreach (var pair in mappedValues)
         {
@@ -2275,15 +2327,23 @@ public sealed class WorkflowEngineService(
             flow.Id,
             terminationReason,
             null,
+            ToNodeExecutionActor(actor),
+            new NodeExecutionCompletionRecord(
+                NodeExecutionRecordStatuses.Completed,
+                NodeExecutionCompletionReasons.MessageDelivery,
+                null,
+                flow.Id,
+                token.ParallelBranchId,
+                ToNodeExecutionActor(actor)),
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
@@ -3173,6 +3233,7 @@ public sealed class WorkflowEngineService(
         IReadOnlyList<VariableModel> processVariables,
         JsonElement? payload,
         Dictionary<string, JsonElement> contextBase,
+        long? nodeExecutionId,
         CancellationToken cancellationToken)
     {
         var mappings = message.OutputMappings
@@ -3187,7 +3248,14 @@ public sealed class WorkflowEngineService(
             contextBase);
         foreach (var pair in values)
         {
-            await runtime.AddVariableAsync(instanceId, pair.Key, nodeId, setBy, pair.Value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instanceId,
+                pair.Key,
+                nodeId,
+                setBy,
+                pair.Value,
+                cancellationToken,
+                nodeExecutionId);
         }
         return values;
     }
@@ -3253,14 +3321,30 @@ public sealed class WorkflowEngineService(
         var activeTokens = await runtime.ListExecutionTokensAsync(
             id, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var activeTokenIds = activeTokens.Select(token => token.Id).ToList();
-        await runtime.CancelActiveMultiInstancesForTokensAsync(activeTokenIds, cancellationToken);
-        await runtime.CancelOpenUserTasksForTokensAsync(activeTokenIds, cancellationToken);
-        foreach (var tokenId in activeTokenIds)
+        var cancellationActor = ToNodeExecutionActor(actor);
+        await runtime.CancelActiveMultiInstancesForTokensAsync(
+            activeTokenIds,
+            NodeExecutionCompletionReasons.InstanceCancelled,
+            cancellationActor,
+            cancellationToken);
+        await runtime.CancelOpenUserTasksForTokensAsync(
+            activeTokenIds,
+            NodeExecutionCompletionReasons.InstanceCancelled,
+            cancellationActor,
+            cancellationToken);
+        foreach (var activeToken in activeTokens)
         {
             await runtime.SetExecutionTokenStatusAsync(
-                tokenId,
+                activeToken.Id,
                 ExecutionTokenRecordStatuses.Cancelled,
                 ExecutionTokenTerminationReasons.InstanceCancelled,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Cancelled,
+                    NodeExecutionCompletionReasons.InstanceCancelled,
+                    null,
+                    null,
+                    activeToken.ParallelBranchId,
+                    cancellationActor),
                 cancellationToken);
         }
         await runtime.SetInstanceStatusAsync(
@@ -3324,6 +3408,7 @@ public sealed class WorkflowEngineService(
             {
                 ActiveTokenId = token.Id,
                 CurrentStepId = token.NodeId,
+                CurrentNodeExecutionId = token.CurrentNodeExecutionId,
                 FaultCode = token.FaultCode,
                 FaultDescription = token.FaultDescription
             };
@@ -3371,7 +3456,8 @@ public sealed class WorkflowEngineService(
                         boundary.Id,
                         actor.User,
                         errorValue,
-                        cancellationToken);
+                        cancellationToken,
+                        token.CurrentNodeExecutionId);
                     storedOverlay[boundary.ErrorVariable!] = errorValue;
                 }
 
@@ -3393,6 +3479,16 @@ public sealed class WorkflowEngineService(
                     null,
                     null,
                     null,
+                    ToNodeExecutionActor(actor),
+                    new NodeExecutionCompletionRecord(
+                        NodeExecutionRecordStatuses.Faulted,
+                        NodeExecutionCompletionReasons.BoundaryCaught,
+                        null,
+                        null,
+                        token.ParallelBranchId,
+                        ToNodeExecutionActor(actor),
+                        null,
+                        outcome.Reason),
                     cancellationToken);
                 queue.Enqueue(token.Id);
                 continue;
@@ -3432,7 +3528,7 @@ public sealed class WorkflowEngineService(
             if (BpmnFlowNodeTypes.IsParallelInterrupt(currentNode.Type))
             {
                 var interrupted = await InterruptParallelScopeAsync(
-                    instance, token, currentNode, cancellationToken);
+                    instance, token, currentNode, actor, cancellationToken);
                 continuationBranchId = interrupted.ParentBranchId;
                 note = interrupted.Interrupted ? "parallelInterrupt" : "parallelInterruptSkipped";
             }
@@ -3503,6 +3599,7 @@ public sealed class WorkflowEngineService(
                     ToSnapshot(fork),
                     branch.Id,
                     null,
+                    ToNodeExecutionActor(actor),
                     cancellationToken);
             work.Add((branchToken, branch, outgoing[index]));
         }
@@ -3567,6 +3664,13 @@ public sealed class WorkflowEngineService(
                 merged.Id,
                 ExecutionTokenRecordStatuses.Merged,
                 ExecutionTokenTerminationReasons.ParallelJoinMerged,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Merged,
+                    NodeExecutionCompletionReasons.ParallelJoinMerged,
+                    null,
+                    null,
+                    commonBranchId,
+                    ToNodeExecutionActor(actor)),
                 cancellationToken);
         }
         foreach (var joined in selected)
@@ -3625,6 +3729,7 @@ public sealed class WorkflowEngineService(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
         FlowNodeModel interrupt,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         var executions = await runtime.ListParallelGatewayExecutionsAsync(instance.Id, cancellationToken);
@@ -3656,14 +3761,30 @@ public sealed class WorkflowEngineService(
             }
         }
 
-        await runtime.CancelOpenUserTasksForTokensAsync(cancelledTokenIds, cancellationToken);
-        await runtime.CancelActiveMultiInstancesForTokensAsync(cancelledTokenIds, cancellationToken);
+        var interruptionActor = ToNodeExecutionActor(actor);
+        await runtime.CancelOpenUserTasksForTokensAsync(
+            cancelledTokenIds,
+            NodeExecutionCompletionReasons.ParallelScopeCancelled,
+            interruptionActor,
+            cancellationToken);
+        await runtime.CancelActiveMultiInstancesForTokensAsync(
+            cancelledTokenIds,
+            NodeExecutionCompletionReasons.ParallelScopeCancelled,
+            interruptionActor,
+            cancellationToken);
         foreach (var cancelledTokenId in cancelledTokenIds)
         {
             await runtime.SetExecutionTokenStatusAsync(
                 cancelledTokenId,
                 ExecutionTokenRecordStatuses.Cancelled,
                 ExecutionTokenTerminationReasons.ParallelScopeCancelled,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Cancelled,
+                    NodeExecutionCompletionReasons.ParallelScopeCancelled,
+                    null,
+                    null,
+                    null,
+                    interruptionActor),
                 cancellationToken);
         }
 
@@ -3784,6 +3905,15 @@ public sealed class WorkflowEngineService(
                 : null
         };
         var nextContext = WithContext(storedOverlay, actor, targetInstance, definition, nextNode);
+        var nodeExecutionReason = note switch
+        {
+            "parallelFork" => NodeExecutionCompletionReasons.ParallelFork,
+            "parallelJoin" => NodeExecutionCompletionReasons.ParallelJoin,
+            "parallelInterrupt" => NodeExecutionCompletionReasons.ParallelInterrupt,
+            "parallelInterruptSkipped" => NodeExecutionCompletionReasons.ParallelInterruptSkipped,
+            "messageStart" => NodeExecutionCompletionReasons.MessageDelivery,
+            _ => NodeExecutionCompletionReasons.Normal
+        };
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
@@ -3792,6 +3922,15 @@ public sealed class WorkflowEngineService(
             flow.Id,
             terminationReason,
             null,
+            ToNodeExecutionActor(actor),
+            new NodeExecutionCompletionRecord(
+                NodeExecutionRecordStatuses.Completed,
+                nodeExecutionReason,
+                BpmnFlowNodeTypes.IsGateway(currentNode.Type) ? flow.Id : null,
+                flow.Id,
+                parallelBranchId,
+                ToNodeExecutionActor(actor),
+                HasExitParallelBranchSnapshot: true),
             cancellationToken);
 
         // Entering a scoped interrupt takes effect immediately. Deferring it to
@@ -3810,7 +3949,7 @@ public sealed class WorkflowEngineService(
                 ?? throw new WorkflowConflictException(
                     "The execution token disappeared while entering a parallel interrupt.");
             var interrupted = await InterruptParallelScopeAsync(
-                instance, enteredToken, nextNode, cancellationToken);
+                instance, enteredToken, nextNode, actor, cancellationToken);
             var interruptFlow = SelectPassThroughFlow(
                 definition, nextNode, nextContext, flowInfo);
             await AdvanceAutomaticTokenAsync(
@@ -3832,13 +3971,13 @@ public sealed class WorkflowEngineService(
 
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
             instance = instance with { Status = WorkflowInstanceStatuses.Completed };
             return;
         }
         if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
             instance = instance with { Status = WorkflowInstanceStatuses.Faulted };
             return;
         }
@@ -3868,6 +4007,7 @@ public sealed class WorkflowEngineService(
     private async Task TerminateInstanceAsync(
         long instanceId,
         long triggeringTokenId,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -3879,14 +4019,30 @@ public sealed class WorkflowEngineService(
         var active = await runtime.ListExecutionTokensAsync(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var cancelledIds = active.Where(token => token.Id != triggeringTokenId).Select(token => token.Id).ToList();
-        await runtime.CancelOpenUserTasksForTokensAsync(cancelledIds, cancellationToken);
-        await runtime.CancelActiveMultiInstancesForTokensAsync(cancelledIds, cancellationToken);
-        foreach (var tokenId in cancelledIds)
+        var terminationActor = ToNodeExecutionActor(actor);
+        await runtime.CancelOpenUserTasksForTokensAsync(
+            cancelledIds,
+            NodeExecutionCompletionReasons.TerminateEnd,
+            terminationActor,
+            cancellationToken);
+        await runtime.CancelActiveMultiInstancesForTokensAsync(
+            cancelledIds,
+            NodeExecutionCompletionReasons.TerminateEnd,
+            terminationActor,
+            cancellationToken);
+        foreach (var cancelledToken in active.Where(token => token.Id != triggeringTokenId))
         {
             await runtime.SetExecutionTokenStatusAsync(
-                tokenId,
+                cancelledToken.Id,
                 ExecutionTokenRecordStatuses.Cancelled,
                 ExecutionTokenTerminationReasons.TerminateEnd,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Cancelled,
+                    NodeExecutionCompletionReasons.TerminateEnd,
+                    null,
+                    null,
+                    cancelledToken.ParallelBranchId,
+                    terminationActor),
                 cancellationToken);
         }
         foreach (var execution in await runtime.ListParallelGatewayExecutionsAsync(instanceId, cancellationToken))
@@ -3921,6 +4077,7 @@ public sealed class WorkflowEngineService(
     private async Task FaultInstanceAsync(
         long instanceId,
         long triggeringTokenId,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -3932,14 +4089,30 @@ public sealed class WorkflowEngineService(
         var active = await runtime.ListExecutionTokensAsync(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var cancelledIds = active.Where(token => token.Id != triggeringTokenId).Select(token => token.Id).ToList();
-        await runtime.CancelOpenUserTasksForTokensAsync(cancelledIds, cancellationToken);
-        await runtime.CancelActiveMultiInstancesForTokensAsync(cancelledIds, cancellationToken);
-        foreach (var tokenId in cancelledIds)
+        var faultActor = ToNodeExecutionActor(actor);
+        await runtime.CancelOpenUserTasksForTokensAsync(
+            cancelledIds,
+            NodeExecutionCompletionReasons.ErrorEnd,
+            faultActor,
+            cancellationToken);
+        await runtime.CancelActiveMultiInstancesForTokensAsync(
+            cancelledIds,
+            NodeExecutionCompletionReasons.ErrorEnd,
+            faultActor,
+            cancellationToken);
+        foreach (var cancelledToken in active.Where(token => token.Id != triggeringTokenId))
         {
             await runtime.SetExecutionTokenStatusAsync(
-                tokenId,
+                cancelledToken.Id,
                 ExecutionTokenRecordStatuses.Cancelled,
                 ExecutionTokenTerminationReasons.ErrorEnd,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Cancelled,
+                    NodeExecutionCompletionReasons.ErrorEnd,
+                    null,
+                    null,
+                    cancelledToken.ParallelBranchId,
+                    faultActor),
                 cancellationToken);
         }
         foreach (var execution in await runtime.ListParallelGatewayExecutionsAsync(instanceId, cancellationToken))
@@ -4120,7 +4293,14 @@ public sealed class WorkflowEngineService(
             .Where(f => f.IsSelectable && !f.IsDefault && !f.CancelRemainingInstances)
             .Select(f => f.Id).ToList();
         await runtime.AddMultiInstanceAsync(
-            instance.Id, token.Id, ToSnapshot(node), multi, items, outcomeIds, cancellationToken);
+            instance.Id,
+            token.Id,
+            ToSnapshot(node),
+            multi,
+            items,
+            outcomeIds,
+            ToNodeExecutionActor(actor),
+            cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
@@ -4465,6 +4645,7 @@ public sealed class WorkflowEngineService(
         {
             return await FailServiceTaskBeforeInvocationAsync(
                 instance.Id,
+                instance.CurrentNodeExecutionId,
                 node.Id,
                 actor.User,
                 service,
@@ -4502,6 +4683,7 @@ public sealed class WorkflowEngineService(
         {
             return await FailServiceTaskBeforeInvocationAsync(
                 instance.Id,
+                instance.CurrentNodeExecutionId,
                 node.Id,
                 actor.User,
                 service,
@@ -4521,6 +4703,7 @@ public sealed class WorkflowEngineService(
             {
                 return await FailServiceTaskBeforeInvocationAsync(
                     instance.Id,
+                    instance.CurrentNodeExecutionId,
                     node.Id,
                     actor.User,
                     service,
@@ -4546,6 +4729,7 @@ public sealed class WorkflowEngineService(
             {
                 return await FailServiceTaskBeforeInvocationAsync(
                     instance.Id,
+                    instance.CurrentNodeExecutionId,
                     node.Id,
                     actor.User,
                     service,
@@ -4572,6 +4756,7 @@ public sealed class WorkflowEngineService(
                 definition.Variables,
                 new Dictionary<string, JsonElement>(variables, StringComparer.OrdinalIgnoreCase),
                 storedOverlay,
+                instance.CurrentNodeExecutionId,
                 cancellationToken);
             if (mappingFailure is not null)
             {
@@ -4581,13 +4766,29 @@ public sealed class WorkflowEngineService(
                 // so the pass-through loop routes out an attached errorBoundaryEvent
                 // (or, with no boundary, rolls back and returns 400).
                 logger.LogWarning("Service task #{NodeId} on instance {InstanceId}: output mapping failed: {Reason}", node.Id, instance.Id, mappingFailure);
-                await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
+                await WriteStatusVariableAsync(
+                    instance.Id,
+                    node.Id,
+                    performedBy,
+                    service,
+                    result.StatusCode,
+                    storedOverlay,
+                    instance.CurrentNodeExecutionId,
+                    cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
                 return TaskExecutionOutcome.Fail(mappingFailure);
             }
 
             logger.LogInformation("Service task #{NodeId} on instance {InstanceId} succeeded with HTTP {StatusCode}.", node.Id, instance.Id, result.StatusCode);
-            await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
+            await WriteStatusVariableAsync(
+                instance.Id,
+                node.Id,
+                performedBy,
+                service,
+                result.StatusCode,
+                storedOverlay,
+                instance.CurrentNodeExecutionId,
+                cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return TaskExecutionOutcome.Ok();
         }
@@ -4597,7 +4798,15 @@ public sealed class WorkflowEngineService(
         // errorBoundaryEvent is attached the loop throws (rollback + 400) and this
         // write rolls back with the transaction; if a boundary catches, it persists.
         logger.LogWarning("Service task #{NodeId} on instance {InstanceId} failed with HTTP {StatusCode}: {Reason}", node.Id, instance.Id, result.StatusCode, result.Error);
-        await WriteStatusVariableAsync(instance.Id, node.Id, performedBy, service, result.StatusCode, storedOverlay, cancellationToken);
+        await WriteStatusVariableAsync(
+            instance.Id,
+            node.Id,
+            performedBy,
+            service,
+            result.StatusCode,
+            storedOverlay,
+            instance.CurrentNodeExecutionId,
+            cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
@@ -4620,6 +4829,7 @@ public sealed class WorkflowEngineService(
 
     private async Task<TaskExecutionOutcome> FailServiceTaskBeforeInvocationAsync(
         long instanceId,
+        long? nodeExecutionId,
         int nodeId,
         string? setBy,
         ServiceTaskModel service,
@@ -4636,6 +4846,7 @@ public sealed class WorkflowEngineService(
             service,
             0,
             storedOverlay,
+            nodeExecutionId,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return TaskExecutionOutcome.Fail(reason);
@@ -4654,6 +4865,7 @@ public sealed class WorkflowEngineService(
         IReadOnlyList<VariableModel> processVariables,
         Dictionary<string, JsonElement> contextBase,
         Dictionary<string, JsonElement> storedOverlay,
+        long? nodeExecutionId,
         CancellationToken cancellationToken)
     {
         if (service.OutputMappings.Count == 0)
@@ -4696,7 +4908,14 @@ public sealed class WorkflowEngineService(
 
                 foreach (var pair in values)
                 {
-                    await runtime.AddVariableAsync(instanceId, pair.Key, nodeId, setBy, pair.Value, cancellationToken);
+                    await runtime.AddVariableAsync(
+                        instanceId,
+                        pair.Key,
+                        nodeId,
+                        setBy,
+                        pair.Value,
+                        cancellationToken,
+                        nodeExecutionId);
                     storedOverlay[pair.Key] = pair.Value;
                 }
             }
@@ -4716,6 +4935,7 @@ public sealed class WorkflowEngineService(
         ServiceTaskModel service,
         int statusCode,
         Dictionary<string, JsonElement> storedOverlay,
+        long? nodeExecutionId,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(service.StatusVariable))
@@ -4724,7 +4944,14 @@ public sealed class WorkflowEngineService(
         }
 
         var value = JsonSerializer.SerializeToElement(statusCode);
-        await runtime.AddVariableAsync(instanceId, service.StatusVariable, nodeId, setBy, value, cancellationToken);
+        await runtime.AddVariableAsync(
+            instanceId,
+            service.StatusVariable,
+            nodeId,
+            setBy,
+            value,
+            cancellationToken,
+            nodeExecutionId);
         storedOverlay[service.StatusVariable] = value;
     }
 
@@ -4856,7 +5083,14 @@ public sealed class WorkflowEngineService(
         var performedBy = actor.User;
         foreach (var (target, value) in writes)
         {
-            await runtime.AddVariableAsync(instance.Id, target.Name!, node.Id, performedBy, value, cancellationToken);
+            await runtime.AddVariableAsync(
+                instance.Id,
+                target.Name!,
+                node.Id,
+                performedBy,
+                value,
+                cancellationToken,
+                instance.CurrentNodeExecutionId);
             storedOverlay[target.Name!] = value;
         }
 
@@ -6465,6 +6699,11 @@ public sealed class WorkflowEngineService(
             .OrderBy(role => role, StringComparer.OrdinalIgnoreCase)
             .ThenBy(role => role, StringComparer.Ordinal)
             .ToList();
+
+    private static NodeExecutionActorRecord ToNodeExecutionActor(ActorContext actor) =>
+        new(
+            string.IsNullOrWhiteSpace(actor.User) ? null : actor.User.Trim(),
+            SnapshotRoles(actor.Roles));
 
     private static void EnsureTaskAssignmentManager(WorkflowModel definition, ActorContext actor)
     {

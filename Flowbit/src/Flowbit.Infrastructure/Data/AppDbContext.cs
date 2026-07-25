@@ -24,6 +24,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ExecutionTokenEntity> ExecutionTokens => Set<ExecutionTokenEntity>();
 
+    public DbSet<NodeExecutionEntity> NodeExecutions => Set<NodeExecutionEntity>();
+
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
@@ -111,6 +113,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.ParallelBranchId, e.Status });
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
+            entity.HasIndex(e => e.CurrentNodeExecutionId).IsUnique();
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Tokens)
                 .HasForeignKey(e => e.InstanceId)
@@ -118,6 +121,109 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.ParallelBranch)
                 .WithMany(e => e.Tokens)
                 .HasForeignKey(e => e.ParallelBranchId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(e => e.CurrentNodeExecution)
+                .WithOne()
+                .HasForeignKey<ExecutionTokenEntity>(e => e.CurrentNodeExecutionId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        modelBuilder.Entity<NodeExecutionEntity>(entity =>
+        {
+            entity.ToTable("node_executions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_node_executions_execution_kind",
+                    "\"ExecutionKind\" IN ('node', 'userTaskItem')");
+                table.HasCheckConstraint(
+                    "CK_node_executions_status",
+                    "\"Status\" IN ('pending', 'active', 'completed', 'cancelled', 'faulted', 'merged')");
+                table.HasCheckConstraint(
+                    "CK_node_executions_completion_reason",
+                    "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR "
+                    + "(\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') "
+                    + "AND \"CompletionReason\" IN "
+                    + "('normal', 'userAction', 'messageDelivery', 'multiInstanceItem', "
+                    + "'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', "
+                    + "'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', "
+                    + "'parallelScopeCancelled', 'parallelJoinMerged', 'parallelFork', "
+                    + "'parallelJoin', 'parallelInterrupt', 'parallelInterruptSkipped')))");
+                table.HasCheckConstraint(
+                    "CK_node_executions_multi_instance_shape",
+                    "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
+                    + "(\"ExecutionKind\" = 'userTaskItem' AND \"UserTaskId\" IS NOT NULL "
+                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_node_executions_timestamps",
+                    "(\"Status\" = 'pending' AND \"StartedAt\" IS NULL AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" = 'active' AND \"StartedAt\" IS NOT NULL AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" = 'cancelled' AND \"CompletedAt\" IS NOT NULL) OR "
+                    + "(\"Status\" IN ('completed', 'faulted', 'merged') "
+                    + "AND \"StartedAt\" IS NOT NULL AND \"CompletedAt\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_node_executions_timestamp_order",
+                    "(\"StartedAt\" IS NULL OR \"StartedAt\" >= \"CreatedAt\") "
+                    + "AND \"UpdatedAt\" >= \"CreatedAt\" "
+                    + "AND (\"CompletedAt\" IS NULL OR \"CompletedAt\" >= COALESCE(\"StartedAt\", \"CreatedAt\"))");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeExternalId).HasMaxLength(300);
+            entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ExecutionKind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CompletionReason).HasMaxLength(64);
+            entity.Property(e => e.NodeRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.TriggeredBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.TriggeredByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.CompletedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
+            entity.Property(e => e.ErrorDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.IsCutoverSeeded).HasDefaultValue(false);
+            entity.HasIndex(e => new { e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.CreatedAt, e.Id });
+            entity.HasIndex(e => new { e.StartedAt, e.Id });
+            entity.HasIndex(e => new { e.CompletedAt, e.Id });
+            entity.HasIndex(e => new { e.ExecutionTokenId, e.Status });
+            entity.HasIndex(e => new { e.NodeId, e.Status, e.StartedAt, e.Id });
+            entity.HasIndex(e => new { e.NodeExternalId, e.Status, e.StartedAt, e.Id });
+            entity.HasIndex(e => new { e.NodeType, e.Status, e.StartedAt, e.Id });
+            entity.HasIndex(e => e.UserTaskId)
+                .IsUnique()
+                .HasFilter("\"UserTaskId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex })
+                .IsUnique()
+                .HasFilter("\"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL");
+            entity.HasIndex(e => e.EntryParallelBranchId);
+            entity.HasIndex(e => e.ExitParallelBranchId);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.NodeExecutions)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.ExecutionToken)
+                .WithMany(e => e.NodeExecutions)
+                .HasForeignKey(e => e.ExecutionTokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.UserTask)
+                .WithOne(e => e.NodeExecution)
+                .HasForeignKey<NodeExecutionEntity>(e => e.UserTaskId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.MultiInstanceExecution)
+                .WithMany(e => e.NodeExecutions)
+                .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.EntryParallelBranch)
+                .WithMany(e => e.EnteredNodeExecutions)
+                .HasForeignKey(e => e.EntryParallelBranchId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(e => e.ExitParallelBranch)
+                .WithMany(e => e.ExitedNodeExecutions)
+                .HasForeignKey(e => e.ExitParallelBranchId)
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
@@ -357,6 +463,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.Variables)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(e => e.NodeExecutionId);
+            entity.HasOne(e => e.NodeExecution)
+                .WithMany()
+                .HasForeignKey(e => e.NodeExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<InstanceHistoryEntity>(entity =>

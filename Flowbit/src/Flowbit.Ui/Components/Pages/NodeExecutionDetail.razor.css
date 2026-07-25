@@ -1,0 +1,31 @@
+.execution-sidebar-grid {
+    grid-template-columns: 1fr;
+}
+
+.execution-json {
+    max-height: 24rem;
+    margin: 0;
+    padding: .85rem;
+    overflow: auto;
+    color: #1e293b;
+    background: #f8fafc;
+    border: 1px solid var(--fb-border);
+    border-radius: .65rem;
+    font-size: .72rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.execution-inline-json {
+    display: inline-block;
+    max-width: 32rem;
+    color: #4338ca;
+    font-size: .7rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.execution-failure {
+    border-color: #fecaca;
+    background: #fffafa;
+}

@@ -184,7 +184,12 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             var roles = Request.Headers["X-Test-Roles"].FirstOrDefault()
                 ?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 ?? [];
-            foreach (var role in roles.Append("admin").Distinct(StringComparer.OrdinalIgnoreCase))
+            var suppressAdmin = string.Equals(
+                Request.Headers["X-Test-Suppress-Admin"].FirstOrDefault(),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+            var effectiveRoles = suppressAdmin ? roles : roles.Append("admin");
+            foreach (var role in effectiveRoles.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 claims.Add(new Claim(ClaimTypes.Role, role));
                 claims.Add(new Claim("role", role));

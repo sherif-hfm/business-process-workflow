@@ -12,6 +12,8 @@ public sealed class ParallelGatewayBranchEntity
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAt { get; set; }
     public List<ExecutionTokenEntity> Tokens { get; set; } = [];
+    public List<NodeExecutionEntity> EnteredNodeExecutions { get; set; } = [];
+    public List<NodeExecutionEntity> ExitedNodeExecutions { get; set; } = [];
     public List<ParallelGatewayExecutionEntity> ChildExecutions { get; set; } = [];
 }
 

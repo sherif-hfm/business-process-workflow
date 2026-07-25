@@ -30,6 +30,8 @@ public sealed class WorkflowInstanceEntity
 
     public List<ExecutionTokenEntity> Tokens { get; set; } = [];
 
+    public List<NodeExecutionEntity> NodeExecutions { get; set; } = [];
+
     public List<UserTaskEntity> UserTasks { get; set; } = [];
 
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];

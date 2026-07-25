@@ -229,6 +229,78 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? new PagedResult<ManagedUserTaskDto>([], page, pageSize, 0);
     }
 
+    public async Task<PagedResult<NodeExecutionSummaryDto>> GetNodeExecutionsAsync(
+        NodeExecutionSearchQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string>
+        {
+            $"page={query.Page}",
+            $"pageSize={query.PageSize}"
+        };
+
+        AddQueryValue(parameters, "executionId", query.ExecutionId);
+        AddQueryValue(parameters, "instanceId", query.InstanceId);
+        AddQueryValue(parameters, "workflowId", query.WorkflowId);
+        AddQueryValue(parameters, "workflowKey", query.WorkflowKey);
+        AddQueryValue(parameters, "workflowVersion", query.WorkflowVersion);
+        AddQueryValue(parameters, "businessKey", query.BusinessKey);
+        AddQueryValue(parameters, "tokenId", query.TokenId);
+        AddQueryValue(parameters, "userTaskId", query.UserTaskId);
+        AddQueryValue(parameters, "multiInstanceExecutionId", query.MultiInstanceExecutionId);
+        AddQueryValue(parameters, "parallelBranchId", query.ParallelBranchId);
+        AddQueryValue(parameters, "itemIndex", query.ItemIndex);
+        AddQueryValue(parameters, "executionKind", query.ExecutionKind);
+        AddQueryValue(parameters, "nodeId", query.NodeId);
+        AddQueryValue(parameters, "nodeName", query.NodeName);
+        AddQueryValue(parameters, "nodeExternalId", query.NodeExternalId);
+        AddQueryValues(parameters, "nodeType", query.NodeTypes);
+        AddQueryValues(parameters, "status", query.Statuses);
+        AddQueryValues(parameters, "instanceStatus", query.InstanceStatuses);
+        AddQueryValues(parameters, "completionReason", query.CompletionReasons);
+        AddQueryValue(parameters, "isMultiInstance", query.IsMultiInstance);
+        AddQueryValue(parameters, "isCutoverSeeded", query.IsCutoverSeeded);
+        AddQueryValue(parameters, "owner", query.Owner);
+        AddQueryValue(parameters, "startedBy", query.StartedBy);
+        AddQueryValue(parameters, "completedBy", query.CompletedBy);
+        AddQueryValue(parameters, "enteredViaFlowId", query.EnteredViaFlowId);
+        AddQueryValue(parameters, "selectedFlowId", query.SelectedFlowId);
+        AddQueryValue(parameters, "exitedViaFlowId", query.ExitedViaFlowId);
+        AddQueryValue(parameters, "aggregateFlowId", query.AggregateFlowId);
+        AddQueryValue(parameters, "createdFrom", query.CreatedFrom);
+        AddQueryValue(parameters, "createdTo", query.CreatedTo);
+        AddQueryValue(parameters, "startedFrom", query.StartedFrom);
+        AddQueryValue(parameters, "startedTo", query.StartedTo);
+        AddQueryValue(parameters, "updatedFrom", query.UpdatedFrom);
+        AddQueryValue(parameters, "updatedTo", query.UpdatedTo);
+        AddQueryValue(parameters, "completedFrom", query.CompletedFrom);
+        AddQueryValue(parameters, "completedTo", query.CompletedTo);
+        AddQueryValue(parameters, "minDurationMilliseconds", query.MinimumDurationMilliseconds);
+        AddQueryValue(parameters, "maxDurationMilliseconds", query.MaximumDurationMilliseconds);
+        AddQueryValues(parameters, "var", query.Variables);
+        AddQueryValues(parameters, "sort", query.Sort);
+
+        var url = $"/api/node-executions?{string.Join("&", parameters)}";
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<NodeExecutionSummaryDto>>(cancellationToken)
+            ?? new PagedResult<NodeExecutionSummaryDto>([], query.Page, query.PageSize, 0);
+    }
+
+    public async Task<NodeExecutionDetailDto?> GetNodeExecutionAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync($"/api/node-executions/{id}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<NodeExecutionDetailDto>(cancellationToken);
+    }
+
     private static string BuildVariableQuery(IEnumerable<string>? variables)
     {
         if (variables is null)
@@ -253,6 +325,43 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         return string.Concat(sort.Select(clause => $"&sort={Uri.EscapeDataString(clause)}"));
+    }
+
+    private static void AddQueryValues(
+        ICollection<string> parameters,
+        string name,
+        IEnumerable<string>? values)
+    {
+        if (values is null)
+        {
+            return;
+        }
+
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
+        {
+            parameters.Add($"{name}={Uri.EscapeDataString(value.Trim())}");
+        }
+    }
+
+    private static void AddQueryValue(
+        ICollection<string> parameters,
+        string name,
+        object? value)
+    {
+        var text = value switch
+        {
+            null => null,
+            string stringValue => stringValue.Trim(),
+            DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O"),
+            bool boolean => boolean ? "true" : "false",
+            IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            _ => value.ToString()
+        };
+
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            parameters.Add($"{name}={Uri.EscapeDataString(text)}");
+        }
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
@@ -406,4 +515,50 @@ public sealed class WorkflowApiException(HttpStatusCode statusCode, string? mess
     : InvalidOperationException(message)
 {
     public HttpStatusCode StatusCode { get; } = statusCode;
+}
+
+public sealed class NodeExecutionSearchQuery
+{
+    public int Page { get; init; } = 1;
+    public int PageSize { get; init; } = 50;
+    public long? ExecutionId { get; init; }
+    public long? InstanceId { get; init; }
+    public long? WorkflowId { get; init; }
+    public string? WorkflowKey { get; init; }
+    public int? WorkflowVersion { get; init; }
+    public string? BusinessKey { get; init; }
+    public long? TokenId { get; init; }
+    public long? UserTaskId { get; init; }
+    public long? MultiInstanceExecutionId { get; init; }
+    public long? ParallelBranchId { get; init; }
+    public int? ItemIndex { get; init; }
+    public string? ExecutionKind { get; init; }
+    public int? NodeId { get; init; }
+    public string? NodeName { get; init; }
+    public string? NodeExternalId { get; init; }
+    public IReadOnlyList<string> NodeTypes { get; init; } = [];
+    public IReadOnlyList<string> Statuses { get; init; } = [];
+    public IReadOnlyList<string> InstanceStatuses { get; init; } = [];
+    public IReadOnlyList<string> CompletionReasons { get; init; } = [];
+    public bool? IsMultiInstance { get; init; }
+    public bool? IsCutoverSeeded { get; init; }
+    public string? Owner { get; init; }
+    public string? StartedBy { get; init; }
+    public string? CompletedBy { get; init; }
+    public int? EnteredViaFlowId { get; init; }
+    public int? SelectedFlowId { get; init; }
+    public int? ExitedViaFlowId { get; init; }
+    public int? AggregateFlowId { get; init; }
+    public DateTimeOffset? CreatedFrom { get; init; }
+    public DateTimeOffset? CreatedTo { get; init; }
+    public DateTimeOffset? StartedFrom { get; init; }
+    public DateTimeOffset? StartedTo { get; init; }
+    public DateTimeOffset? UpdatedFrom { get; init; }
+    public DateTimeOffset? UpdatedTo { get; init; }
+    public DateTimeOffset? CompletedFrom { get; init; }
+    public DateTimeOffset? CompletedTo { get; init; }
+    public long? MinimumDurationMilliseconds { get; init; }
+    public long? MaximumDurationMilliseconds { get; init; }
+    public IReadOnlyList<string> Variables { get; init; } = [];
+    public IReadOnlyList<string> Sort { get; init; } = [];
 }

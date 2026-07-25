@@ -13,6 +13,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<IWorkflowEngineService, WorkflowEngineService>();
+        services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();
         return services;
     }

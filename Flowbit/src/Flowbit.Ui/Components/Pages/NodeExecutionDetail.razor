@@ -1,0 +1,329 @@
+@page "/node-executions/{ExecutionId:long}"
+@using System.Text.Json
+@inject WorkflowApiClient Api
+
+<PageTitle>Node execution #@ExecutionId · Flowbit</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+
+@if (execution is null && !notFound && !loadFailed)
+{
+    <PageHeader Eyebrow="Activity" Title="Loading node execution" Description="@($"Retrieving execution #{ExecutionId}…")" />
+    <div class="panel"><div class="skeleton" role="status"></div></div>
+}
+else if (loadFailed)
+{
+    <PageHeader Eyebrow="Activity" Title="Unable to load node execution"
+                Description="The API could not return this execution for the current request.">
+        <Actions>
+            <a class="btn btn-outline-secondary" href="activity">Back to activity</a>
+            <button class="btn btn-outline-primary" @onclick="LoadAsync">Try again</button>
+        </Actions>
+    </PageHeader>
+}
+else if (notFound)
+{
+    <PageHeader Eyebrow="Activity" Title="Node execution not found"
+                Description="The execution does not exist or is outside the workflows visible to your current roles.">
+        <Actions><a class="btn btn-outline-secondary" href="activity">Back to activity</a></Actions>
+    </PageHeader>
+    <div class="panel">
+        <EmptyState Icon="activity" Title="No visible execution" Description="Return to Activity to search the workflow versions available to you." />
+    </div>
+}
+else if (execution is not null)
+{
+    <PageHeader Eyebrow="Node execution" Title="@execution.NodeName"
+                Description="@($"Execution #{execution.Id} · {execution.WorkflowName} v{execution.WorkflowVersion} · Instance #{execution.InstanceId}")">
+        <Actions>
+            <a class="btn btn-outline-secondary" href="activity">Back to activity</a>
+            @if (execution.UserTaskId is not null)
+            {
+                <a class="btn btn-outline-secondary" href="@($"user-tasks/{execution.UserTaskId}")">View user task</a>
+            }
+            <a class="btn btn-outline-primary" href="@($"instances/{execution.InstanceId}")">View instance</a>
+        </Actions>
+    </PageHeader>
+
+    @if (execution.IsCutoverSeeded)
+    {
+        <div class="alert alert-warning" role="note">
+            <strong>Cutover-seeded execution.</strong>
+            This row represents work that was open when execution tracking was deployed. Its start time is the migration cutover time, not the node's original entry time.
+        </div>
+    }
+
+    <section class="panel mb-3" aria-labelledby="execution-summary-heading">
+        <div class="section-heading">
+            <div><h2 id="execution-summary-heading">Execution summary</h2><p>Immutable workflow and node identity with current lifecycle state.</p></div>
+            <div class="d-flex flex-wrap gap-1">
+                <StatusBadge Status="@execution.Status" />
+                @if (execution.IsCutoverSeeded)
+                {
+                    <StatusBadge Status="neutral" Text="Cutover seed" />
+                }
+            </div>
+        </div>
+        <div class="summary-grid">
+            <div class="summary-item"><span>Execution</span><strong>#@execution.Id · @execution.ExecutionKind</strong></div>
+            <div class="summary-item"><span>Instance</span><strong>#@execution.InstanceId · @execution.InstanceStatus</strong></div>
+            <div class="summary-item"><span>Workflow</span><strong>@execution.WorkflowKey · v@execution.WorkflowVersion</strong></div>
+            <div class="summary-item"><span>Workflow version ID</span><strong>#@execution.WorkflowId</strong></div>
+            <div class="summary-item"><span>Node</span><strong>#@execution.NodeId · @execution.NodeType</strong></div>
+            <div class="summary-item"><span>External node ID</span><strong>@(execution.NodeExternalId ?? "—")</strong></div>
+            <div class="summary-item"><span>Business key</span><strong>@(execution.BusinessKey ?? "—")</strong></div>
+            <div class="summary-item"><span>Completion reason</span><strong>@(execution.CompletionReason ?? "—")</strong></div>
+        </div>
+    </section>
+
+    <div class="detail-layout">
+        <div class="dashboard-stack">
+            <section class="panel" aria-labelledby="execution-timing-heading">
+                <div class="section-heading">
+                    <div><h2 id="execution-timing-heading">Lifecycle timing</h2><p>Pending visits have no start time; active durations continue to the database clock.</p></div>
+                </div>
+                <div class="summary-grid">
+                    <div class="summary-item"><span>Created</span><strong>@FormatTimestamp(execution.CreatedAt)</strong></div>
+                    <div class="summary-item"><span>Started</span><strong>@FormatTimestamp(execution.StartedAt)</strong></div>
+                    <div class="summary-item"><span>Updated</span><strong>@FormatTimestamp(execution.UpdatedAt)</strong></div>
+                    <div class="summary-item"><span>Completed</span><strong>@FormatTimestamp(execution.CompletedAt)</strong></div>
+                    <div class="summary-item"><span>Duration</span><strong>@FormatDuration(execution.DurationMilliseconds)</strong></div>
+                </div>
+            </section>
+
+            <section class="panel" aria-labelledby="execution-actors-heading">
+                <div class="section-heading">
+                    <div><h2 id="execution-actors-heading">Actors and roles</h2><p>Role values are immutable snapshots captured for this execution.</p></div>
+                </div>
+                <div class="summary-grid">
+                    <div class="summary-item"><span>Owner</span><strong>@(execution.Owner ?? "—")</strong></div>
+                    <div class="summary-item"><span>Started or triggered by</span><strong>@(execution.StartedBy ?? "System")</strong></div>
+                    <div class="summary-item"><span>Completed by</span><strong>@(execution.CompletedBy ?? "System")</strong></div>
+                    <div class="summary-item"><span>Node roles</span><strong>@FormatRoles(execution.NodeRoles, true)</strong></div>
+                    <div class="summary-item"><span>Starting actor roles</span><strong>@FormatRoles(execution.StartedByRoles, true)</strong></div>
+                    <div class="summary-item"><span>Completing actor roles</span><strong>@FormatRoles(execution.CompletedByRoles, true)</strong></div>
+                </div>
+            </section>
+
+            @if (execution.UserTaskId is not null || execution.IsMultiInstance)
+            {
+                <section class="panel" aria-labelledby="execution-work-heading">
+                    <div class="section-heading">
+                        <div><h2 id="execution-work-heading">User-task work item</h2><p>Assignment, claim, and child-item correlation for this visit.</p></div>
+                        @if (execution.UserTaskId is not null)
+                        {
+                            <a class="section-link" href="@($"user-tasks/{execution.UserTaskId}")">Task #@execution.UserTaskId <AppIcon Name="chevron-right" /></a>
+                        }
+                    </div>
+                    <div class="summary-grid">
+                        <div class="summary-item"><span>User-task ID</span><strong>@FormatId(execution.UserTaskId)</strong></div>
+                        <div class="summary-item"><span>Assignment required</span><strong>@FormatBoolean(execution.RequiresAssignment)</strong></div>
+                        <div class="summary-item"><span>Assigned to</span><strong>@(execution.AssignedTo ?? "—")</strong></div>
+                        <div class="summary-item"><span>Claim required</span><strong>@FormatBoolean(execution.RequiresClaim)</strong></div>
+                        <div class="summary-item"><span>Claimed by</span><strong>@(execution.ClaimedBy ?? "—")</strong></div>
+                        <div class="summary-item"><span>Item index</span><strong>@(execution.ItemIndex?.ToString() ?? "—")</strong></div>
+                    </div>
+
+                    @if (execution.ItemValue is not null)
+                    {
+                        <div class="mt-3">
+                            <label class="form-label">Item value</label>
+                            <pre class="execution-json">@FormatJson(execution.ItemValue.Value)</pre>
+                        </div>
+                    }
+                </section>
+            }
+
+            @if (execution.MultiInstance is not null)
+            {
+                var multiInstance = execution.MultiInstance;
+                var progress = multiInstance.TotalCount == 0 ? 0 : multiInstance.CompletedCount * 100d / multiInstance.TotalCount;
+                <section class="panel" aria-labelledby="execution-mi-heading">
+                    <div class="section-heading">
+                        <div><h2 id="execution-mi-heading">Multi-instance context</h2><p>The aggregate state for the child execution's owning fan-out.</p></div>
+                        <StatusBadge Status="@multiInstance.Status" />
+                    </div>
+                    <div class="summary-grid">
+                        <div class="summary-item"><span>Execution ID</span><strong>#@multiInstance.Id</strong></div>
+                        <div class="summary-item"><span>Mode / source</span><strong>@multiInstance.Mode · @multiInstance.Source</strong></div>
+                        <div class="summary-item"><span>One per actor</span><strong>@(multiInstance.OnePerActor ? "Yes" : "No")</strong></div>
+                        <div class="summary-item"><span>Result variable</span><strong>@multiInstance.ResultVariable</strong></div>
+                        <div class="summary-item"><span>Aggregate flow</span><strong>@FormatFlowId(multiInstance.AggregateFlowId)</strong></div>
+                        <div class="summary-item"><span>Completion reason</span><strong>@(multiInstance.CompletionReason ?? "—")</strong></div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="d-flex justify-content-between gap-2 small">
+                            <strong>@multiInstance.CompletedCount of @multiInstance.TotalCount completed</strong>
+                            <span class="text-muted">@multiInstance.CancelledCount cancelled</span>
+                        </div>
+                        <div class="progress mt-2" role="progressbar" aria-valuenow="@multiInstance.CompletedCount" aria-valuemin="0" aria-valuemax="@multiInstance.TotalCount">
+                            <div class="progress-bar" style="width:@progress%"></div>
+                        </div>
+                    </div>
+                </section>
+            }
+
+            @if (execution.SubmittedResult is not null)
+            {
+                <section class="panel" aria-labelledby="execution-result-heading">
+                    <div class="section-heading">
+                        <div><h2 id="execution-result-heading">Submitted result</h2><p>Values committed with this user-task outcome.</p></div>
+                    </div>
+                    <pre class="execution-json">@JsonSerializer.Serialize(execution.SubmittedResult, JsonOptions)</pre>
+                </section>
+            }
+
+            @if (execution.Error is not null)
+            {
+                <section class="panel execution-failure" aria-labelledby="execution-failure-heading">
+                    <div class="section-heading">
+                        <div><h2 id="execution-failure-heading">Committed failure</h2><p>This failure was persisted as part of the execution lifecycle.</p></div>
+                        <StatusBadge Status="faulted" />
+                    </div>
+                    <div class="summary-grid">
+                        <div class="summary-item"><span>Error code</span><strong>@(execution.Error.Code ?? "—")</strong></div>
+                        <div class="summary-item"><span>Description</span><strong>@(execution.Error.Description ?? "—")</strong></div>
+                    </div>
+                </section>
+            }
+
+            <section class="panel panel-flush" aria-labelledby="execution-variables-heading">
+                <div class="section-heading">
+                    <div>
+                        <h2 id="execution-variables-heading">Execution-local variable changes</h2>
+                        <p>Only writes attributed to this execution are shown; this is not the instance's current or historical variable snapshot.</p>
+                    </div>
+                </div>
+                @if (execution.VariableChanges.Count == 0)
+                {
+                    <EmptyState Icon="activity" Title="No attributed variable changes" Description="This execution did not commit variable writes, or it predates execution-level variable correlation." />
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <caption class="visually-hidden">Variable changes attributed to this node execution</caption>
+                            <thead><tr><th scope="col">Variable</th><th scope="col">Value</th><th scope="col">Source action ID</th><th scope="col">Set by</th><th scope="col">Set at</th></tr></thead>
+                            <tbody>
+                                @foreach (var variable in execution.VariableChanges)
+                                {
+                                    <tr>
+                                        <td><strong>@variable.VariableName</strong><span class="data-subtitle">Write #@variable.Id</span></td>
+                                        <td><code class="execution-inline-json">@FormatJson(variable.Value)</code></td>
+                                        <td>@(variable.SourceActionId?.ToString() ?? "—")</td>
+                                        <td>@(variable.SetBy ?? "System")</td>
+                                        <td title="@variable.SetAt.ToString("O")">@variable.SetAt.ToLocalTime().ToString("g")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+        </div>
+
+        <aside class="dashboard-stack">
+            <section class="panel" aria-labelledby="execution-correlation-heading">
+                <div class="section-heading"><div><h2 id="execution-correlation-heading">Correlation</h2><p>Runtime identities for diagnostics.</p></div></div>
+                <div class="summary-grid execution-sidebar-grid">
+                    <div class="summary-item"><span>Token</span><strong>#@execution.TokenId</strong></div>
+                    <div class="summary-item"><span>User task</span><strong>@FormatId(execution.UserTaskId)</strong></div>
+                    <div class="summary-item"><span>MI execution</span><strong>@FormatId(execution.MultiInstanceExecutionId)</strong></div>
+                    <div class="summary-item"><span>Item index</span><strong>@(execution.ItemIndex?.ToString() ?? "—")</strong></div>
+                    <div class="summary-item"><span>Entry branch</span><strong>@FormatId(execution.EntryParallelBranchId)</strong></div>
+                    <div class="summary-item"><span>Exit branch</span><strong>@FormatId(execution.ExitParallelBranchId)</strong></div>
+                </div>
+            </section>
+
+            <section class="panel" aria-labelledby="execution-flows-heading">
+                <div class="section-heading"><div><h2 id="execution-flows-heading">Flow correlation</h2><p>Entry, actor choice, token exit, and aggregate outcome are separate.</p></div></div>
+                <div class="summary-grid execution-sidebar-grid">
+                    <div class="summary-item"><span>Entered via</span><strong>@FormatFlowId(execution.EnteredViaFlowId)</strong></div>
+                    <div class="summary-item"><span>Selected</span><strong>@FormatFlowId(execution.SelectedFlowId)</strong></div>
+                    <div class="summary-item"><span>Exited via</span><strong>@FormatFlowId(execution.ExitedViaFlowId)</strong></div>
+                    <div class="summary-item"><span>MI aggregate</span><strong>@FormatFlowId(execution.AggregateFlowId)</strong></div>
+                </div>
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public long ExecutionId { get; set; }
+
+    private NodeExecutionDetailDto? execution;
+    private string? error;
+    private bool notFound;
+    private bool loadFailed;
+    private long loadedExecutionId;
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedExecutionId == ExecutionId) return;
+        loadedExecutionId = ExecutionId;
+        execution = null;
+        error = null;
+        notFound = false;
+        loadFailed = false;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            error = null;
+            loadFailed = false;
+            execution = await Api.GetNodeExecutionAsync(ExecutionId);
+            notFound = execution is null;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            loadFailed = true;
+        }
+    }
+
+    private static string FormatTimestamp(DateTimeOffset value) =>
+        $"{value.ToLocalTime():g} ({value:O})";
+
+    private static string FormatTimestamp(DateTimeOffset? value) =>
+        value is null ? "—" : FormatTimestamp(value.Value);
+
+    private static string FormatDuration(long? milliseconds)
+    {
+        if (milliseconds is null) return "—";
+        var value = TimeSpan.FromMilliseconds(milliseconds.Value);
+        if (value.TotalDays >= 1) return $"{(int)value.TotalDays}d {value.Hours}h {value.Minutes}m";
+        if (value.TotalHours >= 1) return $"{(int)value.TotalHours}h {value.Minutes}m {value.Seconds}s";
+        if (value.TotalMinutes >= 1) return $"{(int)value.TotalMinutes}m {value.Seconds}s";
+        if (value.TotalSeconds >= 1) return $"{value.TotalSeconds:0.###}s";
+        return $"{milliseconds.Value:N0} ms";
+    }
+
+    private static string FormatRoles(IReadOnlyList<string>? roles, bool nullableSnapshot)
+    {
+        if (roles is null) return nullableSnapshot ? "Not recorded" : "No roles";
+        return roles.Count == 0 ? "No roles" : string.Join(", ", roles);
+    }
+
+    private static string FormatBoolean(bool? value) => value switch
+    {
+        true => "Yes",
+        false => "No",
+        null => "Not applicable"
+    };
+
+    private static string FormatId(long? value) => value is null ? "—" : $"#{value}";
+    private static string FormatFlowId(int? value) => value is null ? "—" : $"Flow #{value}";
+
+    private static string FormatJson(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.String) return value.GetString() ?? string.Empty;
+        return JsonSerializer.Serialize(value, JsonOptions);
+    }
+}

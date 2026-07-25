@@ -16,8 +16,11 @@ public sealed class ExecutionTokenEntity
     public int? ArrivedViaFlowId { get; set; }
     public string? TerminationReason { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
+    public long? CurrentNodeExecutionId { get; set; }
+    public NodeExecutionEntity? CurrentNodeExecution { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public List<NodeExecutionEntity> NodeExecutions { get; set; } = [];
     public List<UserTaskEntity> UserTasks { get; set; } = [];
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
     public List<ParallelGatewayExecutionEntity> InterruptedParallelGatewayExecutions { get; set; } = [];

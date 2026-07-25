@@ -29,6 +29,7 @@ public sealed class UserTaskEntity
     public JsonDocument? ResultJson { get; set; }
     public string? CompletedBy { get; set; }
     public List<string>? CompletedByRoles { get; set; }
+    public NodeExecutionEntity? NodeExecution { get; set; }
 }
 
 public static class UserTaskStatuses

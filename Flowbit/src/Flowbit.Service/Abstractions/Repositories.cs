@@ -48,6 +48,7 @@ public interface IWorkflowRuntimeRepository
         string? businessKeyUniqueness,
         CurrentNodeSnapshot node,
         string? startedBy,
+        IReadOnlyList<string> startedByRoles,
         CancellationToken cancellationToken);
 
     Task<PagedResult<InstanceListItem>> ListInstancesAsync(
@@ -134,6 +135,7 @@ public interface IWorkflowRuntimeRepository
         CurrentNodeSnapshot node,
         long? parallelBranchId,
         int? arrivedViaFlowId,
+        NodeExecutionActorRecord triggeredBy,
         CancellationToken cancellationToken);
 
     Task UpdateExecutionTokenAsync(
@@ -144,12 +146,15 @@ public interface IWorkflowRuntimeRepository
         int? arrivedViaFlowId,
         string? terminationReason,
         string? claimedBy,
+        NodeExecutionActorRecord triggeredBy,
+        NodeExecutionCompletionRecord? currentCompletion,
         CancellationToken cancellationToken);
 
     Task SetExecutionTokenStatusAsync(
         long tokenId,
         string tokenStatus,
         string? terminationReason,
+        NodeExecutionCompletionRecord completion,
         CancellationToken cancellationToken);
 
     Task SetInstanceStatusAsync(
@@ -191,10 +196,14 @@ public interface IWorkflowRuntimeRepository
 
     Task CancelOpenUserTasksForTokensAsync(
         IReadOnlyCollection<long> tokenIds,
+        string completionReason,
+        NodeExecutionActorRecord actor,
         CancellationToken cancellationToken);
 
     Task CancelActiveMultiInstancesForTokensAsync(
         IReadOnlyCollection<long> tokenIds,
+        string completionReason,
+        NodeExecutionActorRecord actor,
         CancellationToken cancellationToken);
 
     Task<MultiInstanceExecutionRecord> AddMultiInstanceAsync(
@@ -204,6 +213,7 @@ public interface IWorkflowRuntimeRepository
         MultiInstanceModel configuration,
         IReadOnlyList<JsonElement?> items,
         IReadOnlyList<int> outcomeFlowIds,
+        NodeExecutionActorRecord triggeredBy,
         CancellationToken cancellationToken);
 
     Task<MultiInstanceExecutionRecord?> GetActiveMultiInstanceAsync(
@@ -293,20 +303,21 @@ public interface IWorkflowRuntimeRepository
         long taskId,
         int selectedFlowId,
         string completedBy,
+        IReadOnlyList<string> completedByRoles,
         Dictionary<string, JsonElement> result,
         CancellationToken cancellationToken);
 
-    Task ActivateNextMultiInstanceItemAsync(long executionId, CancellationToken cancellationToken);
+    Task ActivateNextMultiInstanceItemAsync(
+        long executionId,
+        NodeExecutionActorRecord actor,
+        CancellationToken cancellationToken);
 
     Task CloseMultiInstanceAsync(
         long executionId,
         int winningFlowId,
         string completionReason,
+        NodeExecutionActorRecord actor,
         CancellationToken cancellationToken);
-
-    Task CancelActiveMultiInstanceAsync(long instanceId, CancellationToken cancellationToken);
-
-    Task CancelOpenUserTasksAsync(long instanceId, CancellationToken cancellationToken);
 
     Task<DateTimeOffset> UpdateUserTaskClaimAsync(long taskId, string? claimedBy, CancellationToken cancellationToken);
 
@@ -318,27 +329,14 @@ public interface IWorkflowRuntimeRepository
 
     Task<DateTimeOffset> TouchInstanceAsync(long id, CancellationToken cancellationToken);
 
-    Task UpdateInstanceAsync(
-        long id,
-        int currentStepId,
-        string status,
-        string? claimedBy,
-        CancellationToken cancellationToken);
-
-    Task UpdateInstanceNodeAsync(
-        long id,
-        CurrentNodeSnapshot node,
-        string status,
-        string? claimedBy,
-        CancellationToken cancellationToken);
-
     Task AddVariableAsync(
         long instanceId,
         string variableName,
         int? sourceActionId,
         string? setBy,
         JsonElement value,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        long? nodeExecutionId = null);
 
     Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesAsync(
         long instanceId,

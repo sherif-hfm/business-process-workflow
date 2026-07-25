@@ -10,6 +10,10 @@ public sealed class InstanceVariableEntity
 
     public WorkflowInstanceEntity? Instance { get; set; }
 
+    public long? NodeExecutionId { get; set; }
+
+    public NodeExecutionEntity? NodeExecution { get; set; }
+
     public string VariableName { get; set; } = string.Empty;
 
     public int? SourceActionId { get; set; }

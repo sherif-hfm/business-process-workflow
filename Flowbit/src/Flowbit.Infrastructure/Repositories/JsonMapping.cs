@@ -20,6 +20,12 @@ internal static class JsonMapping
         return JsonDocument.Parse(json);
     }
 
+    public static JsonDocument ToJsonDocument(IReadOnlyList<string> values)
+    {
+        var json = JsonSerializer.Serialize(values, Options);
+        return JsonDocument.Parse(json);
+    }
+
     public static Dictionary<string, JsonElement>? ToDictionary(JsonDocument? document)
     {
         if (document is null || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -29,5 +35,15 @@ internal static class JsonMapping
 
         return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(document.RootElement.GetRawText(), Options)?
             .ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
+    }
+
+    public static IReadOnlyList<string>? ToStringList(JsonDocument? document)
+    {
+        if (document is null || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<List<string>>(document.RootElement.GetRawText(), Options) ?? [];
     }
 }

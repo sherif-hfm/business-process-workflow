@@ -221,14 +221,30 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
             var activeTokens = await repository.ListExecutionTokensAsync(
                 instanceId, ExecutionTokenRecordStatuses.Active, CancellationToken.None);
             var tokenIds = activeTokens.Select(token => token.Id).ToList();
-            await repository.CancelActiveMultiInstancesForTokensAsync(tokenIds, CancellationToken.None);
-            await repository.CancelOpenUserTasksForTokensAsync(tokenIds, CancellationToken.None);
+            var cancellationActor = new NodeExecutionActorRecord("test", Array.Empty<string>());
+            await repository.CancelActiveMultiInstancesForTokensAsync(
+                tokenIds,
+                NodeExecutionCompletionReasons.InstanceCancelled,
+                cancellationActor,
+                CancellationToken.None);
+            await repository.CancelOpenUserTasksForTokensAsync(
+                tokenIds,
+                NodeExecutionCompletionReasons.InstanceCancelled,
+                cancellationActor,
+                CancellationToken.None);
             foreach (var tokenId in tokenIds)
             {
                 await repository.SetExecutionTokenStatusAsync(
                     tokenId,
                     ExecutionTokenRecordStatuses.Cancelled,
                     ExecutionTokenTerminationReasons.InstanceCancelled,
+                    new NodeExecutionCompletionRecord(
+                        NodeExecutionRecordStatuses.Cancelled,
+                        NodeExecutionCompletionReasons.InstanceCancelled,
+                        null,
+                        null,
+                        null,
+                        cancellationActor),
                     CancellationToken.None);
             }
             await repository.SetInstanceStatusAsync(

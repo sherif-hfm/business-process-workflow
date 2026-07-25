@@ -1,0 +1,503 @@
+@page "/activity"
+@inject WorkflowApiClient Api
+
+<PageTitle>Activity · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Workspace" Title="Node activity"
+            Description="Search committed node visits across workflow versions and instances. Visibility is determined by the API for your current roles.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+
+<div class="status-tabs" role="tablist" aria-label="Node execution status">
+    @foreach (var option in StatusOptions)
+    {
+        var selected = string.Equals(status, option.Value, StringComparison.OrdinalIgnoreCase);
+        <button class="status-tab @(selected ? "active" : null)"
+                role="tab"
+                aria-selected="@(selected ? "true" : "false")"
+                @onclick="() => SetStatusAsync(option.Value)">
+            @option.Label
+        </button>
+    }
+</div>
+
+<section class="filter-panel" aria-labelledby="activity-filter-heading">
+    <div class="section-heading mb-0">
+        <div>
+            <h2 id="activity-filter-heading">Advanced filters</h2>
+            <p>Combine execution, workflow, node, actor, flow, variable, and time criteria.</p>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary"
+                @onclick="() => advancedOpen = !advancedOpen"
+                aria-expanded="@(advancedOpen ? "true" : "false")"
+                aria-controls="activity-filter-fields">
+            @(advancedOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
+        </button>
+    </div>
+
+    @if (advancedOpen)
+    {
+        <div id="activity-filter-fields" class="filter-grid mt-3">
+            <div><label class="form-label" for="activity-id">Execution ID</label><input id="activity-id" type="number" class="form-control" @bind="executionId" placeholder="9001" /></div>
+            <div><label class="form-label" for="activity-instance-id">Instance ID</label><input id="activity-instance-id" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
+            <div><label class="form-label" for="activity-workflow-id">Workflow version ID</label><input id="activity-workflow-id" type="number" class="form-control" @bind="workflowId" placeholder="17" /></div>
+            <div><label class="form-label" for="activity-workflow-key">Workflow key</label><input id="activity-workflow-key" class="form-control" @bind="workflowKey" placeholder="purchase-request" /></div>
+
+            <div><label class="form-label" for="activity-workflow-version">Workflow version</label><input id="activity-workflow-version" type="number" class="form-control" @bind="workflowVersion" placeholder="3" /></div>
+            <div><label class="form-label" for="activity-business-key">Business key</label><input id="activity-business-key" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
+            <div><label class="form-label" for="activity-token-id">Token ID</label><input id="activity-token-id" type="number" class="form-control" @bind="tokenId" placeholder="81" /></div>
+            <div><label class="form-label" for="activity-task-id">User-task ID</label><input id="activity-task-id" type="number" class="form-control" @bind="userTaskId" placeholder="107" /></div>
+
+            <div><label class="form-label" for="activity-mi-id">Multi-instance execution ID</label><input id="activity-mi-id" type="number" class="form-control" @bind="multiInstanceExecutionId" placeholder="12" /></div>
+            <div><label class="form-label" for="activity-branch-id">Parallel branch ID</label><input id="activity-branch-id" type="number" class="form-control" @bind="parallelBranchId" placeholder="4" /></div>
+            <div><label class="form-label" for="activity-item-index">Item index</label><input id="activity-item-index" type="number" class="form-control" @bind="itemIndex" placeholder="0" /></div>
+            <div>
+                <label class="form-label" for="activity-kind">Execution kind</label>
+                <select id="activity-kind" class="form-select" @bind="executionKind">
+                    <option value="">Any</option>
+                    <option value="node">Token visit</option>
+                    <option value="userTaskItem">Multi-instance child item</option>
+                </select>
+            </div>
+
+            <div><label class="form-label" for="activity-node-id">Node ID</label><input id="activity-node-id" type="number" class="form-control" @bind="nodeId" placeholder="5" /></div>
+            <div><label class="form-label" for="activity-node-name">Node name</label><input id="activity-node-name" class="form-control" @bind="nodeName" placeholder="Manager approval" /></div>
+            <div><label class="form-label" for="activity-node-external-id">Node external ID</label><input id="activity-node-external-id" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
+            <div><label class="form-label" for="activity-node-types">Node types</label><input id="activity-node-types" class="form-control" @bind="nodeTypes" placeholder="userTask, serviceTask" /><div class="form-text">Comma-separated; values are OR-combined.</div></div>
+
+            <div><label class="form-label" for="activity-instance-statuses">Instance statuses</label><input id="activity-instance-statuses" class="form-control" @bind="instanceStatuses" placeholder="running, faulted" /><div class="form-text">Comma-separated; values are OR-combined.</div></div>
+            <div><label class="form-label" for="activity-reasons">Completion reasons</label><input id="activity-reasons" class="form-control" @bind="completionReasons" placeholder="userAction, boundaryCaught" /><div class="form-text">Comma-separated; values are OR-combined.</div></div>
+            <div>
+                <label class="form-label" for="activity-mi-filter">Multi-instance</label>
+                <select id="activity-mi-filter" class="form-select" @bind="multiInstanceFilter">
+                    <option value="">Any</option>
+                    <option value="true">Only multi-instance items</option>
+                    <option value="false">Exclude multi-instance items</option>
+                </select>
+            </div>
+            <div>
+                <label class="form-label" for="activity-seed-filter">Cutover seed</label>
+                <select id="activity-seed-filter" class="form-select" @bind="cutoverSeedFilter">
+                    <option value="">Any</option>
+                    <option value="true">Only seeded rows</option>
+                    <option value="false">Only post-cutover rows</option>
+                </select>
+            </div>
+
+            <div><label class="form-label" for="activity-owner">Owner</label><input id="activity-owner" class="form-control" @bind="owner" placeholder="alice" /></div>
+            <div><label class="form-label" for="activity-started-by">Started or triggered by</label><input id="activity-started-by" class="form-control" @bind="startedBy" placeholder="alice" /></div>
+            <div><label class="form-label" for="activity-completed-by">Completed by</label><input id="activity-completed-by" class="form-control" @bind="completedBy" placeholder="bob" /></div>
+            <div><label class="form-label" for="activity-entered-flow">Entered-via flow ID</label><input id="activity-entered-flow" type="number" class="form-control" @bind="enteredViaFlowId" placeholder="201" /></div>
+
+            <div><label class="form-label" for="activity-selected-flow">Selected flow ID</label><input id="activity-selected-flow" type="number" class="form-control" @bind="selectedFlowId" placeholder="202" /></div>
+            <div><label class="form-label" for="activity-exited-flow">Exited-via flow ID</label><input id="activity-exited-flow" type="number" class="form-control" @bind="exitedViaFlowId" placeholder="202" /></div>
+            <div><label class="form-label" for="activity-aggregate-flow">MI aggregate flow ID</label><input id="activity-aggregate-flow" type="number" class="form-control" @bind="aggregateFlowId" placeholder="203" /></div>
+            <div><label class="form-label" for="activity-variables">Current instance variables</label><input id="activity-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Latest scalar values; comma-separated name:value pairs.</div></div>
+
+            <div><label class="form-label" for="activity-created-from">Created from (inclusive)</label><input id="activity-created-from" type="datetime-local" class="form-control" @bind="createdFrom" /></div>
+            <div><label class="form-label" for="activity-created-to">Created to (exclusive)</label><input id="activity-created-to" type="datetime-local" class="form-control" @bind="createdTo" /></div>
+            <div><label class="form-label" for="activity-started-from">Started from (inclusive)</label><input id="activity-started-from" type="datetime-local" class="form-control" @bind="startedFrom" /></div>
+            <div><label class="form-label" for="activity-started-to">Started to (exclusive)</label><input id="activity-started-to" type="datetime-local" class="form-control" @bind="startedTo" /></div>
+
+            <div><label class="form-label" for="activity-updated-from">Updated from (inclusive)</label><input id="activity-updated-from" type="datetime-local" class="form-control" @bind="updatedFrom" /></div>
+            <div><label class="form-label" for="activity-updated-to">Updated to (exclusive)</label><input id="activity-updated-to" type="datetime-local" class="form-control" @bind="updatedTo" /></div>
+            <div><label class="form-label" for="activity-completed-from">Completed from (inclusive)</label><input id="activity-completed-from" type="datetime-local" class="form-control" @bind="completedFrom" /></div>
+            <div><label class="form-label" for="activity-completed-to">Completed to (exclusive)</label><input id="activity-completed-to" type="datetime-local" class="form-control" @bind="completedTo" /></div>
+
+            <div><label class="form-label" for="activity-duration-min">Minimum duration (ms)</label><input id="activity-duration-min" type="number" min="0" class="form-control" @bind="minimumDurationMilliseconds" placeholder="1000" /></div>
+            <div><label class="form-label" for="activity-duration-max">Maximum duration (ms)</label><input id="activity-duration-max" type="number" min="0" class="form-control" @bind="maximumDurationMilliseconds" placeholder="60000" /></div>
+            <div class="filter-actions filter-span-2">
+                <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+            </div>
+        </div>
+    }
+</section>
+
+<SortToolbar Id="activity-sort"
+             Options="ActivitySortOptions"
+             DefaultField="updatedAt"
+             DefaultDirection="desc"
+             Applied="ApplySortAsync" />
+
+<section class="panel panel-flush" aria-labelledby="activity-results-heading">
+    <div class="section-heading">
+        <div>
+            <h2 id="activity-results-heading">Results</h2>
+            <p>@(result is null ? loadFailed ? "Activity could not be loaded." : "Loading activity…" : $"{result.TotalCount:N0} matching node executions")</p>
+        </div>
+    </div>
+
+    @if (result is null && !loadFailed)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (result is null)
+    {
+        <EmptyState Icon="alert" Title="Activity unavailable" Description="Use Refresh to try the request again. Authorization and validation errors are shown above." />
+    }
+    else if (result.Items.Count == 0)
+    {
+        <EmptyState Icon="activity" Title="No visible activity" Description="No authorized node executions match these filters. Try a different status or clear the advanced filters." />
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <caption class="visually-hidden">Authorized node executions matching the selected filters</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Execution</th>
+                        <th scope="col">Workflow / instance</th>
+                        <th scope="col">Node</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Actors</th>
+                        <th scope="col">Flow</th>
+                        <th scope="col">Timing</th>
+                        <th scope="col"><span class="visually-hidden">Open</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var execution in result.Items)
+                    {
+                        <tr>
+                            <td>
+                                <a class="mono-id" href="@($"node-executions/{execution.Id}")">#@execution.Id</a>
+                                <span class="data-subtitle">@execution.ExecutionKind · Token #@execution.TokenId</span>
+                                @if (execution.UserTaskId is not null)
+                                {
+                                    <a class="data-subtitle" href="@($"user-tasks/{execution.UserTaskId}")">Task #@execution.UserTaskId</a>
+                                }
+                                @if (execution.MultiInstanceExecutionId is not null)
+                                {
+                                    <span class="data-subtitle">MI #@execution.MultiInstanceExecutionId · item @(execution.ItemIndex?.ToString() ?? "—")</span>
+                                }
+                                @if (execution.EntryParallelBranchId is not null || execution.ExitParallelBranchId is not null)
+                                {
+                                    <span class="data-subtitle">Branch @FormatBranch(execution.EntryParallelBranchId) → @FormatBranch(execution.ExitParallelBranchId)</span>
+                                }
+                            </td>
+                            <td>
+                                <a class="data-title" href="@($"instances/{execution.InstanceId}")">@execution.WorkflowName</a>
+                                <span class="data-subtitle">@execution.WorkflowKey · v@execution.WorkflowVersion · Instance #@execution.InstanceId</span>
+                                @if (!string.IsNullOrWhiteSpace(execution.BusinessKey))
+                                {
+                                    <span class="data-subtitle">@execution.BusinessKey</span>
+                                }
+                            </td>
+                            <td>
+                                <a class="data-title" href="@($"node-executions/{execution.Id}")">@execution.NodeName</a>
+                                <span class="data-subtitle">@execution.NodeType · Node #@execution.NodeId</span>
+                                @if (!string.IsNullOrWhiteSpace(execution.NodeExternalId))
+                                {
+                                    <span class="data-subtitle">@execution.NodeExternalId</span>
+                                }
+                            </td>
+                            <td>
+                                <div class="d-flex flex-wrap gap-1">
+                                    <StatusBadge Status="@execution.Status" />
+                                    @if (execution.IsCutoverSeeded)
+                                    {
+                                        <StatusBadge Status="neutral" Text="Cutover seed" />
+                                    }
+                                </div>
+                                <span class="data-subtitle">Instance: @execution.InstanceStatus</span>
+                                @if (!string.IsNullOrWhiteSpace(execution.CompletionReason))
+                                {
+                                    <span class="data-subtitle">@execution.CompletionReason</span>
+                                }
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(execution.Owner))
+                                {
+                                    <span>Owner: @execution.Owner</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(execution.StartedBy))
+                                {
+                                    <span class="data-subtitle">Started: @execution.StartedBy</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(execution.CompletedBy))
+                                {
+                                    <span class="data-subtitle">Completed: @execution.CompletedBy</span>
+                                }
+                                @if (string.IsNullOrWhiteSpace(execution.Owner) && string.IsNullOrWhiteSpace(execution.StartedBy) && string.IsNullOrWhiteSpace(execution.CompletedBy))
+                                {
+                                    <span>System</span>
+                                }
+                            </td>
+                            <td><span class="mono-id">@FormatFlows(execution)</span></td>
+                            <td>
+                                <span title="@execution.UpdatedAt.ToString("O")">@execution.UpdatedAt.ToLocalTime().ToString("g")</span>
+                                <span class="data-subtitle">@FormatDuration(execution.DurationMilliseconds)</span>
+                            </td>
+                            <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"node-executions/{execution.Id}")">Open</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
+
+@code {
+    private PagedResult<NodeExecutionSummaryDto>? result;
+    private string? status;
+    private string? error;
+    private bool advancedOpen;
+    private bool loadFailed;
+    private int page = 1;
+    private const int PageSize = 50;
+    private IReadOnlyList<string> sortClauses = ["updatedAt:desc"];
+
+    private long? executionId;
+    private long? instanceId;
+    private long? workflowId;
+    private string? workflowKey;
+    private int? workflowVersion;
+    private string? businessKey;
+    private long? tokenId;
+    private long? userTaskId;
+    private long? multiInstanceExecutionId;
+    private long? parallelBranchId;
+    private int? itemIndex;
+    private string? executionKind;
+    private int? nodeId;
+    private string? nodeName;
+    private string? nodeExternalId;
+    private string? nodeTypes;
+    private string? instanceStatuses;
+    private string? completionReasons;
+    private string? multiInstanceFilter;
+    private string? cutoverSeedFilter;
+    private string? owner;
+    private string? startedBy;
+    private string? completedBy;
+    private int? enteredViaFlowId;
+    private int? selectedFlowId;
+    private int? exitedViaFlowId;
+    private int? aggregateFlowId;
+    private string? variableFilter;
+    private DateTime? createdFrom;
+    private DateTime? createdTo;
+    private DateTime? startedFrom;
+    private DateTime? startedTo;
+    private DateTime? updatedFrom;
+    private DateTime? updatedTo;
+    private DateTime? completedFrom;
+    private DateTime? completedTo;
+    private long? minimumDurationMilliseconds;
+    private long? maximumDurationMilliseconds;
+
+    private static readonly IReadOnlyList<(string? Value, string Label)> StatusOptions =
+    [
+        (null, "All"),
+        ("pending", "Pending"),
+        ("active", "Active"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+        ("faulted", "Faulted"),
+        ("merged", "Merged")
+    ];
+
+    private static readonly IReadOnlyList<SortFieldOption> ActivitySortOptions =
+    [
+        new("id", "Execution ID"),
+        new("instanceId", "Instance ID"),
+        new("workflowId", "Workflow version ID"),
+        new("nodeId", "Node ID"),
+        new("createdAt", "Created"),
+        new("startedAt", "Started"),
+        new("updatedAt", "Updated"),
+        new("completedAt", "Completed"),
+        new("duration", "Duration")
+    ];
+
+    private int ActiveFilterCount
+    {
+        get
+        {
+            var values = new object?[]
+            {
+                executionId, instanceId, workflowId, workflowKey, workflowVersion, businessKey,
+                tokenId, userTaskId, multiInstanceExecutionId, parallelBranchId, itemIndex,
+                executionKind, nodeId, nodeName, nodeExternalId, nodeTypes, instanceStatuses,
+                completionReasons, multiInstanceFilter, cutoverSeedFilter, owner, startedBy,
+                completedBy, enteredViaFlowId, selectedFlowId, exitedViaFlowId, aggregateFlowId,
+                variableFilter, createdFrom, createdTo, startedFrom, startedTo, updatedFrom,
+                updatedTo, completedFrom, completedTo, minimumDurationMilliseconds,
+                maximumDurationMilliseconds
+            };
+            return values.Count(IsSet);
+        }
+    }
+
+    private int TotalPages => result is null || result.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+    private bool HasNextPage => result is not null && page < TotalPages;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task SetStatusAsync(string? value)
+    {
+        status = value;
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task ApplySortAsync(IReadOnlyList<string> value)
+    {
+        sortClauses = value;
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1) return;
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        page++;
+        await LoadAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        executionId = instanceId = workflowId = tokenId = userTaskId = multiInstanceExecutionId = parallelBranchId = null;
+        workflowVersion = itemIndex = nodeId = enteredViaFlowId = selectedFlowId = exitedViaFlowId = aggregateFlowId = null;
+        workflowKey = businessKey = executionKind = nodeName = nodeExternalId = nodeTypes = null;
+        instanceStatuses = completionReasons = multiInstanceFilter = cutoverSeedFilter = null;
+        owner = startedBy = completedBy = variableFilter = null;
+        createdFrom = createdTo = startedFrom = startedTo = updatedFrom = updatedTo = completedFrom = completedTo = null;
+        minimumDurationMilliseconds = maximumDurationMilliseconds = null;
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            error = null;
+            loadFailed = false;
+            result = await Api.GetNodeExecutionsAsync(new NodeExecutionSearchQuery
+            {
+                Page = page,
+                PageSize = PageSize,
+                ExecutionId = executionId,
+                InstanceId = instanceId,
+                WorkflowId = workflowId,
+                WorkflowKey = workflowKey,
+                WorkflowVersion = workflowVersion,
+                BusinessKey = businessKey,
+                TokenId = tokenId,
+                UserTaskId = userTaskId,
+                MultiInstanceExecutionId = multiInstanceExecutionId,
+                ParallelBranchId = parallelBranchId,
+                ItemIndex = itemIndex,
+                ExecutionKind = executionKind,
+                NodeId = nodeId,
+                NodeName = nodeName,
+                NodeExternalId = nodeExternalId,
+                NodeTypes = ParseCsv(nodeTypes),
+                Statuses = string.IsNullOrWhiteSpace(status) ? [] : [status],
+                InstanceStatuses = ParseCsv(instanceStatuses),
+                CompletionReasons = ParseCsv(completionReasons),
+                IsMultiInstance = ParseNullableBoolean(multiInstanceFilter),
+                IsCutoverSeeded = ParseNullableBoolean(cutoverSeedFilter),
+                Owner = owner,
+                StartedBy = startedBy,
+                CompletedBy = completedBy,
+                EnteredViaFlowId = enteredViaFlowId,
+                SelectedFlowId = selectedFlowId,
+                ExitedViaFlowId = exitedViaFlowId,
+                AggregateFlowId = aggregateFlowId,
+                CreatedFrom = ToOffset(createdFrom),
+                CreatedTo = ToOffset(createdTo),
+                StartedFrom = ToOffset(startedFrom),
+                StartedTo = ToOffset(startedTo),
+                UpdatedFrom = ToOffset(updatedFrom),
+                UpdatedTo = ToOffset(updatedTo),
+                CompletedFrom = ToOffset(completedFrom),
+                CompletedTo = ToOffset(completedTo),
+                MinimumDurationMilliseconds = minimumDurationMilliseconds,
+                MaximumDurationMilliseconds = maximumDurationMilliseconds,
+                Variables = ParseCsv(variableFilter),
+                Sort = sortClauses
+            });
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            loadFailed = true;
+        }
+    }
+
+    private static bool IsSet(object? value) => value switch
+    {
+        null => false,
+        string text => !string.IsNullOrWhiteSpace(text),
+        _ => true
+    };
+
+    private static IReadOnlyList<string> ParseCsv(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool? ParseNullableBoolean(string? value) =>
+        bool.TryParse(value, out var parsed) ? parsed : null;
+
+    private static DateTimeOffset? ToOffset(DateTime? value) =>
+        value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Local));
+
+    private static string FormatDuration(long? milliseconds)
+    {
+        if (milliseconds is null) return "Not started";
+        var value = TimeSpan.FromMilliseconds(milliseconds.Value);
+        if (value.TotalDays >= 1) return $"{(int)value.TotalDays}d {value.Hours}h";
+        if (value.TotalHours >= 1) return $"{(int)value.TotalHours}h {value.Minutes}m";
+        if (value.TotalMinutes >= 1) return $"{(int)value.TotalMinutes}m {value.Seconds}s";
+        if (value.TotalSeconds >= 1) return $"{value.TotalSeconds:0.#}s";
+        return $"{milliseconds.Value:N0} ms";
+    }
+
+    private static string FormatFlows(NodeExecutionSummaryDto execution)
+    {
+        var parts = new List<string>();
+        if (execution.EnteredViaFlowId is not null) parts.Add($"in #{execution.EnteredViaFlowId}");
+        if (execution.SelectedFlowId is not null) parts.Add($"selected #{execution.SelectedFlowId}");
+        if (execution.ExitedViaFlowId is not null) parts.Add($"out #{execution.ExitedViaFlowId}");
+        if (execution.AggregateFlowId is not null) parts.Add($"aggregate #{execution.AggregateFlowId}");
+        return parts.Count == 0 ? "—" : string.Join(" · ", parts);
+    }
+
+    private static string FormatBranch(long? branchId) =>
+        branchId is null ? "—" : $"#{branchId}";
+}
