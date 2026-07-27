@@ -1,6 +1,7 @@
-
-- add quorum/complex gateway
+- add Inclusive Gateway
+- add Complex Gateway
 - async flow asyncAfter/asyncBefore and  Timers events
+ - add Event-Based Gateway
 - add Workflow runner simulator
 
 
