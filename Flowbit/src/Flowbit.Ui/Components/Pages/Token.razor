@@ -29,14 +29,32 @@
             <div class="form-grid">
                 <div>
                     <label class="form-label" for="token-user">User</label>
-                    <input id="token-user" class="form-control" @bind="user" @bind:event="oninput"
-                           placeholder="e.g. alice" autocomplete="off" />
+                    <input id="token-user" class="form-control" list="token-user-suggestions"
+                           @bind="user" @bind:event="oninput"
+                           placeholder="Select or enter a username" autocomplete="off"
+                           aria-describedby="user-help" />
+                    <datalist id="token-user-suggestions">
+                        @foreach (var suggestion in UserSuggestions)
+                        {
+                            <option value="@suggestion"></option>
+                        }
+                    </datalist>
+                    <div id="user-help" class="form-text">Select a suggested user or enter any username.</div>
                 </div>
                 <div>
                     <label class="form-label" for="token-expiry">Expires in</label>
                     <div class="input-group">
                         <input id="token-expiry" type="number" class="form-control" @bind="expiresInMinutes" min="1" aria-describedby="token-expiry-unit" />
                         <span id="token-expiry-unit" class="input-group-text">minutes</span>
+                    </div>
+                </div>
+                <div class="full">
+                    <div class="d-flex flex-wrap gap-2" aria-label="User suggestions">
+                        @foreach (var suggestion in UserSuggestions)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    @onclick="() => SelectUser(suggestion)">@suggestion</button>
+                        }
                     </div>
                 </div>
                 <div class="full">
@@ -93,15 +111,18 @@
 </div>
 
 @code {
+    private static readonly string[] UserSuggestions = ["sherif", "mahmoud", "khalid", "ahmed", "khalil", "omar"];
     private static readonly string[] RoleSuggestions = ["User", "Manager", "Reviewer", "Finance", "sysAdmin", "admin"];
 
-    private string user = "alice";
+    private string user = UserSuggestions[0];
     private string roles = string.Empty;
     private int expiresInMinutes = 60;
     private string rawToken = string.Empty;
     private string? error;
 
     protected override void OnInitialized() => rawToken = TokenStore.Token ?? string.Empty;
+
+    private void SelectUser(string suggestion) => user = suggestion;
 
     private void AddRole(string role)
     {
