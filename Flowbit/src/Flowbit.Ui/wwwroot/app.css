@@ -128,6 +128,8 @@ code { color: #4338ca; }
 .status-danger { color: #be123c; background: var(--fb-danger-soft); }
 .status-primary { color: #4338ca; background: var(--fb-primary-soft); }
 .status-neutral { color: #475569; background: #f1f5f9; }
+.acting-for-badge { display: inline-flex; align-items: center; gap: .3rem; margin-top: .25rem; padding: .24rem .5rem; color: #6d28d9; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 999px; font-size: .64rem; font-weight: 780; white-space: nowrap; }
+.acting-for-badge .app-icon { width: .82rem; height: .82rem; }
 .progress { height: .5rem; background: #e2e8f0; border-radius: 999px; }
 .progress-bar { background: linear-gradient(90deg, #6366f1, #4f46e5); border-radius: 999px; }
 

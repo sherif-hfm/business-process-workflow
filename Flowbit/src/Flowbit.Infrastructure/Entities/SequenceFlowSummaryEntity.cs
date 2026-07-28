@@ -18,6 +18,10 @@ public sealed class SequenceFlowSummaryEntity
 
     public List<string> LastActionUserRoles { get; set; } = [];
 
+    public string? LastActionActingFor { get; set; }
+
+    public long? LastActionDelegationId { get; set; }
+
     public DateTimeOffset? LastActionOccurredAt { get; set; }
 
     public string? LastActionKind { get; set; }
@@ -29,6 +33,10 @@ public sealed class SequenceFlowSummaryEntity
     public string? LastTraversalUser { get; set; }
 
     public List<string> LastTraversalUserRoles { get; set; } = [];
+
+    public string? LastTraversalActingFor { get; set; }
+
+    public long? LastTraversalDelegationId { get; set; }
 
     public DateTimeOffset? LastTraversalOccurredAt { get; set; }
 

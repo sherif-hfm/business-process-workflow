@@ -29,6 +29,8 @@ public sealed class UserTaskEntity
     public JsonDocument? ResultJson { get; set; }
     public string? CompletedBy { get; set; }
     public List<string>? CompletedByRoles { get; set; }
+    public string? CompletedActingFor { get; set; }
+    public long? CompletionDelegationId { get; set; }
     public NodeExecutionEntity? NodeExecution { get; set; }
 }
 

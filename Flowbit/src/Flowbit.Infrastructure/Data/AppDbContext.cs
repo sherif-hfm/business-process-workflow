@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Flowbit.Infrastructure.Entities;
+using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Infrastructure.Data;
@@ -40,9 +41,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
 
+    public DbSet<UserDelegationEntity> UserDelegations => Set<UserDelegationEntity>();
+
+    public DbSet<WorkflowDelegationPolicyEntity> WorkflowDelegationPolicies =>
+        Set<WorkflowDelegationPolicyEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
+        modelBuilder.HasPostgresExtension("citext");
 
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
         {
@@ -176,8 +183,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeRolesJson).HasColumnType("jsonb");
             entity.Property(e => e.TriggeredBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.TriggeredByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.TriggeredActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.CompletedActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ErrorCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
             entity.Property(e => e.ErrorDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
@@ -240,6 +249,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Assignee).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedByRoles).HasColumnType("text[]");
+            entity.Property(e => e.CompletedActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ItemValueJson).HasColumnType("jsonb");
             entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
@@ -415,6 +425,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.User).HasMaxLength(300);
             entity.Property(e => e.UserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ValuesJson).HasColumnType("jsonb");
             entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId, e.Id })
@@ -434,10 +445,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.LastActionUser).HasMaxLength(300);
             entity.Property(e => e.LastActionUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.LastActionActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastActionKind).HasMaxLength(32);
             entity.Property(e => e.LastActionValuesJson).HasColumnType("jsonb");
             entity.Property(e => e.LastTraversalUser).HasMaxLength(300);
             entity.Property(e => e.LastTraversalUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.LastTraversalActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastTraversalKind).HasMaxLength(32);
             entity.Property(e => e.LastTraversalValuesJson).HasColumnType("jsonb");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId }).IsUnique();
@@ -454,6 +467,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.VariableName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.ValueJson).HasColumnType("jsonb");
             entity.Property(e => e.SetBy).HasMaxLength(300);
+            entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.SetAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.VariableName, e.Id })
                 .IsDescending(false, false, true);
@@ -476,6 +490,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Payload).HasColumnType("jsonb");
             entity.Property(e => e.PerformedBy).HasMaxLength(300);
+            entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.Note).HasMaxLength(1000);
             entity.Property(e => e.PerformedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.InstanceId);
@@ -509,6 +524,107 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Namespace, e.Key }).IsUnique();
+        });
+
+        modelBuilder.Entity<UserDelegationEntity>(entity =>
+        {
+            entity.ToTable("user_delegations", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_user_delegations_validity",
+                    "\"ValidUntil\" > \"ValidFrom\"");
+                table.HasCheckConstraint(
+                    "CK_user_delegations_acceptance_state",
+                    "\"AcceptanceState\" IN ('notRequired', 'pending', 'accepted', 'rejected')");
+                table.HasCheckConstraint(
+                    "CK_user_delegations_acceptance_shape",
+                    "((NOT \"RequiresAcceptance\" AND \"AcceptanceState\" = 'notRequired' "
+                    + "AND \"DecisionBy\" IS NULL AND \"DecisionAt\" IS NULL AND \"DecisionReason\" IS NULL) "
+                    + "OR (\"RequiresAcceptance\" AND \"AcceptanceState\" = 'pending' "
+                    + "AND \"DecisionBy\" IS NULL AND \"DecisionAt\" IS NULL AND \"DecisionReason\" IS NULL) "
+                    + "OR (\"RequiresAcceptance\" AND \"AcceptanceState\" IN ('accepted', 'rejected') "
+                    + "AND \"DecisionBy\" IS NOT NULL AND \"DecisionAt\" IS NOT NULL))");
+                table.HasCheckConstraint(
+                    "CK_user_delegations_revocation_shape",
+                    "((\"RevokedAt\" IS NULL AND \"RevokedBy\" IS NULL AND \"RevocationReason\" IS NULL) "
+                    + "OR (\"RevokedAt\" IS NOT NULL AND \"RevokedBy\" IS NOT NULL))");
+                table.HasCheckConstraint(
+                    "CK_user_delegations_timestamps",
+                    "\"UpdatedAt\" >= \"CreatedAt\" "
+                    + "AND (\"DecisionAt\" IS NULL OR \"DecisionAt\" >= \"CreatedAt\") "
+                    + "AND (\"RevokedAt\" IS NULL OR \"RevokedAt\" >= \"CreatedAt\")");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Delegator)
+                .HasColumnType("citext")
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.Delegate)
+                .HasColumnType("citext")
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.WorkflowKey)
+                .HasMaxLength(UserDelegationConstraints.MaxWorkflowKeyLength)
+                .IsRequired();
+            entity.Property(e => e.AcceptanceState).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedBy)
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.CreationReason)
+                .HasMaxLength(UserDelegationConstraints.MaxReasonLength);
+            entity.Property(e => e.DecisionBy)
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength);
+            entity.Property(e => e.DecisionReason)
+                .HasMaxLength(UserDelegationConstraints.MaxReasonLength);
+            entity.Property(e => e.RevokedBy)
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength);
+            entity.Property(e => e.RevocationReason)
+                .HasMaxLength(UserDelegationConstraints.MaxReasonLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new
+            {
+                e.Delegate,
+                e.WorkflowKey,
+                e.AcceptanceState,
+                e.RevokedAt,
+                e.ValidFrom,
+                e.ValidUntil
+            });
+            entity.HasIndex(e => new
+            {
+                e.Delegator,
+                e.WorkflowKey,
+                e.CreatedAt,
+                e.Id
+            });
+            entity.HasIndex(e => new
+            {
+                e.Delegator,
+                e.Delegate,
+                e.WorkflowKey,
+                e.AcceptanceState,
+                e.RevokedAt,
+                e.ValidFrom,
+                e.ValidUntil
+            });
+            entity.HasIndex(e => new { e.WorkflowKey, e.ValidUntil });
+        });
+
+        modelBuilder.Entity<WorkflowDelegationPolicyEntity>(entity =>
+        {
+            entity.ToTable("workflow_delegation_policies");
+            entity.HasKey(e => e.WorkflowKey);
+            entity.Property(e => e.WorkflowKey)
+                .HasMaxLength(UserDelegationConstraints.MaxWorkflowKeyLength);
+            entity.Property(e => e.CreatedBy)
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.UpdatedBy)
+                .HasMaxLength(UserDelegationConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
         });
     }
 }

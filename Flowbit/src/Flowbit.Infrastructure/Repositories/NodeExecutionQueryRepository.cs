@@ -61,7 +61,11 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                ne."ExitedViaFlowId" AS "ExitedViaFlowId",
                mie."WinningFlowId" AS "AggregateFlowId",
                ne."TriggeredBy" AS "StartedBy",
+               ne."TriggeredActingFor" AS "StartedActingFor",
+               ne."TriggeredDelegationId" AS "StartedDelegationId",
                ne."CompletedBy" AS "CompletedBy",
+               ne."CompletedActingFor" AS "CompletedActingFor",
+               ne."CompletedDelegationId" AS "CompletedDelegationId",
                ne."CreatedAt" AS "CreatedAt",
                ne."StartedAt" AS "StartedAt",
                ne."UpdatedAt" AS "UpdatedAt",
@@ -188,6 +192,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                        v."VariableName" AS "VariableName",
                        v."SourceActionId" AS "SourceActionId",
                        v."SetBy" AS "SetBy",
+                       v."ActingFor" AS "ActingFor",
+                       v."DelegationId" AS "DelegationId",
                        v."ValueJson"::text AS "ValueJson",
                        v."SetAt" AS "SetAt"
                 FROM flowbit.instance_variables v
@@ -585,7 +591,11 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             ExitedViaFlowId = row.ExitedViaFlowId,
             AggregateFlowId = row.AggregateFlowId,
             StartedBy = row.StartedBy,
+            StartedDelegatedAccess = ToDelegatedAccess(
+                row.StartedDelegationId, row.StartedActingFor),
             CompletedBy = row.CompletedBy,
+            CompletedDelegatedAccess = ToDelegatedAccess(
+                row.CompletedDelegationId, row.CompletedActingFor),
             CreatedAt = row.CreatedAt,
             StartedAt = row.StartedAt,
             UpdatedAt = row.UpdatedAt,
@@ -627,7 +637,11 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             ExitedViaFlowId = row.ExitedViaFlowId,
             AggregateFlowId = row.AggregateFlowId,
             StartedBy = row.StartedBy,
+            StartedDelegatedAccess = ToDelegatedAccess(
+                row.StartedDelegationId, row.StartedActingFor),
             CompletedBy = row.CompletedBy,
+            CompletedDelegatedAccess = ToDelegatedAccess(
+                row.CompletedDelegationId, row.CompletedActingFor),
             CreatedAt = row.CreatedAt,
             StartedAt = row.StartedAt,
             UpdatedAt = row.UpdatedAt,
@@ -675,13 +689,23 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
     }
 
     private static NodeExecutionVariableChangeDto ToVariableChange(NodeExecutionVariableRow row) =>
-        new(
+        new NodeExecutionVariableChangeDto(
             row.Id,
             row.VariableName,
             row.SourceActionId,
             row.SetBy,
             ParseRequiredElement(row.ValueJson),
-            row.SetAt);
+            row.SetAt)
+        {
+            DelegatedAccess = ToDelegatedAccess(row.DelegationId, row.ActingFor)
+        };
+
+    private static DelegatedTaskAccessDto? ToDelegatedAccess(
+        long? delegationId,
+        string? actingFor) =>
+        delegationId is long id && !string.IsNullOrWhiteSpace(actingFor)
+            ? new DelegatedTaskAccessDto(id, actingFor)
+            : null;
 
     private static IReadOnlyList<string>? ParseStringArray(string? json)
     {
@@ -748,7 +772,11 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         public int? ExitedViaFlowId { get; set; }
         public int? AggregateFlowId { get; set; }
         public string? StartedBy { get; set; }
+        public string? StartedActingFor { get; set; }
+        public long? StartedDelegationId { get; set; }
         public string? CompletedBy { get; set; }
+        public string? CompletedActingFor { get; set; }
+        public long? CompletedDelegationId { get; set; }
         public DateTimeOffset CreatedAt { get; set; }
         public DateTimeOffset? StartedAt { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }
@@ -786,6 +814,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         public string VariableName { get; set; } = string.Empty;
         public int? SourceActionId { get; set; }
         public string? SetBy { get; set; }
+        public string? ActingFor { get; set; }
+        public long? DelegationId { get; set; }
         public string ValueJson { get; set; } = "null";
         public DateTimeOffset SetAt { get; set; }
     }

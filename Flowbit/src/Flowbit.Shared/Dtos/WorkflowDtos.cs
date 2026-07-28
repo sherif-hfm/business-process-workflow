@@ -198,6 +198,14 @@ public sealed record UserTaskCapabilitiesDto(
     bool CanUnclaim,
     bool CanAct);
 
+/// <summary>
+/// Identifies a standing grant used to act on a task while preserving its
+/// original assignee or claimant.
+/// </summary>
+public sealed record DelegatedTaskAccessDto(
+    long DelegationId,
+    string ActingFor);
+
 public sealed record UserTaskDto(
     long Id,
     long InstanceId,
@@ -220,7 +228,14 @@ public sealed record UserTaskDto(
     MultiInstanceProgressDto? MultiInstance,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? CompletedDelegatedAccess { get; init; }
+}
 
 public sealed record UserTaskActionAckDto(
     long UserTaskId,
@@ -240,6 +255,9 @@ public sealed record UserTaskActionAckDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionInfoDto? Completion { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
 }
 
 public static class UserTaskOwnershipKinds
@@ -488,7 +506,14 @@ public sealed record InstanceVariableDto(
     int? SourceFlowId,
     string? SetBy,
     JsonElement Value,
-    DateTimeOffset SetAt);
+    DateTimeOffset SetAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ActingFor { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DelegationId { get; init; }
+}
 
 /// <summary>
 /// Represents a single step in the execution history of a workflow instance.
@@ -517,7 +542,14 @@ public sealed record InstanceHistoryDto(
     string? PerformedBy,
     Dictionary<string, JsonElement>? Payload,
     string? Note,
-    DateTimeOffset PerformedAt);
+    DateTimeOffset PerformedAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ActingFor { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DelegationId { get; init; }
+}
 
 /// <summary>
 /// Generic wrapper representing a paged list of items.
@@ -599,4 +631,7 @@ public sealed record InboxItemDto(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, JsonElement>? Variables { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
 }

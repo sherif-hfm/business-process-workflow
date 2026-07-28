@@ -18,6 +18,10 @@ public sealed class InstanceHistoryEntity
 
     public string? PerformedBy { get; set; }
 
+    public string? ActingFor { get; set; }
+
+    public long? DelegationId { get; set; }
+
     public JsonDocument? Payload { get; set; }
 
     public string? Note { get; set; }

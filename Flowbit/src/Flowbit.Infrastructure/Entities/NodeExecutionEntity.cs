@@ -42,9 +42,13 @@ public sealed class NodeExecutionEntity
 
     public string? TriggeredBy { get; set; }
     public JsonDocument? TriggeredByRolesJson { get; set; }
+    public string? TriggeredActingFor { get; set; }
+    public long? TriggeredDelegationId { get; set; }
 
     public string? CompletedBy { get; set; }
     public JsonDocument? CompletedByRolesJson { get; set; }
+    public string? CompletedActingFor { get; set; }
+    public long? CompletedDelegationId { get; set; }
 
     public string? ErrorCode { get; set; }
     public string? ErrorDescription { get; set; }

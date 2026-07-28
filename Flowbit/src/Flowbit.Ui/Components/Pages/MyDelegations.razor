@@ -1,0 +1,551 @@
+@page "/delegations"
+@implements IDisposable
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>My Delegations · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Workspace" Title="My delegations"
+            Description="Let another user act on work assigned or claimed by you, or review delegations offered to you.">
+    <Actions>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="A test identity is required"
+                    Description="Set an identity before creating or responding to user delegations.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-label="Current delegation identity">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="data-subtitle mt-0">Delegations for</span>
+                <strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong>
+            </div>
+            <div class="alert alert-info mb-0 py-2">
+                A delegate uses their own roles and identity. Your task ownership is not transferred.
+            </div>
+        </div>
+    </section>
+
+    <div class="status-tabs" role="tablist" aria-label="Delegation direction">
+        <button type="button" class="status-tab @(direction == "outgoing" ? "active" : null)"
+                role="tab" aria-selected="@(direction == "outgoing")"
+                @onclick='() => ChangeDirectionAsync("outgoing")'>
+            Given by me
+        </button>
+        <button type="button" class="status-tab @(direction == "incoming" ? "active" : null)"
+                role="tab" aria-selected="@(direction == "incoming")"
+                @onclick='() => ChangeDirectionAsync("incoming")'>
+            Offered to me
+        </button>
+    </div>
+
+    @if (direction == "outgoing")
+    {
+        <section class="form-surface mb-3" aria-labelledby="new-delegation-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="new-delegation-heading">Create delegation</h2>
+                    <p>The same date window will be applied to every selected workflow family.</p>
+                </div>
+            </div>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="delegation-delegate">Delegate user</label>
+                    <input id="delegation-delegate" class="form-control" maxlength="300"
+                           autocomplete="off" @bind="delegateUser" @bind:event="oninput" placeholder="bob" />
+                </div>
+                <div>
+                    <label class="form-label" for="delegation-workflows">Workflow keys</label>
+                    <input id="delegation-workflows" class="form-control" @bind="workflowKeys" @bind:event="oninput"
+                           placeholder="purchase-request, expense-approval" />
+                    <div class="form-text">Comma-separated stable workflow keys.</div>
+                </div>
+                <div>
+                    <label class="form-label" for="delegation-from">Valid from (UTC)</label>
+                    <input id="delegation-from" type="datetime-local" class="form-control"
+                           @bind="validFrom" @bind:format="yyyy-MM-ddTHH:mm" />
+                </div>
+                <div>
+                    <label class="form-label" for="delegation-until">Valid until (UTC)</label>
+                    <input id="delegation-until" type="datetime-local" class="form-control"
+                           @bind="validUntil" @bind:format="yyyy-MM-ddTHH:mm" />
+                </div>
+                <div class="full">
+                    <label class="form-label" for="delegation-reason">Reason (optional)</label>
+                    <textarea id="delegation-reason" class="form-control" rows="2" maxlength="1000"
+                              @bind="creationReason" @bind:event="oninput" placeholder="Vacation cover"></textarea>
+                </div>
+                <div class="full d-flex justify-content-end">
+                    <button class="btn btn-primary" @onclick="CreateAsync" disabled="@submitting">
+                        <AppIcon Name="plus" /> @(submitting ? "Creating…" : "Create delegation")
+                    </button>
+                </div>
+            </div>
+        </section>
+    }
+
+    <section class="filter-panel" aria-labelledby="delegation-filter-heading">
+        <div class="section-heading mb-0">
+            <div>
+                <h2 id="delegation-filter-heading">Filters</h2>
+                <p>Filter the selected direction by workflow family or acceptance state.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" @onclick="ApplyFiltersAsync">Apply</button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearFiltersAsync"
+                        disabled="@(string.IsNullOrWhiteSpace(filterWorkflowKey) && string.IsNullOrWhiteSpace(filterState))">
+                    Clear
+                </button>
+            </div>
+        </div>
+        <div class="filter-grid mt-3">
+            <div>
+                <label class="form-label" for="delegation-filter-workflow">Workflow key</label>
+                <input id="delegation-filter-workflow" class="form-control"
+                       @bind="filterWorkflowKey" @bind:event="oninput" />
+            </div>
+            <div>
+                <label class="form-label" for="delegation-filter-state">Acceptance state</label>
+                <select id="delegation-filter-state" class="form-select" @bind="filterState">
+                    <option value="">All states</option>
+                    <option value="notRequired">No acceptance required</option>
+                    <option value="pending">Pending</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="delegation-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="delegation-results-heading">@(direction == "outgoing" ? "Delegations given by me" : "Delegations offered to me")</h2>
+                <p>@(result is null ? "Loading delegations…" : $"{result.TotalCount:N0} delegation records")</p>
+            </div>
+        </div>
+
+        @if (result is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (result.Items.Count == 0)
+        {
+            <EmptyState Icon="delegations" Title="No delegations"
+                        Description="No delegation records match this direction and filter set." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>@(direction == "outgoing" ? "Delegate" : "Delegator")</th>
+                            <th>Workflow</th>
+                            <th>Window</th>
+                            <th>Acceptance</th>
+                            <th>Status</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in result.Items)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="data-title">@(direction == "outgoing" ? item.Delegate : item.Delegator)</span>
+                                    <span class="data-subtitle">Grant #@item.Id · Created by @item.CreatedBy</span>
+                                </td>
+                                <td><span class="mono-id">@item.WorkflowKey</span></td>
+                                <td>
+                                    @item.ValidFrom.UtcDateTime.ToString("g") UTC
+                                    <span class="data-subtitle">Until @item.ValidUntil.UtcDateTime.ToString("g") UTC</span>
+                                </td>
+                                <td>
+                                    <StatusBadge Status="@AcceptanceTone(item.AcceptanceState)" Text="@AcceptanceLabel(item.AcceptanceState)" />
+                                    <span class="data-subtitle">@(item.RequiresAcceptance ? "Delegate response required" : "No response required")</span>
+                                </td>
+                                <td>
+                                    <StatusBadge Status="@LifecycleTone(item)" Text="@LifecycleLabel(item)" />
+                                    <span class="data-subtitle">Updated @item.UpdatedAt.UtcDateTime.ToString("g") UTC</span>
+                                </td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        @if (direction == "incoming" && CanDecide(item))
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" @onclick='() => OpenLifecycle(item, "accept")'>Accept</button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick='() => OpenLifecycle(item, "reject")'>Reject</button>
+                                        }
+                                        @if (direction == "outgoing" && CanRevoke(item))
+                                        {
+                                            <button class="btn btn-sm btn-outline-danger" @onclick='() => OpenLifecycle(item, "revoke")'>
+                                                @(item.AcceptanceState == "pending" ? "Withdraw" : "Revoke")
+                                            </button>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+@if (selectedDelegation is not null)
+{
+    <div class="delegation-backdrop" aria-hidden="true"></div>
+    <div class="delegation-dialog-shell" role="dialog" aria-modal="true" aria-labelledby="delegation-dialog-title">
+        <section class="delegation-dialog panel">
+            <div class="section-heading">
+                <div>
+                    <span class="page-eyebrow">Grant #@selectedDelegation.Id</span>
+                    <h2 id="delegation-dialog-title">@LifecycleActionTitle</h2>
+                    <p>@selectedDelegation.Delegator → @selectedDelegation.Delegate · @selectedDelegation.WorkflowKey</p>
+                </div>
+                <button class="btn-close" aria-label="Close" @onclick="CloseLifecycle" disabled="@submitting"></button>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="delegation-lifecycle-reason">Reason (optional)</label>
+                <textarea id="delegation-lifecycle-reason" class="form-control" rows="3" maxlength="1000"
+                          @bind="lifecycleReason" @bind:event="oninput"></textarea>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(dialogError))
+            {
+                <div class="alert alert-danger" role="alert">@dialogError</div>
+            }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-outline-secondary" @onclick="CloseLifecycle" disabled="@submitting">Cancel</button>
+                <button class="btn @(lifecycleOperation == "accept" ? "btn-primary" : "btn-danger")"
+                        @onclick="SubmitLifecycleAsync" disabled="@submitting">
+                    @(submitting ? "Saving…" : LifecycleActionTitle)
+                </button>
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    private const int PageSize = 50;
+    private PagedResult<UserDelegationDto>? result;
+    private UserDelegationDto? selectedDelegation;
+    private string direction = "outgoing";
+    private string? delegateUser;
+    private string? workflowKeys;
+    private string? creationReason;
+    private DateTime? validFrom = MinuteValue(DateTime.UtcNow);
+    private DateTime? validUntil = MinuteValue(DateTime.UtcNow.AddDays(7));
+    private string? filterWorkflowKey;
+    private string? filterState;
+    private string? lifecycleOperation;
+    private string? lifecycleReason;
+    private string? error;
+    private string? success;
+    private string? dialogError;
+    private bool loading;
+    private bool submitting;
+    private int page = 1;
+
+    private int TotalPages => result is null || result.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+    private bool HasNextPage => result is not null && page < TotalPages;
+    private string LifecycleActionTitle => lifecycleOperation switch
+    {
+        "accept" => "Accept delegation",
+        "reject" => "Reject delegation",
+        _ => selectedDelegation?.AcceptanceState == "pending" ? "Withdraw delegation" : "Revoke delegation"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (!Token.HasToken)
+        {
+            result = null;
+            return;
+        }
+
+        try
+        {
+            loading = true;
+            error = null;
+            result = await Api.GetUserDelegationsAsync(
+                direction,
+                filterWorkflowKey,
+                filterState,
+                page,
+                PageSize);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task ChangeDirectionAsync(string value)
+    {
+        direction = value;
+        page = 1;
+        success = null;
+        CloseLifecycle();
+        await LoadAsync();
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        filterWorkflowKey = filterState = null;
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1) return;
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        page++;
+        await LoadAsync();
+    }
+
+    private async Task CreateAsync()
+    {
+        var keys = ParseWorkflowKeys(workflowKeys);
+        if (string.IsNullOrWhiteSpace(delegateUser))
+        {
+            error = "A delegate user is required.";
+            return;
+        }
+        if (keys.Count == 0)
+        {
+            error = "At least one workflow key is required.";
+            return;
+        }
+        if (validFrom is null || validUntil is null)
+        {
+            error = "Both validity dates are required.";
+            return;
+        }
+
+        var from = ToUtc(validFrom.Value);
+        var until = ToUtc(validUntil.Value);
+        if (until <= from)
+        {
+            error = "Valid until must be later than valid from.";
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            error = success = null;
+            var created = await Api.CreateUserDelegationsAsync(
+                new CreateUserDelegationRequest(
+                    delegateUser.Trim(),
+                    keys,
+                    from,
+                    until,
+                    NullIfWhiteSpace(creationReason)));
+            success = created.Count == 1
+                ? "Delegation created."
+                : $"{created.Count} workflow delegations created.";
+            delegateUser = workflowKeys = creationReason = null;
+            page = 1;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private void OpenLifecycle(UserDelegationDto item, string operation)
+    {
+        selectedDelegation = item;
+        lifecycleOperation = operation;
+        lifecycleReason = dialogError = null;
+    }
+
+    private void CloseLifecycle()
+    {
+        if (submitting) return;
+        selectedDelegation = null;
+        lifecycleOperation = lifecycleReason = dialogError = null;
+    }
+
+    private async Task SubmitLifecycleAsync()
+    {
+        if (selectedDelegation is null || lifecycleOperation is null) return;
+        var item = selectedDelegation;
+        var request = new UserDelegationLifecycleRequest(
+            item.UpdatedAt,
+            NullIfWhiteSpace(lifecycleReason));
+
+        try
+        {
+            submitting = true;
+            dialogError = null;
+            _ = lifecycleOperation switch
+            {
+                "accept" => await Api.AcceptUserDelegationAsync(item.Id, request),
+                "reject" => await Api.RejectUserDelegationAsync(item.Id, request),
+                _ => await Api.RevokeUserDelegationAsync(item.Id, request)
+            };
+            success = lifecycleOperation switch
+            {
+                "accept" => "Delegation accepted.",
+                "reject" => "Delegation rejected.",
+                _ => "Delegation revoked."
+            };
+            selectedDelegation = null;
+            lifecycleOperation = lifecycleReason = null;
+            await LoadAsync();
+            if (result is { Items.Count: 0 } && page > 1)
+            {
+                page--;
+                await LoadAsync();
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            dialogError = "This delegation changed. Close the dialog, refresh, and try again.";
+        }
+        catch (Exception ex)
+        {
+            dialogError = ex.Message;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        selectedDelegation = null;
+        page = 1;
+        await LoadAsync();
+    });
+
+    private static bool CanDecide(UserDelegationDto item) =>
+        item.RevokedAt is null
+        && string.Equals(item.AcceptanceState, "pending", StringComparison.OrdinalIgnoreCase)
+        && item.ValidUntil > DateTimeOffset.UtcNow;
+
+    private static bool CanRevoke(UserDelegationDto item) =>
+        item.RevokedAt is null
+        && !string.Equals(item.AcceptanceState, "rejected", StringComparison.OrdinalIgnoreCase)
+        && item.ValidUntil > DateTimeOffset.UtcNow;
+
+    private static string AcceptanceLabel(string state) => state switch
+    {
+        "notRequired" => "Not required",
+        "pending" => "Pending",
+        "accepted" => "Accepted",
+        "rejected" => "Rejected",
+        _ => state
+    };
+
+    private static string AcceptanceTone(string state) => state switch
+    {
+        "pending" => "warning",
+        "accepted" or "notRequired" => "success",
+        "rejected" => "danger",
+        _ => "neutral"
+    };
+
+    private static string LifecycleLabel(UserDelegationDto item)
+    {
+        if (item.RevokedAt is not null) return "Revoked";
+        if (string.Equals(item.AcceptanceState, "rejected", StringComparison.OrdinalIgnoreCase)) return "Rejected";
+        if (item.ValidUntil <= DateTimeOffset.UtcNow) return "Expired";
+        if (item.ValidFrom > DateTimeOffset.UtcNow) return "Scheduled";
+        return item.IsActive ? "Active" : "Inactive";
+    }
+
+    private static string LifecycleTone(UserDelegationDto item) => LifecycleLabel(item) switch
+    {
+        "Active" => "success",
+        "Scheduled" or "Inactive" => "warning",
+        "Revoked" or "Rejected" or "Expired" => "danger",
+        _ => "neutral"
+    };
+
+    private static IReadOnlyList<string> ParseWorkflowKeys(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static DateTime MinuteValue(DateTime value) =>
+        new(value.Year, value.Month, value.Day, value.Hour, value.Minute, 0, DateTimeKind.Unspecified);
+
+    private static DateTimeOffset ToUtc(DateTime value)
+    {
+        var utc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return new DateTimeOffset(utc);
+    }
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

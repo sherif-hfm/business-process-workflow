@@ -134,6 +134,11 @@ try
                 {
                     Name = "Task Distribution",
                     Description = "List and assign workflow-family tasks using external distributor client credentials."
+                },
+                new()
+                {
+                    Name = "User Delegation",
+                    Description = "Create and administer finite, workflow-family standing grants for acting on behalf of another user."
                 }
             };
 
@@ -345,6 +350,7 @@ try
     app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
     app.MapNodeExecutionEndpoints();
+    app.MapUserDelegationEndpoints();
 
     app.Run();
 }

@@ -69,6 +69,7 @@ public interface IWorkflowRuntimeRepository
     Task<PagedResult<InboxListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
+        DateTimeOffset asOf,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -248,6 +249,7 @@ public interface IWorkflowRuntimeRepository
         string? status,
         string user,
         IReadOnlyCollection<string> roles,
+        DateTimeOffset asOf,
         int page,
         int pageSize,
         CancellationToken cancellationToken);
@@ -297,7 +299,9 @@ public interface IWorkflowRuntimeRepository
         string completedBy,
         IReadOnlyList<string> completedByRoles,
         Dictionary<string, JsonElement> result,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task CompleteUserTaskAsync(
         long taskId,
@@ -305,7 +309,9 @@ public interface IWorkflowRuntimeRepository
         string completedBy,
         IReadOnlyList<string> completedByRoles,
         Dictionary<string, JsonElement> result,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task ActivateNextMultiInstanceItemAsync(
         long executionId,
@@ -336,7 +342,9 @@ public interface IWorkflowRuntimeRepository
         string? setBy,
         JsonElement value,
         CancellationToken cancellationToken,
-        long? nodeExecutionId = null);
+        long? nodeExecutionId = null,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesAsync(
         long instanceId,
@@ -350,7 +358,9 @@ public interface IWorkflowRuntimeRepository
         string? performedBy,
         Dictionary<string, JsonElement>? payload,
         string? note,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task AddTokenHistoryAsync(
         long instanceId,
@@ -361,7 +371,9 @@ public interface IWorkflowRuntimeRepository
         string? performedBy,
         Dictionary<string, JsonElement>? payload,
         string? note,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task AddMultiInstanceHistoryAsync(
         long instanceId,
@@ -375,7 +387,9 @@ public interface IWorkflowRuntimeRepository
         string? performedBy,
         Dictionary<string, JsonElement>? payload,
         string note,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task AddUserTaskActionHistoryAsync(
         long instanceId,
@@ -386,7 +400,9 @@ public interface IWorkflowRuntimeRepository
         int toStepId,
         string performedBy,
         Dictionary<string, JsonElement> payload,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task AddUserTaskHistoryAsync(
         long instanceId,
@@ -398,7 +414,9 @@ public interface IWorkflowRuntimeRepository
         string performedBy,
         Dictionary<string, JsonElement> payload,
         string note,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null);
 
     Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(
         long instanceId,

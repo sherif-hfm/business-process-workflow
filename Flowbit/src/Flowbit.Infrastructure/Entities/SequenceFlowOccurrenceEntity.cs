@@ -34,6 +34,10 @@ public sealed class SequenceFlowOccurrenceEntity
 
     public List<string> UserRoles { get; set; } = [];
 
+    public string? ActingFor { get; set; }
+
+    public long? DelegationId { get; set; }
+
     public JsonDocument? ValuesJson { get; set; }
 
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;

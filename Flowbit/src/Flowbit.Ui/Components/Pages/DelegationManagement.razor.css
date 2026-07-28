@@ -1,0 +1,42 @@
+.delegation-admin-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+.policy-card {
+    padding: .9rem;
+    background: var(--fb-surface-soft);
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+}
+
+.delegation-backdrop {
+    position: fixed;
+    z-index: 1040;
+    inset: 0;
+    background: rgba(15, 23, 42, .42);
+}
+
+.delegation-dialog-shell {
+    position: fixed;
+    z-index: 1050;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+}
+
+.delegation-dialog {
+    width: min(100%, 560px);
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    box-shadow: var(--fb-shadow-lg);
+}
+
+@media (max-width: 999.98px) {
+    .delegation-admin-grid {
+        grid-template-columns: 1fr;
+    }
+}

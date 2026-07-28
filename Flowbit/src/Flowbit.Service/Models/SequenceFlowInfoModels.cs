@@ -38,7 +38,16 @@ public sealed record SequenceFlowLastOccurrence(
     [property: JsonPropertyName("userRoles")] IReadOnlyList<string> UserRoles,
     [property: JsonPropertyName("occurredAt")] DateTimeOffset OccurredAt,
     [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("values")] JsonElement? Values);
+    [property: JsonPropertyName("values")] JsonElement? Values)
+{
+    [JsonPropertyName("actingFor")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ActingFor { get; init; }
+
+    [JsonPropertyName("delegationId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DelegationId { get; init; }
+}
 
 /// <summary>
 /// A transition-local, mutable snapshot of the persisted summaries. It keeps

@@ -55,12 +55,16 @@ public static class SequenceFlowConditionEvaluator
         "actions.count",
         "actions.last.user",
         "actions.last.userRoles",
+        "actions.last.actingFor",
+        "actions.last.delegationId",
         "actions.last.occurredAt",
         "actions.last.kind",
         "actions.last.values",
         "traversals.count",
         "traversals.last.user",
         "traversals.last.userRoles",
+        "traversals.last.actingFor",
+        "traversals.last.delegationId",
         "traversals.last.occurredAt",
         "traversals.last.kind",
         "traversals.last.values",
@@ -312,6 +316,8 @@ public static class SequenceFlowConditionEvaluator
 
         if (path.EndsWith(".user", StringComparison.OrdinalIgnoreCase)) return last.User;
         if (path.EndsWith(".userRoles", StringComparison.OrdinalIgnoreCase)) return last.UserRoles;
+        if (path.EndsWith(".actingFor", StringComparison.OrdinalIgnoreCase)) return last.ActingFor;
+        if (path.EndsWith(".delegationId", StringComparison.OrdinalIgnoreCase)) return last.DelegationId;
         if (path.EndsWith(".occurredAt", StringComparison.OrdinalIgnoreCase))
         {
             return last.OccurredAt.ToString("O", CultureInfo.InvariantCulture);

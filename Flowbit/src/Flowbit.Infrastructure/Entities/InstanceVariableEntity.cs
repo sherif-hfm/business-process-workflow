@@ -22,5 +22,9 @@ public sealed class InstanceVariableEntity
 
     public string? SetBy { get; set; }
 
+    public string? ActingFor { get; set; }
+
+    public long? DelegationId { get; set; }
+
     public DateTimeOffset SetAt { get; set; } = DateTimeOffset.UtcNow;
 }

@@ -65,7 +65,11 @@ public sealed record ExecutionTokenRecord(
 
 public sealed record NodeExecutionActorRecord(
     string? User,
-    IReadOnlyList<string> Roles);
+    IReadOnlyList<string> Roles)
+{
+    public string? ActingFor { get; init; }
+    public long? DelegationId { get; init; }
+}
 
 public sealed record NodeExecutionCompletionRecord(
     string Status,
@@ -108,7 +112,13 @@ public sealed record NodeExecutionRecord(
     DateTimeOffset? StartedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    bool IsCutoverSeeded);
+    bool IsCutoverSeeded)
+{
+    public string? TriggeredActingFor { get; init; }
+    public long? TriggeredDelegationId { get; init; }
+    public string? CompletedActingFor { get; init; }
+    public long? CompletedDelegationId { get; init; }
+}
 
 public sealed record ParallelGatewayExecutionRecord(
     long Id,
@@ -175,7 +185,18 @@ public sealed record UserTaskRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    long? NodeExecutionId = null);
+    long? NodeExecutionId = null)
+{
+    public string? CompletedActingFor { get; init; }
+    public long? CompletionDelegationId { get; init; }
+
+    /// <summary>
+    /// Request-local delegation metadata populated by actor-scoped repository
+    /// queries. It is not part of the persisted user-task row.
+    /// </summary>
+    public string? ActingFor { get; init; }
+    public long? DelegationId { get; init; }
+}
 
 public sealed record ManagedUserTaskRecord(
     long UserTaskId,
@@ -338,13 +359,18 @@ public sealed record InboxListItem(
     DateTimeOffset InstanceCreatedAt,
     DateTimeOffset InstanceUpdatedAt,
     IReadOnlyDictionary<string, JsonElement>? Variables,
-    MultiInstanceProgressRecord? MultiInstanceProgress = null);
+    MultiInstanceProgressRecord? MultiInstanceProgress = null)
+{
+    public string? ActingFor { get; init; }
+    public long? DelegationId { get; init; }
+}
 
 public sealed record AssignmentInheritanceSourceRecord(
     long UserTaskId,
     int NodeId,
     string? Assignee,
-    string? CompletedBy);
+    string? CompletedBy,
+    string? CompletedActingFor = null);
 
 public sealed record InstanceVariableRecord(
     long Id,
@@ -354,7 +380,9 @@ public sealed record InstanceVariableRecord(
     string? SetBy,
     JsonElement Value,
     DateTimeOffset SetAt,
-    long? NodeExecutionId = null);
+    long? NodeExecutionId = null,
+    string? ActingFor = null,
+    long? DelegationId = null);
 
 public sealed record InstanceHistoryRecord(
     long Id,
@@ -369,7 +397,9 @@ public sealed record InstanceHistoryRecord(
     string? PerformedBy,
     Dictionary<string, JsonElement>? Payload,
     string? Note,
-    DateTimeOffset PerformedAt);
+    DateTimeOffset PerformedAt,
+    string? ActingFor = null,
+    long? DelegationId = null);
 
 public sealed record SequenceFlowOccurrenceWriteRecord(
     long InstanceId,
@@ -386,14 +416,18 @@ public sealed record SequenceFlowOccurrenceWriteRecord(
     string? User,
     IReadOnlyList<string> UserRoles,
     Dictionary<string, JsonElement>? Values,
-    DateTimeOffset OccurredAt);
+    DateTimeOffset OccurredAt,
+    string? ActingFor = null,
+    long? DelegationId = null);
 
 public sealed record SequenceFlowEvidenceRecord(
     string? User,
     IReadOnlyList<string> UserRoles,
     DateTimeOffset OccurredAt,
     string Kind,
-    Dictionary<string, JsonElement>? Values);
+    Dictionary<string, JsonElement>? Values,
+    string? ActingFor = null,
+    long? DelegationId = null);
 
 public sealed record SequenceFlowSummaryRecord(
     long InstanceId,

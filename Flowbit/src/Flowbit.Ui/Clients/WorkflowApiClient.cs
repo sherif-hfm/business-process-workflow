@@ -229,6 +229,144 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? new PagedResult<ManagedUserTaskDto>([], page, pageSize, 0);
     }
 
+    public async Task<PagedResult<UserDelegationDto>> GetUserDelegationsAsync(
+        string direction = "outgoing",
+        string? workflowKey = null,
+        string? state = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string>
+        {
+            $"direction={Uri.EscapeDataString(direction)}",
+            $"page={page}",
+            $"pageSize={pageSize}"
+        };
+        AddQueryValue(parameters, "workflowKey", workflowKey);
+        AddQueryValue(parameters, "state", state);
+
+        using var response = await httpClient.GetAsync(
+            $"/api/user-delegations?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<UserDelegationDto>>(cancellationToken)
+            ?? new PagedResult<UserDelegationDto>([], page, pageSize, 0);
+    }
+
+    public async Task<IReadOnlyList<UserDelegationDto>> CreateUserDelegationsAsync(
+        CreateUserDelegationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/user-delegations", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<UserDelegationDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public Task<UserDelegationDto?> AcceptUserDelegationAsync(
+        long id,
+        UserDelegationLifecycleRequest request,
+        CancellationToken cancellationToken = default) =>
+        ChangeUserDelegationAsync(id, "accept", request, managed: false, cancellationToken);
+
+    public Task<UserDelegationDto?> RejectUserDelegationAsync(
+        long id,
+        UserDelegationLifecycleRequest request,
+        CancellationToken cancellationToken = default) =>
+        ChangeUserDelegationAsync(id, "reject", request, managed: false, cancellationToken);
+
+    public Task<UserDelegationDto?> RevokeUserDelegationAsync(
+        long id,
+        UserDelegationLifecycleRequest request,
+        CancellationToken cancellationToken = default) =>
+        ChangeUserDelegationAsync(id, "revoke", request, managed: false, cancellationToken);
+
+    public async Task<PagedResult<UserDelegationDto>> GetManagedUserDelegationsAsync(
+        string? delegator = null,
+        string? @delegate = null,
+        string? workflowKey = null,
+        string? state = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        AddQueryValue(parameters, "delegator", delegator);
+        AddQueryValue(parameters, "delegate", @delegate);
+        AddQueryValue(parameters, "workflowKey", workflowKey);
+        AddQueryValue(parameters, "state", state);
+
+        using var response = await httpClient.GetAsync(
+            $"/api/user-delegations/manage?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<UserDelegationDto>>(cancellationToken)
+            ?? new PagedResult<UserDelegationDto>([], page, pageSize, 0);
+    }
+
+    public async Task<IReadOnlyList<UserDelegationDto>> CreateManagedUserDelegationsAsync(
+        CreateManagedUserDelegationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/user-delegations/manage", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<UserDelegationDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public Task<UserDelegationDto?> RevokeManagedUserDelegationAsync(
+        long id,
+        UserDelegationLifecycleRequest request,
+        CancellationToken cancellationToken = default) =>
+        ChangeUserDelegationAsync(id, "revoke", request, managed: true, cancellationToken);
+
+    public async Task<WorkflowDelegationPolicyDto?> GetWorkflowDelegationPolicyAsync(
+        string workflowKey,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/user-delegation-policies/{Uri.EscapeDataString(workflowKey)}",
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowDelegationPolicyDto>(cancellationToken);
+    }
+
+    public async Task<WorkflowDelegationPolicyDto?> UpdateWorkflowDelegationPolicyAsync(
+        string workflowKey,
+        UpdateWorkflowDelegationPolicyRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/user-delegation-policies/{Uri.EscapeDataString(workflowKey)}",
+            request,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowDelegationPolicyDto>(cancellationToken);
+    }
+
+    private async Task<UserDelegationDto?> ChangeUserDelegationAsync(
+        long id,
+        string operation,
+        UserDelegationLifecycleRequest request,
+        bool managed,
+        CancellationToken cancellationToken)
+    {
+        var route = managed
+            ? $"/api/user-delegations/manage/{id}/{operation}"
+            : $"/api/user-delegations/{id}/{operation}";
+        using var response = await httpClient.PostAsJsonAsync(route, request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserDelegationDto>(cancellationToken);
+    }
+
     public async Task<PagedResult<NodeExecutionSummaryDto>> GetNodeExecutionsAsync(
         NodeExecutionSearchQuery query,
         CancellationToken cancellationToken = default)

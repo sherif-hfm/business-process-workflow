@@ -1,4 +1,4 @@
-- add user delegation
+
 - add Inclusive Gateway
 - add Complex Gateway
 - async flow asyncAfter/asyncBefore and  Timers events
@@ -15,6 +15,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add user delegation (done)
 - add Parallel Gateways (done)
 - terminateEndEvent (done)
 - api/instances/{id}/message should has node id or external node id (done)

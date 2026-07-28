@@ -102,7 +102,7 @@ else
                         {
                             <tr>
                                 <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
-                                <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@item.WorkflowVersion</span></td>
+                                <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@(item.WorkflowVersion)</span></td>
                                 <td><StatusBadge Status="@OwnershipTone(item.Ownership)" Text="@OwnershipLabel(item)" /><span class="data-subtitle">@(item.RequiresClaim ? "Claim required when pooled" : "Open when pooled")</span></td>
                                 <td>@if (item.NodeRoles.Count == 0) { <span>Any role</span> } else { @foreach (var role in item.NodeRoles) { <StatusBadge Status="neutral" Text="@role" /> } }</td>
                                 <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
@@ -146,9 +146,9 @@ else
             </div>
             @if (!unassignMode)
             {
-                <div class="mb-3"><label class="form-label" for="assignment-actor">New actor ID</label><input id="assignment-actor" class="form-control" maxlength="300" autocomplete="off" @bind="targetActor" /><div class="form-text">Must exactly match the canonical identity resolved from the target user’s JWT.</div></div>
+                <div class="mb-3"><label class="form-label" for="assignment-actor">New actor ID</label><input id="assignment-actor" class="form-control" maxlength="300" autocomplete="off" @bind="targetActor" @bind:event="oninput" /><div class="form-text">Must exactly match the canonical identity resolved from the target user’s JWT.</div></div>
             }
-            <div class="mb-3"><label class="form-label" for="assignment-reason">Reason (optional)</label><textarea id="assignment-reason" class="form-control" rows="3" maxlength="1000" @bind="assignmentReason"></textarea></div>
+            <div class="mb-3"><label class="form-label" for="assignment-reason">Reason (optional)</label><textarea id="assignment-reason" class="form-control" rows="3" maxlength="1000" @bind="assignmentReason" @bind:event="oninput"></textarea></div>
             <div class="alert alert-warning">Flowbit cannot verify that this actor exists or holds the required node and flow roles. A manager can correct or release the task later.</div>
             @if (!string.IsNullOrWhiteSpace(dialogError)) { <div class="alert alert-danger" role="alert">@dialogError</div> }
             <div class="d-flex justify-content-end gap-2">

@@ -29,7 +29,8 @@
             <div class="form-grid">
                 <div>
                     <label class="form-label" for="token-user">User</label>
-                    <input id="token-user" class="form-control" @bind="user" placeholder="e.g. alice" autocomplete="off" />
+                    <input id="token-user" class="form-control" @bind="user" @bind:event="oninput"
+                           placeholder="e.g. alice" autocomplete="off" />
                 </div>
                 <div>
                     <label class="form-label" for="token-expiry">Expires in</label>
@@ -40,7 +41,8 @@
                 </div>
                 <div class="full">
                     <label class="form-label" for="token-roles">Roles</label>
-                    <input id="token-roles" class="form-control" @bind="roles" placeholder="e.g. Manager, Finance" aria-describedby="role-help" />
+                    <input id="token-roles" class="form-control" @bind="roles" @bind:event="oninput"
+                           placeholder="e.g. Manager, Finance" aria-describedby="role-help" />
                     <div id="role-help" class="form-text">Comma-separated. Role matching in workflow authorization is case-insensitive.</div>
                 </div>
                 <div class="full">
@@ -79,7 +81,8 @@
             }
 
             <label class="form-label" for="raw-token">Raw JWT</label>
-            <textarea id="raw-token" class="form-control font-monospace" rows="7" @bind="rawToken" spellcheck="false"
+            <textarea id="raw-token" class="form-control font-monospace" rows="7"
+                      @bind="rawToken" @bind:event="oninput" spellcheck="false"
                       placeholder="Paste a JWT to test it as-is, including invalid or expired tokens."></textarea>
             <div class="d-flex flex-wrap gap-2 mt-3">
                 <button class="btn btn-outline-primary" @onclick="ApplyRaw">Apply pasted token</button>

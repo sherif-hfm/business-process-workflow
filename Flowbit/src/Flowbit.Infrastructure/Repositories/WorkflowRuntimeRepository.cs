@@ -128,6 +128,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task<PagedResult<InboxListItem>> ListInboxAsync(
         string user,
         IReadOnlyCollection<string> roles,
+        DateTimeOffset asOf,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -142,7 +143,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     {
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
-        var (where, args) = BuildInboxWhere(user, roles, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters);
+        var (where, args) = BuildInboxWhere(
+            user, roles, asOf, instanceId, workflowId, workflowKey, businessKey,
+            nodeId, nodeExternalId, variableFilters);
         var eligibleOrderBy = BuildInboxOrderBy(sort, "e");
         var pageOrderBy = BuildInboxOrderBy(sort, "page");
         var eligibleCte = $"""
@@ -150,6 +153,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 SELECT ut."Id",
                        ut."InstanceId",
                        ut."MultiInstanceExecutionId",
+                       delegation."Id" AS "DelegationId",
+                       delegation."Delegator" AS "ActingFor",
                        ut."CreatedAt" AS "TaskCreatedAt",
                        ut."UpdatedAt" AS "TaskUpdatedAt",
                        w."CreatedAt" AS "InstanceCreatedAt",
@@ -158,13 +163,20 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                            PARTITION BY CASE
                                WHEN COALESCE(mie."OnePerActor", FALSE) THEN mie."Id"
                                ELSE -ut."Id"
+                           END,
+                           CASE
+                               WHEN COALESCE(mie."OnePerActor", FALSE)
+                               THEN lower(COALESCE(delegation."Delegator", @user))
+                               ELSE ''
                            END
                            ORDER BY
                                CASE
                                    WHEN COALESCE(mie."OnePerActor", FALSE)
-                                        AND lower(ut."Assignee") = lower(@user) THEN 0
+                                        AND lower(ut."Assignee") =
+                                            lower(COALESCE(delegation."Delegator", @user)) THEN 0
                                    WHEN COALESCE(mie."OnePerActor", FALSE)
-                                        AND lower(ut."ClaimedBy") = lower(@user) THEN 1
+                                        AND lower(ut."ClaimedBy") =
+                                            lower(COALESCE(delegation."Delegator", @user)) THEN 1
                                    ELSE 2
                                END,
                                ut."UpdatedAt" DESC,
@@ -174,6 +186,19 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 JOIN flowbit.workflow_instances w ON ut."InstanceId" = w."Id"
                 JOIN flowbit.workflow_definitions wd ON w."WorkflowDefinitionId" = wd."Id"
                 LEFT JOIN flowbit.multi_instance_executions mie ON mie."Id" = ut."MultiInstanceExecutionId"
+                LEFT JOIN LATERAL (
+                    SELECT d."Id", d."Delegator"
+                    FROM flowbit.user_delegations d
+                    WHERE d."Delegate" = @user
+                      AND d."Delegator" = COALESCE(ut."Assignee", ut."ClaimedBy")
+                      AND d."WorkflowKey" = w."WorkflowKey"
+                      AND d."RevokedAt" IS NULL
+                      AND d."ValidFrom" <= @delegationAsOf
+                      AND @delegationAsOf < d."ValidUntil"
+                      AND d."AcceptanceState" IN ('notRequired', 'accepted')
+                    ORDER BY d."ValidFrom" DESC, d."Id" DESC
+                    LIMIT 1
+                ) delegation ON TRUE
                 {where}
             )
             """;
@@ -205,6 +230,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 {eligibleCte},
                 page_task_ids AS MATERIALIZED (
                     SELECT e."Id", e."InstanceId", e."MultiInstanceExecutionId",
+                           e."DelegationId", e."ActingFor",
                            e."TaskCreatedAt", e."TaskUpdatedAt",
                            e."InstanceCreatedAt", e."InstanceUpdatedAt"
                     FROM eligible e
@@ -276,6 +302,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        ut."RequiresAssignment" AS "CurrentRequiresAssignment",
                        w."Status" AS "Status",
                        ut."ClaimedBy" AS "ClaimedBy",
+                       page."DelegationId" AS "DelegationId",
+                       page."ActingFor" AS "ActingFor",
                        w."StartedBy" AS "StartedBy",
                        ut."CreatedAt" AS "TaskCreatedAt",
                        ut."UpdatedAt" AS "TaskUpdatedAt",
@@ -531,6 +559,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     private static (StringBuilder Where, List<(string Name, object Value)> Args) BuildInboxWhere(
         string user,
         IReadOnlyCollection<string> roles,
+        DateTimeOffset asOf,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -583,6 +612,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                         AND COALESCE((bypass_flow->>'canActWithoutClaim')::boolean, FALSE)
                      )
                     ))
+                 OR delegation."Id" IS NOT NULL
                   )
               AND (
                     NOT COALESCE(mie."OnePerActor", FALSE)
@@ -592,7 +622,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                       WHERE completed."MultiInstanceExecutionId" = mie."Id"
                         AND completed."Status" = @completedTask
                         AND completed."CompletedBy" IS NOT NULL
-                        AND lower(completed."CompletedBy") = lower(@user)
+                        AND lower(COALESCE(
+                                completed."CompletedActingFor",
+                                completed."CompletedBy")) =
+                            lower(COALESCE(delegation."Delegator", @user))
                     )
                   )
             """);
@@ -603,6 +636,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ("activeTask", UserTaskStatuses.Active),
             ("completedTask", UserTaskStatuses.Completed),
             ("user", user),
+            ("delegationAsOf", asOf),
             ("lowerRoles", lowerRoles)
         };
 
@@ -1624,7 +1658,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             row.InstanceCreatedAt,
             row.InstanceUpdatedAt,
             ParseVariables(row.VariablesJson),
-            progress);
+            progress)
+        {
+            ActingFor = row.ActingFor,
+            DelegationId = row.DelegationId
+        };
     }
 
     private static JsonElement? ParseJsonValue(string? json)
@@ -1692,6 +1730,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         public bool CurrentRequiresAssignment { get; set; }
         public string Status { get; set; } = string.Empty;
         public string? ClaimedBy { get; set; }
+        public long? DelegationId { get; set; }
+        public string? ActingFor { get; set; }
         public string? StartedBy { get; set; }
         public DateTimeOffset TaskCreatedAt { get; set; }
         public DateTimeOffset TaskUpdatedAt { get; set; }
@@ -1719,6 +1759,56 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         public int MiPendingTaskCount { get; set; }
         public int MiCancelledTaskCount { get; set; }
         public string MiFlowCountsJson { get; set; } = string.Empty;
+    }
+
+    private static UserTaskRecord ToUserTaskRecord(UserTaskPageRow row) =>
+        new(row.Id, row.InstanceId, row.TokenId, row.NodeId, row.NodeName,
+            row.NodeExternalId, row.Roles, row.RequiresClaim, row.RequiresAssignment,
+            row.Status, row.ClaimedBy, row.MultiInstanceExecutionId, row.ItemIndex,
+            ParseJsonValue(row.ItemValueJson), row.Assignee, row.SelectedFlowId,
+            ParseOptionalDictionary(row.ResultJson), row.CompletedBy, row.CompletedByRoles,
+            row.CreatedAt, row.UpdatedAt, row.CompletedAt, row.NodeExecutionId)
+        {
+            CompletedActingFor = row.CompletedActingFor,
+            CompletionDelegationId = row.CompletionDelegationId,
+            ActingFor = row.ActingFor,
+            DelegationId = row.DelegationId
+        };
+
+    private static Dictionary<string, JsonElement>? ParseOptionalDictionary(string? json) =>
+        json is null
+            ? null
+            : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+
+    private sealed class UserTaskPageRow
+    {
+        public long Id { get; set; }
+        public long InstanceId { get; set; }
+        public long TokenId { get; set; }
+        public int NodeId { get; set; }
+        public string NodeName { get; set; } = string.Empty;
+        public string? NodeExternalId { get; set; }
+        public string[] Roles { get; set; } = [];
+        public bool RequiresClaim { get; set; }
+        public bool RequiresAssignment { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string? ClaimedBy { get; set; }
+        public long? MultiInstanceExecutionId { get; set; }
+        public int? ItemIndex { get; set; }
+        public string? ItemValueJson { get; set; }
+        public string? Assignee { get; set; }
+        public int? SelectedFlowId { get; set; }
+        public string? ResultJson { get; set; }
+        public string? CompletedBy { get; set; }
+        public string[]? CompletedByRoles { get; set; }
+        public string? CompletedActingFor { get; set; }
+        public long? CompletionDelegationId { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+        public DateTimeOffset UpdatedAt { get; set; }
+        public DateTimeOffset? CompletedAt { get; set; }
+        public long? NodeExecutionId { get; set; }
+        public long? DelegationId { get; set; }
+        public string? ActingFor { get; set; }
     }
 
     private async Task<IReadOnlyList<ManagedUserTaskRecord>> ToManagedUserTaskRecordsAsync(
@@ -2026,6 +2116,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? status,
         string user,
         IReadOnlyCollection<string> roles,
+        DateTimeOffset asOf,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -2037,7 +2128,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToArray();
         var where = new StringBuilder("""
              WHERE ut."InstanceId" = @instanceId
-               AND (ut."Assignee" IS NULL OR lower(ut."Assignee") = lower(@user))
+               AND (
+                    ut."Assignee" IS NULL
+                    OR lower(ut."Assignee") = lower(@user)
+                    OR delegation."Id" IS NOT NULL
+               )
                AND (NOT ut."RequiresAssignment" OR ut."Assignee" IS NOT NULL)
                AND (
                     cardinality(ut."Roles") = 0
@@ -2051,6 +2146,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             ("instanceId", instanceId),
             ("user", user),
+            ("delegationAsOf", asOf),
             ("lowerRoles", lowerRoles)
         };
         if (!string.IsNullOrWhiteSpace(status))
@@ -2060,9 +2156,26 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
 #pragma warning disable EF1002
+        const string from = """
+            FROM flowbit.user_tasks ut
+            JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+            LEFT JOIN LATERAL (
+                SELECT d."Id", d."Delegator"
+                FROM flowbit.user_delegations d
+                WHERE d."Delegate" = @user
+                  AND d."Delegator" = COALESCE(ut."Assignee", ut."ClaimedBy")
+                  AND d."WorkflowKey" = w."WorkflowKey"
+                  AND d."RevokedAt" IS NULL
+                  AND d."ValidFrom" <= @delegationAsOf
+                  AND @delegationAsOf < d."ValidUntil"
+                  AND d."AcceptanceState" IN ('notRequired', 'accepted')
+                ORDER BY d."ValidFrom" DESC, d."Id" DESC
+                LIMIT 1
+            ) delegation ON TRUE
+            """;
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM flowbit.user_tasks ut {where}",
+                $"SELECT COUNT(*) AS \"Value\" {from} {where}",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
         var pageArgs = new List<(string Name, object Value)>(args)
@@ -2070,16 +2183,49 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ("take", pageSize),
             ("skip", (page - 1) * pageSize)
         };
-        var tasks = await dbContext.UserTasks
-            .FromSqlRaw(
-                $"SELECT ut.* FROM flowbit.user_tasks ut {where} ORDER BY ut.\"UpdatedAt\" DESC, ut.\"Id\" DESC LIMIT @take OFFSET @skip",
+        var taskRows = await dbContext.Database
+            .SqlQueryRaw<UserTaskPageRow>(
+                $"""
+                SELECT ut."Id" AS "Id",
+                       ut."InstanceId" AS "InstanceId",
+                       ut."TokenId" AS "TokenId",
+                       ut."NodeId" AS "NodeId",
+                       ut."NodeName" AS "NodeName",
+                       ut."NodeExternalId" AS "NodeExternalId",
+                       ut."Roles" AS "Roles",
+                       ut."RequiresClaim" AS "RequiresClaim",
+                       ut."RequiresAssignment" AS "RequiresAssignment",
+                       ut."Status" AS "Status",
+                       ut."ClaimedBy" AS "ClaimedBy",
+                       ut."MultiInstanceExecutionId" AS "MultiInstanceExecutionId",
+                       ut."ItemIndex" AS "ItemIndex",
+                       ut."ItemValueJson"::text AS "ItemValueJson",
+                       ut."Assignee" AS "Assignee",
+                       ut."SelectedFlowId" AS "SelectedFlowId",
+                       ut."ResultJson"::text AS "ResultJson",
+                       ut."CompletedBy" AS "CompletedBy",
+                       ut."CompletedByRoles" AS "CompletedByRoles",
+                       ut."CompletedActingFor" AS "CompletedActingFor",
+                       ut."CompletionDelegationId" AS "CompletionDelegationId",
+                       ut."CreatedAt" AS "CreatedAt",
+                       ut."UpdatedAt" AS "UpdatedAt",
+                       ut."CompletedAt" AS "CompletedAt",
+                       node_execution."Id" AS "NodeExecutionId",
+                       delegation."Id" AS "DelegationId",
+                       delegation."Delegator" AS "ActingFor"
+                {from}
+                LEFT JOIN flowbit.node_executions node_execution
+                       ON node_execution."UserTaskId" = ut."Id"
+                {where}
+                ORDER BY ut."UpdatedAt" DESC, ut."Id" DESC
+                LIMIT @take OFFSET @skip
+                """,
                 BuildParameters(pageArgs))
-            .AsNoTracking()
             .ToListAsync(cancellationToken);
 #pragma warning restore EF1002
 
         return new PagedResult<UserTaskRecord>(
-            tasks.Select(entity => ToRecord(entity)).ToList(), page, pageSize, totalCount);
+            taskRows.Select(ToUserTaskRecord).ToList(), page, pageSize, totalCount);
     }
 
     public async Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken) =>
@@ -2109,7 +2255,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 task.Id,
                 task.NodeId,
                 task.Assignee,
-                task.CompletedBy))
+                task.CompletedBy,
+                task.CompletedActingFor))
             .FirstOrDefaultAsync(cancellationToken);
     }
 
@@ -2235,7 +2382,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                            && ids.Contains(task.MultiInstanceExecutionId.Value)
                            && ((task.Status == UserTaskStatuses.Completed
                                 && task.CompletedBy != null
-                                && task.CompletedBy.ToLower() == normalizedActor)
+                                && (task.CompletedActingFor ?? task.CompletedBy).ToLower() == normalizedActor)
                                || (task.Status == UserTaskStatuses.Active
                                    && ((task.Assignee != null && task.Assignee.ToLower() == normalizedActor)
                                        || (task.ClaimedBy != null && task.ClaimedBy.ToLower() == normalizedActor)))))
@@ -2270,7 +2417,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             task => task.MultiInstanceExecutionId == executionId
                     && task.Status == UserTaskStatuses.Completed
                     && task.CompletedBy != null
-                    && task.CompletedBy.ToLower() == normalizedUser,
+                    && (task.CompletedActingFor ?? task.CompletedBy).ToLower() == normalizedUser,
             cancellationToken);
     }
 
@@ -2319,7 +2466,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string completedBy,
         IReadOnlyList<string> completedByRoles,
         Dictionary<string, System.Text.Json.JsonElement> result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         var task = dbContext.UserTasks.Local.Single(t => t.Id == taskId);
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == task.MultiInstanceExecutionId);
@@ -2333,6 +2482,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         task.ResultJson = JsonMapping.ToJsonDocument(result);
         task.CompletedBy = completedBy;
         task.CompletedByRoles = completedByRoles.ToList();
+        task.CompletedActingFor = actingFor;
+        task.CompletionDelegationId = delegationId;
         task.CompletedAt = now;
         task.UpdatedAt = now;
         execution.CompletedCount++;
@@ -2346,7 +2497,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 selectedFlowId,
                 null,
                 token.ParallelBranchId,
-                new NodeExecutionActorRecord(completedBy, completedByRoles)),
+                new NodeExecutionActorRecord(completedBy, completedByRoles)
+                {
+                    ActingFor = actingFor,
+                    DelegationId = delegationId
+                }),
             now,
             cancellationToken);
     }
@@ -2357,7 +2512,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string completedBy,
         IReadOnlyList<string> completedByRoles,
         Dictionary<string, System.Text.Json.JsonElement> result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         var task = dbContext.UserTasks.Local.SingleOrDefault(entity => entity.Id == taskId)
             ?? await dbContext.UserTasks.SingleAsync(entity => entity.Id == taskId, cancellationToken);
@@ -2369,6 +2526,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         task.ResultJson = JsonMapping.ToJsonDocument(result);
         task.CompletedBy = completedBy;
         task.CompletedByRoles = completedByRoles.ToList();
+        task.CompletedActingFor = actingFor;
+        task.CompletionDelegationId = delegationId;
         task.CompletedAt = now;
         task.UpdatedAt = now;
         await CompleteUserTaskNodeExecutionAsync(
@@ -2379,7 +2538,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 selectedFlowId,
                 selectedFlowId,
                 token.ParallelBranchId,
-                new NodeExecutionActorRecord(completedBy, completedByRoles)),
+                new NodeExecutionActorRecord(completedBy, completedByRoles)
+                {
+                    ActingFor = actingFor,
+                    DelegationId = delegationId
+                }),
             now,
             cancellationToken);
     }
@@ -2413,6 +2576,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             nodeExecution.UpdatedAt = now;
             nodeExecution.TriggeredBy = actor.User;
             nodeExecution.TriggeredByRolesJson = JsonMapping.ToJsonDocument(actor.Roles);
+            nodeExecution.TriggeredActingFor = actor.ActingFor;
+            nodeExecution.TriggeredDelegationId = actor.DelegationId;
         }
     }
 
@@ -2522,7 +2687,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? setBy,
         System.Text.Json.JsonElement value,
         CancellationToken cancellationToken,
-        long? nodeExecutionId = null)
+        long? nodeExecutionId = null,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceVariables.Add(new InstanceVariableEntity
         {
@@ -2531,6 +2698,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             VariableName = variableName,
             SourceActionId = sourceActionId,
             SetBy = setBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             ValueJson = JsonMapping.ToJsonDocument(value),
             SetAt = DateTimeOffset.UtcNow
         });
@@ -2556,7 +2725,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? performedBy,
         Dictionary<string, System.Text.Json.JsonElement>? payload,
         string? note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
@@ -2565,6 +2736,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
@@ -2584,7 +2757,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? performedBy,
         Dictionary<string, System.Text.Json.JsonElement>? payload,
         string note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
@@ -2597,6 +2772,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
@@ -2613,7 +2790,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? performedBy,
         Dictionary<string, JsonElement>? payload,
         string? note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
@@ -2623,6 +2802,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
@@ -2639,7 +2820,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int toStepId,
         string performedBy,
         Dictionary<string, System.Text.Json.JsonElement> payload,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
@@ -2650,6 +2833,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             PerformedAt = DateTimeOffset.UtcNow
         });
@@ -2666,7 +2851,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string performedBy,
         Dictionary<string, System.Text.Json.JsonElement> payload,
         string note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? actingFor = null,
+        long? delegationId = null)
     {
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
@@ -2679,6 +2866,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             FromStepId = nodeId,
             ToStepId = nodeId,
             PerformedBy = performedBy,
+            ActingFor = actingFor,
+            DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
@@ -2797,6 +2986,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             IsTraversal = occurrence.IsTraversal,
             User = occurrence.User,
             UserRoles = occurrence.UserRoles.ToList(),
+            ActingFor = occurrence.ActingFor,
+            DelegationId = occurrence.DelegationId,
             ValuesJson = JsonMapping.ToJsonDocument(occurrence.Values),
             OccurredAt = occurrence.OccurredAt
         });
@@ -2825,6 +3016,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             summary.ActionCount = checked(summary.ActionCount + 1);
             summary.LastActionUser = occurrence.User;
             summary.LastActionUserRoles = occurrence.UserRoles.ToList();
+            summary.LastActionActingFor = occurrence.ActingFor;
+            summary.LastActionDelegationId = occurrence.DelegationId;
             summary.LastActionOccurredAt = occurrence.OccurredAt;
             summary.LastActionKind = occurrence.Kind;
             summary.LastActionValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
@@ -2835,6 +3028,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             summary.TraversalCount = checked(summary.TraversalCount + 1);
             summary.LastTraversalUser = occurrence.User;
             summary.LastTraversalUserRoles = occurrence.UserRoles.ToList();
+            summary.LastTraversalActingFor = occurrence.ActingFor;
+            summary.LastTraversalDelegationId = occurrence.DelegationId;
             summary.LastTraversalOccurredAt = occurrence.OccurredAt;
             summary.LastTraversalKind = occurrence.Kind;
             summary.LastTraversalValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
@@ -3061,13 +3256,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.UpdatedAt, entity.CompletedAt);
 
     private static UserTaskRecord ToRecord(UserTaskEntity entity, long? nodeExecutionId = null) =>
-        new(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.NodeName,
+        new UserTaskRecord(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.NodeName,
             entity.NodeExternalId, entity.Roles, entity.RequiresClaim, entity.RequiresAssignment, entity.Status,
             entity.ClaimedBy, entity.MultiInstanceExecutionId, entity.ItemIndex,
             entity.ItemValueJson?.RootElement.Clone(), entity.Assignee, entity.SelectedFlowId,
             JsonMapping.ToDictionary(entity.ResultJson), entity.CompletedBy, entity.CompletedByRoles,
             entity.CreatedAt,
-            entity.UpdatedAt, entity.CompletedAt, nodeExecutionId ?? entity.NodeExecution?.Id);
+            entity.UpdatedAt, entity.CompletedAt, nodeExecutionId ?? entity.NodeExecution?.Id)
+        {
+            CompletedActingFor = entity.CompletedActingFor,
+            CompletionDelegationId = entity.CompletionDelegationId
+        };
 
     private static NodeExecutionRecord ToRecord(NodeExecutionEntity entity) =>
         new(
@@ -3100,7 +3299,13 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.StartedAt,
             entity.UpdatedAt,
             entity.CompletedAt,
-            entity.IsCutoverSeeded);
+            entity.IsCutoverSeeded)
+        {
+            TriggeredActingFor = entity.TriggeredActingFor,
+            TriggeredDelegationId = entity.TriggeredDelegationId,
+            CompletedActingFor = entity.CompletedActingFor,
+            CompletedDelegationId = entity.CompletedDelegationId
+        };
 
     private static NodeExecutionEntity NewNodeExecution(
         WorkflowInstanceEntity instance,
@@ -3133,6 +3338,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles.ToList()),
             TriggeredBy = triggeredBy.User,
             TriggeredByRolesJson = JsonMapping.ToJsonDocument(triggeredBy.Roles),
+            TriggeredActingFor = triggeredBy.ActingFor,
+            TriggeredDelegationId = triggeredBy.DelegationId,
             CreatedAt = now,
             StartedAt = status == NodeExecutionStatuses.Pending ? null : now,
             UpdatedAt = now
@@ -3227,6 +3434,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             : completion.ExitParallelBranchId ?? nodeExecution.EntryParallelBranchId;
         nodeExecution.CompletedBy = completion.Actor.User;
         nodeExecution.CompletedByRolesJson = JsonMapping.ToJsonDocument(completion.Actor.Roles);
+        nodeExecution.CompletedActingFor = completion.Actor.ActingFor;
+        nodeExecution.CompletedDelegationId = completion.Actor.DelegationId;
         nodeExecution.ErrorCode = completion.ErrorCode;
         nodeExecution.ErrorDescription = LimitNodeExecutionErrorDescription(
             completion.ErrorDescription);
@@ -3336,7 +3545,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.SetBy,
             entity.ValueJson.RootElement.Clone(),
             entity.SetAt,
-            entity.NodeExecutionId);
+            entity.NodeExecutionId,
+            entity.ActingFor,
+            entity.DelegationId);
 
     private static InstanceHistoryRecord ToRecord(InstanceHistoryEntity entity) =>
         new(
@@ -3352,7 +3563,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.PerformedBy,
             JsonMapping.ToDictionary(entity.Payload),
             entity.Note,
-            entity.PerformedAt);
+            entity.PerformedAt,
+            entity.ActingFor,
+            entity.DelegationId);
 
     private static MessageDeliveryReceiptRecord ToRecord(MessageDeliveryReceiptEntity entity) =>
         new(
@@ -3378,21 +3591,27 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 entity.LastActionUserRoles,
                 entity.LastActionOccurredAt,
                 entity.LastActionKind,
-                entity.LastActionValuesJson),
+                entity.LastActionValuesJson,
+                entity.LastActionActingFor,
+                entity.LastActionDelegationId),
             entity.TraversalCount,
             ToEvidence(
                 entity.LastTraversalUser,
                 entity.LastTraversalUserRoles,
                 entity.LastTraversalOccurredAt,
                 entity.LastTraversalKind,
-                entity.LastTraversalValuesJson));
+                entity.LastTraversalValuesJson,
+                entity.LastTraversalActingFor,
+                entity.LastTraversalDelegationId));
 
     private static SequenceFlowEvidenceRecord? ToEvidence(
         string? user,
         IReadOnlyList<string> userRoles,
         DateTimeOffset? occurredAt,
         string? kind,
-        JsonDocument? valuesJson) =>
+        JsonDocument? valuesJson,
+        string? actingFor,
+        long? delegationId) =>
         occurredAt is null || kind is null
             ? null
             : new SequenceFlowEvidenceRecord(
@@ -3400,5 +3619,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 userRoles.ToList(),
                 occurredAt.Value,
                 kind,
-                JsonMapping.ToDictionary(valuesJson));
+                JsonMapping.ToDictionary(valuesJson),
+                actingFor,
+                delegationId);
 }

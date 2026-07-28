@@ -1,0 +1,13 @@
+<span class="acting-for-badge" title="@Title">
+    <AppIcon Name="delegations" />
+    Acting for @ActingFor
+</span>
+
+@code {
+    [Parameter, EditorRequired] public string ActingFor { get; set; } = string.Empty;
+    [Parameter] public long? DelegationId { get; set; }
+
+    private string Title => DelegationId is long id
+        ? $"Delegated task access via grant #{id}"
+        : "Delegated task access";
+}

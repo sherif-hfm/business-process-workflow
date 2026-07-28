@@ -1,0 +1,632 @@
+@page "/delegation-management"
+@implements IDisposable
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>User Delegations · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="User delegations"
+            Description="Create and revoke standing grants, and configure acceptance by workflow family.">
+    <Actions>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured delegation administrator role.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-label="Current delegation administrator">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="data-subtitle mt-0">Managing as</span>
+                <strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                @if (Token.CurrentRoles.Count == 0)
+                {
+                    <StatusBadge Status="neutral" Text="No roles" />
+                }
+                else
+                {
+                    @foreach (var role in Token.CurrentRoles)
+                    {
+                        <StatusBadge Status="primary" Text="@role" />
+                    }
+                }
+            </div>
+        </div>
+    </section>
+
+    <div class="delegation-admin-grid mb-3">
+        <section class="panel" aria-labelledby="managed-delegation-create-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="managed-delegation-create-heading">Create for users</h2>
+                    <p>Administrators may create the same finite grant across several workflow families.</p>
+                </div>
+            </div>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="managed-delegator">Delegator</label>
+                    <input id="managed-delegator" class="form-control" maxlength="300"
+                           autocomplete="off" @bind="newDelegator" @bind:event="oninput" />
+                </div>
+                <div>
+                    <label class="form-label" for="managed-delegate">Delegate</label>
+                    <input id="managed-delegate" class="form-control" maxlength="300"
+                           autocomplete="off" @bind="newDelegate" @bind:event="oninput" />
+                </div>
+                <div class="full">
+                    <label class="form-label" for="managed-workflows">Workflow keys</label>
+                    <input id="managed-workflows" class="form-control" @bind="newWorkflowKeys" @bind:event="oninput"
+                           placeholder="purchase-request, expense-approval" />
+                    <div class="form-text">Comma-separated stable workflow keys.</div>
+                </div>
+                <div>
+                    <label class="form-label" for="managed-valid-from">Valid from (UTC)</label>
+                    <input id="managed-valid-from" type="datetime-local" class="form-control"
+                           @bind="newValidFrom" @bind:format="yyyy-MM-ddTHH:mm" />
+                </div>
+                <div>
+                    <label class="form-label" for="managed-valid-until">Valid until (UTC)</label>
+                    <input id="managed-valid-until" type="datetime-local" class="form-control"
+                           @bind="newValidUntil" @bind:format="yyyy-MM-ddTHH:mm" />
+                </div>
+                <div class="full">
+                    <label class="form-label" for="managed-reason">Reason (optional)</label>
+                    <textarea id="managed-reason" class="form-control" rows="2" maxlength="1000"
+                              @bind="newReason" @bind:event="oninput"></textarea>
+                </div>
+                <div class="full d-flex justify-content-end">
+                    <button class="btn btn-primary" @onclick="CreateAsync" disabled="@submitting">
+                        <AppIcon Name="plus" /> @(submitting ? "Creating…" : "Create delegations")
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel" aria-labelledby="delegation-policy-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="delegation-policy-heading">Workflow acceptance policy</h2>
+                    <p>A policy change applies only to grants created afterwards.</p>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="policy-workflow-key">Workflow key</label>
+                <div class="d-flex gap-2">
+                    <input id="policy-workflow-key" class="form-control"
+                           @bind="policyWorkflowKey" @bind:event="oninput" />
+                    <button class="btn btn-outline-primary" @onclick="LoadPolicyAsync"
+                            disabled="@(policyBusy || string.IsNullOrWhiteSpace(policyWorkflowKey))">
+                        Load
+                    </button>
+                </div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(policyError))
+            {
+                <div class="alert alert-danger" role="alert">@policyError</div>
+            }
+            @if (policyLoaded)
+            {
+                <div class="policy-card mb-3">
+                    <div class="form-check">
+                        <input id="policy-requires-acceptance" class="form-check-input" type="checkbox"
+                               @bind="policyRequiresAcceptance" />
+                        <label class="form-check-label" for="policy-requires-acceptance">
+                            Delegate must accept new grants
+                        </label>
+                    </div>
+                    <span class="data-subtitle">
+                        @(policy is null
+                            ? "No stored policy; the runtime default is no acceptance required."
+                            : $"Last updated {(policy.UpdatedAt is { } updatedAt ? $"{updatedAt.UtcDateTime:g} UTC" : "at creation")} by {policy.UpdatedBy ?? policy.CreatedBy ?? "unknown"}")
+                    </span>
+                </div>
+                <button class="btn btn-primary" @onclick="SavePolicyAsync" disabled="@policyBusy">
+                    @(policyBusy ? "Saving…" : "Save policy")
+                </button>
+            }
+        </section>
+    </div>
+
+    <section class="filter-panel" aria-labelledby="managed-delegation-filter-heading">
+        <div class="section-heading mb-0">
+            <div>
+                <h2 id="managed-delegation-filter-heading">Delegation search</h2>
+                <p>Search retained grants, including rejected, revoked, and expired records.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" @onclick="ApplyFiltersAsync">Apply</button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearFiltersAsync"
+                        disabled="@(ActiveFilterCount == 0)">Clear</button>
+            </div>
+        </div>
+        <div class="filter-grid mt-3">
+            <div>
+                <label class="form-label" for="delegation-search-delegator">Delegator</label>
+                <input id="delegation-search-delegator" class="form-control"
+                       @bind="filterDelegator" @bind:event="oninput" />
+            </div>
+            <div>
+                <label class="form-label" for="delegation-search-delegate">Delegate</label>
+                <input id="delegation-search-delegate" class="form-control"
+                       @bind="filterDelegate" @bind:event="oninput" />
+            </div>
+            <div>
+                <label class="form-label" for="delegation-search-workflow">Workflow key</label>
+                <input id="delegation-search-workflow" class="form-control"
+                       @bind="filterWorkflowKey" @bind:event="oninput" />
+            </div>
+            <div>
+                <label class="form-label" for="delegation-search-state">Acceptance state</label>
+                <select id="delegation-search-state" class="form-select" @bind="filterState">
+                    <option value="">All states</option>
+                    <option value="notRequired">No acceptance required</option>
+                    <option value="pending">Pending</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="managed-delegation-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="managed-delegation-results-heading">Delegation records</h2>
+                <p>@(result is null ? "Loading delegation records…" : $"{result.TotalCount:N0} records")</p>
+            </div>
+        </div>
+
+        @if (result is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (result.Items.Count == 0)
+        {
+            <EmptyState Icon="delegations" Title="No delegation records"
+                        Description="No retained records match the current filters." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Users</th>
+                            <th>Workflow</th>
+                            <th>Window</th>
+                            <th>Acceptance</th>
+                            <th>Status</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in result.Items)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="data-title">@item.Delegator → @item.Delegate</span>
+                                    <span class="data-subtitle">Grant #@item.Id · Created by @item.CreatedBy</span>
+                                </td>
+                                <td><span class="mono-id">@item.WorkflowKey</span></td>
+                                <td>
+                                    @item.ValidFrom.UtcDateTime.ToString("g") UTC
+                                    <span class="data-subtitle">Until @item.ValidUntil.UtcDateTime.ToString("g") UTC</span>
+                                </td>
+                                <td>
+                                    <StatusBadge Status="@AcceptanceTone(item.AcceptanceState)" Text="@AcceptanceLabel(item.AcceptanceState)" />
+                                    <span class="data-subtitle">@(item.RequiresAcceptance ? "Response required" : "No response required")</span>
+                                </td>
+                                <td>
+                                    <StatusBadge Status="@LifecycleTone(item)" Text="@LifecycleLabel(item)" />
+                                    <span class="data-subtitle">Updated @item.UpdatedAt.UtcDateTime.ToString("g") UTC</span>
+                                </td>
+                                <td class="text-end">
+                                    @if (CanRevoke(item))
+                                    {
+                                        <button class="btn btn-sm btn-outline-danger" @onclick="() => OpenRevoke(item)">Revoke</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+@if (selectedDelegation is not null)
+{
+    <div class="delegation-backdrop" aria-hidden="true"></div>
+    <div class="delegation-dialog-shell" role="dialog" aria-modal="true" aria-labelledby="delegation-revoke-title">
+        <section class="delegation-dialog panel">
+            <div class="section-heading">
+                <div>
+                    <span class="page-eyebrow">Grant #@selectedDelegation.Id</span>
+                    <h2 id="delegation-revoke-title">Revoke delegation</h2>
+                    <p>@selectedDelegation.Delegator → @selectedDelegation.Delegate · @selectedDelegation.WorkflowKey</p>
+                </div>
+                <button class="btn-close" aria-label="Close" @onclick="CloseRevoke" disabled="@submitting"></button>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="managed-revoke-reason">Reason (optional)</label>
+                <textarea id="managed-revoke-reason" class="form-control" rows="3" maxlength="1000"
+                          @bind="revokeReason" @bind:event="oninput"></textarea>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(dialogError))
+            {
+                <div class="alert alert-danger" role="alert">@dialogError</div>
+            }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-outline-secondary" @onclick="CloseRevoke" disabled="@submitting">Cancel</button>
+                <button class="btn btn-danger" @onclick="RevokeAsync" disabled="@submitting">
+                    @(submitting ? "Revoking…" : "Revoke delegation")
+                </button>
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    private const int PageSize = 50;
+    private PagedResult<UserDelegationDto>? result;
+    private UserDelegationDto? selectedDelegation;
+    private WorkflowDelegationPolicyDto? policy;
+    private string? newDelegator;
+    private string? newDelegate;
+    private string? newWorkflowKeys;
+    private string? newReason;
+    private DateTime? newValidFrom = MinuteValue(DateTime.UtcNow);
+    private DateTime? newValidUntil = MinuteValue(DateTime.UtcNow.AddDays(7));
+    private string? filterDelegator;
+    private string? filterDelegate;
+    private string? filterWorkflowKey;
+    private string? filterState;
+    private string? policyWorkflowKey;
+    private string? revokeReason;
+    private string? error;
+    private string? success;
+    private string? policyError;
+    private string? dialogError;
+    private bool loading;
+    private bool submitting;
+    private bool policyBusy;
+    private bool policyLoaded;
+    private bool policyRequiresAcceptance;
+    private int page = 1;
+
+    private int ActiveFilterCount => new[] { filterDelegator, filterDelegate, filterWorkflowKey, filterState }
+        .Count(value => !string.IsNullOrWhiteSpace(value));
+    private int TotalPages => result is null || result.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+    private bool HasNextPage => result is not null && page < TotalPages;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (!Token.HasToken)
+        {
+            result = null;
+            return;
+        }
+
+        try
+        {
+            loading = true;
+            error = null;
+            result = await Api.GetManagedUserDelegationsAsync(
+                filterDelegator,
+                filterDelegate,
+                filterWorkflowKey,
+                filterState,
+                page,
+                PageSize);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            error = "This identity does not have a configured delegation administrator role.";
+            result = new PagedResult<UserDelegationDto>([], 1, PageSize, 0);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        var keys = ParseWorkflowKeys(newWorkflowKeys);
+        if (string.IsNullOrWhiteSpace(newDelegator) || string.IsNullOrWhiteSpace(newDelegate))
+        {
+            error = "Both delegator and delegate are required.";
+            return;
+        }
+        if (keys.Count == 0)
+        {
+            error = "At least one workflow key is required.";
+            return;
+        }
+        if (newValidFrom is null || newValidUntil is null)
+        {
+            error = "Both validity dates are required.";
+            return;
+        }
+
+        var from = ToUtc(newValidFrom.Value);
+        var until = ToUtc(newValidUntil.Value);
+        if (until <= from)
+        {
+            error = "Valid until must be later than valid from.";
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            error = success = null;
+            var created = await Api.CreateManagedUserDelegationsAsync(
+                new CreateManagedUserDelegationRequest(
+                    newDelegator.Trim(),
+                    newDelegate.Trim(),
+                    keys,
+                    from,
+                    until,
+                    NullIfWhiteSpace(newReason)));
+            success = created.Count == 1
+                ? "Delegation created."
+                : $"{created.Count} workflow delegations created.";
+            newDelegator = newDelegate = newWorkflowKeys = newReason = null;
+            page = 1;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private async Task LoadPolicyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(policyWorkflowKey)) return;
+        try
+        {
+            policyBusy = true;
+            policyError = null;
+            policy = await Api.GetWorkflowDelegationPolicyAsync(policyWorkflowKey.Trim());
+            policyRequiresAcceptance = policy?.RequiresAcceptance ?? false;
+            policyLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            policy = null;
+            policyLoaded = false;
+            policyError = ex.Message;
+        }
+        finally
+        {
+            policyBusy = false;
+        }
+    }
+
+    private async Task SavePolicyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(policyWorkflowKey)) return;
+        try
+        {
+            policyBusy = true;
+            policyError = null;
+            policy = await Api.UpdateWorkflowDelegationPolicyAsync(
+                policyWorkflowKey.Trim(),
+                new UpdateWorkflowDelegationPolicyRequest(
+                    policyRequiresAcceptance,
+                    policy?.UpdatedAt));
+            policyRequiresAcceptance = policy?.RequiresAcceptance ?? policyRequiresAcceptance;
+            policyLoaded = true;
+            success = $"Delegation policy saved for {policyWorkflowKey.Trim()}.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            policyError = "This policy changed. Reload it before saving again.";
+        }
+        catch (Exception ex)
+        {
+            policyError = ex.Message;
+        }
+        finally
+        {
+            policyBusy = false;
+        }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        filterDelegator = filterDelegate = filterWorkflowKey = filterState = null;
+        page = 1;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1) return;
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        page++;
+        await LoadAsync();
+    }
+
+    private void OpenRevoke(UserDelegationDto item)
+    {
+        selectedDelegation = item;
+        revokeReason = dialogError = null;
+    }
+
+    private void CloseRevoke()
+    {
+        if (submitting) return;
+        selectedDelegation = null;
+        revokeReason = dialogError = null;
+    }
+
+    private async Task RevokeAsync()
+    {
+        if (selectedDelegation is null) return;
+        var item = selectedDelegation;
+        try
+        {
+            submitting = true;
+            dialogError = null;
+            _ = await Api.RevokeManagedUserDelegationAsync(
+                item.Id,
+                new UserDelegationLifecycleRequest(item.UpdatedAt, NullIfWhiteSpace(revokeReason)));
+            success = "Delegation revoked.";
+            selectedDelegation = null;
+            revokeReason = null;
+            await LoadAsync();
+            if (result is { Items.Count: 0 } && page > 1)
+            {
+                page--;
+                await LoadAsync();
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            dialogError = "This delegation changed. Close the dialog, refresh, and try again.";
+        }
+        catch (Exception ex)
+        {
+            dialogError = ex.Message;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        selectedDelegation = null;
+        policy = null;
+        policyLoaded = false;
+        page = 1;
+        await LoadAsync();
+    });
+
+    private static bool CanRevoke(UserDelegationDto item) =>
+        item.RevokedAt is null
+        && !string.Equals(item.AcceptanceState, "rejected", StringComparison.OrdinalIgnoreCase)
+        && item.ValidUntil > DateTimeOffset.UtcNow;
+
+    private static string AcceptanceLabel(string state) => state switch
+    {
+        "notRequired" => "Not required",
+        "pending" => "Pending",
+        "accepted" => "Accepted",
+        "rejected" => "Rejected",
+        _ => state
+    };
+
+    private static string AcceptanceTone(string state) => state switch
+    {
+        "pending" => "warning",
+        "accepted" or "notRequired" => "success",
+        "rejected" => "danger",
+        _ => "neutral"
+    };
+
+    private static string LifecycleLabel(UserDelegationDto item)
+    {
+        if (item.RevokedAt is not null) return "Revoked";
+        if (string.Equals(item.AcceptanceState, "rejected", StringComparison.OrdinalIgnoreCase)) return "Rejected";
+        if (item.ValidUntil <= DateTimeOffset.UtcNow) return "Expired";
+        if (item.ValidFrom > DateTimeOffset.UtcNow) return "Scheduled";
+        return item.IsActive ? "Active" : "Inactive";
+    }
+
+    private static string LifecycleTone(UserDelegationDto item) => LifecycleLabel(item) switch
+    {
+        "Active" => "success",
+        "Scheduled" or "Inactive" => "warning",
+        "Revoked" or "Rejected" or "Expired" => "danger",
+        _ => "neutral"
+    };
+
+    private static IReadOnlyList<string> ParseWorkflowKeys(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static DateTime MinuteValue(DateTime value) =>
+        new(value.Year, value.Month, value.Day, value.Hour, value.Minute, 0, DateTimeKind.Unspecified);
+
+    private static DateTimeOffset ToUtc(DateTime value)
+    {
+        var utc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return new DateTimeOffset(utc);
+    }
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

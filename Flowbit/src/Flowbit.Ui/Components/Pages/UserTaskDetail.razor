@@ -24,6 +24,14 @@ else
         </Actions>
     </PageHeader>
 
+    @if (task.DelegatedAccess is not null)
+    {
+        <div class="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2" role="status">
+            <span>You are using your own identity and roles while acting for <strong>@task.DelegatedAccess.ActingFor</strong>.</span>
+            <ActingForBadge ActingFor="@task.DelegatedAccess.ActingFor" DelegationId="@task.DelegatedAccess.DelegationId" />
+        </div>
+    }
+
     <section class="panel mb-3" aria-labelledby="task-summary-heading">
         <div class="section-heading">
             <div><h2 id="task-summary-heading">Task summary</h2><p>Assignment, claim, and execution context.</p></div>

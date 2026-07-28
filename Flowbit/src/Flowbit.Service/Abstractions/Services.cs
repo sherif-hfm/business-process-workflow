@@ -16,6 +16,15 @@ public sealed record ActorContext(
     IReadOnlyCollection<string> Roles,
     IReadOnlyDictionary<string, string> Claims)
 {
+    /// <summary>
+    /// The task owner represented by this actor for a delegation-authorized
+    /// operation. Roles and claims always remain those of <see cref="User"/>.
+    /// </summary>
+    public string? ActingFor { get; init; }
+
+    /// <summary>The standing delegation grant authorizing <see cref="ActingFor"/>.</summary>
+    public long? DelegationId { get; init; }
+
     public static readonly ActorContext Anonymous =
         new(null, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 }

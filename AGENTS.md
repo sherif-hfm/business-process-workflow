@@ -651,6 +651,28 @@ Storage follows the hybrid design:
   Each real change writes a `taskAssignment` instance-history row with the
   manager, previous/new ownership, and optional reason. A missing or empty
   `taskAssignmentRoles` list disables management for that workflow version.
+- **Standing user delegation.** Delegation is a runtime/worklist extension, not
+  workflow-definition data or a BPMN node. An authenticated delegator may grant
+  another canonical user access to tasks assigned to or claimed by the
+  delegator for selected stable workflow keys and a finite UTC validity window
+  `[ValidFrom, ValidUntil)`. Original `Assignee`/`ClaimedBy` ownership is retained
+  and both users may act concurrently. Grants are direct-only (never
+  transitive), retained after rejection/revocation/expiry, and may optionally
+  require delegate acceptance according to a per-workflow policy snapshotted at
+  grant creation. `Delegation.AdminRoles` is a comma-separated engine setting
+  for cross-user administration and defaults to `admin`.
+  Delegated access is resolved in the authoritative inbox query before count,
+  sort, and paging, then rechecked under the task mutation transaction. It
+  permits task visibility, flow inspection/action, and unclaiming the
+  delegator's claim; it does not permit claiming a pool task on another user's
+  behalf, assignment management, instance cancellation, parent multi-instance
+  interrupts, or creating a further grant as the represented user. Node/flow
+  authorization and expression context still use the real delegate's JWT:
+  `sys.user`, `sys.roles`, and `sys.claim.*` identify the delegate, while
+  `sys.actingFor` identifies the represented owner. Audit records retain the
+  real performer and add nullable `ActingFor`/`DelegationId` attribution.
+  Multi-instance `onePerActor` and later claim/assignment inheritance use the
+  represented identity (`ActingFor ?? actual user`).
 - **External task distribution.** A workflow definition may declare top-level
   `taskDistribution: { clientId, clientSecret }`. These values may be literals
   or `${setting.*}` / `${config.*}` templates; literal secrets are retained in
@@ -748,6 +770,17 @@ what the cross-version `workflowKey` instance search matches.
   `reason`; `POST /{taskId}/unassign` accepts `expectedUpdatedAt` and an optional
   `reason`. Unauthorized workflow managers receive 403 and stale mutations
   receive 409.
+- `UserDelegationEndpoints` (`/api/user-delegations`): `GET
+  /?direction=outgoing|incoming&workflowKey=&state=&page=&pageSize=` returns the
+  caller's retained grants; `POST /` atomically creates one grant per supplied
+  workflow key; `POST /{id}/accept`, `POST /{id}/reject`, and `POST
+  /{id}/revoke` apply optimistic lifecycle changes using `expectedUpdatedAt`
+  plus an optional reason. Administrative `GET /manage?delegator=&delegate=&
+  workflowKey=&state=&page=&pageSize=`, `POST /manage`, and `POST
+  /manage/{id}/revoke` require a configured delegation administrator role.
+  `WorkflowDelegationPolicyEndpoints`
+  (`/api/user-delegation-policies/{workflowKey}`) exposes authenticated
+  administrator `GET`/`PUT` operations for the new-grant acceptance policy.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -838,10 +871,17 @@ what the cross-version `workflowKey` instance search matches.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
   workflow id, workflow key, node id, node external id, and comma-separated
   `name:value` variable filter boxes. Its sort toolbar exposes the six inbox sort
-  fields and resets to `taskUpdatedAt:desc`.
+  fields and resets to `taskUpdatedAt:desc`. Delegated rows show an
+  `Acting for ...` badge.
+- `/delegations` (`MyDelegations.razor`) - self-service outgoing/incoming grant
+  lists, finite-window batch creation by workflow key, acceptance/rejection, and
+  withdrawal/revocation with optimistic concurrency.
 - `/task-management` (`TaskManagement.razor`) - workflow-role-scoped manager
   view for filtering active tasks and assigning, reassigning, or unassigning an
   item with optimistic concurrency and an optional audit reason.
+- `/delegation-management` (`DelegationManagement.razor`) - administrator
+  search, cross-user grant creation/revocation, and per-workflow acceptance
+  policy management.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   and view variables and history, including task-assignment audit details.
@@ -1446,6 +1486,11 @@ when extending the model so new features stay close to BPMN terminology.
   applied. `canActWithoutClaimRoles` optionally restricts which otherwise-authorized
   actors can use a claim-bypass flow. `requiresClaim` ownership is enforced on top
   of the role check unless that explicit bypass succeeds.
+- **Standing user delegation is operational, not BPMN model data.** BPMN defines
+  User Tasks and potential/actual owners but no process element for a
+  time-bounded, cross-task proxy grant. Flowbit therefore keeps delegation out
+  of the editor JSON and applies it only in runtime worklist authorization and
+  audit.
 
 ### If you add BPMN-aligned features later
 

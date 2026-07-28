@@ -11,10 +11,12 @@ public static class ServiceCollectionExtensions
     {
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
+        services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<IWorkflowEngineService, WorkflowEngineService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();
+        services.AddScoped<IUserDelegationService, UserDelegationService>();
         return services;
     }
 }

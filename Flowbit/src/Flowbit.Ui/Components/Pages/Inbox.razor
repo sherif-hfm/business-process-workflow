@@ -105,7 +105,14 @@ else
                         @foreach (var item in result.Items)
                         {
                             <tr>
-                                <td><a class="data-title" href="@($"user-tasks/{item.UserTaskId}")">@item.CurrentNodeName</a><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
+                                <td>
+                                    <a class="data-title" href="@($"user-tasks/{item.UserTaskId}")">@item.CurrentNodeName</a>
+                                    <span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span>
+                                    @if (item.DelegatedAccess is not null)
+                                    {
+                                        <ActingForBadge ActingFor="@item.DelegatedAccess.ActingFor" DelegationId="@item.DelegatedAccess.DelegationId" />
+                                    }
+                                </td>
                                 <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? "No business key")</span></td>
                                 <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>
                                 <td>@if (item.MultiInstance is not null) { <span>@item.MultiInstance.Completed / @item.MultiInstance.Total</span><span class="data-subtitle">Multi-instance</span> } else { <span>Single task</span> }</td>

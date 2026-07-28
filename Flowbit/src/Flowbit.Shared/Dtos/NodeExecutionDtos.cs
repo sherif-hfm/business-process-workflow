@@ -55,6 +55,12 @@ public record NodeExecutionSummaryDto
     public string? StartedBy { get; init; }
     public string? CompletedBy { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? StartedDelegatedAccess { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? CompletedDelegatedAccess { get; init; }
+
     public required DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? StartedAt { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
@@ -107,7 +113,11 @@ public sealed record NodeExecutionVariableChangeDto(
     int? SourceActionId,
     string? SetBy,
     JsonElement Value,
-    DateTimeOffset SetAt);
+    DateTimeOffset SetAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
+}
 
 /// <summary>
 /// Authorized detail for one node execution. VariableChanges contains only
