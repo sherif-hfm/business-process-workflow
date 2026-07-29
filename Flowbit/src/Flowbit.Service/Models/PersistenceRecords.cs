@@ -56,8 +56,11 @@ public sealed record ExecutionTokenRecord(
     string? FaultCode,
     string? FaultDescription,
     string Status,
-    long? ParallelBranchId,
+    long? GatewayBranchId,
     int? ArrivedViaFlowId,
+    long? ComplexGatewayStateId,
+    int? ComplexGatewayCycle,
+    IReadOnlyList<long> ComplexDrainStateIds,
     string? TerminationReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
@@ -76,11 +79,11 @@ public sealed record NodeExecutionCompletionRecord(
     string CompletionReason,
     int? SelectedFlowId,
     int? ExitedViaFlowId,
-    long? ExitParallelBranchId,
+    long? ExitGatewayBranchId,
     NodeExecutionActorRecord Actor,
     string? ErrorCode = null,
     string? ErrorDescription = null,
-    bool HasExitParallelBranchSnapshot = false);
+    bool HasExitGatewayBranchSnapshot = false);
 
 public sealed record NodeExecutionRecord(
     long Id,
@@ -96,8 +99,8 @@ public sealed record NodeExecutionRecord(
     string ExecutionKind,
     string Status,
     string? CompletionReason,
-    long? EntryParallelBranchId,
-    long? ExitParallelBranchId,
+    long? EntryGatewayBranchId,
+    long? ExitGatewayBranchId,
     int? EnteredViaFlowId,
     int? SelectedFlowId,
     int? ExitedViaFlowId,
@@ -120,10 +123,15 @@ public sealed record NodeExecutionRecord(
     public long? CompletedDelegationId { get; init; }
 }
 
-public sealed record ParallelGatewayExecutionRecord(
+public sealed record GatewayExecutionRecord(
     long Id,
     long InstanceId,
-    int ForkNodeId,
+    int GatewayNodeId,
+    string GatewayType,
+    string Direction,
+    string? Phase,
+    int? Cycle,
+    IReadOnlyList<int> SelectedFlowIds,
     long? ParentBranchId,
     string Status,
     string? CompletionReason,
@@ -133,7 +141,7 @@ public sealed record ParallelGatewayExecutionRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
 
-public sealed record ParallelGatewayBranchRecord(
+public sealed record GatewayBranchRecord(
     long Id,
     long ExecutionId,
     int OriginatingFlowId,
@@ -142,6 +150,20 @@ public sealed record ParallelGatewayBranchRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
+
+public sealed record ComplexGatewayStateRecord(
+    long Id,
+    long InstanceId,
+    int GatewayNodeId,
+    string Phase,
+    int Cycle,
+    IReadOnlyList<int> ContributingFlowIds,
+    IReadOnlyList<int> RemainingFlowIds,
+    IReadOnlyList<long> ActivationDrainStateIds,
+    IReadOnlyList<long> DrainingTokenIds,
+    long? ActiveExecutionId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
 
 public sealed record MultiInstanceExecutionRecord(
     long Id,
@@ -509,12 +531,16 @@ public static class NodeExecutionCompletionReasons
     public const string TerminateEnd = "terminateEnd";
     public const string ErrorEnd = "errorEnd";
     public const string InstanceCancelled = "instanceCancelled";
-    public const string ParallelScopeCancelled = "parallelScopeCancelled";
-    public const string ParallelJoinMerged = "parallelJoinMerged";
+    public const string GatewayScopeCancelled = "gatewayScopeCancelled";
+    public const string GatewayJoinMerged = "gatewayJoinMerged";
     public const string ParallelFork = "parallelFork";
     public const string ParallelJoin = "parallelJoin";
-    public const string ParallelInterrupt = "parallelInterrupt";
-    public const string ParallelInterruptSkipped = "parallelInterruptSkipped";
+    public const string InclusiveSplit = "inclusiveSplit";
+    public const string InclusiveMerge = "inclusiveMerge";
+    public const string ComplexActivation = "complexActivation";
+    public const string ComplexReset = "complexReset";
+    public const string ScopedInterrupt = "scopedInterrupt";
+    public const string ScopedInterruptSkipped = "scopedInterruptSkipped";
 }
 
 public static class ExecutionTokenTerminationReasons
@@ -523,12 +549,11 @@ public static class ExecutionTokenTerminationReasons
     public const string TerminateEnd = "terminateEnd";
     public const string ErrorEnd = "errorEnd";
     public const string InstanceCancelled = "instanceCancelled";
-    public const string ParallelScopeCancelled = "parallelScopeCancelled";
-    public const string ParallelScopeInterrupted = ParallelScopeCancelled;
-    public const string ParallelJoinMerged = "parallelJoinMerged";
+    public const string GatewayScopeCancelled = "gatewayScopeCancelled";
+    public const string GatewayJoinMerged = "gatewayJoinMerged";
 }
 
-public static class ParallelGatewayExecutionRecordStatuses
+public static class GatewayExecutionRecordStatuses
 {
     public const string Active = "active";
     public const string Joined = "joined";
@@ -537,11 +562,24 @@ public static class ParallelGatewayExecutionRecordStatuses
     public const string Cancelled = "cancelled";
 }
 
-public static class ParallelGatewayBranchRecordStatuses
+public static class GatewayBranchRecordStatuses
 {
     public const string Active = "active";
     public const string Merged = "merged";
     public const string Completed = "completed";
     public const string Interrupted = "interrupted";
     public const string Cancelled = "cancelled";
+}
+
+public static class GatewayExecutionRecordDirections
+{
+    public const string Split = "split";
+    public const string Merge = "merge";
+}
+
+public static class ComplexGatewayStateRecordPhases
+{
+    public const string WaitingForStart = "waitingForStart";
+    public const string WaitingForReset = "waitingForReset";
+    public const string InterruptedDraining = "interruptedDraining";
 }

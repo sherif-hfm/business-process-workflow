@@ -36,7 +36,9 @@ public sealed class WorkflowInstanceEntity
 
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
 
-    public List<ParallelGatewayExecutionEntity> ParallelGatewayExecutions { get; set; } = [];
+    public List<GatewayExecutionEntity> GatewayExecutions { get; set; } = [];
+
+    public List<ComplexGatewayStateEntity> ComplexGatewayStates { get; set; } = [];
 
     public List<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences { get; set; } = [];
 

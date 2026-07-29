@@ -22,12 +22,16 @@
   `flowbit.workflow_definitions`.
 - Runtime state is normalized in `flowbit.workflow_instances`,
   `flowbit.execution_tokens`, `flowbit.user_tasks`,
+  `flowbit.gateway_executions`, `flowbit.gateway_branches`,
+  `flowbit.complex_gateway_states`,
   `flowbit.multi_instance_executions`, `flowbit.multi_instance_flow_counts`,
   `flowbit.node_executions`, `flowbit.instance_variables`,
   `flowbit.instance_history`,
   `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
-- Runtime mutations use one lock order: instance, multi-instance execution, then
-  user tasks. Stale competing actions return 409 instead of advancing twice.
+- Runtime mutations use one lock order: instance, active gateway
+  executions/states/branches, active tokens, active multi-instance executions,
+  then active/pending user tasks; rows are ordered by ID within each group.
+  Stale competing actions return 409 instead of advancing twice.
 - Instance summary/detail projections include grouped active, pending, claimed,
   and assigned task counts. Claim ownership is exposed only by task DTOs; instance
   DTOs do not project a task claimant.
@@ -43,6 +47,41 @@
   managers and the external distributor can still see it. `assignmentMode`
   supports `fresh`, `previous`, and `fromNode` ownership inheritance; this gate
   is intentionally separate from `requiresClaim` and cannot be combined with it.
+
+## Gateways and scoped interruption
+
+Gateway direction is inferred from topology. A split has exactly one incoming
+and at least two outgoing flows; a merge has at least two incoming and exactly
+one outgoing flow. One-in/one-out and many-in/many-out gateways are rejected, so
+split and merge behavior must be authored as separate nodes. Their types are
+independent: for example, a Parallel split may feed an Inclusive or Exclusive
+merge.
+
+- Exclusive splits keep ordered first-match/default routing; Exclusive merges
+  pass each arriving token without synchronization.
+- Parallel splits select every outgoing flow and Parallel merges wait for every
+  static incoming flow.
+- Inclusive splits select every true condition (or the required default).
+  Inclusive merges use cached graph reachability plus current active token
+  positions to apply the unpaired BPMN enabling rule and retain surplus tokens
+  for later batches.
+- Complex gateways persist a per-instance/node phase and cycle. Their
+  `activationCondition` can use literal `IncomingCount(flowId)`,
+  `TotalIncomingCount()`, and outgoing conditions can use
+  `[gateway.waitingForStart]` to distinguish start from reset routing.
+
+Every Parallel, Inclusive, or Complex firing is recorded in
+`gateway_executions`; diverging firings create generic branch lineage even when
+only one flow is selected. `scopedInterruptEvent` is a Flowbit extension whose
+`gatewayRef` targets a structurally reachable Parallel, Inclusive, or Complex
+split. It interrupts the nearest active matching activation in the triggering
+token's ancestry, cancels sibling and nested work atomically, and follows its
+single authored continuation. A stale event records `scopedInterruptSkipped`
+and continues without cancellation.
+
+The fan-out limit is configured by `Workflow.Gateway.MaxActiveTokens` and
+defaults to 1000. Adjacency and reachability plans are cached per immutable
+workflow-definition ID.
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -125,6 +164,24 @@ Open:
 
 In development, the API applies migrations and seeds the root `workflow.json` as a published workflow if the database is empty.
 
+### Gateway migration rollout
+
+The generic gateway runtime is intentionally incompatible with the retired
+parallel-specific schema and JSON vocabulary. For a deployment that predates
+`inclusiveGateway`, `complexGateway`, and `scopedInterruptEvent`:
+
+1. Stop every Flowbit API and worker process.
+2. Back up anything that must be retained, then reset the `flowbit` schema (or
+   recreate the database).
+3. Apply the current EF Core migrations to the empty schema.
+4. Deploy and start the matching API and UI versions.
+5. Re-import workflow definitions using only the canonical gateway node types
+   and `scopedInterruptEvent.gatewayRef`.
+
+Do not run old and new binaries against the same database. Legacy
+`parallelInterruptEvent`, `parallelGatewayRef`, parallel-specific runtime rows,
+and in-flight gateway executions are not migrated.
+
 ## Main API
 
 - `GET /api/workflows`
@@ -163,7 +220,7 @@ authorized execution with its execution-local detail. These routes do not grant
 assignment, claim, cancellation, or workflow-mutation authority; the existing
 inbox and Task Assignments APIs remain the action surfaces for human work.
 
-A node execution represents one token visit to one node. Parallel forks
+A node execution represents one token visit to one node. Gateway splits
 therefore produce a visit for each spawned branch token. A normal user task
 shares one execution with its work item. A multi-instance user task instead
 produces one execution per child work item and deliberately has no duplicate
@@ -171,14 +228,15 @@ parent execution row. Execution kind is `node` for a token visit and
 `userTaskItem` for a multi-instance child. The supported lifecycle statuses are
 `pending`, `active`, `completed`, `cancelled`, `faulted`, and `merged`;
 completion reasons distinguish
-normal/user/message/multi-instance work, parallel fork/join/interrupt behavior,
+normal/user/message/multi-instance work, gateway firing/interruption behavior,
 caught errors, scoped or instance cancellation, and terminal end behavior. The
 reason values are `normal`, `userAction`, `messageDelivery`,
 `multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
 `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
-`instanceCancelled`, `parallelScopeCancelled`, `parallelJoinMerged`,
-`parallelFork`, `parallelJoin`, `parallelInterrupt`, and
-`parallelInterruptSkipped`.
+`instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
+`parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
+`complexActivation`, `complexReset`, `scopedInterrupt`, and
+`scopedInterruptSkipped`.
 
 The list returns `PagedResult<NodeExecutionSummaryDto>` and the detail route
 returns `NodeExecutionDetailDto`. Summary rows include immutable workflow,
@@ -200,7 +258,7 @@ OR-combined within their group; different groups are AND-combined.
 
 | Filter group | Query parameters |
 | --- | --- |
-| Identity/context | `executionId`, `instanceId`, `workflowId`, `workflowKey`, `workflowVersion`, `businessKey`, `tokenId`, `userTaskId`, `multiInstanceExecutionId`, `parallelBranchId`, `itemIndex` |
+| Identity/context | `executionId`, `instanceId`, `workflowId`, `workflowKey`, `workflowVersion`, `businessKey`, `tokenId`, `userTaskId`, `multiInstanceExecutionId`, `gatewayBranchId`, `itemIndex` |
 | Node/lifecycle | `executionKind`, `nodeId`, `nodeName`, `nodeExternalId`, repeated `nodeType`, repeated `status`, repeated `instanceStatus`, repeated `completionReason`, `isMultiInstance`, `isCutoverSeeded` |
 | People/flows | `owner`, `startedBy`, `completedBy`, `enteredViaFlowId`, `selectedFlowId`, `exitedViaFlowId`, `aggregateFlowId` |
 | Time/duration | `createdFrom`, `createdTo`, `startedFrom`, `startedTo`, `updatedFrom`, `updatedTo`, `completedFrom`, `completedTo`, `minDurationMilliseconds`, `maxDurationMilliseconds` |

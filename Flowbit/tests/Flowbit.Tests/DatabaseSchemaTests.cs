@@ -22,10 +22,13 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(21, mappedTables.Length);
+        Assert.Equal(22, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
-        Assert.Contains(mappedTables, table => table.Name == "parallel_gateway_executions");
-        Assert.Contains(mappedTables, table => table.Name == "parallel_gateway_branches");
+        Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
+        Assert.Contains(mappedTables, table => table.Name == "gateway_branches");
+        Assert.Contains(mappedTables, table => table.Name == "complex_gateway_states");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "parallel_gateway_executions");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "parallel_gateway_branches");
         Assert.Contains(mappedTables, table => table.Name == "node_executions");
         Assert.Contains(mappedTables, table => table.Name == "user_delegations");
         Assert.Contains(mappedTables, table => table.Name == "workflow_delegation_policies");

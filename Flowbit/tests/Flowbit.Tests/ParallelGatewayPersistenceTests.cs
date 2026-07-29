@@ -121,34 +121,37 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
             await setup.SaveChangesAsync();
             instanceId = instance.Id;
 
-            var execution = new ParallelGatewayExecutionEntity
+            var execution = new GatewayExecutionEntity
             {
                 InstanceId = instance.Id,
-                ForkNodeId = 2,
-                Status = ParallelGatewayExecutionStatuses.Active,
+                GatewayNodeId = 2,
+                GatewayType = BpmnFlowNodeTypes.ParallelGateway,
+                Direction = GatewayExecutionDirections.Split,
+                SelectedFlowIds = [100, 101],
+                Status = GatewayExecutionStatuses.Active,
                 Branches =
                 [
-                    new ParallelGatewayBranchEntity
+                    new GatewayBranchEntity
                     {
                         OriginatingFlowId = 100,
                         Ordinal = 0,
-                        Status = ParallelGatewayBranchStatuses.Active
+                        Status = GatewayBranchStatuses.Active
                     },
-                    new ParallelGatewayBranchEntity
+                    new GatewayBranchEntity
                     {
                         OriginatingFlowId = 101,
                         Ordinal = 1,
-                        Status = ParallelGatewayBranchStatuses.Active
+                        Status = GatewayBranchStatuses.Active
                     }
                 ]
             };
-            setup.ParallelGatewayExecutions.Add(execution);
+            setup.GatewayExecutions.Add(execution);
             await setup.SaveChangesAsync();
 
             var managerToken = new ExecutionTokenEntity
             {
                 InstanceId = instance.Id,
-                ParallelBranchId = execution.Branches[0].Id,
+                GatewayBranchId = execution.Branches[0].Id,
                 NodeId = 3,
                 NodeName = "Manager review",
                 NodeType = BpmnFlowNodeTypes.UserTask,
@@ -157,7 +160,7 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
             var financeToken = new ExecutionTokenEntity
             {
                 InstanceId = instance.Id,
-                ParallelBranchId = execution.Branches[1].Id,
+                GatewayBranchId = execution.Branches[1].Id,
                 NodeId = 4,
                 NodeName = "Finance review",
                 NodeType = BpmnFlowNodeTypes.UserTask,
@@ -259,9 +262,9 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
         var tasks = await verify.UserTasks.AsNoTracking()
             .Where(task => task.InstanceId == instanceId)
             .ToListAsync();
-        var executionState = await verify.ParallelGatewayExecutions.AsNoTracking()
+        var executionState = await verify.GatewayExecutions.AsNoTracking()
             .SingleAsync(execution => execution.InstanceId == instanceId);
-        var branches = await verify.ParallelGatewayBranches.AsNoTracking()
+        var branches = await verify.GatewayBranches.AsNoTracking()
             .Where(branch => branch.ExecutionId == executionState.Id)
             .ToListAsync();
         var multiInstanceState = await verify.MultiInstanceExecutions.AsNoTracking()
@@ -275,12 +278,12 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
         Assert.All(tasks, task => Assert.Equal(UserTaskStatuses.Cancelled, task.Status));
         Assert.Equal(MultiInstanceExecutionStatuses.Cancelled, multiInstanceState.Status);
         Assert.Equal("instanceCancel", multiInstanceState.CompletionReason);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Cancelled, executionState.Status);
+        Assert.Equal(GatewayExecutionStatuses.Cancelled, executionState.Status);
         Assert.Equal("instanceCancel", executionState.CompletionReason);
         Assert.NotNull(executionState.CompletedAt);
         Assert.All(branches, branch =>
         {
-            Assert.Equal(ParallelGatewayBranchStatuses.Cancelled, branch.Status);
+            Assert.Equal(GatewayBranchStatuses.Cancelled, branch.Status);
             Assert.NotNull(branch.CompletedAt);
         });
     }

@@ -56,7 +56,7 @@
             <div><label class="form-label" for="activity-task-id">User-task ID</label><input id="activity-task-id" type="number" class="form-control" @bind="userTaskId" placeholder="107" /></div>
 
             <div><label class="form-label" for="activity-mi-id">Multi-instance execution ID</label><input id="activity-mi-id" type="number" class="form-control" @bind="multiInstanceExecutionId" placeholder="12" /></div>
-            <div><label class="form-label" for="activity-branch-id">Parallel branch ID</label><input id="activity-branch-id" type="number" class="form-control" @bind="parallelBranchId" placeholder="4" /></div>
+            <div><label class="form-label" for="activity-branch-id">Gateway branch ID</label><input id="activity-branch-id" type="number" class="form-control" @bind="gatewayBranchId" placeholder="4" /></div>
             <div><label class="form-label" for="activity-item-index">Item index</label><input id="activity-item-index" type="number" class="form-control" @bind="itemIndex" placeholder="0" /></div>
             <div>
                 <label class="form-label" for="activity-kind">Execution kind</label>
@@ -179,9 +179,9 @@
                                 {
                                     <span class="data-subtitle">MI #@execution.MultiInstanceExecutionId · item @(execution.ItemIndex?.ToString() ?? "—")</span>
                                 }
-                                @if (execution.EntryParallelBranchId is not null || execution.ExitParallelBranchId is not null)
+                                @if (execution.EntryGatewayBranchId is not null || execution.ExitGatewayBranchId is not null)
                                 {
-                                    <span class="data-subtitle">Branch @FormatBranch(execution.EntryParallelBranchId) → @FormatBranch(execution.ExitParallelBranchId)</span>
+                                    <span class="data-subtitle">Branch @FormatBranch(execution.EntryGatewayBranchId) → @FormatBranch(execution.ExitGatewayBranchId)</span>
                                 }
                             </td>
                             <td>
@@ -273,7 +273,7 @@
     private long? tokenId;
     private long? userTaskId;
     private long? multiInstanceExecutionId;
-    private long? parallelBranchId;
+    private long? gatewayBranchId;
     private int? itemIndex;
     private string? executionKind;
     private int? nodeId;
@@ -334,7 +334,7 @@
             var values = new object?[]
             {
                 executionId, instanceId, workflowId, workflowKey, workflowVersion, businessKey,
-                tokenId, userTaskId, multiInstanceExecutionId, parallelBranchId, itemIndex,
+                tokenId, userTaskId, multiInstanceExecutionId, gatewayBranchId, itemIndex,
                 executionKind, nodeId, nodeName, nodeExternalId, nodeTypes, instanceStatuses,
                 completionReasons, multiInstanceFilter, cutoverSeedFilter, owner, startedBy,
                 completedBy, enteredViaFlowId, selectedFlowId, exitedViaFlowId, aggregateFlowId,
@@ -389,7 +389,7 @@
 
     private async Task ClearFiltersAsync()
     {
-        executionId = instanceId = workflowId = tokenId = userTaskId = multiInstanceExecutionId = parallelBranchId = null;
+        executionId = instanceId = workflowId = tokenId = userTaskId = multiInstanceExecutionId = gatewayBranchId = null;
         workflowVersion = itemIndex = nodeId = enteredViaFlowId = selectedFlowId = exitedViaFlowId = aggregateFlowId = null;
         workflowKey = businessKey = executionKind = nodeName = nodeExternalId = nodeTypes = null;
         instanceStatuses = completionReasons = multiInstanceFilter = cutoverSeedFilter = null;
@@ -419,7 +419,7 @@
                 TokenId = tokenId,
                 UserTaskId = userTaskId,
                 MultiInstanceExecutionId = multiInstanceExecutionId,
-                ParallelBranchId = parallelBranchId,
+                GatewayBranchId = gatewayBranchId,
                 ItemIndex = itemIndex,
                 ExecutionKind = executionKind,
                 NodeId = nodeId,

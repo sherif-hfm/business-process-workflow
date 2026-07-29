@@ -52,12 +52,16 @@ public sealed class NodeExecutionQueryService(
             NodeExecutionCompletionReasons.TerminateEnd,
             NodeExecutionCompletionReasons.ErrorEnd,
             NodeExecutionCompletionReasons.InstanceCancelled,
-            NodeExecutionCompletionReasons.ParallelScopeCancelled,
-            NodeExecutionCompletionReasons.ParallelJoinMerged,
+            NodeExecutionCompletionReasons.GatewayScopeCancelled,
+            NodeExecutionCompletionReasons.GatewayJoinMerged,
             NodeExecutionCompletionReasons.ParallelFork,
             NodeExecutionCompletionReasons.ParallelJoin,
-            NodeExecutionCompletionReasons.ParallelInterrupt,
-            NodeExecutionCompletionReasons.ParallelInterruptSkipped);
+            NodeExecutionCompletionReasons.InclusiveSplit,
+            NodeExecutionCompletionReasons.InclusiveMerge,
+            NodeExecutionCompletionReasons.ComplexActivation,
+            NodeExecutionCompletionReasons.ComplexReset,
+            NodeExecutionCompletionReasons.ScopedInterrupt,
+            NodeExecutionCompletionReasons.ScopedInterruptSkipped);
 
     private static readonly IReadOnlyDictionary<string, string> NodeTypes =
         CanonicalMap(
@@ -69,7 +73,9 @@ public sealed class NodeExecutionQueryService(
             BpmnFlowNodeTypes.ScriptTask,
             BpmnFlowNodeTypes.ExclusiveGateway,
             BpmnFlowNodeTypes.ParallelGateway,
-            BpmnFlowNodeTypes.ParallelInterruptEvent,
+            BpmnFlowNodeTypes.InclusiveGateway,
+            BpmnFlowNodeTypes.ComplexGateway,
+            BpmnFlowNodeTypes.ScopedInterruptEvent,
             BpmnFlowNodeTypes.ErrorBoundaryEvent,
             BpmnFlowNodeTypes.IntermediateMessageCatchEvent,
             BpmnFlowNodeTypes.EndEvent,
@@ -145,7 +151,7 @@ public sealed class NodeExecutionQueryService(
         ValidateNullablePositive(request.TokenId, "token id");
         ValidateNullablePositive(request.UserTaskId, "user task id");
         ValidateNullablePositive(request.MultiInstanceExecutionId, "multi-instance execution id");
-        ValidateNullablePositive(request.ParallelBranchId, "parallel branch id");
+        ValidateNullablePositive(request.GatewayBranchId, "gateway branch id");
         ValidateNullableNonNegative(request.ItemIndex, "item index");
         ValidateNullablePositive(request.NodeId, "node id");
         ValidateNullablePositive(request.EnteredViaFlowId, "entered-via flow id");
@@ -185,7 +191,7 @@ public sealed class NodeExecutionQueryService(
             TokenId = request.TokenId,
             UserTaskId = request.UserTaskId,
             MultiInstanceExecutionId = request.MultiInstanceExecutionId,
-            ParallelBranchId = request.ParallelBranchId,
+            GatewayBranchId = request.GatewayBranchId,
             ItemIndex = request.ItemIndex,
             ExecutionKind = ParseOptionalEnum(request.ExecutionKind, ExecutionKinds, "execution kind"),
             NodeId = request.NodeId,

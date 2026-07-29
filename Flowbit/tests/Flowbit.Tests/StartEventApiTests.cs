@@ -293,7 +293,7 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task Start_ExclusiveGatewayUsesPriorityAcceptsSeveralIncomingPathsAndRecordsFlow()
+    public async Task Start_AdjacentExclusiveMergeAndSplitUsePriorityAndRecordSelectedFlow()
     {
         var model = CreateMultiEntryGatewayModel();
         var workflow = await CreateWorkflowAsync(model, true);
@@ -312,7 +312,8 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
             Assert.Equal("completed", started.Status);
             Assert.Equal(5, started.CurrentNodeId);
             var detail = await GetInstanceAsync(started.Id);
-            var gatewayHistory = Assert.Single(detail.History, entry => entry.Note == "gateway");
+            var gatewayHistory = Assert.Single(detail.History, entry =>
+                entry.Note == "gateway" && entry.FromNodeId == 3);
             Assert.Equal(3, gatewayHistory.FromNodeId);
             Assert.Equal(5, gatewayHistory.ToNodeId);
             Assert.Equal(302, gatewayHistory.SequenceFlowId);
@@ -699,15 +700,17 @@ public sealed class StartEventApiTests(PostgresApiFixture fixture)
             [
                 new FlowNodeModel { Id = 1, Name = "Primary start", Type = BpmnFlowNodeTypes.StartEvent },
                 new FlowNodeModel { Id = 2, Name = "Alternative start", Type = BpmnFlowNodeTypes.StartEvent },
-                new FlowNodeModel { Id = 3, Name = "Shared route", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+                new FlowNodeModel { Id = 3, Name = "Shared route split", Type = BpmnFlowNodeTypes.ExclusiveGateway },
                 new FlowNodeModel { Id = 4, Name = "Later priority", Type = BpmnFlowNodeTypes.EndEvent },
                 new FlowNodeModel { Id = 5, Name = "Earlier priority", Type = BpmnFlowNodeTypes.EndEvent },
-                new FlowNodeModel { Id = 6, Name = "Fallback", Type = BpmnFlowNodeTypes.EndEvent }
+                new FlowNodeModel { Id = 6, Name = "Fallback", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 7, Name = "Shared route merge", Type = BpmnFlowNodeTypes.ExclusiveGateway }
             ],
             SequenceFlows =
             [
-                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 3 },
-                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 7 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 7 },
+                new SequenceFlowModel { Id = 701, SourceRef = 7, TargetRef = 3 },
                 new SequenceFlowModel
                 {
                     Id = 301,

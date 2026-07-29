@@ -404,12 +404,21 @@ public sealed class FlowNodeModel
     public string? ErrorDescription { get; set; }
 
     /// <summary>
-    /// The parallel fork whose nearest active runtime activation is interrupted
-    /// when this parallelInterruptEvent is entered.
+    /// Complex gateway only: the NCalc expression that decides when the current
+    /// start/reset phase is enabled. IncomingCount(flowId) and
+    /// TotalIncomingCount() are available while evaluating this expression.
     /// </summary>
-    [JsonPropertyName("parallelGatewayRef")]
+    [JsonPropertyName("activationCondition")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? ParallelGatewayRef { get; set; }
+    public string? ActivationCondition { get; set; }
+
+    /// <summary>
+    /// Scoped interrupt event only: the split gateway whose nearest active
+    /// runtime activation is interrupted when this event is entered.
+    /// </summary>
+    [JsonPropertyName("gatewayRef")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? GatewayRef { get; set; }
 }
 
 public static class ErrorEndConstraints
@@ -1197,13 +1206,12 @@ public static class BpmnFlowNodeTypes
     public const string ServiceTask = "serviceTask";
     public const string ScriptTask = "scriptTask";
     public const string ExclusiveGateway = "exclusiveGateway";
-    // A parallel gateway with two or more outgoing flows is a fork for every
-    // arriving token (including when it has several incoming flows). A gateway
-    // with exactly one outgoing and two or more incoming flows is a join.
     public const string ParallelGateway = "parallelGateway";
-    // Flowbit extension that interrupts the nearest active activation of its
-    // referenced parallel fork, then continues down its sole outgoing flow.
-    public const string ParallelInterruptEvent = "parallelInterruptEvent";
+    public const string InclusiveGateway = "inclusiveGateway";
+    public const string ComplexGateway = "complexGateway";
+    // Flowbit extension that interrupts the nearest active activation of a
+    // referenced Parallel, Inclusive, or Complex split.
+    public const string ScopedInterruptEvent = "scopedInterruptEvent";
     // Terminal event that ends the instance with the Faulted status (vs the
     // Completed status set by a plain endEvent). Typically reached via an
     // errorBoundaryEvent's error path, directly or through a handler task.
@@ -1266,11 +1274,23 @@ public static class BpmnFlowNodeTypes
     public static bool IsParallelGateway(string type) =>
         string.Equals(type, ParallelGateway, StringComparison.Ordinal);
 
-    public static bool IsGateway(string type) =>
-        IsExclusiveGateway(type) || IsParallelGateway(type);
+    public static bool IsInclusiveGateway(string type) =>
+        string.Equals(type, InclusiveGateway, StringComparison.Ordinal);
 
-    public static bool IsParallelInterrupt(string type) =>
-        string.Equals(type, ParallelInterruptEvent, StringComparison.Ordinal);
+    public static bool IsComplexGateway(string type) =>
+        string.Equals(type, ComplexGateway, StringComparison.Ordinal);
+
+    public static bool IsGateway(string type) =>
+        IsExclusiveGateway(type)
+        || IsParallelGateway(type)
+        || IsInclusiveGateway(type)
+        || IsComplexGateway(type);
+
+    public static bool IsScopeProducingGateway(string type) =>
+        IsParallelGateway(type) || IsInclusiveGateway(type) || IsComplexGateway(type);
+
+    public static bool IsScopedInterrupt(string type) =>
+        string.Equals(type, ScopedInterruptEvent, StringComparison.Ordinal);
 
     public static bool IsMessageCatch(string type) =>
         string.Equals(type, IntermediateMessageCatchEvent, StringComparison.Ordinal);
@@ -1292,11 +1312,12 @@ public static class BpmnFlowNodeTypes
     public static bool IsPassThrough(string type) =>
         IsStart(type) || IsMessageStart(type) || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
-        || IsParallelInterrupt(type);
+        || IsScopedInterrupt(type);
 
     public static bool IsSupported(string type) =>
         type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
-            or ExclusiveGateway or ParallelGateway or ParallelInterruptEvent
+            or ExclusiveGateway or ParallelGateway or InclusiveGateway or ComplexGateway
+            or ScopedInterruptEvent
             or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent
             or IntermediateMessageCatchEvent or MessageStartEvent;
 }

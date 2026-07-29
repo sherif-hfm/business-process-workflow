@@ -1,7 +1,5 @@
 - receive task
 - Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
-- add Inclusive Gateway
-- add Complex Gateway
 - async flow asyncAfter/asyncBefore and  Timers events
  - add Event-Based Gateway
 - add Workflow runner simulator
@@ -16,6 +14,8 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add Inclusive Gateway (done)
+- add Complex Gateway (done)
 - add user delegation (done)
 - add Parallel Gateways (done)
 - terminateEndEvent (done)

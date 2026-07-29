@@ -915,10 +915,12 @@
   .node.scriptTask rect { fill: var(--node-script-fill); stroke: var(--node-script-stroke); }
   .node.exclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
   .node.parallelGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .node.inclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .node.complexGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
   .node.errorEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
   .node.terminateEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
-  .node.parallelInterruptEvent circle.body { fill: var(--node-interrupt-fill); stroke: var(--node-interrupt-stroke); stroke-width: 3; }
-  .node.parallelInterruptEvent circle.ring { fill: none; stroke: var(--node-interrupt-stroke); stroke-width: 1.5; }
+  .node.scopedInterruptEvent circle.body { fill: var(--node-interrupt-fill); stroke: var(--node-interrupt-stroke); stroke-width: 3; }
+  .node.scopedInterruptEvent circle.ring { fill: none; stroke: var(--node-interrupt-stroke); stroke-width: 1.5; }
   .node.errorBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--red); stroke-width: 3; }
   .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
   .node.intermediateMessageCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
@@ -933,7 +935,7 @@
   .node.selected.endEvent circle.body,
   .node.selected.errorEndEvent circle.body,
   .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
-  .node.selected.parallelInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node text { fill: var(--node-text); font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: var(--node-id-text); font-size: 10.5px; }
@@ -945,8 +947,9 @@
   .node.startEvent .node-icon { color: var(--node-start-icon); }
   .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon { color: var(--node-message-icon); }
   .node.endEvent .node-icon, .node.errorEndEvent .node-icon, .node.terminateEndEvent .node-icon,
-  .node.parallelInterruptEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
-  .node.exclusiveGateway .node-icon, .node.parallelGateway .node-icon { color: var(--node-gateway-icon); }
+  .node.scopedInterruptEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
+  .node.exclusiveGateway .node-icon, .node.parallelGateway .node-icon,
+  .node.inclusiveGateway .node-icon, .node.complexGateway .node-icon { color: var(--node-gateway-icon); }
   .node.task .node-icon { color: var(--node-task-icon); }
   .node.serviceTask .node-icon { color: var(--node-service-icon); }
   .node.scriptTask .node-icon { color: var(--node-script-icon); }
@@ -1311,7 +1314,9 @@
         <symbol id="icon-end" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
         <symbol id="icon-gateway" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
         <symbol id="icon-parallel-gateway" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></symbol>
-        <symbol id="icon-parallel-interrupt" viewBox="0 0 24 24"><path d="M12 3v6M12 15v6M3 12h6M15 12h6M8.5 8.5l7 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></symbol>
+        <symbol id="icon-inclusive-gateway" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/></symbol>
+        <symbol id="icon-complex-gateway" viewBox="0 0 24 24"><path d="M12 4v16M5.1 8l13.8 8M5.1 16 18.9 8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+        <symbol id="icon-scoped-interrupt" viewBox="0 0 24 24"><path d="M12 3v6M12 15v6M3 12h6M15 12h6M8.5 8.5l7 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></symbol>
         <symbol id="icon-terminate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="currentColor"/></symbol>
         <symbol id="icon-message" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-error-throw" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
@@ -1464,7 +1469,9 @@ const NODE_TYPE = {
   SCRIPT_TASK: "scriptTask",
   EXCLUSIVE_GATEWAY: "exclusiveGateway",
   PARALLEL_GATEWAY: "parallelGateway",
-  PARALLEL_INTERRUPT_EVENT: "parallelInterruptEvent",
+  INCLUSIVE_GATEWAY: "inclusiveGateway",
+  COMPLEX_GATEWAY: "complexGateway",
+  SCOPED_INTERRUPT_EVENT: "scopedInterruptEvent",
   TERMINATE_END_EVENT: "terminateEndEvent",
   ERROR_END_EVENT: "errorEndEvent",
   ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
@@ -1479,8 +1486,10 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task" },
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
-  { value: NODE_TYPE.PARALLEL_GATEWAY, label: "Parallel Gateway (fork / join)" },
-  { value: NODE_TYPE.PARALLEL_INTERRUPT_EVENT, label: "Parallel Interrupt Event" },
+  { value: NODE_TYPE.PARALLEL_GATEWAY, label: "Parallel Gateway" },
+  { value: NODE_TYPE.INCLUSIVE_GATEWAY, label: "Inclusive Gateway" },
+  { value: NODE_TYPE.COMPLEX_GATEWAY, label: "Complex Gateway" },
+  { value: NODE_TYPE.SCOPED_INTERRUPT_EVENT, label: "Scoped Interrupt Event" },
   { value: NODE_TYPE.TERMINATE_END_EVENT, label: "Terminate End Event" },
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
@@ -1566,15 +1575,15 @@ function buildDiagramTraceContext(candidate, selection, mode) {
     if (node.type === "errorBoundaryEvent" && nodeById.has(node.attachedToRef)) {
       contextNodeIds.add(node.attachedToRef);
     }
-    if (node.type === "parallelInterruptEvent" && nodeById.has(node.parallelGatewayRef)) {
-      contextNodeIds.add(node.parallelGatewayRef);
+    if (node.type === "scopedInterruptEvent" && nodeById.has(node.gatewayRef)) {
+      contextNodeIds.add(node.gatewayRef);
     }
     for (const candidateNode of nodes) {
       if (!candidateNode) continue;
       if (candidateNode.type === "errorBoundaryEvent" && candidateNode.attachedToRef === nodeId) {
         contextNodeIds.add(candidateNode.id);
       }
-      if (candidateNode.type === "parallelInterruptEvent" && candidateNode.parallelGatewayRef === nodeId) {
+      if (candidateNode.type === "scopedInterruptEvent" && candidateNode.gatewayRef === nodeId) {
         contextNodeIds.add(candidateNode.id);
       }
     }
@@ -1612,7 +1621,9 @@ function searchDiagram(candidate, query, limit = 20) {
     scriptTask: "Script Task",
     exclusiveGateway: "Exclusive Gateway",
     parallelGateway: "Parallel Gateway",
-    parallelInterruptEvent: "Parallel Interrupt Event",
+    inclusiveGateway: "Inclusive Gateway",
+    complexGateway: "Complex Gateway",
+    scopedInterruptEvent: "Scoped Interrupt Event",
     endEvent: "End Event",
     terminateEndEvent: "Terminate End Event",
     errorEndEvent: "Error End Event",
@@ -2335,7 +2346,7 @@ function roleSummary(roles, maxLength = 28) {
 function isEventType(type) {
   return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT ||
     type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.TERMINATE_END_EVENT ||
-    type === NODE_TYPE.PARALLEL_INTERRUPT_EVENT ||
+    type === NODE_TYPE.SCOPED_INTERRUPT_EVENT ||
     type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT;
 }
 function isAutomaticType(type) {
@@ -2363,8 +2374,8 @@ function isErrorEndEventType(type) {
 function isTerminateEndEventType(type) {
   return type === NODE_TYPE.TERMINATE_END_EVENT;
 }
-function isParallelInterruptEventType(type) {
-  return type === NODE_TYPE.PARALLEL_INTERRUPT_EVENT;
+function isScopedInterruptEventType(type) {
+  return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT;
 }
 function isBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
@@ -2381,24 +2392,103 @@ function isExclusiveGatewayType(type) {
 function isParallelGatewayType(type) {
   return type === NODE_TYPE.PARALLEL_GATEWAY;
 }
+function isInclusiveGatewayType(type) {
+  return type === NODE_TYPE.INCLUSIVE_GATEWAY;
+}
+function isComplexGatewayType(type) {
+  return type === NODE_TYPE.COMPLEX_GATEWAY;
+}
 function isGatewayType(type) {
-  return isExclusiveGatewayType(type) || isParallelGatewayType(type);
+  return isExclusiveGatewayType(type) || isParallelGatewayType(type) ||
+    isInclusiveGatewayType(type) || isComplexGatewayType(type);
 }
-function isParallelJoinNode(node, additionalIncoming = 0) {
-  return !!node && isParallelGatewayType(node.type) &&
-    incomingFlows(node.id).length + additionalIncoming >= 2 &&
-    outgoingFlows(node.id).length === 1;
+function buildGatewayAdjacencyIndex(candidate = model) {
+  const incoming = new Map();
+  const outgoing = new Map();
+  const structuralIncoming = new Map();
+  const structuralOutgoing = new Map();
+  const addStructuralEdge = (sourceId, targetId) => {
+    if (!structuralIncoming.has(targetId)) structuralIncoming.set(targetId, []);
+    if (!structuralOutgoing.has(sourceId)) structuralOutgoing.set(sourceId, []);
+    structuralIncoming.get(targetId).push(sourceId);
+    structuralOutgoing.get(sourceId).push(targetId);
+  };
+  for (const flow of candidate.sequenceFlows || []) {
+    if (!incoming.has(flow.targetRef)) incoming.set(flow.targetRef, []);
+    if (!outgoing.has(flow.sourceRef)) outgoing.set(flow.sourceRef, []);
+    incoming.get(flow.targetRef).push(flow);
+    outgoing.get(flow.sourceRef).push(flow);
+    addStructuralEdge(flow.sourceRef, flow.targetRef);
+  }
+  for (const boundary of candidate.flowNodes || []) {
+    if (isBoundaryEventType(boundary.type) && Number.isInteger(boundary.attachedToRef)) {
+      addStructuralEdge(boundary.attachedToRef, boundary.id);
+    }
+  }
+  return { incoming, outgoing, structuralIncoming, structuralOutgoing };
 }
-function parallelGatewayBehavior(node) {
+function canReachWithAdjacency(sourceId, targetId, adjacency) {
+  const queue = [sourceId];
+  const visited = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (current === targetId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const next of adjacency.structuralOutgoing.get(current) || []) {
+      if (!visited.has(next)) queue.push(next);
+    }
+  }
+  return false;
+}
+function gatewayTopology(node, additionalIncoming = 0, additionalOutgoing = 0, adjacency = null) {
+  if (!node || !isGatewayType(node.type)) return "invalid";
+  const incoming = (adjacency
+    ? (adjacency.incoming.get(node.id) || []).length
+    : incomingFlows(node.id).length) + additionalIncoming;
+  const outgoing = (adjacency
+    ? (adjacency.outgoing.get(node.id) || []).length
+    : outgoingFlows(node.id).length) + additionalOutgoing;
+  if (incoming === 1 && outgoing >= 2) return "split";
+  if (incoming >= 2 && outgoing === 1) return "merge";
+  return "invalid";
+}
+function gatewayBehavior(node) {
   const incoming = incomingFlows(node.id).length;
   const outgoing = outgoingFlows(node.id).length;
-  if (outgoing >= 2 && incoming >= 1) return "Fork";
-  if (outgoing === 1 && incoming >= 2) return "Join";
-  return "Incomplete / invalid";
+  const topology = gatewayTopology(node);
+  if (topology === "split") return `Split · 1 in / ${outgoing} out`;
+  if (topology === "merge") return `Merge · ${incoming} in / 1 out`;
+  return `Incomplete / invalid · ${incoming} in / ${outgoing} out`;
 }
-function findReachableParallelJoinFromInterrupt(node) {
-  if (!node || !isParallelInterruptEventType(node.type)) return null;
-  const first = outgoingFlows(node.id)[0];
+function usesConditionalGatewayRouting(node) {
+  if (!node || !isGatewayType(node.type)) return false;
+  if (isComplexGatewayType(node.type)) return true;
+  return outgoingFlows(node.id).length >= 2 &&
+    (isExclusiveGatewayType(node.type) || isInclusiveGatewayType(node.type));
+}
+function requiresGatewayDefault(node) {
+  return !!node && outgoingFlows(node.id).length >= 2 &&
+    (isExclusiveGatewayType(node.type) || isInclusiveGatewayType(node.type));
+}
+function isGatewaySplitNode(node, adjacency = null) {
+  return gatewayTopology(node, 0, 0, adjacency) === "split";
+}
+function isInterruptibleGatewaySplit(node, adjacency = null) {
+  return !!node && (isParallelGatewayType(node.type) ||
+    isInclusiveGatewayType(node.type) || isComplexGatewayType(node.type)) &&
+    isGatewaySplitNode(node, adjacency);
+}
+function isForbiddenInterruptMerge(node, additionalIncoming = 0, adjacency = null) {
+  if (!node || (!isParallelGatewayType(node.type) && !isComplexGatewayType(node.type))) {
+    return false;
+  }
+  return gatewayTopology(node, additionalIncoming, 0, adjacency) === "merge";
+}
+function findReachableForbiddenMergeFromInterrupt(node) {
+  if (!node || !isScopedInterruptEventType(node.type)) return null;
+  const adjacency = buildGatewayAdjacencyIndex();
+  const first = (adjacency.outgoing.get(node.id) || [])[0];
   if (!first) return null;
   const queue = [first.targetRef];
   const visited = new Set();
@@ -2408,17 +2498,56 @@ function findReachableParallelJoinFromInterrupt(node) {
     visited.add(nodeId);
     const candidate = getNode(nodeId);
     if (!candidate) continue;
-    if (isParallelJoinNode(candidate)) return candidate;
-    for (const flow of outgoingFlows(candidate.id)) queue.push(flow.targetRef);
+    if (isForbiddenInterruptMerge(candidate, 0, adjacency)) return candidate;
+    for (const next of adjacency.structuralOutgoing.get(candidate.id) || []) queue.push(next);
   }
   return null;
+}
+function nearestUpstreamGatewaySplits(node, adjacency = buildGatewayAdjacencyIndex()) {
+  if (!node) return [];
+  const found = new Map();
+  const queue = [...(adjacency.structuralIncoming.get(node.id) || [])];
+  const visited = new Set([node.id]);
+  while (queue.length) {
+    const nodeId = queue.shift();
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    const candidate = getNode(nodeId);
+    if (!candidate) continue;
+    if (isGatewaySplitNode(candidate, adjacency)) {
+      found.set(candidate.id, candidate);
+      continue;
+    }
+    for (const previous of adjacency.structuralIncoming.get(candidate.id) || []) queue.push(previous);
+  }
+  return [...found.values()];
+}
+function gatewayTopologyWarnings(node) {
+  if (!node || !isGatewayType(node.type)) return [];
+  const warnings = [];
+  const adjacency = buildGatewayAdjacencyIndex();
+  if (gatewayTopology(node, 0, 0, adjacency) === "merge") {
+    const upstreamSplits = nearestUpstreamGatewaySplits(node, adjacency);
+    if (isParallelGatewayType(node.type) &&
+        upstreamSplits.some(split => !isParallelGatewayType(split.type))) {
+      warnings.push("Parallel merge waits for every incoming path. An upstream conditional split may omit a path and leave this merge waiting.");
+    }
+    if (isExclusiveGatewayType(node.type) &&
+        upstreamSplits.some(split => !isExclusiveGatewayType(split.type))) {
+      warnings.push("Exclusive merge does not synchronize. Tokens from an upstream multi-branch split can execute downstream work more than once.");
+    }
+  }
+  if (isComplexGatewayType(node.type)) {
+    warnings.push("A Complex gateway can wait indefinitely when its activation condition never becomes true.");
+  }
+  return warnings;
 }
 function isSingleOutgoingType(type) {
   return type === NODE_TYPE.START_EVENT
     || type === NODE_TYPE.TASK
     || type === NODE_TYPE.SERVICE_TASK
     || type === NODE_TYPE.SCRIPT_TASK
-    || type === NODE_TYPE.PARALLEL_INTERRUPT_EVENT
+    || type === NODE_TYPE.SCOPED_INTERRUPT_EVENT
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT;
@@ -2438,11 +2567,12 @@ function nodeSize(node) {
 function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) ||
     isStartEventType(type) || isMessageStartEventType(type) || isGatewayType(type) ||
-    isParallelInterruptEventType(type) || isBoundaryEventType(type);
+    isScopedInterruptEventType(type) || isBoundaryEventType(type);
 }
 function applyTypeInvariants(node) {
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
-  if (node.type !== "parallelInterruptEvent") delete node.parallelGatewayRef;
+  if (!isComplexGatewayType(node.type)) delete node.activationCondition;
+  if (!isScopedInterruptEventType(node.type)) delete node.gatewayRef;
   if (!isUserTaskType(node.type)) {
     node.requiresAssignment = false;
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
@@ -2478,7 +2608,7 @@ function applyTypeInvariants(node) {
     delete node.script;
     delete node.attachedToRef;
     delete node.errorVariable;
-    delete node.parallelGatewayRef;
+    delete node.gatewayRef;
     delete node.message;
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
@@ -2493,8 +2623,12 @@ function applyTypeInvariants(node) {
     delete node.script;
     delete node.attachedToRef;
     delete node.errorVariable;
-    delete node.parallelGatewayRef;
+    delete node.gatewayRef;
     delete node.message;
+    if (isComplexGatewayType(node.type)) {
+      node.activationCondition = typeof node.activationCondition === "string"
+        ? node.activationCondition : "";
+    }
   } else if (isServiceTaskType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2560,7 +2694,7 @@ function applyTypeInvariants(node) {
     delete node.message;
     if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
     if (typeof node.errorVariable !== "string" || !node.errorVariable.trim()) node.errorVariable = null;
-  } else if (isParallelInterruptEventType(node.type)) {
+  } else if (isScopedInterruptEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
@@ -2574,7 +2708,7 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     delete node.message;
-    if (typeof node.parallelGatewayRef !== "number") node.parallelGatewayRef = null;
+    if (typeof node.gatewayRef !== "number") node.gatewayRef = null;
   } else if (isMessageCatchEventType(node.type)) {
     // A message catch event rests (like a userTask) until a matching message is
     // delivered via POST /api/instances/{id}/message. The delivery configuration
@@ -2684,7 +2818,8 @@ function normalizeExclusiveGatewayPriorities() {
   for (const node of model.flowNodes.filter(node =>
       isGatewayType(node.type) && node.type === "exclusiveGateway")) {
     const conditional = outgoingFlows(node.id).filter(flow => !flow.isDefault);
-    if (!conditional.length || conditional.some(flow => flow.conditionPriority != null)) continue;
+    if (outgoingFlows(node.id).length < 2 || !conditional.length ||
+        conditional.some(flow => flow.conditionPriority != null)) continue;
     conditional.forEach((flow, index) => { flow.conditionPriority = index + 1; });
   }
 }
@@ -2729,8 +2864,11 @@ function migrateLegacyUserTaskDefaultFlows() {
 function applyFlowInvariants(flow) {
   const source = getNode(flow.sourceRef);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
-  const exclusiveGateway = source && isExclusiveGatewayType(source.type);
-  const parallelGateway = source && isParallelGatewayType(source.type);
+  const gateway = source && isGatewayType(source.type);
+  const splitRouting = gateway && outgoingFlows(source.id).length >= 2;
+  const conditionalGateway = gateway && (
+    (splitRouting && (isExclusiveGatewayType(source.type) || isInclusiveGatewayType(source.type))) ||
+    isComplexGatewayType(source.type));
   flow.canActWithoutClaimRoles = normalizeRoles(flow.canActWithoutClaimRoles);
   if (typeof flow.isSelectable !== "boolean") flow.isSelectable = true;
   if (!isUserTaskFlow || !source.multiInstance) flow.isSelectable = true;
@@ -2742,17 +2880,18 @@ function applyFlowInvariants(flow) {
     flow.canActWithoutClaim = false;
     flow.canActWithoutClaimRoles = [];
   }
-  if (exclusiveGateway) {
+  if (conditionalGateway) {
     flow.variables = [];
     flow.isSelectable = true;
     flow.completionCondition = null;
     flow.completionPriority = null;
     flow.cancelRemainingInstances = false;
+    if (!isExclusiveGatewayType(source.type)) flow.conditionPriority = null;
     if (flow.isDefault) {
       flow.condition = null;
       flow.conditionPriority = null;
     }
-  } else if (parallelGateway || (source && isParallelInterruptEventType(source.type))) {
+  } else if (gateway || (source && isScopedInterruptEventType(source.type))) {
     flow.roles = [];
     flow.variables = [];
     flow.condition = null;
@@ -2820,7 +2959,9 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.SCRIPT_TASK]: "icon-script",
   [NODE_TYPE.EXCLUSIVE_GATEWAY]: "icon-gateway",
   [NODE_TYPE.PARALLEL_GATEWAY]: "icon-parallel-gateway",
-  [NODE_TYPE.PARALLEL_INTERRUPT_EVENT]: "icon-parallel-interrupt",
+  [NODE_TYPE.INCLUSIVE_GATEWAY]: "icon-inclusive-gateway",
+  [NODE_TYPE.COMPLEX_GATEWAY]: "icon-complex-gateway",
+  [NODE_TYPE.SCOPED_INTERRUPT_EVENT]: "icon-scoped-interrupt",
   [NODE_TYPE.TERMINATE_END_EVENT]: "icon-terminate"
 };
 
@@ -2960,7 +3101,7 @@ function seedSample() {
       { id: 5, name: "Finance Review", externalId: "TASK_FINANCE_REVIEW", type: "userTask", laneId: 2, x: 650, y: 380, roles: ["Finance"], requiresClaim: false, assignee: null, variables: [] },
       { id: 6, name: "Legal Review", externalId: "TASK_LEGAL_REVIEW", type: "userTask", laneId: 2, x: 650, y: 510, roles: ["Legal"], requiresClaim: false, assignee: null, variables: [] },
       { id: 7, name: "All Reviews Complete", externalId: "GATEWAY_REVIEW_JOIN", type: "parallelGateway", laneId: 2, x: 1100, y: 380, roles: [], requiresClaim: false, assignee: null, variables: [] },
-      { id: 8, name: "Manager Override", externalId: "EVENT_MANAGER_OVERRIDE", type: "parallelInterruptEvent", parallelGatewayRef: 3, laneId: 2, x: 900, y: 250, roles: [], requiresClaim: false, assignee: null, variables: [] },
+      { id: 8, name: "Manager Override", externalId: "EVENT_MANAGER_OVERRIDE", type: "scopedInterruptEvent", gatewayRef: 3, laneId: 2, x: 900, y: 250, roles: [], requiresClaim: false, assignee: null, variables: [] },
       { id: 9, name: "Terminate Request", externalId: "END_TERMINATE_REQUEST", type: "terminateEndEvent", laneId: 2, x: 920, y: 320, roles: [], requiresClaim: false, assignee: null, variables: [] },
       { id: 10, name: "Emergency Review", externalId: "TASK_EMERGENCY_REVIEW", type: "userTask", laneId: 3, x: 1080, y: 660, roles: ["Manager"], requiresClaim: false, assignee: null, variables: [] },
       { id: 11, name: "Approved", externalId: "END_APPROVED", type: "endEvent", laneId: 4, x: 1260, y: 890, roles: [], requiresClaim: false, assignee: null, variables: [] },
@@ -3133,7 +3274,7 @@ function renderNodes() {
       if (isMessageCatchEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
-      if (isParallelInterruptEventType(node.type)) {
+      if (isScopedInterruptEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 7 }));
       }
       appendNodeIcon(g, node.type, r - 11, r - 11, 22);
@@ -3976,12 +4117,14 @@ function renderNodeInspector() {
       const businessKeysEnabled = model.flowNodes.some(n =>
         (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
       const previousType = node.type;
-      if (isExclusiveGatewayType(previousType) && isParallelGatewayType(v)) {
+      const changesGatewaySemantics = previousType !== v &&
+        (isGatewayType(previousType) || isGatewayType(v));
+      if (changesGatewaySemantics) {
         const clearsRouting = outgoingFlows(node.id).some(flow =>
           flow.isDefault || flow.condition != null || flow.conditionPriority != null ||
           normalizeRoles(flow.roles).length > 0 || (flow.variables || []).length > 0);
         if (clearsRouting && !confirm(
-            "Changing this exclusive gateway to a parallel gateway clears its default, conditions, priorities, roles, and variables. Continue?")) {
+            "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?")) {
           renderInspector();
           return;
         }
@@ -3990,6 +4133,15 @@ function renderNodeInspector() {
         node.variables = materializeMessageStartVariables(node);
       }
       node.type = v;
+      if (changesGatewaySemantics) {
+        outgoingFlows(node.id).forEach(flow => {
+          flow.isDefault = false;
+          flow.condition = null;
+          flow.conditionPriority = null;
+          flow.roles = [];
+          flow.variables = [];
+        });
+      }
       if (businessKeysEnabled && (isStartEventType(v) || isMessageStartEventType(v)) && node.businessKey == null) {
         node.businessKey = { variable: "", uniqueness: "active" };
       }
@@ -4025,39 +4177,60 @@ function renderNodeInspector() {
     render();
   });
 
-  if (isParallelGatewayType(node.type)) {
+  if (isGatewayType(node.type)) {
     const topologyField = document.createElement("div");
     topologyField.className = "field";
-    topologyField.innerHTML = "<label>Parallel behavior</label>";
+    topologyField.innerHTML = "<label>Gateway topology</label>";
     const topologyInput = document.createElement("input");
     topologyInput.type = "text";
     topologyInput.disabled = true;
-    topologyInput.value = parallelGatewayBehavior(node);
+    topologyInput.value = gatewayBehavior(node);
     topologyField.appendChild(topologyInput);
     inspector.appendChild(topologyField);
 
-    const parallelHint = document.createElement("p");
-    parallelHint.className = "empty-note";
-    parallelHint.textContent = "Two or more outgoing flows make this a fork for every arriving token. Two or more incoming flows with exactly one outgoing flow make it an all-incoming join.";
-    inspector.appendChild(parallelHint);
+    const topologyHint = document.createElement("p");
+    topologyHint.className = "empty-note";
+    topologyHint.textContent = "Use a separate gateway for each direction: a split has exactly one incoming and at least two outgoing flows; a merge has at least two incoming and exactly one outgoing flow.";
+    inspector.appendChild(topologyHint);
+
+    for (const message of gatewayTopologyWarnings(node)) {
+      const warning = document.createElement("p");
+      warning.className = "empty-note";
+      warning.style.color = "var(--warning-text)";
+      warning.textContent = "Warning: " + message;
+      inspector.appendChild(warning);
+    }
   }
 
-  if (isParallelInterruptEventType(node.type)) {
-    const gateways = model.flowNodes.filter(candidate => isParallelGatewayType(candidate.type));
-    const options = [{ value: "", label: "— select parallel fork —" }]
+  if (isComplexGatewayType(node.type)) {
+    textareaField("Activation condition", node.activationCondition ?? "", v => {
+      node.activationCondition = v;
+    }, 4);
+    const activationHint = document.createElement("p");
+    activationHint.className = "empty-note";
+    activationHint.innerHTML = "Required NCalc expression. Use <code>IncomingCount(301)</code> with a literal incoming flow id and <code>TotalIncomingCount()</code>. Outgoing conditions may inspect <code>[gateway.waitingForStart]</code> to distinguish activation from reset.";
+    inspector.appendChild(activationHint);
+  }
+
+  if (isScopedInterruptEventType(node.type)) {
+    const adjacency = buildGatewayAdjacencyIndex();
+    const gateways = model.flowNodes.filter(candidate =>
+      isInterruptibleGatewaySplit(candidate, adjacency) &&
+      canReachWithAdjacency(candidate.id, node.id, adjacency));
+    const options = [{ value: "", label: "— select gateway split —" }]
       .concat(gateways.map(gateway => ({
         value: gateway.id,
-        label: `#${gateway.id} ${gateway.name} · ${parallelGatewayBehavior(gateway)}`
+        label: `#${gateway.id} ${gateway.name} · ${typeLabel(gateway.type)}`
       })));
-    if (node.parallelGatewayRef != null &&
-        !gateways.some(gateway => gateway.id === node.parallelGatewayRef)) {
+    if (node.gatewayRef != null &&
+        !gateways.some(gateway => gateway.id === node.gatewayRef)) {
       options.push({
-        value: node.parallelGatewayRef,
-        label: `#${node.parallelGatewayRef} (missing or not parallel)`
+        value: node.gatewayRef,
+        label: `#${node.gatewayRef} (missing or not an eligible split)`
       });
     }
-    selectField("Interrupt fork", options, node.parallelGatewayRef ?? "", v => {
-      node.parallelGatewayRef = v ? +v : null;
+    selectField("Interrupt gateway", options, node.gatewayRef ?? "", v => {
+      node.gatewayRef = v ? +v : null;
       renderDiagramLayers();
     });
 
@@ -4066,12 +4239,12 @@ function renderNodeInspector() {
     interruptHint.textContent = "Entering this event cancels active work descended from the nearest matching fork activation, then follows its one authored continuation. If no matching activation is active, it continues without cancellation.";
     inspector.appendChild(interruptHint);
 
-    const riskyJoin = findReachableParallelJoinFromInterrupt(node);
+    const riskyJoin = findReachableForbiddenMergeFromInterrupt(node);
     if (riskyJoin) {
       const warning = document.createElement("p");
       warning.className = "empty-note";
       warning.style.color = "var(--warning-text)";
-      warning.textContent = `Warning: this continuation can reach parallel join #${riskyJoin.id}. Ensure it creates every arrival that join requires; interrupted sibling branches no longer can.`;
+      warning.textContent = `Warning: this continuation can reach ${typeLabel(riskyJoin.type).toLowerCase()} merge #${riskyJoin.id}. Interrupted sibling branches can no longer satisfy that merge.`;
       inspector.appendChild(warning);
     }
   }
@@ -4306,7 +4479,7 @@ function renderNodeInspector() {
       const box = document.createElement("div");
       box.className = "field inspector-card clickable";
       const tgt = getNode(flow.targetRef);
-      const extra = isExclusiveGatewayType(node.type)
+      const extra = usesConditionalGatewayRouting(node)
         ? (flow.isDefault ? " · default" : (flow.condition ? ` · [${flow.condition}]` : ""))
         : (isUserTaskType(node.type) && flow.isSelectable === false ? " · engine-only" : "");
       const name = flowLabel(flow, node) || "(unnamed)";
@@ -4315,19 +4488,20 @@ function renderNodeInspector() {
       inspector.appendChild(box);
     });
 
-    if (isSingleOutgoingType(node.type) && flows.length >= 1) {
+    const addFlowProblem = connectionSourceProblem(node);
+    if (addFlowProblem) {
       const p = document.createElement("p");
       p.className = "empty-note";
-      p.textContent = "This node type can have exactly one outgoing sequence flow.";
+      p.textContent = addFlowProblem;
       inspector.appendChild(p);
     } else {
       const addBtn = document.createElement("button");
       addBtn.textContent = "+ Add flow";
       addBtn.style.marginTop = "8px";
       addBtn.onclick = () => {
-        const defaultTarget = isParallelInterruptEventType(node.type)
+        const defaultTarget = isScopedInterruptEventType(node.type)
           ? model.flowNodes.find(candidate =>
-              !parallelInterruptTargetProblem(node, candidate, true))
+              !scopedInterruptTargetProblem(node, candidate, true))
           : node;
         const flow = createFlow(node.id, defaultTarget?.id ?? node.id);
         select('flow', flow.id);
@@ -5277,23 +5451,25 @@ function renderFlowInspector() {
   flow.variables = flow.variables || [];
   const exclusiveGateway = source && isExclusiveGatewayType(source.type);
   const parallelGateway = source && isParallelGatewayType(source.type);
-  const parallelInterrupt = source && isParallelInterruptEventType(source.type);
-  const gateway = exclusiveGateway || parallelGateway;
+  const inclusiveGateway = source && isInclusiveGatewayType(source.type);
+  const complexGateway = source && isComplexGatewayType(source.type);
+  const scopedInterrupt = source && isScopedInterruptEventType(source.type);
+  const gateway = source && isGatewayType(source.type);
+  const conditionalGateway = gateway && usesConditionalGatewayRouting(source);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   inspector.innerHTML = `<h2>Flow #${flow.id}</h2>
     <p class="badge" style="margin-top:-6px">From node #${flow.sourceRef}${source ? ' (' + source.name + ')' : ''}</p>`;
   field("Name", "text", flow.name, v => { flow.name = v; renderEdges(); });
   field("External ID", "text", flow.externalId ?? "", v => { flow.externalId = v.trim() ? v : null; });
-  let targetNodes = model.flowNodes;
-  if (parallelInterrupt) {
-    targetNodes = model.flowNodes.filter(candidate =>
-      candidate.id === flow.targetRef ||
-      !parallelInterruptTargetProblem(source, candidate, false));
-  }
+  const targetNodes = model.flowNodes.filter(candidate => {
+    if (candidate.id === flow.targetRef) return true;
+    if (connectionTargetProblem(candidate)) return false;
+    return !scopedInterruptTargetProblem(source, candidate, true);
+  });
   selectField("Goes to node", targetNodes.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
               flow.targetRef, v => { flow.targetRef = +v; renderDiagramLayers(); });
 
-  if (exclusiveGateway) {
+  if (conditionalGateway) {
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
         flow.isDefault = checked;
@@ -5301,13 +5477,15 @@ function renderFlowInspector() {
           flow.condition = null;
           flow.conditionPriority = null;
           // Only one default per gateway. A displaced default becomes a
-          // conditional branch and receives the next available priority.
+          // conditional branch; Exclusive routing also receives a priority.
           outgoingFlows(flow.sourceRef).forEach(other => {
             if (other.id === flow.id || !other.isDefault) return;
             other.isDefault = false;
-            other.conditionPriority = nextConditionPriority(flow.sourceRef);
+            other.conditionPriority = exclusiveGateway
+              ? nextConditionPriority(flow.sourceRef) : null;
           });
-        } else if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
+        } else if (exclusiveGateway &&
+            (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0)) {
           flow.conditionPriority = nextConditionPriority(flow.sourceRef);
         }
         renderInspector();
@@ -5317,29 +5495,39 @@ function renderFlowInspector() {
     if (flow.isDefault) {
       const defaultHint = document.createElement("p");
       defaultHint.className = "empty-note";
-      defaultHint.textContent = "Required fallback: taken only when no conditional branch matches.";
+      defaultHint.textContent = requiresGatewayDefault(source)
+        ? "Required fallback: taken only when no conditional branch matches."
+        : "Optional fallback: used when no Complex outgoing condition matches.";
       inspector.appendChild(defaultHint);
     } else {
       field("Condition", "text", flow.condition ?? "", v => {
         flow.condition = v.trim() ? v : null;
         renderEdges();
       });
-      field("Condition priority", "number", flow.conditionPriority ?? "", v => {
-        flow.conditionPriority = v.trim() === "" ? null : Number(v);
-        renderEdges();
-      });
+      if (exclusiveGateway) {
+        field("Condition priority", "number", flow.conditionPriority ?? "", v => {
+          flow.conditionPriority = v.trim() === "" ? null : Number(v);
+          renderEdges();
+        });
+      }
       const condHint = document.createElement("p");
       condHint.className = "empty-note";
-      condHint.textContent = 'Required NCalc expression. Lower positive priorities are evaluated first. Example: amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\'). Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
+      condHint.textContent = complexGateway
+        ? "Required NCalc expression evaluated during activation and reset. Use [gateway.waitingForStart] to select phase-specific output; reset may intentionally match no flow."
+        : inclusiveGateway
+          ? "Required NCalc expression. Every true branch is selected from one routing snapshot; priorities are not used."
+          : 'Required NCalc expression. Lower positive priorities are evaluated first. Example: amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\'). Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
       inspector.appendChild(condHint);
     }
   } else {
-    if (parallelGateway || parallelInterrupt) {
+    if (gateway || scopedInterrupt) {
       const routingHint = document.createElement("p");
       routingHint.className = "empty-note";
-      routingHint.textContent = parallelGateway
-        ? "Parallel gateway flows are unconditional and carry no user-action metadata."
-        : "The interrupt continuation is authored here and is unconditional; API callers cannot choose a runtime destination.";
+      routingHint.textContent = scopedInterrupt
+        ? "The scoped interrupt continuation is authored here and is unconditional; API callers cannot choose a runtime destination."
+        : parallelGateway
+          ? "Parallel gateway flows are unconditional and carry no user-action metadata."
+          : "This converging gateway has one unconditional continuation.";
       inspector.appendChild(routingHint);
     }
     if (isUserTaskFlow) {
@@ -5454,11 +5642,11 @@ function renderFlowInspector() {
   variablesTitle.style.marginTop = "16px";
   inspector.appendChild(variablesTitle);
 
-  if (gateway || parallelInterrupt) {
+  if (gateway || scopedInterrupt) {
     const p = document.createElement("p");
     p.className = "empty-note";
-    p.textContent = parallelInterrupt
-      ? "Parallel interrupt continuations do not capture variables."
+    p.textContent = scopedInterrupt
+      ? "Scoped interrupt continuations do not capture variables."
       : "Gateway flows route automatically and do not capture variables.";
     inspector.appendChild(p);
   } else if (!isUserTaskFlow) {
@@ -6117,23 +6305,27 @@ function connectionSourceProblem(node) {
   if (isSingleOutgoingType(node.type) && outgoingFlows(node.id).length >= 1) {
     return "This node type can have exactly one outgoing flow.";
   }
+  if (isGatewayType(node.type) &&
+      incomingFlows(node.id).length >= 2 && outgoingFlows(node.id).length >= 1) {
+    return "A gateway merge can have exactly one outgoing flow. Add a separate gateway for a following split.";
+  }
   return "";
 }
 
-function parallelInterruptTargetProblem(source, target, prospective = false) {
-  if (!source || !isParallelInterruptEventType(source.type)) return "";
+function scopedInterruptTargetProblem(source, target, prospective = false) {
+  if (!source || !isScopedInterruptEventType(source.type)) return "";
   if (!target) return "Drop the connection on a target node.";
   if (target.id === source.id) {
-    return "A parallel interrupt event cannot continue to itself.";
+    return "A scoped interrupt event cannot continue to itself.";
   }
   if (isStartEventType(target.type) || isMessageStartEventType(target.type)) {
-    return "A parallel interrupt event cannot continue to an entry event.";
+    return "A scoped interrupt event cannot continue to an entry event.";
   }
   if (isBoundaryEventType(target.type)) {
-    return "A parallel interrupt event cannot continue to an error boundary event.";
+    return "A scoped interrupt event cannot continue to an error boundary event.";
   }
-  if (isParallelJoinNode(target, prospective ? 1 : 0)) {
-    return "A parallel interrupt event cannot continue directly to a parallel join.";
+  if (isForbiddenInterruptMerge(target, prospective ? 1 : 0)) {
+    return "A scoped interrupt event cannot continue directly to a Parallel or Complex merge.";
   }
   return "";
 }
@@ -6144,12 +6336,16 @@ function connectionTargetProblem(node) {
   if (isStartEventType(node.type) || isMessageStartEventType(node.type)) {
     return "A start event cannot have an incoming sequence flow.";
   }
+  if (isGatewayType(node.type) &&
+      outgoingFlows(node.id).length >= 2 && incomingFlows(node.id).length >= 1) {
+    return "A gateway split can have exactly one incoming flow. Add a separate gateway for a preceding merge.";
+  }
   return "";
 }
 
 function connectionProblem(source, target) {
   return connectionSourceProblem(source) || connectionTargetProblem(target) ||
-    parallelInterruptTargetProblem(source, target, true);
+    scopedInterruptTargetProblem(source, target, true);
 }
 
 function activeConnectionSource() {
@@ -6493,7 +6689,8 @@ function assignNodeLane(nodeId) {
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
                  roles: [], variables: [], condition: null,
-                 conditionPriority: isExclusiveGatewayType(getNode(sourceId)?.type) ? nextConditionPriority(sourceId) : null,
+                 conditionPriority: isExclusiveGatewayType(getNode(sourceId)?.type) &&
+                   outgoingFlows(sourceId).length >= 1 ? nextConditionPriority(sourceId) : null,
                  isDefault: false, isSelectable: true, canActWithoutClaim: false,
                  canActWithoutClaimRoles: [],
                  completionCondition: null, completionPriority: null, cancelRemainingInstances: false };
@@ -6576,8 +6773,8 @@ function deleteNode(id) {
     f.sourceRef !== id && f.targetRef !== id
     && !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
   model.flowNodes.forEach(node => {
-    if (isParallelInterruptEventType(node.type) && node.parallelGatewayRef === id) {
-      node.parallelGatewayRef = null;
+    if (isScopedInterruptEventType(node.type) && node.gatewayRef === id) {
+      node.gatewayRef = null;
     }
   });
   if (model.initialEventId === id) {
@@ -6660,6 +6857,11 @@ function validateModelForSave(candidate) {
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
     countItems(flow.variables) > 0 || hasText(flow.condition) ||
     hasText(flow.completionCondition) || flow.completionPriority != null;
+  const hasGatewayActionMetadata = flow => flow.isSelectable === false ||
+    !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
+    !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
+    countItems(flow.variables) > 0 || hasText(flow.completionCondition) ||
+    flow.completionPriority != null;
   const nodeLabel = node => "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
   const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
@@ -6680,6 +6882,30 @@ function validateModelForSave(candidate) {
   ]);
   const knownFlowIds = new Set(
     flows.filter(flow => Number.isInteger(flow && flow.id)).map(flow => flow.id));
+  const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+  const incomingByNode = new Map();
+  const outgoingByNode = new Map();
+  const structuralTargetsByNode = new Map();
+  const addStructuralTarget = (sourceId, targetId) => {
+    if (!structuralTargetsByNode.has(sourceId)) structuralTargetsByNode.set(sourceId, []);
+    structuralTargetsByNode.get(sourceId).push(targetId);
+  };
+  for (const flow of flows) {
+    if (!flow) continue;
+    if (!incomingByNode.has(flow.targetRef)) incomingByNode.set(flow.targetRef, []);
+    if (!outgoingByNode.has(flow.sourceRef)) outgoingByNode.set(flow.sourceRef, []);
+    incomingByNode.get(flow.targetRef).push(flow);
+    outgoingByNode.get(flow.sourceRef).push(flow);
+    addStructuralTarget(flow.sourceRef, flow.targetRef);
+  }
+  for (const boundary of nodes) {
+    if (boundary && boundary.type === "errorBoundaryEvent" &&
+        Number.isInteger(boundary.attachedToRef)) {
+      addStructuralTarget(boundary.attachedToRef, boundary.id);
+    }
+  }
+  const incomingFor = nodeId => incomingByNode.get(nodeId) || [];
+  const outgoingFor = nodeId => outgoingByNode.get(nodeId) || [];
 
   function splitFlowInfoArguments(source) {
     const args = [];
@@ -6743,7 +6969,7 @@ function validateModelForSave(candidate) {
 
       if (!allowed && !unsupportedReported) {
         errors.push(owner +
-          " cannot use FlowInfo; it is supported only in exclusive-gateway conditions, " +
+          " cannot use FlowInfo; it is supported only in conditional gateway flows, " +
           "multi-instance completion conditions, and NCalc script assignments.");
         unsupportedReported = true;
       }
@@ -6829,6 +7055,8 @@ function validateModelForSave(candidate) {
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
         label + " cardinality expression",
         false);
+      validateFlowInfoExpression(node && node.activationCondition,
+        label + " activationCondition", false);
 
       const serviceMappings = node && node.service && node.service.outputMappings;
       for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
@@ -6850,15 +7078,169 @@ function validateModelForSave(candidate) {
       }
     }
 
-    const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
     for (const flow of flows) {
       const label = flowLabel(flow);
       const source = nodesById.get(flow && flow.sourceRef);
       validateVariables(flow && flow.variables, label);
       validateFlowInfoExpression(flow && flow.condition, label + " condition",
-        !!source && source.type === "exclusiveGateway" && !flow.isDefault);
+        !!source && ["exclusiveGateway", "inclusiveGateway", "complexGateway"].includes(source.type) &&
+          !flow.isDefault);
       validateFlowInfoExpression(flow && flow.completionCondition, label + " completionCondition",
         !!source && source.type === "userTask" && !!source.multiInstance);
+    }
+  }
+
+  function readGatewayHelperCall(expression, openParenthesis) {
+    let depth = 0;
+    let quote = null;
+    for (let index = openParenthesis; index < expression.length; index++) {
+      const ch = expression[index];
+      if (quote) {
+        if (ch === "\\") {
+          index++;
+        } else if (ch === quote) {
+          if (expression[index + 1] === quote) index++;
+          else quote = null;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+      } else if (ch === "(") {
+        depth++;
+      } else if (ch === ")") {
+        depth--;
+        if (depth === 0) {
+          return {
+            close: index,
+            arguments: splitFlowInfoArguments(
+              expression.slice(openParenthesis + 1, index))
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  function validateGatewayExpression(
+      expression, owner, complexGateway, waitingForStartAllowed) {
+    if (!hasText(expression)) return;
+    const incomingIds = complexGateway
+      ? new Set(incomingFor(complexGateway.id).map(flow => flow.id))
+      : new Set();
+    const waitingPattern = /\bgateway\.waitingForStart/gi;
+    let waitingMatch;
+    while ((waitingMatch = waitingPattern.exec(expression)) !== null) {
+      if (isInsideQuotedExpressionText(expression, waitingMatch.index)) continue;
+      const end = waitingMatch.index + waitingMatch[0].length;
+      const following = expression[end] || "";
+      if (/[A-Za-z0-9_]/.test(following) || following === ".") continue;
+      if (!complexGateway || !waitingForStartAllowed) {
+        errors.push(owner +
+          " has invalid Complex gateway expression usage: [gateway.waitingForStart] " +
+          "is available only in Complex gateway outgoing-flow conditions.");
+        break;
+      }
+    }
+
+    const helperPattern = /\b(IncomingCount|TotalIncomingCount)\b/gi;
+    let match;
+    while ((match = helperPattern.exec(expression)) !== null) {
+      if (isInsideQuotedExpressionText(expression, match.index)) continue;
+      let open = match.index + match[0].length;
+      while (/\s/.test(expression[open] || "")) open++;
+      // Match the server inspector: an identifier without a call is left to
+      // ordinary expression parsing rather than treated as a helper call.
+      if (expression[open] !== "(") continue;
+      if (!complexGateway) {
+        errors.push(owner + " has invalid Complex gateway expression usage: " +
+          match[1] + " is available only in Complex gateway expressions.");
+      }
+      const call = readGatewayHelperCall(expression, open);
+      if (!call) {
+        errors.push(owner + " has invalid Complex gateway expression usage: " +
+          match[1] + " has an unterminated argument list.");
+        break;
+      }
+      const hasNoArguments = call.arguments.length === 1 &&
+        !String(call.arguments[0]).trim();
+      if (match[1].toLowerCase() === "totalincomingcount") {
+        if (!hasNoArguments) {
+          errors.push(owner + " has invalid Complex gateway expression usage: " +
+            "TotalIncomingCount requires no arguments.");
+        }
+      } else if (hasNoArguments || call.arguments.length !== 1) {
+        errors.push(owner + " has invalid Complex gateway expression usage: " +
+          "IncomingCount requires exactly one literal incoming-flow id.");
+      } else {
+        const flowIdText = String(call.arguments[0]).trim();
+        if (!/^[+-]?\d+$/.test(flowIdText)) {
+          errors.push(owner + " has invalid Complex gateway expression usage: " +
+            "IncomingCount's argument must be a literal integer incoming-flow id.");
+        } else if (complexGateway && !incomingIds.has(Number(flowIdText))) {
+          errors.push(owner + " has invalid Complex gateway expression usage: " +
+            "IncomingCount references sequence flow #" + flowIdText +
+            ", which is not incoming to this Complex gateway.");
+        }
+      }
+      helperPattern.lastIndex = call.close + 1;
+    }
+  }
+
+  function validateGatewayExpressionUsage() {
+    const validateVariables = (variables, owner) => {
+      for (const variable of Array.isArray(variables) ? variables : []) {
+        validateGatewayExpression(
+          variable && variable.validation,
+          "Validation for variable '" + String(variable && variable.name || "") +
+            "' on " + owner,
+          null,
+          false);
+      }
+    };
+
+    validateVariables(processVariables, "process variables");
+    for (const node of nodes) {
+      const label = "Flow node #" + String(node && node.id);
+      const complex = node && node.type === "complexGateway" ? node : null;
+      validateGatewayExpression(node && node.activationCondition,
+        label + " activationCondition", complex, false);
+      validateGatewayExpression(node && node.assignee,
+        label + " assignee expression", null, false);
+      validateGatewayExpression(
+        node && node.multiInstance && node.multiInstance.cardinalityExpression,
+        label + " cardinality expression", null, false);
+      validateVariables(node && node.variables, label);
+
+      const serviceMappings = node && node.service && node.service.outputMappings;
+      for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
+        validateGatewayExpression(mapping && mapping.validation,
+          label + " service output validation", null, false);
+      }
+      const message = node && node.message;
+      validateGatewayExpression(message && message.headerValidation,
+        label + " message header validation", null, false);
+      for (const mapping of Array.isArray(message && message.outputMappings)
+          ? message.outputMappings : []) {
+        validateGatewayExpression(mapping && mapping.validation,
+          label + " message output validation", null, false);
+      }
+      for (const assignment of Array.isArray(node && node.assignments)
+          ? node.assignments : []) {
+        validateGatewayExpression(assignment && assignment.expression,
+          label + " assignment", null, false);
+      }
+    }
+
+    for (const flow of flows) {
+      const label = flowLabel(flow);
+      const source = nodesById.get(flow && flow.sourceRef);
+      const complex = source && source.type === "complexGateway" ? source : null;
+      validateGatewayExpression(flow && flow.condition,
+        label + " condition", complex, true);
+      validateGatewayExpression(flow && flow.completionCondition,
+        label + " completionCondition", null, false);
+      validateVariables(flow && flow.variables, label);
     }
   }
 
@@ -6950,6 +7332,7 @@ function validateModelForSave(candidate) {
   for (const node of nodes) validateVariableNames(node && node.variables, "flow node #" + String(node && node.id));
   for (const flow of flows) validateVariableNames(flow && flow.variables, "sequence flow #" + String(flow && flow.id));
   validateFlowInfoUsage();
+  validateGatewayExpressionUsage();
 
   const processByName = new Map();
   for (const variable of processVariables) {
@@ -7396,67 +7779,169 @@ function validateModelForSave(candidate) {
     }
   }
 
-  const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
+  const supportedNodeTypes = new Set([
+    "startEvent", "messageStartEvent", "userTask", "task", "serviceTask",
+    "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
+    "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
+    "errorEndEvent", "errorBoundaryEvent", "intermediateMessageCatchEvent"
+  ]);
+  for (const node of nodes.filter(Boolean)) {
+    if (!supportedNodeTypes.has(node.type)) {
+      errors.push("Flow node #" + String(node.id) +
+        " has unsupported type '" + String(node.type) + "'.");
+    }
+    if (node.parallelGatewayRef != null) {
+      errors.push("Flow node #" + String(node.id) +
+        " uses removed parallelGatewayRef metadata; use gatewayRef on scopedInterruptEvent.");
+    }
+    if (node.type !== "scopedInterruptEvent" && node.gatewayRef != null) {
+      errors.push("Flow node #" + String(node.id) +
+        " can define gatewayRef only when its type is scopedInterruptEvent.");
+    }
+    if (node.type !== "complexGateway" && node.activationCondition != null) {
+      errors.push("Flow node #" + String(node.id) +
+        " can define activationCondition only when its type is complexGateway.");
+    }
+  }
+  const gatewayTypes = new Set([
+    "exclusiveGateway", "parallelGateway", "inclusiveGateway", "complexGateway"
+  ]);
+  const gatewayTopologyFor = node => {
+    const incoming = incomingFor(node.id).length;
+    const outgoing = outgoingFor(node.id).length;
+    if (incoming === 1 && outgoing >= 2) return "split";
+    if (incoming >= 2 && outgoing === 1) return "merge";
+    return "invalid";
+  };
+  const gatewayName = type => ({
+    exclusiveGateway: "Exclusive",
+    parallelGateway: "Parallel",
+    inclusiveGateway: "Inclusive",
+    complexGateway: "Complex"
+  })[type] || "Gateway";
 
-  for (const gateway of nodes.filter(node => node && node.type === "parallelGateway")) {
-    const label = "Parallel gateway #" + String(gateway.id);
-    const incoming = flows.filter(flow => flow && flow.targetRef === gateway.id);
-    const outgoing = flows.filter(flow => flow && flow.sourceRef === gateway.id);
-    const isFork = incoming.length >= 1 && outgoing.length >= 2;
-    const isJoin = incoming.length >= 2 && outgoing.length === 1;
-    if (!isFork && !isJoin) {
-      errors.push(label + " must be a fork (at least one incoming and at least two outgoing flows) " +
-        "or a join (at least two incoming and exactly one outgoing flow).");
+  function validateComplexActivation(gateway) {
+    const label = "Complex gateway #" + String(gateway.id) + " activationCondition";
+    if (!hasText(gateway.activationCondition)) {
+      errors.push(label + " is required.");
+    }
+  }
+
+  for (const gateway of nodes.filter(node => node && gatewayTypes.has(node.type))) {
+    const label = gatewayName(gateway.type) + " gateway #" + String(gateway.id);
+    const incoming = incomingFor(gateway.id);
+    const outgoing = outgoingFor(gateway.id);
+    const topology = gatewayTopologyFor(gateway);
+    if (topology === "invalid") {
+      errors.push(label + " must be either a split (exactly one incoming and at least two outgoing flows) " +
+        "or a merge (at least two incoming and exactly one outgoing flow); use two adjacent gateways for merge-then-split.");
+    }
+    if (gateway.type === "complexGateway") {
+      validateComplexActivation(gateway);
+    }
+    if (countItems(gateway.roles) > 0 || countItems(gateway.variables) > 0 ||
+        !!gateway.requiresClaim || hasText(gateway.assignee) ||
+        !!gateway.requiresAssignment ||
+        (hasText(gateway.claimMode) && gateway.claimMode !== "fresh") ||
+        gateway.inheritClaimFromNodeId != null ||
+        (hasText(gateway.assignmentMode) && gateway.assignmentMode !== "fresh") ||
+        gateway.inheritAssignmentFromNodeId != null ||
+        gateway.multiInstance != null || gateway.service != null ||
+        countItems(gateway.assignments) > 0 || hasText(gateway.script) ||
+        gateway.message != null || gateway.attachedToRef != null ||
+        gateway.errorVariable != null || gateway.businessKey != null ||
+        gateway.idempotency != null) {
+      errors.push(label + " can define only gateway configuration and normal node identity/layout fields.");
     }
     for (const flow of outgoing) {
-      if (hasUnsupportedPassThroughMetadata(flow) || flow.conditionPriority != null) {
+      if (hasGatewayActionMetadata(flow)) {
         errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
-          " must be unconditional and cannot define user-action, gateway-condition, or multi-instance metadata.");
+          " cannot define user-action or multi-instance metadata.");
+      }
+    }
+
+    if (gateway.type === "parallelGateway" ||
+        (topology === "merge" && gateway.type !== "complexGateway")) {
+      for (const flow of outgoing) {
+        if (hasText(flow.condition) || !!flow.isDefault || flow.conditionPriority != null) {
+          errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+            " must be unconditional and cannot define default or condition metadata.");
+        }
+      }
+      continue;
+    }
+
+    const defaults = outgoing.filter(flow => !!flow.isDefault);
+    const requiresDefault = topology === "split" &&
+      (gateway.type === "exclusiveGateway" || gateway.type === "inclusiveGateway");
+    if (requiresDefault && defaults.length !== 1) {
+      errors.push(label + " split must have exactly one default outgoing sequence flow.");
+    }
+    if (gateway.type === "complexGateway" && defaults.length > 1) {
+      errors.push(label + " can have at most one default outgoing sequence flow.");
+    }
+
+    const priorities = new Set();
+    for (const flow of outgoing) {
+      if (flow.isDefault) {
+        if (hasText(flow.condition) || flow.conditionPriority != null) {
+          errors.push("The default flow from " + label.toLowerCase() +
+            " cannot define a condition or conditionPriority.");
+        }
+        continue;
+      }
+      if (!hasText(flow.condition)) {
+        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          " must define a condition.");
+      }
+      if (gateway.type === "exclusiveGateway") {
+        if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
+          errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+            " must define a positive integer conditionPriority.");
+        } else if (priorities.has(flow.conditionPriority)) {
+          errors.push(label + " has duplicate conditionPriority " + flow.conditionPriority + ".");
+        } else {
+          priorities.add(flow.conditionPriority);
+        }
+      } else if (flow.conditionPriority != null) {
+        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          " cannot define conditionPriority.");
       }
     }
   }
 
-  const canReachNode = (sourceId, targetId) => {
+  const reachabilityBySource = new Map();
+  const reachableFrom = sourceId => {
+    if (reachabilityBySource.has(sourceId)) return reachabilityBySource.get(sourceId);
     const queue = [sourceId];
     const visited = new Set();
     while (queue.length > 0) {
       const current = queue.shift();
-      if (current === targetId) return true;
       if (visited.has(current)) continue;
       visited.add(current);
-      for (const flow of flows) {
-        if (flow && flow.sourceRef === current && !visited.has(flow.targetRef)) {
-          queue.push(flow.targetRef);
-        }
-      }
-      // Error boundaries are reached through their host attachment, not an
-      // authored incoming sequence flow. Treat host -> boundary as an implicit
-      // structural edge so boundary-triggered parallel interrupts validate.
-      for (const boundary of nodes) {
-        if (boundary && boundary.type === "errorBoundaryEvent" &&
-            boundary.attachedToRef === current && !visited.has(boundary.id)) {
-          queue.push(boundary.id);
-        }
+      for (const targetId of structuralTargetsByNode.get(current) || []) {
+        if (!visited.has(targetId)) queue.push(targetId);
       }
     }
-    return false;
+    reachabilityBySource.set(sourceId, visited);
+    return visited;
   };
+  const canReachNode = (sourceId, targetId) => reachableFrom(sourceId).has(targetId);
 
-  for (const interrupt of nodes.filter(node => node && node.type === "parallelInterruptEvent")) {
-    const label = "Parallel interrupt event #" + String(interrupt.id);
-    const incoming = flows.filter(flow => flow && flow.targetRef === interrupt.id);
-    const outgoing = flows.filter(flow => flow && flow.sourceRef === interrupt.id);
-    const referenced = nodesById.get(interrupt.parallelGatewayRef);
-    if (!Number.isInteger(interrupt.parallelGatewayRef) ||
-        !referenced || referenced.type !== "parallelGateway") {
-      errors.push(label + " parallelGatewayRef must reference an existing parallel gateway fork.");
+  for (const interrupt of nodes.filter(node => node && node.type === "scopedInterruptEvent")) {
+    const label = "Scoped interrupt event #" + String(interrupt.id);
+    const incoming = incomingFor(interrupt.id);
+    const outgoing = outgoingFor(interrupt.id);
+    const referenced = nodesById.get(interrupt.gatewayRef);
+    if (!Number.isInteger(interrupt.gatewayRef) || !referenced ||
+        !["parallelGateway", "inclusiveGateway", "complexGateway"].includes(referenced.type)) {
+      errors.push(label + " gatewayRef must reference an existing Parallel, Inclusive, or Complex gateway split.");
     } else {
-      const referencedOutgoing = flows.filter(flow => flow && flow.sourceRef === referenced.id);
-      if (referencedOutgoing.length < 2) {
-        errors.push(label + " parallelGatewayRef must reference a fork with at least two outgoing flows.");
+      if (gatewayTopologyFor(referenced) !== "split") {
+        errors.push(label + " gatewayRef must reference a split with exactly one incoming and at least two outgoing flows.");
       }
       if (!canReachNode(referenced.id, interrupt.id)) {
-        errors.push(label + " must be structurally reachable from its referenced parallel gateway fork.");
+        errors.push(label + " must be structurally reachable from its referenced gateway split.");
       }
     }
     if (incoming.length !== 1) {
@@ -7480,70 +7965,35 @@ function validateModelForSave(candidate) {
         errors.push(label + " cannot continue directly to an entry event.");
       } else if (target.type === "errorBoundaryEvent") {
         errors.push(label + " cannot continue directly to an error boundary event.");
-      } else if (target.type === "parallelGateway") {
-        const targetIncoming = flows.filter(flow => flow && flow.targetRef === target.id);
-        const targetOutgoing = flows.filter(flow => flow && flow.sourceRef === target.id);
-        if (targetIncoming.length >= 2 && targetOutgoing.length === 1) {
-          errors.push(label + " cannot continue directly to parallel join #" + String(target.id) + ".");
-        }
+      } else if ((target.type === "parallelGateway" || target.type === "complexGateway") &&
+          gatewayTopologyFor(target) === "merge") {
+        errors.push(label + " cannot continue directly to " +
+          gatewayName(target.type).toLowerCase() + " merge #" + String(target.id) + ".");
       }
     }
     if (countItems(interrupt.roles) > 0 || countItems(interrupt.variables) > 0 ||
         !!interrupt.requiresClaim || hasText(interrupt.assignee) ||
+        !!interrupt.requiresAssignment ||
+        (hasText(interrupt.claimMode) && interrupt.claimMode !== "fresh") ||
+        interrupt.inheritClaimFromNodeId != null ||
+        (hasText(interrupt.assignmentMode) && interrupt.assignmentMode !== "fresh") ||
+        interrupt.inheritAssignmentFromNodeId != null ||
         interrupt.multiInstance != null || interrupt.service != null ||
         countItems(interrupt.assignments) > 0 || hasText(interrupt.script) ||
-        interrupt.message != null || interrupt.attachedToRef != null) {
-      errors.push(label + " can define only parallelGatewayRef and normal node identity/layout fields.");
+        interrupt.message != null || interrupt.attachedToRef != null ||
+        interrupt.errorVariable != null || interrupt.businessKey != null ||
+        interrupt.idempotency != null) {
+      errors.push(label + " can define only gatewayRef and normal node identity/layout fields.");
     }
   }
 
   for (const flow of flows) {
     const source = nodesById.get(flow && flow.sourceRef);
     if (flow && flow.conditionPriority != null &&
-        (!source || source.type !== "exclusiveGateway")) {
-      errors.push(flowLabel(flow) + " can define conditionPriority only when leaving an exclusive gateway.");
-    }
-  }
-  for (const gateway of nodes.filter(node => node && node.type === "exclusiveGateway")) {
-    const label = "Exclusive gateway #" + String(gateway.id);
-    const outgoing = flows.filter(flow => flow && flow.sourceRef === gateway.id);
-    if (outgoing.length < 2) {
-      errors.push(label + " must have at least two outgoing sequence flows.");
-    }
-    const defaults = outgoing.filter(flow => !!flow.isDefault);
-    if (defaults.length !== 1) {
-      errors.push(label + " must have exactly one default outgoing sequence flow.");
-    }
-
-    const priorities = new Set();
-    for (const flow of outgoing) {
-      if (countItems(flow.roles) > 0 || countItems(flow.variables) > 0 ||
-          flow.isSelectable === false || !!flow.canActWithoutClaim ||
-          countItems(flow.canActWithoutClaimRoles) > 0 ||
-          hasText(flow.completionCondition) || flow.completionPriority != null ||
-          !!flow.cancelRemainingInstances) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
-          " cannot define user-action or multi-instance metadata.");
-      }
-      if (flow.isDefault) {
-        if (hasText(flow.condition) || flow.conditionPriority != null) {
-          errors.push("The default flow from " + label.toLowerCase() +
-            " cannot define a condition or conditionPriority.");
-        }
-        continue;
-      }
-      if (!hasText(flow.condition)) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
-          " must define a condition.");
-      }
-      if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
-          " must define a positive integer conditionPriority.");
-      } else if (priorities.has(flow.conditionPriority)) {
-        errors.push(label + " has duplicate conditionPriority " + flow.conditionPriority + ".");
-      } else {
-        priorities.add(flow.conditionPriority);
-      }
+        (!source || source.type !== "exclusiveGateway" ||
+         gatewayTopologyFor(source) !== "split")) {
+      errors.push(flowLabel(flow) +
+        " can define conditionPriority only when leaving an Exclusive gateway split.");
     }
   }
 
@@ -8043,8 +8493,10 @@ function loadFromObject(obj) {
         errorCode: isErrorEndEventType(s.type) && typeof s.errorCode === "string" ? s.errorCode.trim() : undefined,
         errorDescription: isErrorEndEventType(s.type) && typeof s.errorDescription === "string" && s.errorDescription.trim()
           ? s.errorDescription.trim() : undefined,
-        parallelGatewayRef: isParallelInterruptEventType(s.type) &&
-          typeof s.parallelGatewayRef === "number" ? s.parallelGatewayRef : undefined,
+        activationCondition: isComplexGatewayType(s.type) &&
+          typeof s.activationCondition === "string" ? s.activationCondition : undefined,
+        gatewayRef: isScopedInterruptEventType(s.type) &&
+          typeof s.gatewayRef === "number" ? s.gatewayRef : undefined,
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined

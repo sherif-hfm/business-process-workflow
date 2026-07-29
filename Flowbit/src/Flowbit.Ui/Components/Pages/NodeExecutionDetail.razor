@@ -233,8 +233,8 @@ else if (execution is not null)
                     <div class="summary-item"><span>User task</span><strong>@FormatId(execution.UserTaskId)</strong></div>
                     <div class="summary-item"><span>MI execution</span><strong>@FormatId(execution.MultiInstanceExecutionId)</strong></div>
                     <div class="summary-item"><span>Item index</span><strong>@(execution.ItemIndex?.ToString() ?? "—")</strong></div>
-                    <div class="summary-item"><span>Entry branch</span><strong>@FormatId(execution.EntryParallelBranchId)</strong></div>
-                    <div class="summary-item"><span>Exit branch</span><strong>@FormatId(execution.ExitParallelBranchId)</strong></div>
+                    <div class="summary-item"><span>Entry branch</span><strong>@FormatId(execution.EntryGatewayBranchId)</strong></div>
+                    <div class="summary-item"><span>Exit branch</span><strong>@FormatId(execution.ExitGatewayBranchId)</strong></div>
                 </div>
             </section>
 

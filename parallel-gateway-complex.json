@@ -333,7 +333,7 @@
       "id": 13,
       "name": "Cancel Technical Fork Only",
       "externalId": "INTERRUPT_TECHNICAL_ONLY",
-      "type": "parallelInterruptEvent",
+      "type": "scopedInterruptEvent",
       "laneId": 2,
       "x": 1228,
       "y": 162,
@@ -347,13 +347,13 @@
       "variables": [],
       "assignee": null,
       "assignments": [],
-      "parallelGatewayRef": 3
+      "gatewayRef": 3
     },
     {
       "id": 14,
       "name": "Cancel Technical Fork First",
       "externalId": "INTERRUPT_TECHNICAL_CHAIN",
-      "type": "parallelInterruptEvent",
+      "type": "scopedInterruptEvent",
       "laneId": 2,
       "x": 1044,
       "y": 494,
@@ -367,13 +367,13 @@
       "variables": [],
       "assignee": null,
       "assignments": [],
-      "parallelGatewayRef": 3
+      "gatewayRef": 3
     },
     {
       "id": 15,
       "name": "Then Cancel Main Fork",
       "externalId": "INTERRUPT_MAIN_CHAIN",
-      "type": "parallelInterruptEvent",
+      "type": "scopedInterruptEvent",
       "laneId": 2,
       "x": 1716,
       "y": 494,
@@ -387,7 +387,7 @@
       "variables": [],
       "assignee": null,
       "assignments": [],
-      "parallelGatewayRef": 2
+      "gatewayRef": 2
     },
     {
       "id": 16,

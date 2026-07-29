@@ -30,8 +30,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
-    public DbSet<ParallelGatewayExecutionEntity> ParallelGatewayExecutions => Set<ParallelGatewayExecutionEntity>();
-    public DbSet<ParallelGatewayBranchEntity> ParallelGatewayBranches => Set<ParallelGatewayBranchEntity>();
+    public DbSet<GatewayExecutionEntity> GatewayExecutions => Set<GatewayExecutionEntity>();
+    public DbSet<GatewayBranchEntity> GatewayBranches => Set<GatewayBranchEntity>();
+    public DbSet<ComplexGatewayStateEntity> ComplexGatewayStates => Set<ComplexGatewayStateEntity>();
 
     public DbSet<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences => Set<SequenceFlowOccurrenceEntity>();
 
@@ -103,7 +104,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<ExecutionTokenEntity>(entity =>
         {
-            entity.ToTable("execution_tokens");
+            entity.ToTable("execution_tokens", table =>
+                table.HasCheckConstraint(
+                    "CK_execution_tokens_complex_gateway_registration",
+                    "(\"ComplexGatewayStateId\" IS NULL AND \"ComplexGatewayCycle\" IS NULL) OR "
+                    + "(\"ComplexGatewayStateId\" IS NOT NULL AND \"ComplexGatewayCycle\" IS NOT NULL "
+                    + "AND \"ComplexGatewayCycle\" >= 0)"));
             entity.HasKey(e => e.Id);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
@@ -112,22 +118,43 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.TerminationReason).HasMaxLength(64);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ComplexDrainStateIds)
+                .HasColumnType("bigint[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::bigint[]");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.InstanceId, e.Id }).IsDescending(false, true);
             entity.HasIndex(e => new { e.InstanceId, e.NodeId, e.Status, e.ArrivedViaFlowId, e.Id });
-            entity.HasIndex(e => new { e.ParallelBranchId, e.Status });
+            entity.HasIndex(e => new { e.GatewayBranchId, e.Status })
+                .HasFilter("\"GatewayBranchId\" IS NOT NULL AND \"Status\" = 'active'");
+            entity.HasIndex(e => new
+                {
+                    e.ComplexGatewayStateId,
+                    e.ComplexGatewayCycle,
+                    e.Status,
+                    e.ArrivedViaFlowId,
+                    e.Id
+                })
+                .HasFilter("\"ComplexGatewayStateId\" IS NOT NULL AND \"Status\" = 'active'");
             entity.HasIndex(e => new { e.NodeId, e.Status });
             entity.HasIndex(e => new { e.NodeExternalId, e.Status });
+            entity.HasIndex(e => e.ComplexDrainStateIds)
+                .HasMethod("gin")
+                .HasFilter("\"Status\" = 'active' AND cardinality(\"ComplexDrainStateIds\") > 0");
             entity.HasIndex(e => e.CurrentNodeExecutionId).IsUnique();
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Tokens)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.ParallelBranch)
+            entity.HasOne(e => e.GatewayBranch)
                 .WithMany(e => e.Tokens)
-                .HasForeignKey(e => e.ParallelBranchId)
+                .HasForeignKey(e => e.GatewayBranchId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(e => e.ComplexGatewayState)
+                .WithMany(e => e.WaitingTokens)
+                .HasForeignKey(e => e.ComplexGatewayStateId)
                 .OnDelete(DeleteBehavior.NoAction);
             entity.HasOne(e => e.CurrentNodeExecution)
                 .WithOne()
@@ -153,8 +180,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "('normal', 'userAction', 'messageDelivery', 'multiInstanceItem', "
                     + "'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', "
                     + "'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', "
-                    + "'parallelScopeCancelled', 'parallelJoinMerged', 'parallelFork', "
-                    + "'parallelJoin', 'parallelInterrupt', 'parallelInterruptSkipped')))");
+                    + "'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', "
+                    + "'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', "
+                    + "'complexActivation', 'complexReset', 'scopedInterrupt', "
+                    + "'scopedInterruptSkipped')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
                     "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
@@ -208,8 +237,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex })
                 .IsUnique()
                 .HasFilter("\"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL");
-            entity.HasIndex(e => e.EntryParallelBranchId);
-            entity.HasIndex(e => e.ExitParallelBranchId);
+            entity.HasIndex(e => e.EntryGatewayBranchId);
+            entity.HasIndex(e => e.ExitGatewayBranchId);
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.NodeExecutions)
                 .HasForeignKey(e => e.InstanceId)
@@ -226,13 +255,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.NodeExecutions)
                 .HasForeignKey(e => e.MultiInstanceExecutionId)
                 .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.EntryParallelBranch)
+            entity.HasOne(e => e.EntryGatewayBranch)
                 .WithMany(e => e.EnteredNodeExecutions)
-                .HasForeignKey(e => e.EntryParallelBranchId)
+                .HasForeignKey(e => e.EntryGatewayBranchId)
                 .OnDelete(DeleteBehavior.NoAction);
-            entity.HasOne(e => e.ExitParallelBranch)
+            entity.HasOne(e => e.ExitGatewayBranch)
                 .WithMany(e => e.ExitedNodeExecutions)
-                .HasForeignKey(e => e.ExitParallelBranchId)
+                .HasForeignKey(e => e.ExitGatewayBranchId)
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
@@ -374,19 +403,53 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
-        modelBuilder.Entity<ParallelGatewayExecutionEntity>(entity =>
+        modelBuilder.Entity<GatewayExecutionEntity>(entity =>
         {
-            entity.ToTable("parallel_gateway_executions");
+            entity.ToTable("gateway_executions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_gateway_type",
+                    "\"GatewayType\" IN ('parallelGateway', 'inclusiveGateway', 'complexGateway')");
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_direction",
+                    "\"Direction\" IN ('split', 'merge')");
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_status",
+                    "\"Status\" IN ('active', 'joined', 'completed', 'interrupted', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_phase_cycle",
+                    "(\"GatewayType\" = 'complexGateway' "
+                    + "AND \"Phase\" IN ('start', 'reset') AND \"Cycle\" IS NOT NULL AND \"Cycle\" >= 0) OR "
+                    + "(\"GatewayType\" <> 'complexGateway' AND \"Phase\" IS NULL AND \"Cycle\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_selected_flows",
+                    "cardinality(\"SelectedFlowIds\") >= 1 OR "
+                    + "(\"GatewayType\" = 'complexGateway' AND \"Phase\" = 'reset')");
+                table.HasCheckConstraint(
+                    "CK_gateway_executions_completed_at",
+                    "(\"Status\" = 'active' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" <> 'active' AND \"CompletedAt\" IS NOT NULL)");
+            });
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.GatewayType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Direction).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.Phase).HasMaxLength(32);
+            entity.Property(e => e.SelectedFlowIds)
+                .HasColumnType("integer[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::integer[]");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CompletionReason).HasMaxLength(64);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => new { e.InstanceId, e.Status });
-            entity.HasIndex(e => new { e.InstanceId, e.ForkNodeId, e.Status });
-            entity.HasIndex(e => new { e.ParentBranchId, e.Status });
+            entity.HasIndex(e => new { e.InstanceId, e.Status })
+                .HasFilter("\"Status\" = 'active'");
+            entity.HasIndex(e => new { e.InstanceId, e.GatewayNodeId, e.Status })
+                .HasFilter("\"Status\" = 'active'");
+            entity.HasIndex(e => new { e.ParentBranchId, e.Status })
+                .HasFilter("\"Status\" = 'active'");
             entity.HasOne(e => e.Instance)
-                .WithMany(e => e.ParallelGatewayExecutions)
+                .WithMany(e => e.GatewayExecutions)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.ParentBranch)
@@ -394,25 +457,88 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .HasForeignKey(e => e.ParentBranchId)
                 .OnDelete(DeleteBehavior.NoAction);
             entity.HasOne(e => e.InterruptingToken)
-                .WithMany(e => e.InterruptedParallelGatewayExecutions)
+                .WithMany(e => e.InterruptedGatewayExecutions)
                 .HasForeignKey(e => e.InterruptingTokenId)
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
-        modelBuilder.Entity<ParallelGatewayBranchEntity>(entity =>
+        modelBuilder.Entity<GatewayBranchEntity>(entity =>
         {
-            entity.ToTable("parallel_gateway_branches");
+            entity.ToTable("gateway_branches", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_gateway_branches_status",
+                    "\"Status\" IN ('active', 'merged', 'completed', 'interrupted', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_gateway_branches_ordinal",
+                    "\"Ordinal\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_gateway_branches_completed_at",
+                    "(\"Status\" = 'active' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" <> 'active' AND \"CompletedAt\" IS NOT NULL)");
+            });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => new { e.ExecutionId, e.Status });
+            entity.HasIndex(e => new { e.ExecutionId, e.Status })
+                .HasFilter("\"Status\" = 'active'");
             entity.HasIndex(e => new { e.ExecutionId, e.OriginatingFlowId }).IsUnique();
             entity.HasIndex(e => new { e.ExecutionId, e.Ordinal }).IsUnique();
             entity.HasOne(e => e.Execution)
                 .WithMany(e => e.Branches)
                 .HasForeignKey(e => e.ExecutionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ComplexGatewayStateEntity>(entity =>
+        {
+            entity.ToTable("complex_gateway_states", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_complex_gateway_states_phase",
+                    "\"Phase\" IN ('waitingForStart', 'waitingForReset', 'interruptedDraining')");
+                table.HasCheckConstraint(
+                    "CK_complex_gateway_states_cycle",
+                    "\"Cycle\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_complex_gateway_states_draining_tokens",
+                    "\"Phase\" = 'interruptedDraining' OR cardinality(\"DrainingTokenIds\") = 0");
+                table.HasCheckConstraint(
+                    "CK_complex_gateway_states_activation_drain_states",
+                    "\"Phase\" <> 'waitingForStart' OR cardinality(\"ActivationDrainStateIds\") = 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Phase).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ContributingFlowIds)
+                .HasColumnType("integer[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::integer[]");
+            entity.Property(e => e.RemainingFlowIds)
+                .HasColumnType("integer[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::integer[]");
+            entity.Property(e => e.DrainingTokenIds)
+                .HasColumnType("bigint[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::bigint[]");
+            entity.Property(e => e.ActivationDrainStateIds)
+                .HasColumnType("bigint[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::bigint[]");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.GatewayNodeId }).IsUnique();
+            entity.HasIndex(e => new { e.InstanceId, e.Phase })
+                .HasFilter("\"Phase\" <> 'waitingForStart'");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.ComplexGatewayStates)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.ActiveExecution)
+                .WithMany(e => e.ActiveComplexStates)
+                .HasForeignKey(e => e.ActiveExecutionId)
+                .OnDelete(DeleteBehavior.NoAction);
         });
 
         modelBuilder.Entity<SequenceFlowOccurrenceEntity>(entity =>

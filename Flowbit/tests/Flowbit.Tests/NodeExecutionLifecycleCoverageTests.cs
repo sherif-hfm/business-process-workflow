@@ -190,7 +190,7 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
     }
 
     [Fact]
-    public async Task ParallelInterruptAndStaleInterruptCloseVisitsWithPreciseReasons()
+    public async Task ScopedInterruptAndStaleInterruptCloseVisitsWithPreciseReasons()
     {
         var workflowId = await CreateWorkflowAsync(
             ParallelGatewayApiTests.CreateParallelWorkflow(includeStaleInterrupt: true));
@@ -216,12 +216,12 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
                     && execution.NodeId == 9);
             AssertCompleted(
                 interrupt,
-                NodeExecutionCompletionReasons.ParallelInterrupt,
+                NodeExecutionCompletionReasons.ScopedInterrupt,
                 "manager");
             Assert.Equal(302, interrupt.EnteredViaFlowId);
             Assert.Equal(901, interrupt.ExitedViaFlowId);
-            Assert.NotNull(interrupt.EntryParallelBranchId);
-            Assert.Null(interrupt.ExitParallelBranchId);
+            Assert.NotNull(interrupt.EntryGatewayBranchId);
+            Assert.Null(interrupt.ExitGatewayBranchId);
             interruptExecutionId = interrupt.Id;
 
             var cancelledJoinVisits = await db.NodeExecutions.AsNoTracking()
@@ -235,7 +235,7 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
             Assert.All(cancelledJoinVisits, execution =>
             {
                 Assert.Equal(
-                    NodeExecutionCompletionReasons.ParallelScopeCancelled,
+                    NodeExecutionCompletionReasons.GatewayScopeCancelled,
                     execution.CompletionReason);
                 Assert.Equal("manager", execution.CompletedBy);
                 Assert.Null(execution.ExitedViaFlowId);
@@ -261,12 +261,12 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
                     && execution.NodeId == 12);
             AssertCompleted(
                 skipped,
-                NodeExecutionCompletionReasons.ParallelInterruptSkipped,
+                NodeExecutionCompletionReasons.ScopedInterruptSkipped,
                 "manager");
             Assert.Equal(1001, skipped.EnteredViaFlowId);
             Assert.Equal(1201, skipped.ExitedViaFlowId);
-            Assert.Null(skipped.EntryParallelBranchId);
-            Assert.Null(skipped.ExitParallelBranchId);
+            Assert.Null(skipped.EntryGatewayBranchId);
+            Assert.Null(skipped.ExitGatewayBranchId);
 
             var afterStale = await db.NodeExecutions.AsNoTracking()
                 .SingleAsync(execution =>
@@ -279,12 +279,12 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
                 execution.InstanceId == instance.Id
                 && execution.Status == NodeExecutionStatuses.Cancelled
                 && execution.CompletionReason
-                    == NodeExecutionCompletionReasons.ParallelScopeCancelled));
+                    == NodeExecutionCompletionReasons.GatewayScopeCancelled));
             Assert.Equal(interruptExecutionId, await db.NodeExecutions
                 .Where(execution =>
                     execution.InstanceId == instance.Id
                     && execution.CompletionReason
-                        == NodeExecutionCompletionReasons.ParallelInterrupt)
+                        == NodeExecutionCompletionReasons.ScopedInterrupt)
                 .Select(execution => execution.Id)
                 .SingleAsync());
         }

@@ -60,7 +60,7 @@ public sealed class WorkflowDefinitionService(
         bool publish,
         CancellationToken cancellationToken)
     {
-        ValidateAuthoredParallelControlFlowMetadata(definition);
+        ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
@@ -87,7 +87,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         definition.Id = source.WorkflowKey;
-        ValidateAuthoredParallelControlFlowMetadata(definition);
+        ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
@@ -181,6 +181,7 @@ public sealed class WorkflowDefinitionService(
         ValidateUniqueIdentifiers(definition);
         ValidateMessageStartExternalIds(definition);
         ValidateFlowInfoUsage(definition);
+        ValidateGatewayExpressionUsage(definition);
 
         // initialEventId is optional: a workflow whose only entry is a
         // messageStartEvent (system-started) has no user-facing default start.
@@ -215,6 +216,12 @@ public sealed class WorkflowDefinitionService(
         ValidateEntryProcessVariableCollisions(definition);
 
         var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
+        var incomingByNodeId = nodeIds.ToDictionary(
+            id => id,
+            _ => new List<SequenceFlowModel>());
+        var outgoingByNodeId = nodeIds.ToDictionary(
+            id => id,
+            _ => new List<SequenceFlowModel>());
 
         foreach (var flow in definition.SequenceFlows)
         {
@@ -241,8 +248,11 @@ public sealed class WorkflowDefinitionService(
             }
 
             ValidateVariables(flow.Variables ?? [], $"sequence flow #{flow.Id}");
+            outgoingByNodeId[flow.SourceRef].Add(flow);
+            incomingByNodeId[flow.TargetRef].Add(flow);
         }
 
+        var structuralTargetsBySource = BuildStructuralAdjacency(definition);
         foreach (var node in definition.FlowNodes)
         {
             if (string.IsNullOrWhiteSpace(node.Name))
@@ -255,8 +265,8 @@ public sealed class WorkflowDefinitionService(
                 throw new WorkflowDomainException($"Flow node #{node.Id} has an unsupported type '{node.Type}'.");
             }
 
-            var outgoing = definition.SequenceFlows.Where(f => f.SourceRef == node.Id).ToList();
-            var incoming = definition.SequenceFlows.Where(f => f.TargetRef == node.Id).ToList();
+            var outgoing = outgoingByNodeId[node.Id];
+            var incoming = incomingByNodeId[node.Id];
 
             if (BpmnFlowNodeTypes.IsEntry(node.Type))
             {
@@ -294,9 +304,26 @@ public sealed class WorkflowDefinitionService(
                 ValidateParallelGateway(node, incoming, outgoing);
             }
 
-            if (BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+            if (BpmnFlowNodeTypes.IsInclusiveGateway(node.Type))
             {
-                ValidateParallelInterrupt(node, definition, incoming, outgoing);
+                ValidateInclusiveGateway(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsComplexGateway(node.Type))
+            {
+                ValidateComplexGateway(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
+            {
+                ValidateScopedInterrupt(
+                    node,
+                    definition,
+                    incoming,
+                    outgoing,
+                    incomingByNodeId,
+                    outgoingByNodeId,
+                    structuralTargetsBySource);
             }
 
             if ((BpmnFlowNodeTypes.IsStart(node.Type)
@@ -412,69 +439,7 @@ public sealed class WorkflowDefinitionService(
 
             if (BpmnFlowNodeTypes.IsExclusiveGateway(node.Type))
             {
-                if (outgoing.Count < 2)
-                {
-                    throw new WorkflowDomainException($"Exclusive gateway #{node.Id} must have at least two outgoing sequence flows.");
-                }
-
-                var gatewayDefaultCount = outgoing.Count(f => f.IsDefault);
-                if (gatewayDefaultCount != 1)
-                {
-                    throw new WorkflowDomainException(
-                        $"Exclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {gatewayDefaultCount}.");
-                }
-
-                var defaultFlow = outgoing.Single(f => f.IsDefault);
-                if (!string.IsNullOrWhiteSpace(defaultFlow.Condition)
-                    || defaultFlow.ConditionPriority is not null)
-                {
-                    throw new WorkflowDomainException(
-                        $"Default sequence flow #{defaultFlow.Id} from exclusive gateway #{node.Id} cannot define a condition or conditionPriority.");
-                }
-
-                var conditionalFlows = outgoing.Where(f => !f.IsDefault).ToList();
-                if (conditionalFlows.Any(f => string.IsNullOrWhiteSpace(f.Condition)))
-                {
-                    throw new WorkflowDomainException(
-                        $"Every non-default sequence flow from exclusive gateway #{node.Id} must define a condition.");
-                }
-
-                if (conditionalFlows.Any(f => f.ConditionPriority is null or <= 0))
-                {
-                    throw new WorkflowDomainException(
-                        $"Every non-default sequence flow from exclusive gateway #{node.Id} must define a positive conditionPriority.");
-                }
-
-                var duplicatePriority = conditionalFlows
-                    .GroupBy(f => f.ConditionPriority!.Value)
-                    .FirstOrDefault(group => group.Count() > 1)?.Key;
-                if (duplicatePriority is not null)
-                {
-                    throw new WorkflowDomainException(
-                        $"Exclusive gateway #{node.Id} has duplicate conditionPriority {duplicatePriority}.");
-                }
-
-                foreach (var flow in conditionalFlows)
-                {
-                    if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
-                    {
-                        throw new WorkflowDomainException(
-                            $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
-                    }
-
-                    if (flow.Roles.Count > 0
-                        || flow.Variables.Count > 0
-                        || !flow.IsSelectable
-                        || flow.CanActWithoutClaim
-                        || flow.CanActWithoutClaimRoles.Count > 0
-                        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
-                        || flow.CompletionPriority is not null
-                        || flow.CancelRemainingInstances)
-                    {
-                        throw new WorkflowDomainException(
-                            $"Sequence flow #{flow.Id} from exclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
-                    }
-                }
+                ValidateExclusiveGateway(node, incoming, outgoing);
             }
 
             ValidateVariables(node.Variables, $"flow node #{node.Id}");
@@ -690,31 +655,137 @@ public sealed class WorkflowDefinitionService(
     }
 
     /// <summary>
-    /// Parallel gateways and scoped interrupt events route automatically. Reject
-    /// authored flow metadata before tolerant normalization can obscure it.
-    /// Incoming flows remain unrestricted because they may be user actions.
+    /// Rejects gateway/control-event metadata before tolerant normalization can
+    /// discard inactive node fields. Incoming flows remain unrestricted because
+    /// they may originate at user activities.
     /// </summary>
-    private static void ValidateAuthoredParallelControlFlowMetadata(WorkflowModel definition)
+    private static void ValidateAuthoredGatewayControlFlowMetadata(WorkflowModel definition)
     {
         var nodes = definition.FlowNodes ?? [];
-        foreach (var flow in definition.SequenceFlows ?? [])
+        var flows = definition.SequenceFlows ?? [];
+        var incomingCounts = flows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var outgoingCounts = flows
+            .GroupBy(flow => flow.SourceRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        foreach (var node in nodes)
+        {
+            if (!BpmnFlowNodeTypes.IsComplexGateway(node.Type)
+                && !string.IsNullOrWhiteSpace(node.ActivationCondition))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines activationCondition but is not a Complex gateway.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsScopedInterrupt(node.Type) && node.GatewayRef is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines gatewayRef but is not a scoped interrupt event.");
+            }
+
+            if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)
+                && HasUnsupportedScopedInterruptNodeMetadata(node))
+            {
+                throw new WorkflowDomainException(
+                    $"Scoped interrupt event #{node.Id} cannot define task, role, variable, event, or multi-instance metadata.");
+            }
+        }
+
+        foreach (var flow in flows)
         {
             var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
-            if (source is null
-                || (!BpmnFlowNodeTypes.IsParallelGateway(source.Type)
-                    && !BpmnFlowNodeTypes.IsParallelInterrupt(source.Type))
-                || !HasUnsupportedPassThroughMetadata(flow))
+            if (source is null)
             {
                 continue;
             }
 
-            var kind = BpmnFlowNodeTypes.IsParallelGateway(source.Type)
-                ? "Parallel gateway"
-                : "Parallel interrupt event";
-            throw new WorkflowDomainException(
-                $"Sequence flow #{flow.Id} from {kind.ToLowerInvariant()} #{source.Id} must be unconditional and cannot define action or multi-instance metadata.");
+            var incomingCount = incomingCounts.GetValueOrDefault(source.Id);
+            var outgoingCount = outgoingCounts.GetValueOrDefault(source.Id);
+            var isSplit = IsGatewaySplitTopology(incomingCount, outgoingCount);
+            var isMerge = IsGatewayMergeTopology(incomingCount, outgoingCount);
+
+            if (BpmnFlowNodeTypes.IsParallelGateway(source.Type)
+                || BpmnFlowNodeTypes.IsScopedInterrupt(source.Type)
+                || (BpmnFlowNodeTypes.IsInclusiveGateway(source.Type) && isMerge))
+            {
+                if (HasUnsupportedPassThroughMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from {GatewayKind(source.Type).ToLowerInvariant()} #{source.Id} must be unconditional and cannot define action or multi-instance metadata.");
+                }
+                continue;
+            }
+
+            if (BpmnFlowNodeTypes.IsInclusiveGateway(source.Type))
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define conditionPriority.");
+                }
+
+                if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+                {
+                    throw new WorkflowDomainException(
+                        $"Default sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define a condition.");
+                }
+
+                if (HasUnsupportedGatewayActionMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define user-action or multi-instance metadata.");
+                }
+                continue;
+            }
+
+            if (BpmnFlowNodeTypes.IsComplexGateway(source.Type))
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define conditionPriority.");
+                }
+
+                if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+                {
+                    throw new WorkflowDomainException(
+                        $"Default sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define a condition.");
+                }
+
+                if (HasUnsupportedGatewayActionMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define user-action or multi-instance metadata.");
+                }
+            }
         }
     }
+
+    private static bool HasUnsupportedScopedInterruptNodeMetadata(FlowNodeModel node) =>
+        node.Roles is { Count: > 0 }
+        || node.RequiresClaim
+        || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
+        || node.InheritClaimFromNodeId is not null
+        || node.Variables is { Count: > 0 }
+        || node.Service is not null
+        || node.Message is not null
+        || node.BusinessKey is not null
+        || node.Idempotency is not null
+        || !string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.OrdinalIgnoreCase)
+        || node.Assignments is { Count: > 0 }
+        || !string.IsNullOrWhiteSpace(node.Script)
+        || node.UsesFlowInfo is not null
+        || !string.IsNullOrWhiteSpace(node.AssigneeExpression)
+        || node.RequiresAssignment
+        || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
+        || node.InheritAssignmentFromNodeId is not null
+        || node.MultiInstance is not null
+        || node.AttachedToRef is not null
+        || !string.IsNullOrWhiteSpace(node.ErrorVariable)
+        || !string.IsNullOrWhiteSpace(node.ErrorCode)
+        || !string.IsNullOrWhiteSpace(node.ErrorDescription);
 
     /// <summary>
     /// Rejects gateway metadata that the tolerant migrator may otherwise clear.
@@ -724,7 +795,14 @@ public sealed class WorkflowDefinitionService(
     private static void ValidateAuthoredExclusiveGatewayMetadata(WorkflowModel definition)
     {
         var nodes = definition.FlowNodes ?? [];
-        foreach (var flow in definition.SequenceFlows ?? [])
+        var flows = definition.SequenceFlows ?? [];
+        var incomingCounts = flows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var outgoingCounts = flows
+            .GroupBy(flow => flow.SourceRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        foreach (var flow in flows)
         {
             var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
             var isGateway = source is not null && BpmnFlowNodeTypes.IsExclusiveGateway(source.Type);
@@ -733,7 +811,20 @@ public sealed class WorkflowDefinitionService(
                 if (flow.ConditionPriority is not null)
                 {
                     throw new WorkflowDomainException(
-                        $"Sequence flow #{flow.Id} defines conditionPriority but its source node is not an exclusive gateway.");
+                        $"Sequence flow #{flow.Id} defines conditionPriority but its source node is not an Exclusive split.");
+                }
+                continue;
+            }
+
+            var incomingCount = incomingCounts.GetValueOrDefault(source!.Id);
+            var outgoingCount = outgoingCounts.GetValueOrDefault(source.Id);
+            if (!IsGatewaySplitTopology(incomingCount, outgoingCount))
+            {
+                if (IsGatewayMergeTopology(incomingCount, outgoingCount)
+                    && HasUnsupportedPassThroughMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Exclusive merge #{source!.Id} must be unconditional and cannot define action or multi-instance metadata.");
                 }
                 continue;
             }
@@ -884,18 +975,117 @@ public sealed class WorkflowDefinitionService(
         || flow.CompletionPriority is not null
         || flow.CancelRemainingInstances;
 
+    private static bool HasUnsupportedGatewayActionMetadata(SequenceFlowModel flow) =>
+        !flow.IsSelectable
+        || flow.Roles is { Count: > 0 }
+        || flow.Variables is { Count: > 0 }
+        || flow.CanActWithoutClaim
+        || flow.CanActWithoutClaimRoles is { Count: > 0 }
+        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+        || flow.CompletionPriority is not null
+        || flow.CancelRemainingInstances;
+
+    private static string GatewayKind(string type) =>
+        BpmnFlowNodeTypes.IsExclusiveGateway(type) ? "Exclusive gateway"
+        : BpmnFlowNodeTypes.IsParallelGateway(type) ? "Parallel gateway"
+        : BpmnFlowNodeTypes.IsInclusiveGateway(type) ? "Inclusive gateway"
+        : BpmnFlowNodeTypes.IsComplexGateway(type) ? "Complex gateway"
+        : BpmnFlowNodeTypes.IsScopedInterrupt(type) ? "Scoped interrupt event"
+        : "Flow node";
+
+    private static bool ValidateGatewayTopology(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = IsGatewaySplitTopology(incoming.Count, outgoing.Count);
+        var isMerge = IsGatewayMergeTopology(incoming.Count, outgoing.Count);
+        if (!isSplit && !isMerge)
+        {
+            throw new WorkflowDomainException(
+                $"{GatewayKind(node.Type)} #{node.Id} must be a split with exactly one incoming and at least two outgoing sequence flows, or a merge with at least two incoming and exactly one outgoing sequence flow. Use two adjacent gateways instead of a one-in/one-out or many-in/many-out gateway.");
+        }
+
+        return isSplit;
+    }
+
+    private static void ValidateExclusiveGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = ValidateGatewayTopology(node, incoming, outgoing);
+        if (!isSplit)
+        {
+            var invalidMergeFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+            if (invalidMergeFlow is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{invalidMergeFlow.Id} from Exclusive merge #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+            }
+            return;
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Exclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        var defaultFlow = outgoing.Single(flow => flow.IsDefault);
+        if (!string.IsNullOrWhiteSpace(defaultFlow.Condition)
+            || defaultFlow.ConditionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Default sequence flow #{defaultFlow.Id} from Exclusive gateway #{node.Id} cannot define a condition or conditionPriority.");
+        }
+
+        var invalidActionFlow = outgoing.FirstOrDefault(HasUnsupportedGatewayActionMetadata);
+        if (invalidActionFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidActionFlow.Id} from Exclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+        }
+
+        var conditionalFlows = outgoing.Where(flow => !flow.IsDefault).ToList();
+        if (conditionalFlows.Any(flow => string.IsNullOrWhiteSpace(flow.Condition)))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default sequence flow from Exclusive gateway #{node.Id} must define a condition.");
+        }
+
+        if (conditionalFlows.Any(flow => flow.ConditionPriority is null or <= 0))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default sequence flow from Exclusive gateway #{node.Id} must define a positive conditionPriority.");
+        }
+
+        var duplicatePriority = conditionalFlows
+            .GroupBy(flow => flow.ConditionPriority!.Value)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicatePriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Exclusive gateway #{node.Id} has duplicate conditionPriority {duplicatePriority}.");
+        }
+
+        foreach (var flow in conditionalFlows)
+        {
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+        }
+    }
+
     private static void ValidateParallelGateway(
         FlowNodeModel node,
         IReadOnlyCollection<SequenceFlowModel> incoming,
         IReadOnlyCollection<SequenceFlowModel> outgoing)
     {
-        var isFork = IsParallelForkTopology(incoming.Count, outgoing.Count);
-        var isJoin = IsParallelJoinTopology(incoming.Count, outgoing.Count);
-        if (!isFork && !isJoin)
-        {
-            throw new WorkflowDomainException(
-                $"Parallel gateway #{node.Id} must be a fork with at least one incoming and at least two outgoing sequence flows, or a join with at least two incoming and exactly one outgoing sequence flow.");
-        }
+        ValidateGatewayTopology(node, incoming, outgoing);
 
         var invalidFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
         if (invalidFlow is not null)
@@ -905,51 +1095,175 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
-    private static void ValidateParallelInterrupt(
+    private static void ValidateInclusiveGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = ValidateGatewayTopology(node, incoming, outgoing);
+        if (!isSplit)
+        {
+            var invalidMergeFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+            if (invalidMergeFlow is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{invalidMergeFlow.Id} from Inclusive merge #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+            }
+            return;
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Inclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        var defaultFlow = outgoing.Single(flow => flow.IsDefault);
+        if (!string.IsNullOrWhiteSpace(defaultFlow.Condition))
+        {
+            throw new WorkflowDomainException(
+                $"Default sequence flow #{defaultFlow.Id} from Inclusive gateway #{node.Id} cannot define a condition.");
+        }
+
+        var priorityFlow = outgoing.FirstOrDefault(flow => flow.ConditionPriority is not null);
+        if (priorityFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{priorityFlow.Id} from Inclusive gateway #{node.Id} cannot define conditionPriority.");
+        }
+
+        var invalidActionFlow = outgoing.FirstOrDefault(HasUnsupportedGatewayActionMetadata);
+        if (invalidActionFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidActionFlow.Id} from Inclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+        }
+
+        foreach (var flow in outgoing.Where(flow => !flow.IsDefault))
+        {
+            if (string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Every non-default sequence flow from Inclusive gateway #{node.Id} must define a condition.");
+            }
+
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+        }
+    }
+
+    private static void ValidateComplexGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        ValidateGatewayTopology(node, incoming, outgoing);
+        if (string.IsNullOrWhiteSpace(node.ActivationCondition))
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} must define activationCondition.");
+        }
+
+        if (!SequenceFlowConditionEvaluator.IsValid(node.ActivationCondition))
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} has an invalid activationCondition: '{node.ActivationCondition}'.");
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount > 1)
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} may have at most one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        foreach (var flow in outgoing)
+        {
+            if (flow.ConditionPriority is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define conditionPriority.");
+            }
+
+            if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Default sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define a condition.");
+            }
+
+            if (!flow.IsDefault && string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Every non-default sequence flow from Complex gateway #{node.Id} must define a condition.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(flow.Condition)
+                && !SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+
+            if (HasUnsupportedGatewayActionMetadata(flow))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+            }
+        }
+    }
+
+    private static void ValidateScopedInterrupt(
         FlowNodeModel node,
         WorkflowModel definition,
         IReadOnlyCollection<SequenceFlowModel> incoming,
-        IReadOnlyCollection<SequenceFlowModel> outgoing)
+        IReadOnlyCollection<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> incomingByNodeId,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> outgoingByNodeId,
+        IReadOnlyDictionary<int, int[]> structuralTargetsBySource)
     {
         if (incoming.Count != 1 || outgoing.Count != 1)
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} must have exactly one incoming and exactly one outgoing sequence flow.");
+                $"Scoped interrupt event #{node.Id} must have exactly one incoming and exactly one outgoing sequence flow.");
         }
 
-        if (node.ParallelGatewayRef is null)
+        if (node.GatewayRef is null)
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} must reference a parallel fork via parallelGatewayRef.");
+                $"Scoped interrupt event #{node.Id} must reference a Parallel, Inclusive, or Complex split via gatewayRef.");
         }
 
         var fork = definition.FlowNodes.SingleOrDefault(candidate =>
-            candidate.Id == node.ParallelGatewayRef.Value);
+            candidate.Id == node.GatewayRef.Value);
         if (fork is null)
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{node.ParallelGatewayRef} does not reference an existing flow node.");
+                $"Scoped interrupt event #{node.Id} gatewayRef #{node.GatewayRef} does not reference an existing flow node.");
         }
 
-        if (!BpmnFlowNodeTypes.IsParallelGateway(fork.Type))
+        if (!BpmnFlowNodeTypes.IsScopeProducingGateway(fork.Type))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{fork.Id} must reference a parallel gateway.");
+                $"Scoped interrupt event #{node.Id} gatewayRef #{fork.Id} must reference a Parallel, Inclusive, or Complex gateway.");
         }
 
-        var forkIncomingCount = definition.SequenceFlows.Count(flow => flow.TargetRef == fork.Id);
-        var forkOutgoingCount = definition.SequenceFlows.Count(flow => flow.SourceRef == fork.Id);
-        if (!IsParallelForkTopology(forkIncomingCount, forkOutgoingCount))
+        var forkIncomingCount = incomingByNodeId[fork.Id].Count;
+        var forkOutgoingCount = outgoingByNodeId[fork.Id].Count;
+        if (!IsGatewaySplitTopology(forkIncomingCount, forkOutgoingCount))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} parallelGatewayRef #{fork.Id} must reference a parallel fork with at least two outgoing sequence flows.");
+                $"Scoped interrupt event #{node.Id} gatewayRef #{fork.Id} must reference a split with exactly one incoming and at least two outgoing sequence flows.");
         }
 
         var continuation = outgoing.Single();
         if (HasUnsupportedPassThroughMetadata(continuation))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+                $"Scoped interrupt event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
 
         var target = definition.FlowNodes.Single(candidate =>
@@ -957,66 +1271,69 @@ public sealed class WorkflowDefinitionService(
         if (BpmnFlowNodeTypes.IsEntry(target.Type))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} cannot continue directly to entry event #{target.Id}.");
+                $"Scoped interrupt event #{node.Id} cannot continue directly to entry event #{target.Id}.");
         }
 
         if (BpmnFlowNodeTypes.IsErrorBoundary(target.Type))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} cannot continue directly to error boundary event #{target.Id}.");
+                $"Scoped interrupt event #{node.Id} cannot continue directly to error boundary event #{target.Id}.");
         }
 
         if (target.Id == node.Id)
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} cannot continue directly to itself.");
+                $"Scoped interrupt event #{node.Id} cannot continue directly to itself.");
         }
 
-        if (BpmnFlowNodeTypes.IsParallelGateway(target.Type))
+        if (BpmnFlowNodeTypes.IsParallelGateway(target.Type)
+            || BpmnFlowNodeTypes.IsComplexGateway(target.Type))
         {
-            var targetIncomingCount = definition.SequenceFlows.Count(flow => flow.TargetRef == target.Id);
-            var targetOutgoingCount = definition.SequenceFlows.Count(flow => flow.SourceRef == target.Id);
-            if (IsParallelJoinTopology(targetIncomingCount, targetOutgoingCount))
+            var targetIncomingCount = incomingByNodeId[target.Id].Count;
+            var targetOutgoingCount = outgoingByNodeId[target.Id].Count;
+            if (IsGatewayMergeTopology(targetIncomingCount, targetOutgoingCount))
             {
                 throw new WorkflowDomainException(
-                    $"Parallel interrupt event #{node.Id} cannot continue directly to parallel join #{target.Id}.");
+                    $"Scoped interrupt event #{node.Id} cannot continue directly to {GatewayKind(target.Type).ToLowerInvariant()} merge #{target.Id}.");
             }
         }
 
-        if (!HasStructuralPath(definition, fork.Id, node.Id))
+        if (!HasStructuralPath(structuralTargetsBySource, fork.Id, node.Id))
         {
             throw new WorkflowDomainException(
-                $"Parallel interrupt event #{node.Id} must be structurally reachable from referenced parallel fork #{fork.Id}.");
+                $"Scoped interrupt event #{node.Id} must be structurally reachable from referenced gateway split #{fork.Id}.");
         }
     }
 
-    private static bool IsParallelForkTopology(int incomingCount, int outgoingCount) =>
-        incomingCount >= 1 && outgoingCount >= 2;
+    private static bool IsGatewaySplitTopology(int incomingCount, int outgoingCount) =>
+        incomingCount == 1 && outgoingCount >= 2;
 
-    private static bool IsParallelJoinTopology(int incomingCount, int outgoingCount) =>
+    private static bool IsGatewayMergeTopology(int incomingCount, int outgoingCount) =>
         incomingCount >= 2 && outgoingCount == 1;
 
-    private static bool HasStructuralPath(
-        WorkflowModel definition,
-        int sourceNodeId,
-        int targetNodeId)
+    private static IReadOnlyDictionary<int, int[]> BuildStructuralAdjacency(
+        WorkflowModel definition)
     {
         // A boundary event is structurally reached through its attachment rather
-        // than an authored incoming sequence flow. Include that implicit edge so
-        // a fork branch whose service/script failure enters an interrupt event
-        // satisfies the same reachability rule as every other supported trigger.
-        var structuralEdges = definition.SequenceFlows
+        // than an authored incoming sequence flow.
+        return definition.SequenceFlows
             .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
             .Concat(definition.FlowNodes
                 .Where(node =>
                     BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                     && node.AttachedToRef is not null)
-                .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)));
-        var targetsBySource = structuralEdges
+                .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
             .GroupBy(edge => edge.Source)
             .ToDictionary(
                 group => group.Key,
                 group => group.Select(edge => edge.Target).Distinct().ToArray());
+    }
+
+    private static bool HasStructuralPath(
+        IReadOnlyDictionary<int, int[]> targetsBySource,
+        int sourceNodeId,
+        int targetNodeId)
+    {
         var visited = new HashSet<int> { sourceNodeId };
         var queue = new Queue<int>();
         queue.Enqueue(sourceNodeId);
@@ -2087,7 +2404,11 @@ public sealed class WorkflowDefinitionService(
             nodesById.TryGetValue(flow.SourceRef, out var source);
             Check(
                 flow.Condition,
-                source is not null && BpmnFlowNodeTypes.IsExclusiveGateway(source.Type) && !flow.IsDefault,
+                source is not null
+                && (BpmnFlowNodeTypes.IsExclusiveGateway(source.Type)
+                    || BpmnFlowNodeTypes.IsInclusiveGateway(source.Type)
+                    || BpmnFlowNodeTypes.IsComplexGateway(source.Type))
+                && !flow.IsDefault,
                 $"Sequence flow #{flow.Id} condition");
             Check(
                 flow.CompletionCondition,
@@ -2111,6 +2432,8 @@ public sealed class WorkflowDefinitionService(
 
         foreach (var node in definition.FlowNodes)
         {
+            Check(node.ActivationCondition, false,
+                $"Complex gateway #{node.Id} activationCondition");
             Check(node.AssigneeExpression, false, $"User task #{node.Id} assignee expression");
             Check(node.MultiInstance?.CardinalityExpression, false,
                 $"User task #{node.Id} cardinalityExpression");
@@ -2159,6 +2482,111 @@ public sealed class WorkflowDefinitionService(
                     BpmnFlowNodeTypes.IsScriptTask(node.Type)
                     && string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.Ordinal),
                     $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Restricts Complex-gateway count helpers and phase state to the gateway
+    /// expressions whose runtime context can supply them.
+    /// </summary>
+    private static void ValidateGatewayExpressionUsage(WorkflowModel definition)
+    {
+        var nodesById = definition.FlowNodes.ToDictionary(node => node.Id);
+        var emptyIncoming = new HashSet<int>();
+        var incomingIdsByNode = definition.SequenceFlows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlySet<int>)group.Select(flow => flow.Id).ToHashSet());
+
+        void Check(
+            string? expression,
+            FlowNodeModel? complexGateway,
+            bool waitingForStartAllowed,
+            string owner)
+        {
+            var helpersAllowed = complexGateway is not null
+                && BpmnFlowNodeTypes.IsComplexGateway(complexGateway.Type);
+            var incomingIds = helpersAllowed
+                ? incomingIdsByNode.GetValueOrDefault(complexGateway!.Id, emptyIncoming)
+                : emptyIncoming;
+            if (!SequenceFlowConditionEvaluator.TryValidateGatewayReferences(
+                    expression,
+                    incomingIds,
+                    helpersAllowed,
+                    helpersAllowed && waitingForStartAllowed,
+                    out var error))
+            {
+                throw new WorkflowDomainException(
+                    $"{owner} has invalid Complex gateway expression usage: {error}");
+            }
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            nodesById.TryGetValue(flow.SourceRef, out var source);
+            var complex = source is not null && BpmnFlowNodeTypes.IsComplexGateway(source.Type)
+                ? source
+                : null;
+            Check(flow.Condition, complex, true, $"Sequence flow #{flow.Id} condition");
+            Check(flow.CompletionCondition, null, false,
+                $"Sequence flow #{flow.Id} completionCondition");
+            foreach (var variable in flow.Variables)
+            {
+                Check(variable.Validation, null, false,
+                    $"Variable '{variable.Name}' on sequence flow #{flow.Id}");
+            }
+        }
+
+        foreach (var variable in definition.Variables)
+        {
+            Check(variable.Validation, null, false, $"Process variable '{variable.Name}'");
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            var complex = BpmnFlowNodeTypes.IsComplexGateway(node.Type) ? node : null;
+            Check(node.ActivationCondition, complex, false,
+                $"Complex gateway #{node.Id} activationCondition");
+            Check(node.AssigneeExpression, null, false,
+                $"User task #{node.Id} assignee expression");
+            Check(node.MultiInstance?.CardinalityExpression, null, false,
+                $"User task #{node.Id} cardinalityExpression");
+            Check(node.Message?.HeaderValidation, null, false,
+                $"Flow node #{node.Id} headerValidation");
+
+            foreach (var variable in node.Variables)
+            {
+                Check(variable.Validation, null, false,
+                    $"Variable '{variable.Name}' on flow node #{node.Id}");
+            }
+
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    Check(mapping.Validation, null, false,
+                        $"Service task #{node.Id} output mapping '{mapping.Variable}' validation");
+                }
+            }
+
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    Check(mapping.Validation, null, false,
+                        $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
+                }
+            }
+
+            foreach (var assignment in node.Assignments)
+            {
+                if (assignment is not null)
+                {
+                    Check(assignment.Expression, null, false,
+                        $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+                }
             }
         }
     }

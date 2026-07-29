@@ -85,7 +85,9 @@ else
         BpmnFlowNodeTypes.UserTask => "User task",
         BpmnFlowNodeTypes.IntermediateMessageCatchEvent => "Message wait",
         BpmnFlowNodeTypes.ParallelGateway => "Parallel gateway",
-        BpmnFlowNodeTypes.ParallelInterruptEvent => "Parallel interrupt",
+        BpmnFlowNodeTypes.InclusiveGateway => "Inclusive gateway",
+        BpmnFlowNodeTypes.ComplexGateway => "Complex gateway",
+        BpmnFlowNodeTypes.ScopedInterruptEvent => "Scoped interrupt",
         BpmnFlowNodeTypes.TerminateEndEvent => "Terminate end",
         BpmnFlowNodeTypes.ErrorEndEvent => "Error end",
         BpmnFlowNodeTypes.EndEvent => "End event",
@@ -94,8 +96,8 @@ else
 
     private static string TerminationReasonLabel(string reason) => reason switch
     {
-        "parallelScopeCancelled" => "Cancelled by a scoped parallel interrupt",
-        "parallelJoinMerged" => "Merged at a parallel join",
+        "gatewayScopeCancelled" => "Cancelled by a scoped interrupt",
+        "gatewayJoinMerged" => "Merged at a gateway join",
         "terminateEnd" => "Cancelled by a terminate end event",
         "errorEnd" => "Cancelled when the instance faulted",
         "instanceCancelled" => "Cancelled with the instance",

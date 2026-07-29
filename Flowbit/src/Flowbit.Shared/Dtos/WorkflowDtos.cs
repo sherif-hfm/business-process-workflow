@@ -105,9 +105,14 @@ public sealed record CompletionInfoDto(
     string? NodeExternalId,
     DateTimeOffset CompletedAt);
 
-public sealed record ParallelGatewayExecutionDto(
+public sealed record GatewayExecutionDto(
     long Id,
-    int ForkNodeId,
+    int GatewayNodeId,
+    string GatewayType,
+    string Direction,
+    string? Phase,
+    int? Cycle,
+    IReadOnlyList<int> SelectedFlowIds,
     long? ParentExecutionId,
     string Status,
     string? CompletionReason,
@@ -122,6 +127,16 @@ public sealed record ParallelGatewayExecutionDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
+
+public sealed record ComplexGatewayStateDto(
+    int GatewayNodeId,
+    string Phase,
+    int Cycle,
+    IReadOnlyList<int> ContributingFlowIds,
+    IReadOnlyList<int> RemainingFlowIds,
+    IReadOnlyList<long> DrainingTokenIds,
+    long? ActiveExecutionId,
+    DateTimeOffset UpdatedAt);
 
 /// <summary>
 /// Slim response returned when starting a new workflow instance.
@@ -417,7 +432,9 @@ public sealed record InstanceDetailDto(
 
     public IReadOnlyList<MultiInstanceProgressDto> MultiInstances { get; init; } = [];
 
-    public IReadOnlyList<ParallelGatewayExecutionDto> ParallelGatewayExecutions { get; init; } = [];
+    public IReadOnlyList<GatewayExecutionDto> GatewayExecutions { get; init; } = [];
+
+    public IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates { get; init; } = [];
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionInfoDto? Completion { get; init; }

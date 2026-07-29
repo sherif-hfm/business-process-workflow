@@ -27,9 +27,9 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             (3, ExecutionTokenStatuses.Active),
             (6, ExecutionTokenStatuses.Active),
             (6, ExecutionTokenStatuses.Active));
-        var activeScope = Assert.Single(started.ParallelGatewayExecutions);
-        Assert.Equal(2, activeScope.ForkNodeId);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Active, activeScope.Status);
+        var activeScope = Assert.Single(started.GatewayExecutions);
+        Assert.Equal(2, activeScope.GatewayNodeId);
+        Assert.Equal(GatewayExecutionStatuses.Active, activeScope.Status);
         Assert.Equal(3, activeScope.TotalBranchCount);
         Assert.Equal(3, activeScope.ActiveBranchCount);
         Assert.Equal(0, activeScope.CompletedBranchCount);
@@ -69,11 +69,19 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
         var detail = await GetInstanceAsync(started.Id);
         Assert.Equal("completed", detail.Status);
         AssertPositions(detail.ExecutionPositions, (8, ExecutionTokenStatuses.Completed));
-        var joinedScope = Assert.Single(detail.ParallelGatewayExecutions);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Joined, joinedScope.Status);
+        var joinedScope = Assert.Single(
+            detail.GatewayExecutions,
+            execution => execution.Direction == GatewayExecutionDirections.Split);
+        Assert.Equal(GatewayExecutionStatuses.Joined, joinedScope.Status);
         Assert.Equal(3, joinedScope.TotalBranchCount);
         Assert.Equal(3, joinedScope.MergedBranchCount);
         Assert.Equal(0, joinedScope.ActiveBranchCount);
+        var joinFiring = Assert.Single(
+            detail.GatewayExecutions,
+            execution => execution.Direction == GatewayExecutionDirections.Merge);
+        Assert.Equal(6, joinFiring.GatewayNodeId);
+        Assert.Equal(GatewayExecutionStatuses.Joined, joinFiring.Status);
+        Assert.Equal([601], joinFiring.SelectedFlowIds);
         Assert.Equal(WorkflowCompletionKinds.Normal, Assert.IsType<CompletionInfoDto>(detail.Completion).Kind);
         Assert.Equal(3, detail.History.Count(entry => entry.Note == "parallelFork"));
         Assert.Single(detail.History, entry => entry.Note == "parallelJoin");
@@ -114,20 +122,20 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             (10, ExecutionTokenStatuses.Active));
         Assert.All(
             ack.ExecutionPositions.Where(position => position.TokenStatus == ExecutionTokenStatuses.Cancelled),
-            position => Assert.Equal("parallelScopeCancelled", position.TerminationReason));
+            position => Assert.Equal("gatewayScopeCancelled", position.TerminationReason));
 
         var emergency = Assert.Single((await ListTasksAsync(started.Id, "active")).Items);
         Assert.Equal(10, emergency.NodeId);
         var detail = await GetInstanceAsync(started.Id);
-        var scope = Assert.Single(detail.ParallelGatewayExecutions);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Interrupted, scope.Status);
+        var scope = Assert.Single(detail.GatewayExecutions);
+        Assert.Equal(GatewayExecutionStatuses.Interrupted, scope.Status);
         Assert.Equal(9, scope.InterruptingNodeId);
         Assert.NotNull(scope.InterruptingTokenId);
         Assert.Equal(3, scope.TotalBranchCount);
         Assert.Equal(1, scope.InterruptedBranchCount);
         Assert.Equal(2, scope.CancelledBranchCount);
-        Assert.Single(detail.History, entry => entry.Note == "parallelInterrupt");
-        Assert.DoesNotContain(detail.History, entry => entry.Note == "parallelInterruptSkipped");
+        Assert.Single(detail.History, entry => entry.Note == "scopedInterrupt");
+        Assert.DoesNotContain(detail.History, entry => entry.Note == "scopedInterruptSkipped");
 
         await using var db = fixture.CreateDbContext();
         var cancelled = await db.ExecutionTokens
@@ -138,7 +146,7 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
         Assert.All(cancelled, token =>
         {
             Assert.Equal(6, token.NodeId);
-            Assert.Equal("parallelScopeCancelled", token.TerminationReason);
+            Assert.Equal("gatewayScopeCancelled", token.TerminationReason);
         });
     }
 
@@ -175,11 +183,11 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             (13, ExecutionTokenStatuses.Active));
 
         var detail = await GetInstanceAsync(started.Id);
-        Assert.Single(detail.History, entry => entry.Note == "parallelInterrupt");
-        Assert.Single(detail.History, entry => entry.Note == "parallelInterruptSkipped");
+        Assert.Single(detail.History, entry => entry.Note == "scopedInterrupt");
+        Assert.Single(detail.History, entry => entry.Note == "scopedInterruptSkipped");
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Interrupted,
-            Assert.Single(detail.ParallelGatewayExecutions).Status);
+            GatewayExecutionStatuses.Interrupted,
+            Assert.Single(detail.GatewayExecutions).Status);
     }
 
     [Fact]
@@ -211,15 +219,15 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
         var activeManager = Assert.Single((await ListTasksAsync(started.Id, "active")).Items);
         Assert.Equal(3, activeManager.NodeId);
         var detail = await GetInstanceAsync(started.Id);
-        Assert.Equal(2, detail.ParallelGatewayExecutions.Count);
+        Assert.Equal(2, detail.GatewayExecutions.Count);
         Assert.Single(
-            detail.ParallelGatewayExecutions,
-            execution => execution.Status == ParallelGatewayExecutionStatuses.Interrupted);
+            detail.GatewayExecutions,
+            execution => execution.Status == GatewayExecutionStatuses.Interrupted);
         Assert.Single(
-            detail.ParallelGatewayExecutions,
-            execution => execution.Status == ParallelGatewayExecutionStatuses.Active);
+            detail.GatewayExecutions,
+            execution => execution.Status == GatewayExecutionStatuses.Active);
         Assert.Equal(6, detail.History.Count(entry => entry.Note == "parallelFork"));
-        Assert.Single(detail.History, entry => entry.Note == "parallelInterrupt");
+        Assert.Single(detail.History, entry => entry.Note == "scopedInterrupt");
     }
 
     [Fact]
@@ -256,8 +264,8 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
         var detail = await GetInstanceAsync(started.Id);
         Assert.Equal("completed", detail.Status);
         Assert.Equal(WorkflowCompletionKinds.Terminate, Assert.IsType<CompletionInfoDto>(detail.Completion).Kind);
-        var terminatedScope = Assert.Single(detail.ParallelGatewayExecutions);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Cancelled, terminatedScope.Status);
+        var terminatedScope = Assert.Single(detail.GatewayExecutions);
+        Assert.Equal(GatewayExecutionStatuses.Cancelled, terminatedScope.Status);
         Assert.Equal(3, terminatedScope.TotalBranchCount);
         Assert.Equal(1, terminatedScope.CompletedBranchCount);
         Assert.Equal(2, terminatedScope.CancelledBranchCount);
@@ -382,8 +390,8 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             {
                 Id = 9,
                 Name = "Manager interrupt",
-                Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                ParallelGatewayRef = 2
+                Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                GatewayRef = 2
             },
             new()
             {
@@ -416,14 +424,33 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             }
         };
 
+        if (restartFork)
+        {
+            nodes.Add(new FlowNodeModel
+            {
+                Id = 14,
+                Name = "Fork entry merge",
+                Type = BpmnFlowNodeTypes.ExclusiveGateway
+            });
+            flows.Single(flow => flow.Id == 101).TargetRef = 14;
+            flows.Single(flow => flow.Id == 901).TargetRef = 14;
+            flows.Add(new SequenceFlowModel
+            {
+                Id = 1401,
+                Name = "Enter fork",
+                SourceRef = 14,
+                TargetRef = 2
+            });
+        }
+
         if (includeStaleInterrupt)
         {
             nodes.Add(new FlowNodeModel
             {
                 Id = 12,
                 Name = "Stale interrupt",
-                Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                ParallelGatewayRef = 2
+                Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                GatewayRef = 2
             });
             nodes.Add(new FlowNodeModel
             {

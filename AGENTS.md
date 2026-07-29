@@ -6,10 +6,11 @@ workflows in the browser. Users lay out **flow nodes** inside **lanes**
 edges), attach typed **variables**, and save/load the whole model as JSON.
 
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
-`startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`, or
-`endEvent`, plus `parallelGateway`, `parallelInterruptEvent`, and
+`startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`,
+`inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
+`scopedInterruptEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
-rectangles, gateway diamonds). `parallelInterruptEvent` is a documented Flowbit
+rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
 subprocess.
 Connections are first-class `sequenceFlows` with their own ids. See
@@ -150,9 +151,10 @@ Storage follows the hybrid design:
   `merged`. Completion reasons are `normal`, `userAction`, `messageDelivery`,
   `multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
   `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
-  `instanceCancelled`, `parallelScopeCancelled`, `parallelJoinMerged`,
-  `parallelFork`, `parallelJoin`, `parallelInterrupt`, and
-  `parallelInterruptSkipped`. Token `CurrentNodeExecutionId` points to the
+  `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
+  `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
+  `complexActivation`, `complexReset`, `scopedInterrupt`, and
+  `scopedInterruptSkipped`. Token `CurrentNodeExecutionId` points to the
   current non-MI visit and remains null at a multi-instance parent. New
   instance-variable writes may carry `NodeExecutionId`, so execution detail
   returns only attributed changes rather than a misleading current or
@@ -261,48 +263,51 @@ Storage follows the hybrid design:
   post-deployment evidence.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state. Mutations
-  use a consistent instance -> parallel execution/branch -> execution token ->
-  multi-instance execution -> user-task lock order.
+  use a consistent instance -> active gateway execution/state/branch ->
+  active execution token -> active multi-instance execution -> active/pending
+  user-task lock order, ordered by ID within each group.
   Instance cancellation locks the instance before discovering/cancelling active
   executions and open tasks, and child activity touches the parent `UpdatedAt` in
   the same transaction.
-- **Parallel gateways and scoped interrupts.** `execution_tokens` are the
+- **Generic gateways and scoped interrupts.** `execution_tokens` are the
   authoritative execution positions and an instance may have several active
-  tokens. A `parallelGateway` with two or more outgoing flows creates a durable
-  `parallel_gateway_execution`, snapshots one branch per outgoing flow, and
-  advances them in ascending flow-id order. Outgoing cardinality takes
-  precedence, so a gateway with several incoming and several outgoing flows is
-  a fork for each arriving token (which also permits an authored jump back to
-  restart that fork). A gateway with one outgoing and two or more incoming flows
-  is an all-static-incoming join: one active token must
-  arrive through every incoming flow, the lowest-id token survives, the rest are
-  marked `merged`, and the survivor is reconciled to the deepest common parent
-  scope. A normal `endEvent` completes only its token; the instance completes
-  when no active token remains.
-  `parallelInterruptEvent` is a Flowbit extension with a required
-  `parallelGatewayRef`. On entry it resolves the nearest active activation of
-  that fork in the token's branch ancestry, cancels the other active descendants
-  (including their user tasks and multi-instance work), cancels nested scopes,
-  marks the selected scope `interrupted`, promotes the triggering token to the
-  scope's parent, and follows its single authored continuation. If the activation
-  is stale, it records `parallelInterruptSkipped` and continues without
-  cancellation. The continuation is immutable workflow data; callers never
-  provide a runtime destination. `terminateEndEvent` completes its triggering
-  token, cancels every other active token and scope, and completes the instance;
-  `errorEndEvent` faults the instance and cancels sibling work. API detail and
-  summary DTOs expose non-merged `ExecutionPositions`, parallel-scope summaries,
-  and `Completion` (`normal` or `terminate`) while retaining singular current-node
-  fields as compatibility projections.
+  tokens. Gateway direction is inferred strictly from topology: a split has one
+  incoming and at least two outgoing flows; a merge has at least two incoming
+  and one outgoing flow. One-in/one-out and many-in/many-out gateway shapes are
+  rejected, and split/merge gateway types are independent.
+  `parallelGateway` splits select every outgoing flow and merges synchronize one
+  token from every static incoming flow. `inclusiveGateway` splits select every
+  true condition (or the required default); merges use cached graph reachability
+  and active token positions to apply the unpaired BPMN enabling rule and drain
+  surplus batches deterministically. `complexGateway` persists a phase/cycle and
+  evaluates its `activationCondition` with `IncomingCount(flowId)`,
+  `TotalIncomingCount()`, and outgoing `[gateway.waitingForStart]` context during
+  start/reset routing. Every firing is recorded in `gateway_executions`, while
+  `gateway_branches` provide generic scope lineage; diverging Inclusive/Complex
+  firings create a scope even when only one flow is selected.
+  `scopedInterruptEvent` is a Flowbit extension with a required `gatewayRef`.
+  On entry it resolves the nearest active activation of the referenced Parallel,
+  Inclusive, or Complex split in the token's generic branch ancestry, cancels
+  sibling and nested work, promotes the trigger to the scope parent, and follows
+  its authored continuation. A stale reference records
+  `scopedInterruptSkipped`. Interrupted Complex reset phases drain pre-interrupt
+  token provenance without affecting newer cycles.
+  `terminateEndEvent` completes its triggering token, cancels every other active
+  token and gateway scope, and completes the instance; `errorEndEvent` faults
+  the instance and cancels sibling work. APIs expose generic gateway execution
+  and Complex-state DTOs alongside `ExecutionPositions` and `Completion`.
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
   `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
-  `exclusiveGateway`, `parallelGateway`, `parallelInterruptEvent`, and
+  `exclusiveGateway`, `parallelGateway`, `inclusiveGateway`, `complexGateway`,
+  `scopedInterruptEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
   transaction until the instance rests on a `userTask` or
   `intermediateMessageCatchEvent`, or reaches an end event. A per-token hop limit
   (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
-  `gateway`, `parallelFork`, `parallelJoin`, `parallelInterrupt`,
-  `parallelInterruptSkipped`, `boundary`, `error`, or `message` note. Gateway history also stores
+  `gateway`, `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
+  `complexActivation`, `complexReset`, `scopedInterrupt`,
+  `scopedInterruptSkipped`, `boundary`, `error`, or `message` note. Gateway history also stores
   the selected sequence-flow id; automatic gateway rows are excluded from
   previous-actor claim inheritance even though that audit id is populated.
 - **Service tasks** select a connector through `service.type`; `rest` is the only
@@ -1431,11 +1436,13 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
-| `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | Diamond; permits multiple incoming paths and routes by ascending condition priority, else the required default flow. Requires at least two outgoing flows, so a pure merge is not modeled. |
+| `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | X-marked diamond. Split form routes by ascending condition priority, else the required default; merge form passes every arriving token without synchronization. |
 | `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
-| `type: "parallelInterruptEvent"` | Flowbit scoped-interrupt extension | Red double-ring event with a broken-parallel marker. Cancels the nearest active activation of `parallelGatewayRef` in the triggering token's ancestry and follows one fixed authored continuation. Strict BPMN would use an interruptible subprocess scope. |
+| `type: "inclusiveGateway"` | Inclusive Gateway (OR) | Circle-marked diamond. Split form selects every matching condition or its required default; merge form synchronizes only inputs that can still receive a token according to cached topology and active positions. |
+| `type: "complexGateway"` | Complex Gateway | Asterisk-marked diamond with required `activationCondition`; persists start/reset phase and cycle state and supports incoming-count/phase helpers. |
+| `type: "scopedInterruptEvent"` | Flowbit scoped-interrupt extension | Red double-ring event with a scoped-interrupt marker. Cancels the nearest active activation of referenced Parallel, Inclusive, or Complex split `gatewayRef` and follows one fixed authored continuation. Strict BPMN would use an interruptible subprocess scope. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
-| `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active parallel scopes, and completes the instance with completion kind `terminate`. |
+| `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active gateway scopes, and completes the instance with completion kind `terminate`. |
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. Simplified: no cross-instance message-name/signal matching and no timeout escape hatch (a future timer boundary could address). |
@@ -1454,10 +1461,10 @@ when extending the model so new features stay close to BPMN terminology.
 
 ### Intentional deviations from BPMN
 
-- **Exclusive and parallel gateways only.** Inclusive and event-based gateways
-  are not modeled. Parallel joins use the static set of authored incoming flows;
-  general graph-liveness analysis and dynamic inclusive-join semantics remain
-  out of scope.
+- **No Event-Based Gateway.** Exclusive, Parallel, Inclusive, and Complex
+  gateways are modeled. Split and merge nodes are deliberately separate and
+  unpaired; many-in/many-out gateways are rejected. `scopedInterruptEvent` is a
+  Flowbit extension rather than a BPMN Event-Based Gateway or subprocess scope.
 - **Service tasks are REST only.** A `serviceTask` invokes an HTTP/REST endpoint
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations

@@ -11,8 +11,12 @@ public sealed class ExecutionTokenEntity
     public string NodeType { get; set; } = string.Empty;
     public string? FaultCode { get; set; }
     public string? FaultDescription { get; set; }
-    public long? ParallelBranchId { get; set; }
-    public ParallelGatewayBranchEntity? ParallelBranch { get; set; }
+    public long? GatewayBranchId { get; set; }
+    public GatewayBranchEntity? GatewayBranch { get; set; }
+    public long? ComplexGatewayStateId { get; set; }
+    public ComplexGatewayStateEntity? ComplexGatewayState { get; set; }
+    public int? ComplexGatewayCycle { get; set; }
+    public long[] ComplexDrainStateIds { get; set; } = [];
     public int? ArrivedViaFlowId { get; set; }
     public string? TerminationReason { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
@@ -23,7 +27,7 @@ public sealed class ExecutionTokenEntity
     public List<NodeExecutionEntity> NodeExecutions { get; set; } = [];
     public List<UserTaskEntity> UserTasks { get; set; } = [];
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
-    public List<ParallelGatewayExecutionEntity> InterruptedParallelGatewayExecutions { get; set; } = [];
+    public List<GatewayExecutionEntity> InterruptedGatewayExecutions { get; set; } = [];
 }
 
 public static class ExecutionTokenStatuses

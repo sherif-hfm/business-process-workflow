@@ -44,19 +44,19 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             ack.ExecutionPositions,
             position => position.TokenStatus == ExecutionTokenStatuses.Cancelled);
         Assert.Equal(8, cancelled.NodeId);
-        Assert.Equal("parallelScopeCancelled", cancelled.TerminationReason);
+        Assert.Equal("gatewayScopeCancelled", cancelled.TerminationReason);
 
         var detail = await GetInstanceAsync(started.Id);
         var outer = Assert.Single(
-            detail.ParallelGatewayExecutions,
-            execution => execution.ForkNodeId == 2);
+            detail.GatewayExecutions,
+            execution => execution.GatewayNodeId == 2);
         var inner = Assert.Single(
-            detail.ParallelGatewayExecutions,
-            execution => execution.ForkNodeId == 6);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Active, outer.Status);
-        Assert.Equal(ParallelGatewayExecutionStatuses.Interrupted, inner.Status);
+            detail.GatewayExecutions,
+            execution => execution.GatewayNodeId == 6);
+        Assert.Equal(GatewayExecutionStatuses.Active, outer.Status);
+        Assert.Equal(GatewayExecutionStatuses.Interrupted, inner.Status);
         Assert.Single(detail.History, entry =>
-            entry.Note == "parallelInterrupt" && entry.FromNodeId == 9);
+            entry.Note == "scopedInterrupt" && entry.FromNodeId == 9);
     }
 
     [Fact]
@@ -88,19 +88,19 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
         Assert.All(
             ack.ExecutionPositions.Where(position =>
                 position.TokenStatus == ExecutionTokenStatuses.Cancelled),
-            position => Assert.Equal("parallelScopeCancelled", position.TerminationReason));
+            position => Assert.Equal("gatewayScopeCancelled", position.TerminationReason));
 
         var detail = await GetInstanceAsync(started.Id);
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Interrupted,
+            GatewayExecutionStatuses.Interrupted,
             Assert.Single(
-                detail.ParallelGatewayExecutions,
-                execution => execution.ForkNodeId == 2).Status);
+                detail.GatewayExecutions,
+                execution => execution.GatewayNodeId == 2).Status);
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Cancelled,
+            GatewayExecutionStatuses.Cancelled,
             Assert.Single(
-                detail.ParallelGatewayExecutions,
-                execution => execution.ForkNodeId == 6).Status);
+                detail.GatewayExecutions,
+                execution => execution.GatewayNodeId == 6).Status);
         Assert.Single((await ListTasksAsync(started.Id, "active")).Items);
     }
 
@@ -219,11 +219,11 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             started.ExecutionPositions,
             position => position.TokenStatus == ExecutionTokenStatuses.Cancelled);
         Assert.Equal(2, cancelled.NodeId);
-        Assert.Equal("parallelScopeCancelled", cancelled.TerminationReason);
+        Assert.Equal("gatewayScopeCancelled", cancelled.TerminationReason);
         Assert.DoesNotContain(started.History, entry => entry.ToNodeId == 4);
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Interrupted,
-            Assert.Single(started.ParallelGatewayExecutions).Status);
+            GatewayExecutionStatuses.Interrupted,
+            Assert.Single(started.GatewayExecutions).Status);
         Assert.Equal(5, Assert.Single((await ListTasksAsync(started.Id, "active")).Items).NodeId);
     }
 
@@ -245,14 +245,14 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             started.ExecutionPositions,
             position => position.TokenStatus == ExecutionTokenStatuses.Cancelled);
         Assert.Equal(4, cancelled.NodeId);
-        Assert.Equal("parallelScopeCancelled", cancelled.TerminationReason);
+        Assert.Equal("gatewayScopeCancelled", cancelled.TerminationReason);
         Assert.Contains(
             started.History,
             entry => entry.Note == "automatic" && entry.FromNodeId == 3 && entry.ToNodeId == 5);
         Assert.DoesNotContain(started.History, entry => entry.Note == "service");
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Interrupted,
-            Assert.Single(started.ParallelGatewayExecutions).Status);
+            GatewayExecutionStatuses.Interrupted,
+            Assert.Single(started.GatewayExecutions).Status);
         Assert.Equal(6, Assert.Single((await ListTasksAsync(started.Id, "active")).Items).NodeId);
     }
 
@@ -280,8 +280,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             started.ExecutionPositions,
             position => position.TokenStatus == ExecutionTokenStatuses.Cancelled);
         Assert.Equal(4, cancelledSibling.NodeId);
-        Assert.Equal("parallelScopeCancelled", cancelledSibling.TerminationReason);
-        Assert.Contains(started.History, entry => entry.Note == "parallelInterrupt");
+        Assert.Equal("gatewayScopeCancelled", cancelledSibling.TerminationReason);
+        Assert.Contains(started.History, entry => entry.Note == "scopedInterrupt");
         if (triggerKind == "boundary")
         {
             Assert.Contains(started.History, entry => entry.Note == "error");
@@ -387,7 +387,7 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
         if (detail.Status == "running")
         {
             Assert.Equal(7, Assert.Single((await ListTasksAsync(started.Id, "active")).Items).NodeId);
-            Assert.Single(detail.History, entry => entry.Note == "parallelInterrupt");
+            Assert.Single(detail.History, entry => entry.Note == "scopedInterrupt");
         }
         else
         {
@@ -444,9 +444,9 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             detail.ExecutionPositions,
             position => position.TokenStatus == ExecutionTokenStatuses.Cancelled);
         Assert.Equal(
-            ParallelGatewayExecutionStatuses.Active,
-            Assert.Single(detail.ParallelGatewayExecutions).Status);
-        Assert.DoesNotContain(detail.History, entry => entry.Note == "parallelInterrupt");
+            GatewayExecutionStatuses.Active,
+            Assert.Single(detail.GatewayExecutions).Status);
+        Assert.DoesNotContain(detail.History, entry => entry.Note == "scopedInterrupt");
         Assert.Equal(3, Assert.Single((await ListTasksAsync(started.Id, "active")).Items).NodeId);
     }
 
@@ -582,16 +582,16 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 9,
                     Name = "Interrupt inner",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 6
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 6
                 },
                 new FlowNodeModel { Id = 10, Name = "After inner interrupt", Type = BpmnFlowNodeTypes.UserTask },
                 new FlowNodeModel
                 {
                     Id = 11,
                     Name = "Interrupt outer",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel { Id = 12, Name = "After outer interrupt", Type = BpmnFlowNodeTypes.UserTask },
                 new FlowNodeModel { Id = 20, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
@@ -673,8 +673,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 7,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel { Id = 8, Name = "After interrupt", Type = BpmnFlowNodeTypes.UserTask }
             ],
@@ -776,8 +776,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                     {
                         Id = 3,
                         Name = "Interrupt first",
-                        Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                        ParallelGatewayRef = 2
+                        Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                        GatewayRef = 2
                     },
                     new FlowNodeModel
                     {
@@ -823,8 +823,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 5,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel { Id = 6, Name = "Interrupt won", Type = BpmnFlowNodeTypes.UserTask },
                 new FlowNodeModel { Id = 7, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
@@ -890,8 +890,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
             {
                 Id = 6,
                 Name = "Interrupt",
-                Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                ParallelGatewayRef = 2
+                Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                GatewayRef = 2
             },
             new() { Id = 7, Name = "After interrupt", Type = BpmnFlowNodeTypes.UserTask },
             new() { Id = 8, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
@@ -960,8 +960,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 5,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel
                 {
@@ -1004,8 +1004,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 5,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel { Id = 6, Name = "Terminate", Type = BpmnFlowNodeTypes.TerminateEndEvent },
                 new FlowNodeModel { Id = 7, Name = "After interrupt", Type = BpmnFlowNodeTypes.UserTask },
@@ -1052,8 +1052,8 @@ public sealed class ParallelGatewayAdvancedApiTests(PostgresApiFixture fixture)
                 {
                     Id = 5,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel
                 {

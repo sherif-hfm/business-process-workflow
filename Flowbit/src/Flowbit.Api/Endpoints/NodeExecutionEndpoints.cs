@@ -84,7 +84,7 @@ public static class NodeExecutionEndpoints
             TokenId = query.TokenId,
             UserTaskId = query.UserTaskId,
             MultiInstanceExecutionId = query.MultiInstanceExecutionId,
-            ParallelBranchId = query.ParallelBranchId,
+            GatewayBranchId = query.GatewayBranchId,
             ItemIndex = query.ItemIndex,
             ExecutionKind = query.ExecutionKind,
             NodeId = query.NodeId,
@@ -172,8 +172,8 @@ public static class NodeExecutionEndpoints
         [FromQuery(Name = "multiInstanceExecutionId")]
         public long? MultiInstanceExecutionId { get; init; }
 
-        [FromQuery(Name = "parallelBranchId")]
-        public long? ParallelBranchId { get; init; }
+        [FromQuery(Name = "gatewayBranchId")]
+        public long? GatewayBranchId { get; init; }
 
         [FromQuery(Name = "itemIndex")]
         public int? ItemIndex { get; init; }

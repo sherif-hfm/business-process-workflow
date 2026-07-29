@@ -979,11 +979,37 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             return null;
         }
 
-        var tokens = await dbContext.ExecutionTokens.AsNoTracking()
-            .Where(t => t.InstanceId == id)
-            .OrderBy(t => t.Id)
-            .ToListAsync(cancellationToken);
-        var token = SelectRepresentativeToken(entity.Status, tokens);
+        var tokenQuery = dbContext.ExecutionTokens.AsNoTracking()
+            .Where(token => token.InstanceId == id
+                            && token.Status != ExecutionTokenStatuses.Merged);
+        tokenQuery = entity.Status switch
+        {
+            WorkflowInstanceStatuses.Running => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Active)
+                .OrderBy(token => token.Id),
+            WorkflowInstanceStatuses.Faulted => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Faulted)
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id),
+            WorkflowInstanceStatuses.Completed => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Completed)
+                .OrderByDescending(token =>
+                    token.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd)
+                .ThenByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id),
+            WorkflowInstanceStatuses.Cancelled => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Cancelled)
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id),
+            _ => tokenQuery
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id)
+        };
+        var token = await tokenQuery.FirstOrDefaultAsync(cancellationToken);
+        token ??= await dbContext.ExecutionTokens.AsNoTracking()
+            .Where(candidate => candidate.InstanceId == id)
+            .OrderByDescending(candidate => candidate.Id)
+            .FirstOrDefaultAsync(cancellationToken);
         var activeTasks = await dbContext.UserTasks.AsNoTracking()
             .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
             .OrderByDescending(t => t.Id)
@@ -991,6 +1017,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToListAsync(cancellationToken);
         var task = activeTasks.Count == 1 ? activeTasks[0] : null;
         return token is null ? null : ToRecord(entity, token, task);
+    }
+
+    public async Task<string?> GetInstanceStatusAsync(
+        long id,
+        CancellationToken cancellationToken)
+    {
+        var tracked = dbContext.WorkflowInstances.Local.SingleOrDefault(instance =>
+            instance.Id == id);
+        if (tracked is not null)
+        {
+            return tracked.Status;
+        }
+        return await dbContext.WorkflowInstances.AsNoTracking()
+            .Where(instance => instance.Id == id)
+            .Select(instance => instance.Status)
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
@@ -1007,31 +1049,48 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         // Preserve the mutation lock hierarchy for every instance transaction:
-        // instance -> parallel executions/branches -> tokens -> multi-instance
+        // instance -> active gateway executions/states/branches -> active tokens -> multi-instance
         // executions -> user tasks. Stable id ordering also keeps independently
         // addressed task/branch operations from introducing lock-order cycles.
-        _ = await dbContext.ParallelGatewayExecutions
-            .FromSqlInterpolated($"SELECT * FROM flowbit.parallel_gateway_executions WHERE \"InstanceId\" = {id} ORDER BY \"Id\" FOR UPDATE")
+        _ = await dbContext.GatewayExecutions
+            .FromSqlInterpolated($"SELECT * FROM flowbit.gateway_executions WHERE \"InstanceId\" = {id} AND \"Status\" = {GatewayExecutionStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
-        _ = await dbContext.ParallelGatewayBranches
+        _ = await dbContext.ComplexGatewayStates
             .FromSqlInterpolated($"""
                 SELECT *
-                FROM flowbit.parallel_gateway_branches
+                FROM flowbit.complex_gateway_states
+                WHERE "InstanceId" = {id}
+                ORDER BY "Id"
+                FOR UPDATE
+                """)
+            .ToListAsync(cancellationToken);
+        _ = await dbContext.GatewayBranches
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM flowbit.gateway_branches
                 WHERE "ExecutionId" IN (
                     SELECT "Id"
-                    FROM flowbit.parallel_gateway_executions
-                    WHERE "InstanceId" = {id})
+                    FROM flowbit.gateway_executions
+                    WHERE "InstanceId" = {id} AND "Status" = {GatewayExecutionStatuses.Active})
+                  AND "Status" = {GatewayBranchStatuses.Active}
                 ORDER BY "Id"
                 FOR UPDATE
                 """)
             .ToListAsync(cancellationToken);
         var tokens = await dbContext.ExecutionTokens
-            .FromSqlInterpolated($"SELECT * FROM flowbit.execution_tokens WHERE \"InstanceId\" = {id} ORDER BY \"Id\" FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.execution_tokens WHERE \"InstanceId\" = {id} AND \"Status\" = {ExecutionTokenStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         _ = await dbContext.MultiInstanceExecutions
-            .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"InstanceId\" = {id} ORDER BY \"Id\" FOR UPDATE")
+            .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"InstanceId\" = {id} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         var token = SelectRepresentativeToken(entity.Status, tokens);
+        if (token is null)
+        {
+            token = await dbContext.ExecutionTokens.AsNoTracking()
+                .Where(candidate => candidate.InstanceId == id)
+                .OrderByDescending(candidate => candidate.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
         UserTaskEntity? task = null;
         if (lockActiveUserTask)
         {
@@ -1064,13 +1123,52 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entity is null ? null : ToRecord(entity);
     }
 
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> GetExecutionTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0)
+        {
+            return [];
+        }
+
+        var distinctIds = tokenIds.Distinct().ToArray();
+        var local = dbContext.ExecutionTokens.Local
+            .Where(token => distinctIds.Contains(token.Id))
+            .ToList();
+        var localIds = local.Select(token => token.Id).ToHashSet();
+        var missingIds = distinctIds.Where(id => !localIds.Contains(id)).ToArray();
+        var persisted = missingIds.Length == 0
+            ? []
+            : await dbContext.ExecutionTokens
+                .Where(token => missingIds.Contains(token.Id))
+                .OrderBy(token => token.Id)
+                .ToListAsync(cancellationToken);
+        return persisted
+            .Concat(local)
+            .Distinct()
+            .OrderBy(token => token.Id)
+            .Select(ToRecord)
+            .ToList();
+    }
+
     public async Task<IReadOnlyList<ExecutionTokenRecord>> ListExecutionTokensAsync(
         long instanceId,
         string? status,
         CancellationToken cancellationToken)
     {
-        var entities = await dbContext.ExecutionTokens.AsNoTracking()
-            .Where(token => token.InstanceId == instanceId)
+        IQueryable<ExecutionTokenEntity> query =
+            status == ExecutionTokenStatuses.Active
+                ? dbContext.ExecutionTokens
+                : dbContext.ExecutionTokens.AsNoTracking();
+        query = query
+            .Where(token => token.InstanceId == instanceId);
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query = query.Where(token => token.Status == status);
+        }
+        var entities = await query
+            .OrderBy(token => token.Id)
             .ToListAsync(cancellationToken);
         var byId = entities.ToDictionary(token => token.Id);
         foreach (var tracked in dbContext.ExecutionTokens.Local.Where(token => token.InstanceId == instanceId))
@@ -1085,10 +1183,34 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToList();
     }
 
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> ListCurrentExecutionTokensAsync(
+        long instanceId,
+        long representativeTokenId,
+        CancellationToken cancellationToken)
+    {
+        var entities = await dbContext.ExecutionTokens.AsNoTracking()
+            .Where(token =>
+                token.InstanceId == instanceId
+                && (token.Status == ExecutionTokenStatuses.Active
+                    || token.Id == representativeTokenId))
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(token => token.Id);
+        foreach (var tracked in dbContext.ExecutionTokens.Local.Where(token =>
+                     token.InstanceId == instanceId))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderBy(token => token.Id)
+            .Select(ToRecord)
+            .ToList();
+    }
+
     public async Task<ExecutionTokenRecord> AddExecutionTokenAsync(
         long instanceId,
         CurrentNodeSnapshot node,
-        long? parallelBranchId,
+        long? gatewayBranchId,
         int? arrivedViaFlowId,
         NodeExecutionActorRecord triggeredBy,
         CancellationToken cancellationToken)
@@ -1097,7 +1219,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ?? await dbContext.WorkflowInstances.SingleAsync(entity => entity.Id == instanceId, cancellationToken);
         var now = DateTimeOffset.UtcNow;
         var token = NewToken(instance, node, now);
-        token.ParallelBranchId = parallelBranchId;
+        token.GatewayBranchId = gatewayBranchId;
         token.ArrivedViaFlowId = arrivedViaFlowId;
         dbContext.ExecutionTokens.Add(token);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -1113,7 +1235,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             node,
             NodeExecutionKinds.Node,
             NodeExecutionStatuses.Active,
-            parallelBranchId,
+            gatewayBranchId,
             arrivedViaFlowId,
             triggeredBy,
             now,
@@ -1124,17 +1246,76 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return ToRecord(token);
     }
 
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> AddGatewayBranchTokensAsync(
+        long instanceId,
+        CurrentNodeSnapshot gateway,
+        long? parentBranchId,
+        IReadOnlyList<long> gatewayBranchIds,
+        IReadOnlyCollection<long> complexDrainStateIds,
+        NodeExecutionActorRecord triggeredBy,
+        CancellationToken cancellationToken)
+    {
+        if (gatewayBranchIds.Count == 0)
+        {
+            return [];
+        }
+
+        var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == instanceId)
+            ?? await dbContext.WorkflowInstances.SingleAsync(
+                entity => entity.Id == instanceId,
+                cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var tokens = gatewayBranchIds
+            .Select(branchId =>
+            {
+                var token = NewToken(instance, gateway, now);
+                // The spawned token already belongs to its child branch so an
+                // immediate scoped interrupt can see/cancel it. Its gateway
+                // node-execution entry snapshot still records parentBranchId;
+                // AdvanceAutomaticTokenAsync records the child as the exit.
+                token.GatewayBranchId = branchId;
+                token.ComplexDrainStateIds = complexDrainStateIds
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToArray();
+                return token;
+            })
+            .ToList();
+
+        dbContext.ExecutionTokens.AddRange(tokens);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var token in tokens)
+        {
+            var nodeExecution = NewNodeExecution(
+                instance,
+                token,
+                gateway,
+                NodeExecutionKinds.Node,
+                NodeExecutionStatuses.Active,
+                parentBranchId,
+                null,
+                triggeredBy,
+                now);
+            dbContext.NodeExecutions.Add(nodeExecution);
+            token.CurrentNodeExecution = nodeExecution;
+        }
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return tokens.Select(ToRecord).ToList();
+    }
+
     public async Task UpdateExecutionTokenAsync(
         long tokenId,
         CurrentNodeSnapshot node,
         string tokenStatus,
-        long? parallelBranchId,
+        long? gatewayBranchId,
         int? arrivedViaFlowId,
         string? terminationReason,
         string? claimedBy,
         NodeExecutionActorRecord triggeredBy,
         NodeExecutionCompletionRecord? currentCompletion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool deferSave = false)
     {
         var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
             ?? await dbContext.ExecutionTokens.SingleAsync(entity => entity.Id == tokenId, cancellationToken);
@@ -1149,7 +1330,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     NodeExecutionCompletionReasons.Normal,
                     null,
                     arrivedViaFlowId,
-                    parallelBranchId,
+                    gatewayBranchId,
                     triggeredBy);
             await CompleteCurrentNodeExecutionAsync(token, completion, now, cancellationToken);
         }
@@ -1160,8 +1341,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.FaultCode = node.FaultCode;
         token.FaultDescription = node.FaultDescription;
         token.Status = tokenStatus;
-        token.ParallelBranchId = parallelBranchId;
+        token.GatewayBranchId = gatewayBranchId;
         token.ArrivedViaFlowId = arrivedViaFlowId;
+        token.ComplexGatewayStateId = null;
+        token.ComplexGatewayCycle = null;
         token.TerminationReason = terminationReason;
         token.UpdatedAt = now;
         instance.UpdatedAt = now;
@@ -1193,7 +1376,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 node,
                 NodeExecutionKinds.Node,
                 NodeExecutionStatuses.Active,
-                parallelBranchId,
+                gatewayBranchId,
                 arrivedViaFlowId,
                 triggeredBy,
                 now,
@@ -1214,7 +1397,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                         },
                         null,
                         null,
-                        parallelBranchId,
+                        gatewayBranchId,
                         triggeredBy,
                         node.FaultCode,
                         node.FaultDescription),
@@ -1226,7 +1409,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 token.CurrentNodeExecution = targetExecution;
             }
         }
-        await dbContext.SaveChangesAsync(cancellationToken);
+        if (!deferSave)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
     }
 
     public async Task SetExecutionTokenStatusAsync(
@@ -1241,6 +1427,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var now = DateTimeOffset.UtcNow;
         token.Status = tokenStatus;
         token.TerminationReason = terminationReason;
+        token.ComplexGatewayStateId = null;
+        token.ComplexGatewayCycle = null;
         token.UpdatedAt = now;
         await CompleteCurrentNodeExecutionAsync(token, completion, now, cancellationToken);
         var persistedTasks = await dbContext.UserTasks
@@ -1280,6 +1468,140 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
     }
 
+    public async Task SetExecutionTokensStatusAsync(
+        IReadOnlyCollection<long> tokenIds,
+        string tokenStatus,
+        string? terminationReason,
+        string completionReason,
+        NodeExecutionActorRecord actor,
+        CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var persisted = await dbContext.ExecutionTokens
+            .Where(token => tokenIds.Contains(token.Id)
+                            && token.Status == ExecutionTokenStatuses.Active)
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        var tokens = persisted
+            .Concat(dbContext.ExecutionTokens.Local.Where(token =>
+                tokenIds.Contains(token.Id) && token.Status == ExecutionTokenStatuses.Active))
+            .Distinct()
+            .OrderBy(token => token.Id)
+            .ToList();
+        var currentExecutionIds = tokens
+            .Where(token => token.CurrentNodeExecution is null
+                            && token.CurrentNodeExecutionId is not null)
+            .Select(token => token.CurrentNodeExecutionId!.Value)
+            .Distinct()
+            .ToArray();
+        if (currentExecutionIds.Length > 0)
+        {
+            var currentExecutions = await dbContext.NodeExecutions
+                .Where(execution => currentExecutionIds.Contains(execution.Id))
+                .ToDictionaryAsync(execution => execution.Id, cancellationToken);
+            foreach (var token in tokens.Where(token =>
+                         token.CurrentNodeExecution is null
+                         && token.CurrentNodeExecutionId is not null))
+            {
+                token.CurrentNodeExecution = currentExecutions.GetValueOrDefault(
+                    token.CurrentNodeExecutionId!.Value);
+            }
+        }
+        foreach (var token in tokens)
+        {
+            if (token.Status != ExecutionTokenStatuses.Active)
+            {
+                continue;
+            }
+            token.Status = tokenStatus;
+            token.TerminationReason = terminationReason;
+            token.ComplexGatewayStateId = null;
+            token.ComplexGatewayCycle = null;
+            token.UpdatedAt = now;
+            await CompleteCurrentNodeExecutionAsync(
+                token,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Cancelled,
+                    completionReason,
+                    null,
+                    null,
+                    token.GatewayBranchId,
+                    actor),
+                now,
+                cancellationToken);
+        }
+    }
+
+    public async Task MergeExecutionTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        long? exitGatewayBranchId,
+        string completionReason,
+        NodeExecutionActorRecord actor,
+        CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var persisted = await dbContext.ExecutionTokens
+            .Where(token => tokenIds.Contains(token.Id)
+                            && token.Status == ExecutionTokenStatuses.Active)
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        var tokens = persisted
+            .Concat(dbContext.ExecutionTokens.Local.Where(token =>
+                tokenIds.Contains(token.Id) && token.Status == ExecutionTokenStatuses.Active))
+            .Distinct()
+            .OrderBy(token => token.Id)
+            .ToList();
+        var currentExecutionIds = tokens
+            .Where(token => token.CurrentNodeExecution is null
+                            && token.CurrentNodeExecutionId is not null)
+            .Select(token => token.CurrentNodeExecutionId!.Value)
+            .Distinct()
+            .ToArray();
+        if (currentExecutionIds.Length > 0)
+        {
+            var currentExecutions = await dbContext.NodeExecutions
+                .Where(execution => currentExecutionIds.Contains(execution.Id))
+                .ToDictionaryAsync(execution => execution.Id, cancellationToken);
+            foreach (var token in tokens.Where(token =>
+                         token.CurrentNodeExecution is null
+                         && token.CurrentNodeExecutionId is not null))
+            {
+                token.CurrentNodeExecution = currentExecutions.GetValueOrDefault(
+                    token.CurrentNodeExecutionId!.Value);
+            }
+        }
+
+        foreach (var token in tokens)
+        {
+            token.Status = ExecutionTokenStatuses.Merged;
+            token.TerminationReason = ExecutionTokenTerminationReasons.GatewayJoinMerged;
+            token.ComplexGatewayStateId = null;
+            token.ComplexGatewayCycle = null;
+            token.UpdatedAt = now;
+            await CompleteCurrentNodeExecutionAsync(
+                token,
+                new NodeExecutionCompletionRecord(
+                    NodeExecutionRecordStatuses.Merged,
+                    completionReason,
+                    null,
+                    null,
+                    exitGatewayBranchId,
+                    actor),
+                now,
+                cancellationToken);
+        }
+    }
+
     public async Task SetInstanceStatusAsync(
         long instanceId,
         string status,
@@ -1292,7 +1614,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         instance.UpdatedAt = now;
         if (status is WorkflowInstanceStatuses.Faulted or WorkflowInstanceStatuses.Cancelled)
         {
-            await CancelActiveParallelScopesAsync(
+            await CancelActiveGatewayScopesAsync(
                 instanceId,
                 status == WorkflowInstanceStatuses.Faulted ? "errorEnd" : "instanceCancel",
                 now,
@@ -1301,64 +1623,140 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         await ReleaseBusinessKeyClaimAsync(instance, status, cancellationToken);
     }
 
-    public async Task<ParallelGatewayExecutionRecord> AddParallelGatewayExecutionAsync(
+    public async Task<GatewayExecutionRecord> AddGatewayExecutionAsync(
         long instanceId,
-        int forkNodeId,
+        int gatewayNodeId,
+        string gatewayType,
+        string direction,
+        string? phase,
+        int? cycle,
         long? parentBranchId,
-        IReadOnlyList<int> originatingFlowIds,
+        IReadOnlyList<int> selectedFlowIds,
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var execution = new ParallelGatewayExecutionEntity
+        var execution = new GatewayExecutionEntity
         {
             InstanceId = instanceId,
-            ForkNodeId = forkNodeId,
+            GatewayNodeId = gatewayNodeId,
+            GatewayType = gatewayType,
+            Direction = direction,
+            Phase = phase,
+            Cycle = cycle,
+            SelectedFlowIds = selectedFlowIds.ToArray(),
             ParentBranchId = parentBranchId,
-            Status = ParallelGatewayExecutionStatuses.Active,
+            Status = GatewayExecutionStatuses.Active,
             CreatedAt = now,
             UpdatedAt = now
         };
-        for (var index = 0; index < originatingFlowIds.Count; index++)
+        if (direction == GatewayExecutionDirections.Split)
         {
-            execution.Branches.Add(new ParallelGatewayBranchEntity
+            for (var index = 0; index < selectedFlowIds.Count; index++)
             {
-                OriginatingFlowId = originatingFlowIds[index],
-                Ordinal = index,
-                Status = ParallelGatewayBranchStatuses.Active,
-                CreatedAt = now,
-                UpdatedAt = now
-            });
+                execution.Branches.Add(new GatewayBranchEntity
+                {
+                    OriginatingFlowId = selectedFlowIds[index],
+                    Ordinal = index,
+                    Status = GatewayBranchStatuses.Active,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
         }
-        dbContext.ParallelGatewayExecutions.Add(execution);
+        dbContext.GatewayExecutions.Add(execution);
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToRecord(execution);
     }
 
-    public async Task<IReadOnlyList<ParallelGatewayExecutionRecord>> ListParallelGatewayExecutionsAsync(
+    public async Task<IReadOnlyList<GatewayExecutionRecord>> ListGatewayExecutionsAsync(
         long instanceId,
+        string? status,
         CancellationToken cancellationToken)
     {
-        var entities = await dbContext.ParallelGatewayExecutions.AsNoTracking()
-            .Where(execution => execution.InstanceId == instanceId)
+        IQueryable<GatewayExecutionEntity> query =
+            status == GatewayExecutionStatuses.Active
+                ? dbContext.GatewayExecutions
+                : dbContext.GatewayExecutions.AsNoTracking();
+        query = query
+            .Where(execution => execution.InstanceId == instanceId);
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query = query.Where(execution => execution.Status == status);
+        }
+        var entities = await query
             .ToListAsync(cancellationToken);
         var byId = entities.ToDictionary(execution => execution.Id);
-        foreach (var tracked in dbContext.ParallelGatewayExecutions.Local
+        foreach (var tracked in dbContext.GatewayExecutions.Local
                      .Where(execution => execution.InstanceId == instanceId))
         {
             byId[tracked.Id] = tracked;
         }
-        return byId.Values.OrderBy(execution => execution.Id).Select(ToRecord).ToList();
+        return byId.Values
+            .Where(execution => string.IsNullOrWhiteSpace(status) || execution.Status == status)
+            .OrderBy(execution => execution.Id)
+            .Select(ToRecord)
+            .ToList();
     }
 
-    public async Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelGatewayBranchesAsync(
+    public async Task<IReadOnlyList<GatewayExecutionRecord>> ListCurrentGatewayExecutionsAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var entities = await dbContext.GatewayExecutions
+            .Where(execution =>
+                execution.InstanceId == instanceId
+                && execution.Status == GatewayExecutionStatuses.Active)
+            .OrderBy(execution => execution.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(execution => execution.Id);
+        foreach (var tracked in dbContext.GatewayExecutions.Local.Where(execution =>
+                     execution.InstanceId == instanceId))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderBy(execution => execution.Id)
+            .Select(ToRecord)
+            .ToList();
+    }
+
+    public async Task<GatewayExecutionRecord?> GetGatewayExecutionAsync(
         long executionId,
         CancellationToken cancellationToken)
     {
-        var entities = await dbContext.ParallelGatewayBranches.AsNoTracking()
+        var tracked = dbContext.GatewayExecutions.Local
+            .SingleOrDefault(execution => execution.Id == executionId);
+        if (tracked is not null)
+        {
+            return ToRecord(tracked);
+        }
+        var execution = await dbContext.GatewayExecutions.AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.Id == executionId,
+                cancellationToken);
+        return execution is null ? null : ToRecord(execution);
+    }
+
+    public async Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesAsync(
+        long executionId,
+        CancellationToken cancellationToken)
+    {
+        var localBranches = dbContext.GatewayBranches.Local
+            .Where(branch => branch.ExecutionId == executionId)
+            .OrderBy(branch => branch.Ordinal)
+            .ThenBy(branch => branch.Id)
+            .ToList();
+        if (localBranches.Count > 0
+            && dbContext.GatewayExecutions.Local.Any(execution => execution.Id == executionId))
+        {
+            return localBranches.Select(ToRecord).ToList();
+        }
+
+        var entities = await dbContext.GatewayBranches.AsNoTracking()
             .Where(branch => branch.ExecutionId == executionId)
             .ToListAsync(cancellationToken);
         var byId = entities.ToDictionary(branch => branch.Id);
-        foreach (var tracked in dbContext.ParallelGatewayBranches.Local
+        foreach (var tracked in dbContext.GatewayBranches.Local
                      .Where(branch => branch.ExecutionId == executionId))
         {
             byId[tracked.Id] = tracked;
@@ -1370,68 +1768,174 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToList();
     }
 
-    public async Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelBranchAncestryAsync(
-        long? branchId,
+    public async Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesForInstanceAsync(
+        long instanceId,
+        bool activeOnly,
         CancellationToken cancellationToken)
     {
-        var result = new List<ParallelGatewayBranchRecord>();
-        while (branchId is not null)
+        IQueryable<GatewayBranchEntity> query = activeOnly
+            ? dbContext.GatewayBranches
+            : dbContext.GatewayBranches.AsNoTracking();
+        query = query
+            .Where(branch => branch.Execution != null
+                             && branch.Execution.InstanceId == instanceId);
+        if (activeOnly)
         {
-            var branch = await dbContext.ParallelGatewayBranches.AsNoTracking()
-                .SingleOrDefaultAsync(entity => entity.Id == branchId.Value, cancellationToken);
-            if (branch is null)
-            {
-                break;
-            }
-            result.Add(ToRecord(branch));
-            branchId = await dbContext.ParallelGatewayExecutions.AsNoTracking()
-                .Where(execution => execution.Id == branch.ExecutionId)
-                .Select(execution => execution.ParentBranchId)
-                .SingleAsync(cancellationToken);
+            query = query.Where(branch =>
+                branch.Status == GatewayBranchStatuses.Active
+                && branch.Execution!.Status == GatewayExecutionStatuses.Active);
         }
-        return result;
+        var entities = await query
+            .OrderBy(branch => branch.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(branch => branch.Id);
+        foreach (var tracked in dbContext.GatewayBranches.Local.Where(branch =>
+                     branch.Execution?.InstanceId == instanceId
+                     || dbContext.GatewayExecutions.Local.Any(execution =>
+                         execution.Id == branch.ExecutionId && execution.InstanceId == instanceId)))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        var localExecutionStatuses = dbContext.GatewayExecutions.Local
+            .Where(execution => execution.InstanceId == instanceId)
+            .ToDictionary(execution => execution.Id, execution => execution.Status);
+        return byId.Values
+            .Where(branch =>
+                !activeOnly
+                || (branch.Status == GatewayBranchStatuses.Active
+                    && (!localExecutionStatuses.TryGetValue(branch.ExecutionId, out var executionStatus)
+                        || executionStatus == GatewayExecutionStatuses.Active)))
+            .OrderBy(branch => branch.Id)
+            .Select(ToRecord)
+            .ToList();
     }
 
-    public async Task SetParallelGatewayExecutionStatusAsync(
+    public async Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesForExecutionsAsync(
+        IReadOnlyCollection<long> executionIds,
+        CancellationToken cancellationToken)
+    {
+        if (executionIds.Count == 0)
+        {
+            return [];
+        }
+
+        var distinctExecutionIds = executionIds.Distinct().ToArray();
+        var entities = await dbContext.GatewayBranches.AsNoTracking()
+            .Where(branch => distinctExecutionIds.Contains(branch.ExecutionId))
+            .OrderBy(branch => branch.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(branch => branch.Id);
+        foreach (var tracked in dbContext.GatewayBranches.Local.Where(branch =>
+                     distinctExecutionIds.Contains(branch.ExecutionId)))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderBy(branch => branch.Id)
+            .Select(ToRecord)
+            .ToList();
+    }
+
+    public Task SetGatewayExecutionStatusAsync(
         long executionId,
+        string status,
+        string completionReason,
+        int? interruptingNodeId,
+        long? interruptingTokenId,
+        CancellationToken cancellationToken) =>
+        SetGatewayExecutionsStatusAsync(
+            [executionId],
+            status,
+            completionReason,
+            interruptingNodeId,
+            interruptingTokenId,
+            cancellationToken);
+
+    public async Task SetGatewayExecutionsStatusAsync(
+        IReadOnlyCollection<long> executionIds,
         string status,
         string completionReason,
         int? interruptingNodeId,
         long? interruptingTokenId,
         CancellationToken cancellationToken)
     {
-        var execution = dbContext.ParallelGatewayExecutions.Local
-            .SingleOrDefault(entity => entity.Id == executionId)
-            ?? await dbContext.ParallelGatewayExecutions
-                .SingleAsync(entity => entity.Id == executionId, cancellationToken);
+        if (executionIds.Count == 0)
+        {
+            return;
+        }
+
+        var distinctExecutionIds = executionIds.Distinct().ToArray();
+        var localExecutions = dbContext.GatewayExecutions.Local
+            .Where(execution => distinctExecutionIds.Contains(execution.Id))
+            .ToList();
+        var localExecutionIds = localExecutions
+            .Select(execution => execution.Id)
+            .ToHashSet();
+        var missingExecutionIds = distinctExecutionIds
+            .Where(id => !localExecutionIds.Contains(id))
+            .ToArray();
+        var persistedExecutions = missingExecutionIds.Length == 0
+            ? []
+            : await dbContext.GatewayExecutions
+                .Where(execution => missingExecutionIds.Contains(execution.Id))
+                .OrderBy(execution => execution.Id)
+                .ToListAsync(cancellationToken);
+        var executions = persistedExecutions
+            .Concat(localExecutions)
+            .Distinct()
+            .OrderBy(execution => execution.Id)
+            .ToList();
+        if (executions.Count != distinctExecutionIds.Length)
+        {
+            throw new InvalidOperationException("One or more gateway executions no longer exist.");
+        }
+
         var now = DateTimeOffset.UtcNow;
-        execution.Status = status;
-        execution.CompletionReason = completionReason;
-        execution.InterruptingNodeId = interruptingNodeId;
-        execution.InterruptingTokenId = interruptingTokenId;
-        execution.UpdatedAt = now;
-        execution.CompletedAt = status == ParallelGatewayExecutionStatuses.Active ? null : now;
+        foreach (var execution in executions)
+        {
+            execution.Status = status;
+            execution.CompletionReason = completionReason;
+            execution.InterruptingNodeId = interruptingNodeId;
+            execution.InterruptingTokenId = interruptingTokenId;
+            execution.UpdatedAt = now;
+            execution.CompletedAt = status == GatewayExecutionStatuses.Active ? null : now;
+        }
 
         var branchStatus = status switch
         {
-            ParallelGatewayExecutionStatuses.Joined or ParallelGatewayExecutionStatuses.Completed =>
-                ParallelGatewayBranchStatuses.Completed,
-            ParallelGatewayExecutionStatuses.Cancelled => ParallelGatewayBranchStatuses.Cancelled,
+            GatewayExecutionStatuses.Joined or GatewayExecutionStatuses.Completed =>
+                GatewayBranchStatuses.Completed,
+            GatewayExecutionStatuses.Cancelled => GatewayBranchStatuses.Cancelled,
             _ => null
         };
         if (branchStatus is not null)
         {
-            var activeBranches = await dbContext.ParallelGatewayBranches
-                .Where(branch => branch.ExecutionId == executionId
-                                 && branch.Status == ParallelGatewayBranchStatuses.Active)
+            var splitExecutionIds = executions
+                .Where(execution => execution.Direction == GatewayExecutionDirections.Split)
+                .Select(execution => execution.Id)
+                .ToArray();
+            if (splitExecutionIds.Length == 0)
+            {
+                return;
+            }
+            var persistedBranches = await dbContext.GatewayBranches
+                .Where(branch => splitExecutionIds.Contains(branch.ExecutionId)
+                                 && branch.Status == GatewayBranchStatuses.Active)
                 .OrderBy(branch => branch.Id)
                 .ToListAsync(cancellationToken);
+            var activeBranches = persistedBranches
+                .Concat(dbContext.GatewayBranches.Local.Where(branch =>
+                    splitExecutionIds.Contains(branch.ExecutionId)
+                    && branch.Status == GatewayBranchStatuses.Active))
+                .Distinct()
+                .OrderBy(branch => branch.Id)
+                .ToList();
             foreach (var branch in activeBranches)
             {
                 // The database predicate cannot see an earlier unsaved status
                 // change in this DbContext; preserve branch-specific merged or
                 // interrupted states already staged by the engine.
-                if (branch.Status != ParallelGatewayBranchStatuses.Active)
+                if (branch.Status != GatewayBranchStatuses.Active)
                 {
                     continue;
                 }
@@ -1442,17 +1946,239 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
     }
 
-    public async Task SetParallelGatewayBranchStatusAsync(
+    public Task SetGatewayBranchStatusAsync(
         long branchId,
+        string status,
+        CancellationToken cancellationToken) =>
+        SetGatewayBranchesStatusAsync([branchId], status, cancellationToken);
+
+    public async Task SetGatewayBranchesStatusAsync(
+        IReadOnlyCollection<long> branchIds,
         string status,
         CancellationToken cancellationToken)
     {
-        var branch = dbContext.ParallelGatewayBranches.Local.SingleOrDefault(entity => entity.Id == branchId)
-            ?? await dbContext.ParallelGatewayBranches.SingleAsync(entity => entity.Id == branchId, cancellationToken);
+        if (branchIds.Count == 0)
+        {
+            return;
+        }
+
+        var distinctBranchIds = branchIds.Distinct().ToArray();
+        var localBranches = dbContext.GatewayBranches.Local
+            .Where(branch => distinctBranchIds.Contains(branch.Id))
+            .ToList();
+        var localBranchIds = localBranches
+            .Select(branch => branch.Id)
+            .ToHashSet();
+        var missingBranchIds = distinctBranchIds
+            .Where(id => !localBranchIds.Contains(id))
+            .ToArray();
+        var persistedBranches = missingBranchIds.Length == 0
+            ? []
+            : await dbContext.GatewayBranches
+                .Where(branch => missingBranchIds.Contains(branch.Id))
+                .OrderBy(branch => branch.Id)
+                .ToListAsync(cancellationToken);
+        var branches = persistedBranches
+            .Concat(localBranches)
+            .Distinct()
+            .OrderBy(branch => branch.Id)
+            .ToList();
+        if (branches.Count != distinctBranchIds.Length)
+        {
+            throw new InvalidOperationException("One or more gateway branches no longer exist.");
+        }
+
         var now = DateTimeOffset.UtcNow;
-        branch.Status = status;
-        branch.UpdatedAt = now;
-        branch.CompletedAt = status == ParallelGatewayBranchStatuses.Active ? null : now;
+        foreach (var branch in branches)
+        {
+            branch.Status = status;
+            branch.UpdatedAt = now;
+            branch.CompletedAt = status == GatewayBranchStatuses.Active ? null : now;
+        }
+    }
+
+    public async Task<ComplexGatewayStateRecord?> GetComplexGatewayStateAsync(
+        long instanceId,
+        int gatewayNodeId,
+        bool forUpdate,
+        CancellationToken cancellationToken)
+    {
+        var tracked = dbContext.ComplexGatewayStates.Local.SingleOrDefault(state =>
+            state.InstanceId == instanceId && state.GatewayNodeId == gatewayNodeId);
+        if (tracked is not null)
+        {
+            return ToRecord(tracked);
+        }
+        var entity = forUpdate
+            ? await dbContext.ComplexGatewayStates
+                .FromSqlInterpolated($"""
+                    SELECT *
+                    FROM flowbit.complex_gateway_states
+                    WHERE "InstanceId" = {instanceId} AND "GatewayNodeId" = {gatewayNodeId}
+                    FOR UPDATE
+                    """)
+                .SingleOrDefaultAsync(cancellationToken)
+            : await dbContext.ComplexGatewayStates.AsNoTracking()
+                .SingleOrDefaultAsync(state =>
+                    state.InstanceId == instanceId && state.GatewayNodeId == gatewayNodeId,
+                    cancellationToken);
+        return entity is null ? null : ToRecord(entity);
+    }
+
+    public async Task<IReadOnlyList<ComplexGatewayStateRecord>> ListComplexGatewayStatesAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var trackedStates = dbContext.ComplexGatewayStates.Local
+            .Where(state => state.InstanceId == instanceId)
+            .OrderBy(state => state.GatewayNodeId)
+            .ToList();
+        // Mutation transactions lock and track every state for the instance in
+        // GetInstanceForUpdateAsync, so the local set is complete and avoids a
+        // repeated reader during scope reconciliation.
+        if (dbContext.Database.CurrentTransaction is not null
+            && dbContext.WorkflowInstances.Local.Any(instance => instance.Id == instanceId))
+        {
+            return trackedStates.Select(ToRecord).ToList();
+        }
+        var entities = await dbContext.ComplexGatewayStates.AsNoTracking()
+            .Where(state => state.InstanceId == instanceId)
+            .OrderBy(state => state.GatewayNodeId)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(state => state.Id);
+        foreach (var tracked in trackedStates)
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderBy(state => state.GatewayNodeId)
+            .Select(ToRecord)
+            .ToList();
+    }
+
+    public async Task<ComplexGatewayStateRecord> SaveComplexGatewayStateAsync(
+        long instanceId,
+        int gatewayNodeId,
+        string phase,
+        int cycle,
+        IReadOnlyCollection<int> contributingFlowIds,
+        IReadOnlyCollection<int> remainingFlowIds,
+        IReadOnlyCollection<long> activationDrainStateIds,
+        IReadOnlyCollection<long> drainingTokenIds,
+        long? activeExecutionId,
+        CancellationToken cancellationToken)
+    {
+        var state = dbContext.ComplexGatewayStates.Local.SingleOrDefault(candidate =>
+                        candidate.InstanceId == instanceId && candidate.GatewayNodeId == gatewayNodeId)
+                    ?? await dbContext.ComplexGatewayStates.SingleOrDefaultAsync(candidate =>
+                        candidate.InstanceId == instanceId && candidate.GatewayNodeId == gatewayNodeId,
+                        cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        if (state is null)
+        {
+            state = new ComplexGatewayStateEntity
+            {
+                InstanceId = instanceId,
+                GatewayNodeId = gatewayNodeId,
+                CreatedAt = now
+            };
+            dbContext.ComplexGatewayStates.Add(state);
+        }
+        state.Phase = phase;
+        state.Cycle = cycle;
+        state.ContributingFlowIds = contributingFlowIds.OrderBy(id => id).ToArray();
+        state.RemainingFlowIds = remainingFlowIds.OrderBy(id => id).ToArray();
+        state.ActivationDrainStateIds = activationDrainStateIds.OrderBy(id => id).ToArray();
+        state.DrainingTokenIds = drainingTokenIds.OrderBy(id => id).ToArray();
+        state.ActiveExecutionId = activeExecutionId;
+        state.UpdatedAt = now;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return ToRecord(state);
+    }
+
+    public async Task RegisterTokenAtComplexGatewayAsync(
+        long tokenId,
+        long? complexGatewayStateId,
+        int? complexGatewayCycle,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(candidate => candidate.Id == tokenId)
+                    ?? await dbContext.ExecutionTokens.SingleAsync(
+                        candidate => candidate.Id == tokenId,
+                        cancellationToken);
+        token.ComplexGatewayStateId = complexGatewayStateId;
+        token.ComplexGatewayCycle = complexGatewayCycle;
+        token.UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    public async Task AddComplexDrainMarkerAsync(
+        IReadOnlyCollection<long> tokenIds,
+        long complexGatewayStateId,
+        CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0)
+        {
+            return;
+        }
+        var persisted = await dbContext.ExecutionTokens
+            .Where(token => tokenIds.Contains(token.Id)
+                            && token.Status == ExecutionTokenStatuses.Active)
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        var tokens = persisted
+            .Concat(dbContext.ExecutionTokens.Local.Where(token =>
+                tokenIds.Contains(token.Id) && token.Status == ExecutionTokenStatuses.Active))
+            .Distinct()
+            .ToList();
+        foreach (var token in tokens)
+        {
+            token.ComplexDrainStateIds = token.ComplexDrainStateIds
+                .Append(complexGatewayStateId)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+        }
+    }
+
+    public async Task SetComplexDrainMarkersAsync(
+        long tokenId,
+        IReadOnlyCollection<long> complexGatewayStateIds,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+                    ?? await dbContext.ExecutionTokens.SingleAsync(
+                        entity => entity.Id == tokenId,
+                        cancellationToken);
+        token.ComplexDrainStateIds = complexGatewayStateIds
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+    }
+
+    public async Task ClearComplexDrainMarkerAsync(
+        long instanceId,
+        long complexGatewayStateId,
+        CancellationToken cancellationToken)
+    {
+        var persisted = await dbContext.ExecutionTokens
+            .Where(token => token.InstanceId == instanceId
+                            && token.Status == ExecutionTokenStatuses.Active
+                            && token.ComplexDrainStateIds.Contains(complexGatewayStateId))
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        var tokens = persisted
+            .Concat(dbContext.ExecutionTokens.Local.Where(token =>
+                token.InstanceId == instanceId
+                && token.Status == ExecutionTokenStatuses.Active
+                && token.ComplexDrainStateIds.Contains(complexGatewayStateId)))
+            .Distinct()
+            .ToList();
+        foreach (var token in tokens)
+        {
+            token.ComplexDrainStateIds = token.ComplexDrainStateIds
+                .Where(id => id != complexGatewayStateId)
+                .ToArray();
+        }
     }
 
     public async Task CancelOpenUserTasksForTokensAsync(
@@ -1464,6 +2190,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         if (tokenIds.Count == 0) return;
         var now = DateTimeOffset.UtcNow;
         var persistedTasks = await dbContext.UserTasks
+            .Include(task => task.Token)
+            .Include(task => task.NodeExecution)
             .Where(task => tokenIds.Contains(task.TokenId)
                            && (task.Status == UserTaskStatuses.Active || task.Status == UserTaskStatuses.Pending))
             .ToListAsync(cancellationToken);
@@ -1486,7 +2214,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                         completionReason,
                         null,
                         null,
-                        task.Token?.ParallelBranchId,
+                        task.Token?.GatewayBranchId,
                         actor),
                     now,
                     cancellationToken);
@@ -1517,8 +2245,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             execution.CompletionReason = completionReason switch
             {
                 NodeExecutionCompletionReasons.InstanceCancelled => "instanceCancel",
-                NodeExecutionCompletionReasons.ParallelScopeCancelled =>
-                    ExecutionTokenTerminationReasons.ParallelScopeInterrupted,
+                NodeExecutionCompletionReasons.GatewayScopeCancelled =>
+                    ExecutionTokenTerminationReasons.GatewayScopeCancelled,
                 NodeExecutionCompletionReasons.TerminateEnd =>
                     ExecutionTokenTerminationReasons.TerminateEnd,
                 NodeExecutionCompletionReasons.ErrorEnd =>
@@ -1528,49 +2256,51 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             execution.UpdatedAt = now;
             execution.CompletedAt = now;
         }
-        await CancelOpenUserTasksForTokensAsync(tokenIds, completionReason, actor, cancellationToken);
     }
 
-    private async Task CancelActiveParallelScopesAsync(
+    private async Task CancelActiveGatewayScopesAsync(
         long instanceId,
         string completionReason,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var executions = await dbContext.ParallelGatewayExecutions
+        var executions = await dbContext.GatewayExecutions
             .Where(execution => execution.InstanceId == instanceId
-                                && execution.Status == ParallelGatewayExecutionStatuses.Active)
+                                && execution.Status == GatewayExecutionStatuses.Active)
             .OrderBy(execution => execution.Id)
             .ToListAsync(cancellationToken);
+        executions = executions
+            .Where(execution => execution.Status == GatewayExecutionStatuses.Active)
+            .ToList();
         if (executions.Count == 0)
         {
             return;
         }
 
         var executionIds = executions.Select(execution => execution.Id).ToArray();
-        var activeBranches = await dbContext.ParallelGatewayBranches
+        var activeBranches = await dbContext.GatewayBranches
             .Where(branch => executionIds.Contains(branch.ExecutionId)
-                             && branch.Status == ParallelGatewayBranchStatuses.Active)
+                             && branch.Status == GatewayBranchStatuses.Active)
             .OrderBy(branch => branch.Id)
             .ToListAsync(cancellationToken);
         foreach (var branch in activeBranches)
         {
-            if (branch.Status != ParallelGatewayBranchStatuses.Active)
+            if (branch.Status != GatewayBranchStatuses.Active)
             {
                 continue;
             }
-            branch.Status = ParallelGatewayBranchStatuses.Cancelled;
+            branch.Status = GatewayBranchStatuses.Cancelled;
             branch.UpdatedAt = now;
             branch.CompletedAt = now;
         }
 
         foreach (var execution in executions)
         {
-            if (execution.Status != ParallelGatewayExecutionStatuses.Active)
+            if (execution.Status != GatewayExecutionStatuses.Active)
             {
                 continue;
             }
-            execution.Status = ParallelGatewayExecutionStatuses.Cancelled;
+            execution.Status = GatewayExecutionStatuses.Cancelled;
             execution.CompletionReason = completionReason;
             execution.InterruptingNodeId = null;
             execution.InterruptingTokenId = null;
@@ -1952,7 +2682,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 node,
                 NodeExecutionKinds.UserTaskItem,
                 executionStatus,
-                token.ParallelBranchId,
+                token.GatewayBranchId,
                 token.ArrivedViaFlowId,
                 triggeredBy,
                 now,
@@ -2001,6 +2731,28 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             query = query.Where(execution => execution.Status == status);
         }
         return (await query.OrderBy(execution => execution.Id).ToListAsync(cancellationToken))
+            .Select(ToRecord)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<MultiInstanceExecutionRecord>> ListCurrentMultiInstancesAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var entities = await dbContext.MultiInstanceExecutions.AsNoTracking()
+            .Where(execution =>
+                execution.InstanceId == instanceId
+                && execution.Status == MultiInstanceExecutionStatuses.Active)
+            .OrderBy(execution => execution.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(execution => execution.Id);
+        foreach (var tracked in dbContext.MultiInstanceExecutions.Local.Where(execution =>
+                     execution.InstanceId == instanceId))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderBy(execution => execution.Id)
             .Select(ToRecord)
             .ToList();
     }
@@ -2109,6 +2861,31 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return (await query.OrderByDescending(t => t.UpdatedAt).ThenByDescending(t => t.Id)
                 .ToListAsync(cancellationToken))
             .Select(entity => ToRecord(entity)).ToList();
+    }
+
+    public async Task<IReadOnlyList<UserTaskRecord>> ListCurrentUserTasksAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var entities = await dbContext.UserTasks.AsNoTracking()
+            .Where(task =>
+                task.InstanceId == instanceId
+                && (task.Status == UserTaskStatuses.Active
+                    || task.Status == UserTaskStatuses.Pending))
+            .OrderByDescending(task => task.UpdatedAt)
+            .ThenByDescending(task => task.Id)
+            .ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(task => task.Id);
+        foreach (var tracked in dbContext.UserTasks.Local.Where(task =>
+                     task.InstanceId == instanceId))
+        {
+            byId[tracked.Id] = tracked;
+        }
+        return byId.Values
+            .OrderByDescending(task => task.UpdatedAt)
+            .ThenByDescending(task => task.Id)
+            .Select(task => ToRecord(task))
+            .ToList();
     }
 
     public async Task<PagedResult<UserTaskRecord>> ListUserTasksPageAsync(
@@ -2496,7 +3273,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 NodeExecutionCompletionReasons.MultiInstanceItem,
                 selectedFlowId,
                 null,
-                token.ParallelBranchId,
+                token.GatewayBranchId,
                 new NodeExecutionActorRecord(completedBy, completedByRoles)
                 {
                     ActingFor = actingFor,
@@ -2537,7 +3314,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 NodeExecutionCompletionReasons.UserAction,
                 selectedFlowId,
                 selectedFlowId,
-                token.ParallelBranchId,
+                token.GatewayBranchId,
                 new NodeExecutionActorRecord(completedBy, completedByRoles)
                 {
                     ActingFor = actingFor,
@@ -2633,8 +3410,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             "interrupt" => NodeExecutionCompletionReasons.MultiInstanceInterrupt,
             "instanceCancel" => NodeExecutionCompletionReasons.InstanceCancelled,
             NodeExecutionCompletionReasons.InstanceCancelled => NodeExecutionCompletionReasons.InstanceCancelled,
-            NodeExecutionCompletionReasons.ParallelScopeCancelled =>
-                NodeExecutionCompletionReasons.ParallelScopeCancelled,
+            NodeExecutionCompletionReasons.GatewayScopeCancelled =>
+                NodeExecutionCompletionReasons.GatewayScopeCancelled,
             NodeExecutionCompletionReasons.TerminateEnd => NodeExecutionCompletionReasons.TerminateEnd,
             NodeExecutionCompletionReasons.ErrorEnd => NodeExecutionCompletionReasons.ErrorEnd,
             _ => throw new InvalidOperationException(
@@ -3217,18 +3994,26 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.FaultCode,
             entity.FaultDescription,
             entity.Status,
-            entity.ParallelBranchId,
+            entity.GatewayBranchId,
             entity.ArrivedViaFlowId,
+            entity.ComplexGatewayStateId,
+            entity.ComplexGatewayCycle,
+            entity.ComplexDrainStateIds,
             entity.TerminationReason,
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.CurrentNodeExecutionId);
 
-    private static ParallelGatewayExecutionRecord ToRecord(ParallelGatewayExecutionEntity entity) =>
+    private static GatewayExecutionRecord ToRecord(GatewayExecutionEntity entity) =>
         new(
             entity.Id,
             entity.InstanceId,
-            entity.ForkNodeId,
+            entity.GatewayNodeId,
+            entity.GatewayType,
+            entity.Direction,
+            entity.Phase,
+            entity.Cycle,
+            entity.SelectedFlowIds,
             entity.ParentBranchId,
             entity.Status,
             entity.CompletionReason,
@@ -3238,7 +4023,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.UpdatedAt,
             entity.CompletedAt);
 
-    private static ParallelGatewayBranchRecord ToRecord(ParallelGatewayBranchEntity entity) =>
+    private static ComplexGatewayStateRecord ToRecord(ComplexGatewayStateEntity entity) =>
+        new(
+            entity.Id,
+            entity.InstanceId,
+            entity.GatewayNodeId,
+            entity.Phase,
+            entity.Cycle,
+            entity.ContributingFlowIds,
+            entity.RemainingFlowIds,
+            entity.ActivationDrainStateIds,
+            entity.DrainingTokenIds,
+            entity.ActiveExecutionId,
+            entity.CreatedAt,
+            entity.UpdatedAt);
+
+    private static GatewayBranchRecord ToRecord(GatewayBranchEntity entity) =>
         new(
             entity.Id,
             entity.ExecutionId,
@@ -3283,8 +4083,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.ExecutionKind,
             entity.Status,
             entity.CompletionReason,
-            entity.EntryParallelBranchId,
-            entity.ExitParallelBranchId,
+            entity.EntryGatewayBranchId,
+            entity.ExitGatewayBranchId,
             entity.EnteredViaFlowId,
             entity.SelectedFlowId,
             entity.ExitedViaFlowId,
@@ -3313,7 +4113,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CurrentNodeSnapshot node,
         string executionKind,
         string status,
-        long? entryParallelBranchId,
+        long? entryGatewayBranchId,
         int? enteredViaFlowId,
         NodeExecutionActorRecord triggeredBy,
         DateTimeOffset now,
@@ -3333,7 +4133,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeType = node.Type,
             ExecutionKind = executionKind,
             Status = status,
-            EntryParallelBranchId = entryParallelBranchId,
+            EntryGatewayBranchId = entryGatewayBranchId,
             EnteredViaFlowId = enteredViaFlowId,
             NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles.ToList()),
             TriggeredBy = triggeredBy.User,
@@ -3429,9 +4229,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         nodeExecution.CompletionReason = completion.CompletionReason;
         nodeExecution.SelectedFlowId = completion.SelectedFlowId;
         nodeExecution.ExitedViaFlowId = completion.ExitedViaFlowId;
-        nodeExecution.ExitParallelBranchId = completion.HasExitParallelBranchSnapshot
-            ? completion.ExitParallelBranchId
-            : completion.ExitParallelBranchId ?? nodeExecution.EntryParallelBranchId;
+        nodeExecution.ExitGatewayBranchId = completion.HasExitGatewayBranchSnapshot
+            ? completion.ExitGatewayBranchId
+            : completion.ExitGatewayBranchId ?? nodeExecution.EntryGatewayBranchId;
         nodeExecution.CompletedBy = completion.Actor.User;
         nodeExecution.CompletedByRolesJson = JsonMapping.ToJsonDocument(completion.Actor.Roles);
         nodeExecution.CompletedActingFor = completion.Actor.ActingFor;

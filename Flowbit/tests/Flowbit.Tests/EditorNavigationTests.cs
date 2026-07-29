@@ -33,9 +33,9 @@ public sealed class EditorNavigationTests
               "id": 9,
               "name": "Cancel fork",
               "externalId": "CANCEL_FORK",
-              "type": "parallelInterruptEvent",
+              "type": "scopedInterruptEvent",
               "laneId": 2,
-              "parallelGatewayRef": 8
+              "gatewayRef": 8
             }
           ],
           "sequenceFlows": [
@@ -159,13 +159,58 @@ public sealed class EditorNavigationTests
     [InlineData("""{ "kind": "node", "nodeId": 7 }""", 2)]
     [InlineData("""{ "kind": "node", "nodeId": 8 }""", 9)]
     [InlineData("""{ "kind": "node", "nodeId": 9 }""", 8)]
-    public void Trace_ReportsBoundaryAndParallelInterruptReferencesAsContext(
+    public void Trace_ReportsBoundaryAndScopedInterruptReferencesAsContext(
         string selectionJson,
         int expectedContextNodeId)
     {
         using var result = Trace(DiagramCandidateJson, selectionJson, "local");
 
         AssertContainsIds(result.RootElement, "contextNodeIds", expectedContextNodeId);
+    }
+
+    [Fact]
+    public void ScopedInterruptSelectorReachabilityIncludesImplicitBoundaryAttachment()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"function buildGatewayAdjacencyIndex[\s\S]*?(?=function gatewayTopology)");
+        Assert.True(match.Success, "The editor gateway adjacency helpers were not found.");
+
+        var engine = new Engine();
+        engine.Execute(
+            """
+            function isBoundaryEventType(type) { return type === 'errorBoundaryEvent'; }
+            """);
+        engine.Execute(match.Value);
+        engine.SetValue(
+            "candidateJson",
+            """
+            {
+              "flowNodes": [
+                { "id": 2, "type": "parallelGateway" },
+                { "id": 3, "type": "serviceTask" },
+                { "id": 4, "type": "errorBoundaryEvent", "attachedToRef": 3 },
+                { "id": 5, "type": "scopedInterruptEvent" },
+                { "id": 6, "type": "parallelGateway" }
+              ],
+              "sequenceFlows": [
+                { "id": 201, "sourceRef": 2, "targetRef": 3 },
+                { "id": 401, "sourceRef": 4, "targetRef": 5 }
+              ]
+            }
+            """);
+
+        Assert.True(engine.Evaluate(
+            """
+            const adjacency = buildGatewayAdjacencyIndex(JSON.parse(candidateJson));
+            canReachWithAdjacency(2, 5, adjacency) &&
+              !canReachWithAdjacency(6, 5, adjacency);
+            """).AsBoolean());
+        Assert.Contains(
+            "canReachWithAdjacency(candidate.id, node.id, adjacency)",
+            html,
+            StringComparison.Ordinal);
     }
 
     [Theory]

@@ -1520,7 +1520,7 @@ public sealed class DefinitionValidationTests
     internal static WorkflowModel CreateOutputMappingModel()
     {
         var suffix = Guid.NewGuid().ToString("N");
-        return new WorkflowModel
+        var model = new WorkflowModel
         {
             Id = "typed-output-" + suffix,
             Name = "Typed output " + suffix,
@@ -1593,6 +1593,7 @@ public sealed class DefinitionValidationTests
                 new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
             ]
         };
+        return model;
     }
 
     [Fact]
@@ -1871,7 +1872,7 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_AllowsSeveralIncomingPathsToExclusiveGateway()
+    public async Task CreateAsync_RejectsMixedExclusiveMergeAndSplitTopology()
     {
         var model = BuildGatewayFlowInfoModel();
         model.FlowNodes.Add(new FlowNodeModel
@@ -1888,7 +1889,10 @@ public sealed class DefinitionValidationTests
             TargetRef = 3
         });
 
-        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("two adjacent gateways", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2000,7 +2004,7 @@ public sealed class DefinitionValidationTests
         nonGatewayMetadata.SequenceFlows.Single(flow => flow.Id == 101).ConditionPriority = 9;
         var nonGatewayError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(nonGatewayMetadata, false, CancellationToken.None));
-        Assert.Contains("not an exclusive gateway", nonGatewayError.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not an Exclusive split", nonGatewayError.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2052,12 +2056,16 @@ public sealed class DefinitionValidationTests
         Assert.True(BpmnFlowNodeTypes.IsParallelGateway(BpmnFlowNodeTypes.ParallelGateway));
         Assert.True(BpmnFlowNodeTypes.IsGateway(BpmnFlowNodeTypes.ExclusiveGateway));
         Assert.True(BpmnFlowNodeTypes.IsGateway(BpmnFlowNodeTypes.ParallelGateway));
-        Assert.True(BpmnFlowNodeTypes.IsParallelInterrupt(BpmnFlowNodeTypes.ParallelInterruptEvent));
-        Assert.True(BpmnFlowNodeTypes.IsPassThrough(BpmnFlowNodeTypes.ParallelInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsInclusiveGateway(BpmnFlowNodeTypes.InclusiveGateway));
+        Assert.True(BpmnFlowNodeTypes.IsComplexGateway(BpmnFlowNodeTypes.ComplexGateway));
+        Assert.True(BpmnFlowNodeTypes.IsScopedInterrupt(BpmnFlowNodeTypes.ScopedInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsPassThrough(BpmnFlowNodeTypes.ScopedInterruptEvent));
         Assert.True(BpmnFlowNodeTypes.IsTerminateEnd(BpmnFlowNodeTypes.TerminateEndEvent));
         Assert.True(BpmnFlowNodeTypes.IsEnd(BpmnFlowNodeTypes.TerminateEndEvent));
         Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ParallelGateway));
-        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ParallelInterruptEvent));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.InclusiveGateway));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ComplexGateway));
+        Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.ScopedInterruptEvent));
         Assert.True(BpmnFlowNodeTypes.IsSupported(BpmnFlowNodeTypes.TerminateEndEvent));
     }
 
@@ -2072,20 +2080,23 @@ public sealed class DefinitionValidationTests
             CancellationToken.None);
 
         var savedInterrupt = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 8);
-        Assert.Equal(BpmnFlowNodeTypes.ParallelInterruptEvent, savedInterrupt.Type);
-        Assert.Equal(2, savedInterrupt.ParallelGatewayRef);
+        Assert.Equal(BpmnFlowNodeTypes.ScopedInterruptEvent, savedInterrupt.Type);
+        Assert.Equal(2, savedInterrupt.GatewayRef);
         Assert.Contains(
             repository.Added.Definition.FlowNodes,
             node => BpmnFlowNodeTypes.IsTerminateEnd(node.Type));
     }
 
     [Fact]
-    public async Task CreateAsync_AllowsInterruptToRestartReferencedFork()
+    public async Task CreateAsync_RejectsInterruptRestartThatMakesReferencedForkMixed()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 2;
 
-        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("two adjacent gateways", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -2129,7 +2140,7 @@ public sealed class DefinitionValidationTests
     [InlineData("engineOnly")]
     [InlineData("claimBypass")]
     [InlineData("completion")]
-    public async Task CreateAsync_RejectsMetadataOnParallelInterruptOutgoingFlow(string scenario)
+    public async Task CreateAsync_RejectsMetadataOnScopedInterruptOutgoingFlow(string scenario)
     {
         var model = BuildParallelControlFlowModel();
         var flow = model.SequenceFlows.Single(candidate => candidate.Id == 801);
@@ -2148,7 +2159,7 @@ public sealed class DefinitionValidationTests
         var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
-        Assert.Contains("parallel interrupt", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("scoped interrupt", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("unconditional", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -2162,8 +2173,8 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains("parallel gateway #2", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("fork", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("join", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("split", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2177,36 +2188,36 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains("parallel gateway #6", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("fork", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("join", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("split", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptWithoutForkReference()
+    public async Task CreateAsync_RejectsScopedInterruptWithoutGatewayReference()
     {
         var model = BuildParallelControlFlowModel();
-        model.FlowNodes.Single(node => node.Id == 8).ParallelGatewayRef = null;
+        model.FlowNodes.Single(node => node.Id == 8).GatewayRef = null;
 
         var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
-        Assert.Contains("parallelGatewayRef", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("gatewayRef", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptReferenceToJoin()
+    public async Task CreateAsync_RejectsScopedInterruptReferenceToMerge()
     {
         var model = BuildParallelControlFlowModel();
-        model.FlowNodes.Single(node => node.Id == 8).ParallelGatewayRef = 6;
+        model.FlowNodes.Single(node => node.Id == 8).GatewayRef = 6;
 
         var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
-        Assert.Contains("parallel fork", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("must reference a split", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptOutsideReferencedForkPath()
+    public async Task CreateAsync_RejectsScopedInterruptOutsideReferencedGatewayPath()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.Single(flow => flow.Id == 302).TargetRef = 7;
@@ -2230,7 +2241,7 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptWithSeveralIncomingFlows()
+    public async Task CreateAsync_RejectsScopedInterruptWithSeveralIncomingFlows()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.Single(flow => flow.Id == 401).TargetRef = 8;
@@ -2242,7 +2253,7 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingJoin()
+    public async Task CreateAsync_RejectsScopedInterruptDirectlyTargetingParallelMerge()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 6;
@@ -2251,11 +2262,11 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains("cannot continue directly", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("parallel join", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("parallel gateway merge", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingEntryEvent()
+    public async Task CreateAsync_RejectsScopedInterruptDirectlyTargetingEntryEvent()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 1;
@@ -2271,7 +2282,7 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingBoundaryEvent()
+    public async Task CreateAsync_RejectsScopedInterruptDirectlyTargetingBoundaryEvent()
     {
         var model = BuildParallelControlFlowModel();
         model.FlowNodes.Add(new FlowNodeModel
@@ -2297,7 +2308,7 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsParallelInterruptDirectlyTargetingItself()
+    public async Task CreateAsync_RejectsScopedInterruptDirectlyTargetingItself()
     {
         var model = BuildParallelControlFlowModel();
         model.SequenceFlows.RemoveAll(flow => flow.Id == 302);
@@ -2310,15 +2321,15 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_AllowsParallelInterruptToContinueToAnotherInterrupt()
+    public async Task CreateAsync_AllowsScopedInterruptToContinueToAnotherInterrupt()
     {
         var model = BuildParallelControlFlowModel();
         model.FlowNodes.Add(new FlowNodeModel
         {
             Id = 11,
             Name = "Second interrupt",
-            Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-            ParallelGatewayRef = 2
+            Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+            GatewayRef = 2
         });
         model.SequenceFlows.Single(flow => flow.Id == 801).TargetRef = 11;
         model.SequenceFlows.Add(new SequenceFlowModel
@@ -2355,23 +2366,278 @@ public sealed class DefinitionValidationTests
             new AssignmentModel { Variable = "ignored", Expression = "1" }
         ];
         var fork = model.FlowNodes.Single(node => node.Id == 2);
-        fork.ParallelGatewayRef = 999;
+        fork.GatewayRef = 999;
         var terminate = model.FlowNodes.Single(node => node.Id == 10);
-        terminate.ParallelGatewayRef = 999;
+        terminate.GatewayRef = 999;
         terminate.Roles = ["Manager"];
         terminate.RequiresClaim = true;
 
         WorkflowModelMigrator.Normalize(model);
 
-        Assert.Equal(2, interrupt.ParallelGatewayRef);
+        Assert.Equal(2, interrupt.GatewayRef);
         Assert.Empty(interrupt.Roles);
         Assert.False(interrupt.RequiresClaim);
         Assert.Null(interrupt.Service);
         Assert.Empty(interrupt.Assignments);
-        Assert.Null(fork.ParallelGatewayRef);
-        Assert.Null(terminate.ParallelGatewayRef);
+        Assert.Null(fork.GatewayRef);
+        Assert.Null(terminate.GatewayRef);
         Assert.Empty(terminate.Roles);
         Assert.False(terminate.RequiresClaim);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ExclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
+    [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ComplexGateway)]
+    public async Task CreateAsync_AcceptsSeparateGatewayMerges(string gatewayType)
+    {
+        var model = BuildGatewayMergeModel(gatewayType);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ExclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
+    [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ComplexGateway)]
+    public async Task CreateAsync_RejectsOneInOneOutGateway(string gatewayType)
+    {
+        var model = BuildGatewaySplitModel(gatewayType);
+        model.SequenceFlows.RemoveAll(flow => flow.Id == 202);
+        var remaining = model.SequenceFlows.Single(flow => flow.Id == 201);
+        remaining.Condition = null;
+        remaining.ConditionPriority = null;
+        remaining.IsDefault = false;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("two adjacent gateways", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsInclusiveSplitConditionsWithoutPriorities()
+    {
+        var model = BuildGatewaySplitModel(BpmnFlowNodeTypes.InclusiveGateway);
+        model.SequenceFlows.Single(flow => flow.Id == 201).Condition =
+            "FlowInfo(101, 'traversals.count') >= 0";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsInclusiveSplitWithoutDefaultOrWithPriority()
+    {
+        var missingDefault = BuildGatewaySplitModel(BpmnFlowNodeTypes.InclusiveGateway);
+        missingDefault.SequenceFlows.Single(flow => flow.Id == 202).IsDefault = false;
+        missingDefault.SequenceFlows.Single(flow => flow.Id == 202).Condition = "false";
+        var defaultError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(missingDefault, false, CancellationToken.None));
+        Assert.Contains("exactly one default", defaultError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var priority = BuildGatewaySplitModel(BpmnFlowNodeTypes.InclusiveGateway);
+        priority.SequenceFlows.Single(flow => flow.Id == 201).ConditionPriority = 1;
+        var priorityError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(priority, false, CancellationToken.None));
+        Assert.Contains("cannot define conditionPriority", priorityError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsComplexGatewayCountAndPhaseContext()
+    {
+        var model = BuildGatewaySplitModel(BpmnFlowNodeTypes.ComplexGateway);
+        var gateway = model.FlowNodes.Single(node => node.Id == 2);
+        gateway.ActivationCondition =
+            "IncomingCount(101) >= 1 and TotalIncomingCount() >= 1";
+        model.SequenceFlows.Single(flow => flow.Id == 201).Condition =
+            "[gateway.waitingForStart] and FlowInfo(101, 'traversals.count') >= 0";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("IncomingCount(flowId) >= 1", "literal")]
+    [InlineData("IncomingCount(999) >= 1", "not incoming")]
+    [InlineData("TotalIncomingCount(101) >= 1", "no arguments")]
+    [InlineData("[gateway.waitingForStart]", "outgoing-flow")]
+    [InlineData("FlowInfo(101, 'traversals.count') >= 1", "FlowInfo")]
+    public async Task CreateAsync_RejectsInvalidComplexActivationContext(
+        string activationCondition,
+        string expected)
+    {
+        var model = BuildGatewaySplitModel(BpmnFlowNodeTypes.ComplexGateway);
+        model.FlowNodes.Single(node => node.Id == 2).ActivationCondition = activationCondition;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(expected, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsComplexHelpersOutsideComplexGateway()
+    {
+        var model = BuildGatewaySplitModel(BpmnFlowNodeTypes.InclusiveGateway);
+        model.SequenceFlows.Single(flow => flow.Id == 201).Condition = "IncomingCount(101) > 0";
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("only in Complex gateway", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
+    [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ComplexGateway)]
+    public async Task CreateAsync_AllowsScopedInterruptForScopeProducingSplits(string gatewayType)
+    {
+        var model = BuildParallelControlFlowModel();
+        ConfigureSplitGateway(model, 2, gatewayType);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsScopedInterruptReferenceToExclusiveSplit()
+    {
+        var model = BuildParallelControlFlowModel();
+        ConfigureSplitGateway(model, 2, BpmnFlowNodeTypes.ExclusiveGateway);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("Parallel, Inclusive, or Complex", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ScopedInterrupt_UsesOnlyCanonicalJsonContract()
+    {
+        var node = new FlowNodeModel
+        {
+            Id = 8,
+            Name = "Interrupt",
+            Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+            GatewayRef = 2
+        };
+
+        var json = JsonSerializer.Serialize(node);
+
+        Assert.Contains("\"gatewayRef\":2", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("parallelGatewayRef", json, StringComparison.Ordinal);
+        Assert.False(BpmnFlowNodeTypes.IsSupported("parallelInterruptEvent"));
+    }
+
+    private static WorkflowModel BuildGatewaySplitModel(string gatewayType)
+    {
+        var model = new WorkflowModel
+        {
+            Id = "gateway-split-validation",
+            Name = "Gateway split validation",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Split", Type = gatewayType },
+                new FlowNodeModel { Id = 3, Name = "First end", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 4, Name = "Second end", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, Name = "First", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 202, Name = "Second", SourceRef = 2, TargetRef = 4 }
+            ]
+        };
+
+        ConfigureSplitGateway(model, 2, gatewayType);
+        return model;
+    }
+
+    private static WorkflowModel BuildGatewayMergeModel(string gatewayType)
+    {
+        var gateway = new FlowNodeModel
+        {
+            Id = 3,
+            Name = "Merge",
+            Type = gatewayType,
+            ActivationCondition = gatewayType == BpmnFlowNodeTypes.ComplexGateway
+                ? "TotalIncomingCount() >= 2"
+                : null
+        };
+        var model = new WorkflowModel
+        {
+            Id = "gateway-merge-validation",
+            Name = "Gateway merge validation",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "First start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Second start", Type = BpmnFlowNodeTypes.StartEvent },
+                gateway,
+                new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "First", SourceRef = 1, TargetRef = 3 },
+                new SequenceFlowModel { Id = 102, Name = "Second", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 201, Name = "Continue", SourceRef = 3, TargetRef = 4 }
+            ]
+        };
+        if (gatewayType == BpmnFlowNodeTypes.ComplexGateway)
+        {
+            model.SequenceFlows.Single(flow => flow.Id == 201).Condition = "true";
+        }
+        return model;
+    }
+
+    private static void ConfigureSplitGateway(
+        WorkflowModel model,
+        int gatewayId,
+        string gatewayType)
+    {
+        var gateway = model.FlowNodes.Single(node => node.Id == gatewayId);
+        gateway.Type = gatewayType;
+        gateway.ActivationCondition = null;
+        var outgoing = model.SequenceFlows
+            .Where(flow => flow.SourceRef == gatewayId)
+            .OrderBy(flow => flow.Id)
+            .ToList();
+        foreach (var flow in outgoing)
+        {
+            flow.Condition = null;
+            flow.ConditionPriority = null;
+            flow.IsDefault = false;
+        }
+
+        if (gatewayType == BpmnFlowNodeTypes.ExclusiveGateway)
+        {
+            for (var index = 0; index < outgoing.Count - 1; index++)
+            {
+                outgoing[index].Condition = "true";
+                outgoing[index].ConditionPriority = index + 1;
+            }
+            outgoing[^1].IsDefault = true;
+        }
+        else if (gatewayType == BpmnFlowNodeTypes.InclusiveGateway)
+        {
+            for (var index = 0; index < outgoing.Count - 1; index++)
+            {
+                outgoing[index].Condition = "true";
+            }
+            outgoing[^1].IsDefault = true;
+        }
+        else if (gatewayType == BpmnFlowNodeTypes.ComplexGateway)
+        {
+            gateway.ActivationCondition = "IncomingCount(101) >= 1";
+            for (var index = 0; index < outgoing.Count - 1; index++)
+            {
+                outgoing[index].Condition = "[gateway.waitingForStart]";
+            }
+            outgoing[^1].IsDefault = true;
+        }
     }
 
     private static WorkflowModel BuildParallelControlFlowModel() => new()
@@ -2392,8 +2658,8 @@ public sealed class DefinitionValidationTests
             {
                 Id = 8,
                 Name = "Manager override",
-                Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                ParallelGatewayRef = 2
+                Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                GatewayRef = 2
             },
             new FlowNodeModel { Id = 9, Name = "Emergency review", Type = BpmnFlowNodeTypes.UserTask },
             new FlowNodeModel { Id = 10, Name = "Terminate", Type = BpmnFlowNodeTypes.TerminateEndEvent }

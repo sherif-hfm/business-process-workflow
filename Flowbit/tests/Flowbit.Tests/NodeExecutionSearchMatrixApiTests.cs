@@ -59,7 +59,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             aggregate.Items.Select(item => item.Id).Order());
 
         var eitherSideOfBranch = await SearchAsync(
-            prefix + $"&parallelBranchId={seed.MatchingBranchId}&sort=id:asc");
+            prefix + $"&gatewayBranchId={seed.MatchingBranchId}&sort=id:asc");
 
         Assert.Equal(2, eitherSideOfBranch.TotalCount);
         Assert.Equal(
@@ -67,15 +67,15 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             eitherSideOfBranch.Items.Select(item => item.Id).Order());
         Assert.Contains(
             eitherSideOfBranch.Items,
-            item => item.EntryParallelBranchId == seed.MatchingBranchId
-                    && item.ExitParallelBranchId is null);
+            item => item.EntryGatewayBranchId == seed.MatchingBranchId
+                    && item.ExitGatewayBranchId is null);
         Assert.Contains(
             eitherSideOfBranch.Items,
-            item => item.EntryParallelBranchId is null
-                    && item.ExitParallelBranchId == seed.MatchingBranchId);
+            item => item.EntryGatewayBranchId is null
+                    && item.ExitGatewayBranchId == seed.MatchingBranchId);
 
         var otherBranch = await SearchAsync(
-            prefix + $"&parallelBranchId={seed.OtherBranchId}");
+            prefix + $"&gatewayBranchId={seed.OtherBranchId}");
 
         Assert.Equal(seed.OtherBranchExecutionId, Assert.Single(otherBranch.Items).Id);
     }
@@ -205,41 +205,44 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             UpdatedAt = basis.AddMinutes(22),
             CompletedAt = basis.AddMinutes(22)
         };
-        var parallelExecution = new ParallelGatewayExecutionEntity
+        var parallelExecution = new GatewayExecutionEntity
         {
             InstanceId = instance.Id,
-            ForkNodeId = 30,
-            Status = ParallelGatewayExecutionStatuses.Completed,
+            GatewayNodeId = 30,
+            GatewayType = BpmnFlowNodeTypes.ParallelGateway,
+            Direction = GatewayExecutionDirections.Split,
+            SelectedFlowIds = [300, 301],
+            Status = GatewayExecutionStatuses.Completed,
             CompletionReason = "joined",
             CreatedAt = basis.AddMinutes(25),
             UpdatedAt = basis.AddMinutes(55),
             CompletedAt = basis.AddMinutes(55)
         };
         db.MultiInstanceExecutions.Add(multiInstance);
-        db.ParallelGatewayExecutions.Add(parallelExecution);
+        db.GatewayExecutions.Add(parallelExecution);
         await db.SaveChangesAsync();
 
-        var matchingBranch = new ParallelGatewayBranchEntity
+        var matchingBranch = new GatewayBranchEntity
         {
             ExecutionId = parallelExecution.Id,
             OriginatingFlowId = 300,
             Ordinal = 0,
-            Status = ParallelGatewayBranchStatuses.Completed,
+            Status = GatewayBranchStatuses.Completed,
             CreatedAt = basis.AddMinutes(25),
             UpdatedAt = basis.AddMinutes(55),
             CompletedAt = basis.AddMinutes(55)
         };
-        var otherBranch = new ParallelGatewayBranchEntity
+        var otherBranch = new GatewayBranchEntity
         {
             ExecutionId = parallelExecution.Id,
             OriginatingFlowId = 301,
             Ordinal = 1,
-            Status = ParallelGatewayBranchStatuses.Completed,
+            Status = GatewayBranchStatuses.Completed,
             CreatedAt = basis.AddMinutes(25),
             UpdatedAt = basis.AddMinutes(55),
             CompletedAt = basis.AddMinutes(55)
         };
-        db.ParallelGatewayBranches.AddRange(matchingBranch, otherBranch);
+        db.GatewayBranches.AddRange(matchingBranch, otherBranch);
         await db.SaveChangesAsync();
 
         var firstUserTask = CompletedMultiInstanceTask(
@@ -299,7 +302,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             basis.AddMinutes(31),
             basis.AddMinutes(32),
             NodeExecutionCompletionReasons.Normal);
-        entryMatch.EntryParallelBranchId = matchingBranch.Id;
+        entryMatch.EntryGatewayBranchId = matchingBranch.Id;
 
         var exitMatch = CompletedExecution(
             instance.Id,
@@ -311,7 +314,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             basis.AddMinutes(41),
             basis.AddMinutes(42),
             NodeExecutionCompletionReasons.Normal);
-        exitMatch.ExitParallelBranchId = matchingBranch.Id;
+        exitMatch.ExitGatewayBranchId = matchingBranch.Id;
 
         var branchDecoy = CompletedExecution(
             instance.Id,
@@ -323,8 +326,8 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
             basis.AddMinutes(51),
             basis.AddMinutes(52),
             NodeExecutionCompletionReasons.Normal);
-        branchDecoy.EntryParallelBranchId = otherBranch.Id;
-        branchDecoy.ExitParallelBranchId = otherBranch.Id;
+        branchDecoy.EntryGatewayBranchId = otherBranch.Id;
+        branchDecoy.ExitGatewayBranchId = otherBranch.Id;
 
         db.NodeExecutions.AddRange(
             first,

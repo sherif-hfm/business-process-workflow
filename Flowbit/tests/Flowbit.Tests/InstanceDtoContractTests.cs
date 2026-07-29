@@ -42,7 +42,7 @@ public sealed class InstanceDtoContractTests
     }
 
     [Fact]
-    public void ParallelExecutionAndCompletionProjectionsAreExposedConsistently()
+    public void GatewayExecutionStateAndCompletionProjectionsAreExposedConsistently()
     {
         var responseTypes = new[]
         {
@@ -87,7 +87,12 @@ public sealed class InstanceDtoContractTests
             new[]
             {
                 "Id",
-                "ForkNodeId",
+                "GatewayNodeId",
+                "GatewayType",
+                "Direction",
+                "Phase",
+                "Cycle",
+                "SelectedFlowIds",
                 "ParentExecutionId",
                 "Status",
                 "CompletionReason",
@@ -103,12 +108,29 @@ public sealed class InstanceDtoContractTests
                 "UpdatedAt",
                 "CompletedAt"
             },
-            typeof(ParallelGatewayExecutionDto).GetProperties().Select(property => property.Name));
+            typeof(GatewayExecutionDto).GetProperties().Select(property => property.Name));
+        Assert.Equal(
+            new[]
+            {
+                "GatewayNodeId",
+                "Phase",
+                "Cycle",
+                "ContributingFlowIds",
+                "RemainingFlowIds",
+                "DrainingTokenIds",
+                "ActiveExecutionId",
+                "UpdatedAt"
+            },
+            typeof(ComplexGatewayStateDto).GetProperties().Select(property => property.Name));
 
         Assert.Contains(
             typeof(InstanceDetailDto).GetProperties(),
-            property => property.Name == "ParallelGatewayExecutions"
-                        && property.PropertyType == typeof(IReadOnlyList<ParallelGatewayExecutionDto>));
+            property => property.Name == "GatewayExecutions"
+                        && property.PropertyType == typeof(IReadOnlyList<GatewayExecutionDto>));
+        Assert.Contains(
+            typeof(InstanceDetailDto).GetProperties(),
+            property => property.Name == "ComplexGatewayStates"
+                        && property.PropertyType == typeof(IReadOnlyList<ComplexGatewayStateDto>));
         Assert.Contains(
             typeof(InstanceDetailDto).GetProperties(),
             property => property.Name == "MultiInstances"

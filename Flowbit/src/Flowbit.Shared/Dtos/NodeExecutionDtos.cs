@@ -22,8 +22,8 @@ public record NodeExecutionSummaryDto
     public long? UserTaskId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
     public int? ItemIndex { get; init; }
-    public long? EntryParallelBranchId { get; init; }
-    public long? ExitParallelBranchId { get; init; }
+    public long? EntryGatewayBranchId { get; init; }
+    public long? ExitGatewayBranchId { get; init; }
 
     public required string ExecutionKind { get; init; }
     public required int NodeId { get; init; }

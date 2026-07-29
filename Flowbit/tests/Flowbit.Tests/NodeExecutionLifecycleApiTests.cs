@@ -334,7 +334,7 @@ public sealed class NodeExecutionLifecycleApiTests(PostgresApiFixture fixture)
                 .ToListAsync();
             Assert.Equal(3, branchVisits.Count);
             Assert.Equal(3, branchVisits.Select(visit => visit.ExecutionTokenId).Distinct().Count());
-            Assert.Equal(3, branchVisits.Select(visit => visit.EntryParallelBranchId).Distinct().Count());
+            Assert.Equal(3, branchVisits.Select(visit => visit.EntryGatewayBranchId).Distinct().Count());
         }
 
         using var managerCompletion = await SendAsync(
@@ -355,7 +355,7 @@ public sealed class NodeExecutionLifecycleApiTests(PostgresApiFixture fixture)
             .ToListAsync();
         Assert.Equal(3, joins.Count);
         Assert.Equal(3, joins.Select(join => join.ExecutionTokenId).Distinct().Count());
-        Assert.Equal(3, joins.Select(join => join.EntryParallelBranchId).Distinct().Count());
+        Assert.Equal(3, joins.Select(join => join.EntryGatewayBranchId).Distinct().Count());
 
         var survivor = Assert.Single(joins, join => join.Status == NodeExecutionStatuses.Completed);
         Assert.Equal(NodeExecutionCompletionReasons.ParallelJoin, survivor.CompletionReason);
@@ -365,7 +365,7 @@ public sealed class NodeExecutionLifecycleApiTests(PostgresApiFixture fixture)
         Assert.Equal(2, losers.Count);
         Assert.All(losers, loser =>
         {
-            Assert.Equal(NodeExecutionCompletionReasons.ParallelJoinMerged, loser.CompletionReason);
+            Assert.Equal(NodeExecutionCompletionReasons.GatewayJoinMerged, loser.CompletionReason);
             Assert.Equal("manager", loser.CompletedBy);
             Assert.Null(loser.ExitedViaFlowId);
         });

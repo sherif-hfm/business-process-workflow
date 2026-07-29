@@ -869,7 +869,7 @@ public sealed class WorkflowEngineService(
         }
 
         var roles = NormalizeRoles(executionActor.Roles);
-        return OutgoingFlows(workflow.Definition, node.Id)
+        return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault
                         && RoleAllowed(f.Roles, roles)
                         && (!task.RequiresClaim
@@ -1468,7 +1468,7 @@ public sealed class WorkflowEngineService(
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var context = WithContext(stored, actor, instance, workflow.Definition, node);
         AddMultiInstanceExecutionContext(context, execution);
-        return OutgoingFlows(workflow.Definition, node.Id)
+        return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault
                         && f.CancelRemainingInstances
                         && RoleAllowed(f.Roles, roles)
@@ -1508,7 +1508,7 @@ public sealed class WorkflowEngineService(
         if (node.MultiInstance is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
             throw new WorkflowConflictException("The execution is not an active multi-instance user task.");
 
-        var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
+        var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this multi-instance execution.");
         if (!flow.IsSelectable || flow.IsDefault || !flow.CancelRemainingInstances)
             throw new WorkflowDomainException("Only selectable interrupting flows can be taken at the multi-instance execution level.");
@@ -1632,7 +1632,7 @@ public sealed class WorkflowEngineService(
                 throw new WorkflowConflictException(
                     "The represented actor already owns another item in this multi-instance execution.");
         }
-        var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
+        var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this user task.");
         if (!flow.IsSelectable || flow.IsDefault)
             throw new WorkflowDomainException("The requested flow is an engine-only/default route and cannot be selected by a user.");
@@ -1700,7 +1700,7 @@ public sealed class WorkflowEngineService(
                 || allItemsCompleted;
             if (evaluateCompletionConditions)
             {
-                winning = OutgoingFlows(workflow.Definition, node.Id)
+                winning = OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
                     .Where(f => !f.IsDefault && !f.CancelRemainingInstances
                                 && !string.IsNullOrWhiteSpace(f.CompletionCondition))
                     .OrderBy(f => f.CompletionPriority)
@@ -1710,7 +1710,7 @@ public sealed class WorkflowEngineService(
             if (winning is not null) reason = "condition";
             else if (allItemsCompleted)
             {
-                winning = OutgoingFlows(workflow.Definition, node.Id)
+                winning = OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
                     .Single(f => !f.CancelRemainingInstances && f.IsDefault);
                 reason = "all";
             }
@@ -1884,7 +1884,7 @@ public sealed class WorkflowEngineService(
             token.Id,
             ToSnapshot(nextNode, nextContext, lockedInstance.Id),
             targetTokenStatus,
-            token.ParallelBranchId,
+            token.GatewayBranchId,
             winning.Id,
             terminationReason,
             null,
@@ -1902,11 +1902,6 @@ public sealed class WorkflowEngineService(
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
-            if (token.ParallelBranchId is long branchId)
-            {
-                await runtime.SetParallelGatewayBranchStatusAsync(
-                    branchId, ParallelGatewayBranchRecordStatuses.Completed, cancellationToken);
-            }
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -1914,7 +1909,7 @@ public sealed class WorkflowEngineService(
                 await runtime.SetInstanceStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
-            await CloseInactiveParallelScopesAsync(instance.Id, "allEnded", cancellationToken);
+            await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
         }
         else
         {
@@ -2007,7 +2002,7 @@ public sealed class WorkflowEngineService(
 
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, task.NodeId);
-        var flow = OutgoingFlows(workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId);
+        var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId);
         if (flow is null || !BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
             logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: flow not available from current node #{NodeId} ({NodeType}).",
@@ -2162,7 +2157,7 @@ public sealed class WorkflowEngineService(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
             targetTokenStatus,
-            token.ParallelBranchId,
+            token.GatewayBranchId,
             flow.Id,
             terminationReason,
             null,
@@ -2180,11 +2175,6 @@ public sealed class WorkflowEngineService(
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
-            if (token.ParallelBranchId is long branchId)
-            {
-                await runtime.SetParallelGatewayBranchStatusAsync(
-                    branchId, ParallelGatewayBranchRecordStatuses.Completed, cancellationToken);
-            }
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -2192,7 +2182,7 @@ public sealed class WorkflowEngineService(
                 await runtime.SetInstanceStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
-            await CloseInactiveParallelScopesAsync(instance.Id, "allEnded", cancellationToken);
+            await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
         }
         else
         {
@@ -2376,7 +2366,7 @@ public sealed class WorkflowEngineService(
         // enforced exactly one for a message catch event). SingleOrDefault + a
         // domain exception keeps a malformed legacy definition from surfacing as a
         // bare 500 (matching SelectPassThroughFlow's style).
-        var outgoing = OutgoingFlows(workflow.Definition, node.Id).Take(2).ToList();
+        var outgoing = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).Take(2).ToList();
         if (outgoing.Count != 1)
         {
             throw new WorkflowDomainException(
@@ -2442,7 +2432,7 @@ public sealed class WorkflowEngineService(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
             targetTokenStatus,
-            token.ParallelBranchId,
+            token.GatewayBranchId,
             flow.Id,
             terminationReason,
             null,
@@ -2452,7 +2442,7 @@ public sealed class WorkflowEngineService(
                 NodeExecutionCompletionReasons.MessageDelivery,
                 null,
                 flow.Id,
-                token.ParallelBranchId,
+                token.GatewayBranchId,
                 ToNodeExecutionActor(actor)),
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -2466,11 +2456,6 @@ public sealed class WorkflowEngineService(
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
-            if (token.ParallelBranchId is long branchId)
-            {
-                await runtime.SetParallelGatewayBranchStatusAsync(
-                    branchId, ParallelGatewayBranchRecordStatuses.Completed, cancellationToken);
-            }
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -2478,7 +2463,7 @@ public sealed class WorkflowEngineService(
                 await runtime.SetInstanceStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
-            await CloseInactiveParallelScopesAsync(instance.Id, "allEnded", cancellationToken);
+            await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
         }
         else
         {
@@ -3415,27 +3400,25 @@ public sealed class WorkflowEngineService(
         if (instance.Status != WorkflowInstanceStatuses.Running)
             throw new WorkflowConflictException("Only a running workflow instance can be cancelled.");
 
-        var parallelExecutions = await runtime.ListParallelGatewayExecutionsAsync(id, cancellationToken);
-        foreach (var execution in parallelExecutions.Where(execution =>
-                     execution.Status == ParallelGatewayExecutionRecordStatuses.Active))
-        {
-            foreach (var branch in await runtime.ListParallelGatewayBranchesAsync(
-                         execution.Id, cancellationToken))
-            {
-                if (branch.Status == ParallelGatewayBranchRecordStatuses.Active)
-                {
-                    await runtime.SetParallelGatewayBranchStatusAsync(
-                        branch.Id, ParallelGatewayBranchRecordStatuses.Cancelled, cancellationToken);
-                }
-            }
-            await runtime.SetParallelGatewayExecutionStatusAsync(
-                execution.Id,
-                ParallelGatewayExecutionRecordStatuses.Cancelled,
-                "instanceCancel",
-                null,
-                null,
-                cancellationToken);
-        }
+        var gatewayExecutions = await runtime.ListGatewayExecutionsAsync(
+            id,
+            GatewayExecutionRecordStatuses.Active,
+            cancellationToken);
+        var gatewayBranches = await runtime.ListGatewayBranchesForInstanceAsync(
+            id,
+            true,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            gatewayBranches.Select(branch => branch.Id).ToArray(),
+            GatewayBranchRecordStatuses.Cancelled,
+            cancellationToken);
+        await runtime.SetGatewayExecutionsStatusAsync(
+            gatewayExecutions.Select(execution => execution.Id).ToArray(),
+            GatewayExecutionRecordStatuses.Cancelled,
+            "instanceCancel",
+            null,
+            null,
+            cancellationToken);
 
         var activeTokens = await runtime.ListExecutionTokensAsync(
             id, ExecutionTokenRecordStatuses.Active, cancellationToken);
@@ -3451,21 +3434,13 @@ public sealed class WorkflowEngineService(
             NodeExecutionCompletionReasons.InstanceCancelled,
             cancellationActor,
             cancellationToken);
-        foreach (var activeToken in activeTokens)
-        {
-            await runtime.SetExecutionTokenStatusAsync(
-                activeToken.Id,
-                ExecutionTokenRecordStatuses.Cancelled,
-                ExecutionTokenTerminationReasons.InstanceCancelled,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Cancelled,
-                    NodeExecutionCompletionReasons.InstanceCancelled,
-                    null,
-                    null,
-                    activeToken.ParallelBranchId,
-                    cancellationActor),
-                cancellationToken);
-        }
+        await runtime.SetExecutionTokensStatusAsync(
+            activeTokenIds,
+            ExecutionTokenRecordStatuses.Cancelled,
+            ExecutionTokenTerminationReasons.InstanceCancelled,
+            NodeExecutionCompletionReasons.InstanceCancelled,
+            cancellationActor,
+            cancellationToken);
         await runtime.SetInstanceStatusAsync(
             instance.Id, WorkflowInstanceStatuses.Cancelled, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -3498,65 +3473,68 @@ public sealed class WorkflowEngineService(
         var maxHops = definition.FlowNodes.Count + 1;
         var storedOverlay = await LoadVariablesAsync(instance.Id, cancellationToken);
 
-        while (queue.Count > 0)
+        while (true)
         {
-            if (instance.Status != WorkflowInstanceStatuses.Running)
+            while (queue.Count > 0)
             {
-                break;
-            }
+                if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+                {
+                    queue.Clear();
+                    break;
+                }
 
-            var tokenId = queue.Dequeue();
-            var token = await runtime.GetExecutionTokenAsync(tokenId, false, cancellationToken);
-            if (token is null || token.Status != ExecutionTokenRecordStatuses.Active)
-            {
-                continue;
-            }
+                var tokenId = queue.Dequeue();
+                var token = await runtime.GetExecutionTokenAsync(tokenId, false, cancellationToken);
+                if (token is null || token.Status != ExecutionTokenRecordStatuses.Active)
+                {
+                    continue;
+                }
 
-            var hop = tokenHops.GetValueOrDefault(tokenId);
-            if (hop >= maxHops)
-            {
-                logger.LogError(
-                    "Pass-through routing cycle detected on instance {InstanceId}, token {TokenId}, after {MaxHops} hops.",
-                    instance.Id, tokenId, maxHops);
-                throw new WorkflowDomainException("Pass-through routing cycle detected.");
-            }
-            tokenHops[tokenId] = hop + 1;
+                var hop = tokenHops.GetValueOrDefault(tokenId);
+                if (hop >= maxHops)
+                {
+                    logger.LogError(
+                        "Pass-through routing cycle detected on instance {InstanceId}, token {TokenId}, after {MaxHops} hops.",
+                        instance.Id, tokenId, maxHops);
+                    throw new WorkflowDomainException("Pass-through routing cycle detected.");
+                }
+                tokenHops[tokenId] = hop + 1;
 
-            var currentNode = GetFlowNode(definition, token.NodeId);
-            var tokenInstance = instance with
-            {
-                ActiveTokenId = token.Id,
-                CurrentStepId = token.NodeId,
-                CurrentNodeExecutionId = token.CurrentNodeExecutionId,
-                FaultCode = token.FaultCode,
-                FaultDescription = token.FaultDescription
-            };
-            if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
-            {
-                continue;
-            }
+                var currentNode = GetFlowNode(definition, token.NodeId);
+                var tokenInstance = instance with
+                {
+                    ActiveTokenId = token.Id,
+                    CurrentStepId = token.NodeId,
+                    CurrentNodeExecutionId = token.CurrentNodeExecutionId,
+                    FaultCode = token.FaultCode,
+                    FaultDescription = token.FaultDescription
+                };
+                if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
+                {
+                    continue;
+                }
 
-            var variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
-            TaskExecutionOutcome? outcome = null;
-            if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
-            {
-                outcome = await ExecuteServiceTaskAsync(
-                    tokenInstance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
-                variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
-            }
-            else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
-            {
-                outcome = await ExecuteScriptTaskAsync(
-                    tokenInstance,
-                    currentNode,
-                    definition,
-                    actor,
-                    variables,
-                    storedOverlay,
-                    flowInfo,
-                    cancellationToken);
-                variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
-            }
+                var variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
+                TaskExecutionOutcome? outcome = null;
+                if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
+                {
+                    outcome = await ExecuteServiceTaskAsync(
+                        tokenInstance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
+                    variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
+                }
+                else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
+                {
+                    outcome = await ExecuteScriptTaskAsync(
+                        tokenInstance,
+                        currentNode,
+                        definition,
+                        actor,
+                        variables,
+                        storedOverlay,
+                        flowInfo,
+                        cancellationToken);
+                    variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
+                }
 
             if (outcome is { Success: false })
             {
@@ -3598,7 +3576,7 @@ public sealed class WorkflowEngineService(
                     token.Id,
                     ToSnapshot(boundary),
                     ExecutionTokenRecordStatuses.Active,
-                    token.ParallelBranchId,
+                    token.GatewayBranchId,
                     null,
                     null,
                     null,
@@ -3608,7 +3586,7 @@ public sealed class WorkflowEngineService(
                         NodeExecutionCompletionReasons.BoundaryCaught,
                         null,
                         null,
-                        token.ParallelBranchId,
+                        token.GatewayBranchId,
                         ToNodeExecutionActor(actor),
                         null,
                         outcome.Reason),
@@ -3617,18 +3595,50 @@ public sealed class WorkflowEngineService(
                 continue;
             }
 
-            if (BpmnFlowNodeTypes.IsParallelGateway(currentNode.Type))
+            if (BpmnFlowNodeTypes.IsParallelGateway(currentNode.Type)
+                || BpmnFlowNodeTypes.IsInclusiveGateway(currentNode.Type)
+                || BpmnFlowNodeTypes.IsComplexGateway(currentNode.Type))
             {
-                var outgoing = OutgoingFlows(definition, currentNode.Id).OrderBy(flow => flow.Id).ToList();
-                if (outgoing.Count >= 2)
+                var outgoing = OutgoingFlows(
+                    instance.WorkflowDefinitionId,
+                    definition,
+                    currentNode.Id);
+                if (BpmnFlowNodeTypes.IsParallelGateway(currentNode.Type))
                 {
-                    await ForkParallelTokenAsync(
-                        instance, token, currentNode, outgoing, definition, actor, storedOverlay, flowInfo, queue,
-                        cancellationToken);
+                    if (outgoing.Count >= 2)
+                    {
+                        await ForkGatewayTokenAsync(
+                            instance, token, token.GatewayBranchId, currentNode, outgoing,
+                            "parallelFork", null, null,
+                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken);
+                    }
+                    else
+                    {
+                        await TryReleaseParallelJoinAsync(
+                            instance, token, currentNode, definition, actor, storedOverlay, flowInfo, queue,
+                            cancellationToken);
+                    }
+                }
+                else if (BpmnFlowNodeTypes.IsInclusiveGateway(currentNode.Type))
+                {
+                    if (outgoing.Count >= 2)
+                    {
+                        var selected = SelectInclusiveOutgoingFlows(outgoing, variables, flowInfo, currentNode.Id);
+                        await ForkGatewayTokenAsync(
+                            instance, token, token.GatewayBranchId, currentNode, selected,
+                            "inclusiveSplit", null, null,
+                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken);
+                    }
+                    else
+                    {
+                        await TryReleaseInclusiveJoinAsync(
+                            instance, currentNode, definition, actor, storedOverlay, flowInfo, queue,
+                            cancellationToken);
+                    }
                 }
                 else
                 {
-                    await TryReleaseParallelJoinAsync(
+                    await TryProcessComplexGatewayAsync(
                         instance, token, currentNode, definition, actor, storedOverlay, flowInfo, queue,
                         cancellationToken);
                 }
@@ -3640,23 +3650,28 @@ public sealed class WorkflowEngineService(
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
                 var t when BpmnFlowNodeTypes.IsMessageStart(t) => "messageStart",
                 var t when BpmnFlowNodeTypes.IsExclusiveGateway(t) => "gateway",
-                var t when BpmnFlowNodeTypes.IsParallelInterrupt(t) => "parallelInterruptSkipped",
+                var t when BpmnFlowNodeTypes.IsScopedInterrupt(t) => "scopedInterruptSkipped",
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
                 var t when BpmnFlowNodeTypes.IsErrorBoundary(t) => "boundary",
                 _ => "automatic"
             };
 
-            long? continuationBranchId = token.ParallelBranchId;
-            if (BpmnFlowNodeTypes.IsParallelInterrupt(currentNode.Type))
+            long? continuationBranchId = token.GatewayBranchId;
+            if (BpmnFlowNodeTypes.IsScopedInterrupt(currentNode.Type))
             {
-                var interrupted = await InterruptParallelScopeAsync(
-                    instance, token, currentNode, actor, cancellationToken);
+                var interrupted = await InterruptGatewayScopeAsync(
+                    instance, token, currentNode, definition, actor, cancellationToken);
                 continuationBranchId = interrupted.ParentBranchId;
-                note = interrupted.Interrupted ? "parallelInterrupt" : "parallelInterruptSkipped";
+                note = interrupted.Interrupted ? "scopedInterrupt" : "scopedInterruptSkipped";
             }
 
-            var flow = SelectPassThroughFlow(definition, currentNode, variables, flowInfo);
+            var flow = SelectPassThroughFlow(
+                instance.WorkflowDefinitionId,
+                definition,
+                currentNode,
+                variables,
+                flowInfo);
             await AdvanceAutomaticTokenAsync(
                 instance,
                 token,
@@ -3670,6 +3685,45 @@ public sealed class WorkflowEngineService(
                 flowInfo,
                 queue,
                 cancellationToken);
+            }
+
+            if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+            {
+                break;
+            }
+
+            var releasedInclusiveJoin = await TryReleaseEnabledInclusiveJoinsAsync(
+                instance,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+            if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+            {
+                break;
+            }
+            var completedComplexReset = await TryCompleteEnabledComplexResetsAsync(
+                instance,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+            if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+            {
+                break;
+            }
+            await TryFinishInterruptedComplexDrainsAsync(
+                instance,
+                definition,
+                cancellationToken);
+            if (!releasedInclusiveJoin && !completedComplexReset && queue.Count == 0)
+            {
+                break;
+            }
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -3677,11 +3731,21 @@ public sealed class WorkflowEngineService(
             ?? throw new WorkflowConflictException("The workflow instance disappeared during routing.");
     }
 
-    private async Task ForkParallelTokenAsync(
+    private async Task<bool> IsInstanceRunningAsync(
+        long instanceId,
+        CancellationToken cancellationToken) =>
+        await runtime.GetInstanceStatusAsync(instanceId, cancellationToken)
+        == WorkflowInstanceStatuses.Running;
+
+    private async Task<GatewayExecutionRecord> ForkGatewayTokenAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
-        FlowNodeModel fork,
+        long? parentBranchId,
+        FlowNodeModel gateway,
         IReadOnlyList<SequenceFlowModel> outgoing,
+        string note,
+        string? phase,
+        int? cycle,
         WorkflowModel definition,
         ActorContext actor,
         Dictionary<string, JsonElement> storedOverlay,
@@ -3689,8 +3753,9 @@ public sealed class WorkflowEngineService(
         Queue<long> queue,
         CancellationToken cancellationToken)
     {
+        var selectedOutgoing = outgoing.OrderBy(flow => flow.Id).ToList();
         var configured = await engineSettings.GetByKeyAsync(
-            "Workflow.ParallelGateway.MaxActiveTokens", cancellationToken);
+            "Workflow.Gateway.MaxActiveTokens", cancellationToken);
         var maxActiveTokens = configured is not null
                               && int.TryParse(configured.Value, out var parsed)
                               && parsed > 0
@@ -3698,33 +3763,39 @@ public sealed class WorkflowEngineService(
             : 1000;
         var activeCount = (await runtime.ListExecutionTokensAsync(
             instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken)).Count;
-        if (activeCount + outgoing.Count - 1 > maxActiveTokens)
+        if (activeCount + selectedOutgoing.Count - 1 > maxActiveTokens)
         {
             throw new WorkflowDomainException(
-                $"Parallel gateway #{fork.Id} would exceed the active token limit ({maxActiveTokens}).");
+                $"Gateway #{gateway.Id} would exceed the active token limit ({maxActiveTokens}).");
         }
 
-        var execution = await runtime.AddParallelGatewayExecutionAsync(
+        var execution = await runtime.AddGatewayExecutionAsync(
             instance.Id,
-            fork.Id,
-            token.ParallelBranchId,
-            outgoing.Select(flow => flow.Id).ToList(),
+            gateway.Id,
+            gateway.Type,
+            GatewayExecutionRecordDirections.Split,
+            phase,
+            cycle,
+            parentBranchId,
+            selectedOutgoing.Select(flow => flow.Id).ToList(),
             cancellationToken);
-        var branches = await runtime.ListParallelGatewayBranchesAsync(execution.Id, cancellationToken);
-        var work = new List<(ExecutionTokenRecord Token, ParallelGatewayBranchRecord Branch, SequenceFlowModel Flow)>();
-        for (var index = 0; index < outgoing.Count; index++)
+        var branches = await runtime.ListGatewayBranchesAsync(execution.Id, cancellationToken);
+        var spawnedTokens = await runtime.AddGatewayBranchTokensAsync(
+            instance.Id,
+            ToSnapshot(gateway),
+            parentBranchId,
+            branches.Skip(1).Select(branch => branch.Id).ToList(),
+            token.ComplexDrainStateIds,
+            ToNodeExecutionActor(actor),
+            cancellationToken);
+        var work = new List<(ExecutionTokenRecord Token, GatewayBranchRecord Branch, SequenceFlowModel Flow)>();
+        for (var index = 0; index < selectedOutgoing.Count; index++)
         {
             var branch = branches.Single(item => item.Ordinal == index);
             var branchToken = index == 0
                 ? token
-                : await runtime.AddExecutionTokenAsync(
-                    instance.Id,
-                    ToSnapshot(fork),
-                    branch.Id,
-                    null,
-                    ToNodeExecutionActor(actor),
-                    cancellationToken);
-            work.Add((branchToken, branch, outgoing[index]));
+                : spawnedTokens[index - 1];
+            work.Add((branchToken, branch, selectedOutgoing[index]));
         }
 
         foreach (var item in work)
@@ -3738,16 +3809,19 @@ public sealed class WorkflowEngineService(
                 instance,
                 current,
                 item.Branch.Id,
-                fork,
+                gateway,
                 item.Flow,
-                "parallelFork",
+                note,
                 definition,
                 actor,
                 storedOverlay,
                 flowInfo,
                 queue,
-                cancellationToken);
+                cancellationToken,
+                deferSave: true);
         }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return execution;
     }
 
     private async Task TryReleaseParallelJoinAsync(
@@ -3761,75 +3835,911 @@ public sealed class WorkflowEngineService(
         Queue<long> queue,
         CancellationToken cancellationToken)
     {
-        var incoming = IncomingFlows(definition, join.Id).OrderBy(flow => flow.Id).ToList();
+        var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, join.Id);
+        var outgoing = OutgoingFlows(instance.WorkflowDefinitionId, definition, join.Id).Single();
         var activeAtJoin = (await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken))
             .Where(token => token.NodeId == join.Id && token.ArrivedViaFlowId is not null)
             .OrderBy(token => token.Id)
             .ToList();
-        var selected = new List<ExecutionTokenRecord>();
-        foreach (var flow in incoming)
+        var scopeSnapshot = await LoadActiveGatewayScopeSnapshotAsync(
+            instance.Id,
+            cancellationToken);
+        var released = false;
+        while (true)
         {
-            var candidate = activeAtJoin.FirstOrDefault(token => token.ArrivedViaFlowId == flow.Id);
-            if (candidate is null)
+            await RefreshActiveTokenSnapshotAsync(activeAtJoin, cancellationToken);
+            activeAtJoin.RemoveAll(token =>
+                token.NodeId != join.Id || token.ArrivedViaFlowId is null);
+            var selected = new List<ExecutionTokenRecord>();
+            foreach (var flow in incoming)
             {
-                return;
+                var candidate = activeAtJoin.FirstOrDefault(token => token.ArrivedViaFlowId == flow.Id);
+                if (candidate is null)
+                {
+                    if (released)
+                    {
+                        await CloseInactiveGatewayScopesAsync(
+                            instance.Id,
+                            "join",
+                            cancellationToken);
+                    }
+                    return;
+                }
+                selected.Add(candidate);
             }
-            selected.Add(candidate);
+
+            var (survivor, commonBranchId) = await ConsumeGatewayArrivalBatchAsync(
+                instance.Id,
+                selected,
+                actor,
+                cancellationToken,
+                scopeSnapshot);
+            activeAtJoin.RemoveAll(token => selected.Any(item => item.Id == token.Id));
+
+            var joinExecution = await runtime.AddGatewayExecutionAsync(
+                instance.Id,
+                join.Id,
+                join.Type,
+                GatewayExecutionRecordDirections.Merge,
+                null,
+                null,
+                commonBranchId,
+                [outgoing.Id],
+                cancellationToken);
+            await AdvanceAutomaticTokenAsync(
+                instance,
+                survivor,
+                commonBranchId,
+                join,
+                outgoing,
+                "parallelJoin",
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+            await runtime.SetGatewayExecutionStatusAsync(
+                joinExecution.Id,
+                GatewayExecutionRecordStatuses.Joined,
+                "join",
+                null,
+                null,
+                cancellationToken);
+            released = true;
+        }
+    }
+
+    private async Task<bool> TryReleaseInclusiveJoinAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel join,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, join.Id);
+        var incomingIds = incoming.Select(flow => flow.Id).ToHashSet();
+        var topology = GatewayTopologyCache.Get(instance.WorkflowDefinitionId, definition);
+        var released = false;
+        var activeTokens = (await runtime.ListExecutionTokensAsync(
+                instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken))
+            .ToList();
+        var scopeSnapshot = await LoadActiveGatewayScopeSnapshotAsync(
+            instance.Id,
+            cancellationToken);
+
+        while (true)
+        {
+            await RefreshActiveTokenSnapshotAsync(activeTokens, cancellationToken);
+            var activeAtJoin = activeTokens
+                .Where(token => token.NodeId == join.Id
+                                && token.ArrivedViaFlowId is not null
+                                && incomingIds.Contains(token.ArrivedViaFlowId.Value))
+                .OrderBy(token => token.Id)
+                .ToList();
+            if (activeAtJoin.Count == 0)
+            {
+                break;
+            }
+
+            var populated = activeAtJoin
+                .Select(token => token.ArrivedViaFlowId!.Value)
+                .ToHashSet();
+            var missing = incomingIds.Where(id => !populated.Contains(id)).ToArray();
+            if (activeTokens.Any(token =>
+                    token.NodeId != join.Id
+                    && topology.CanReachAnyInput(join.Id, token.NodeId, missing)))
+            {
+                break;
+            }
+
+            var selected = populated
+                .OrderBy(id => id)
+                .Select(flowId => activeAtJoin.First(token => token.ArrivedViaFlowId == flowId))
+                .ToList();
+            var (survivor, commonBranchId) = await ConsumeGatewayArrivalBatchAsync(
+                instance.Id,
+                selected,
+                actor,
+                cancellationToken,
+                scopeSnapshot);
+            activeTokens.RemoveAll(token => selected.Any(item => item.Id == token.Id));
+
+            var outgoing = OutgoingFlows(instance.WorkflowDefinitionId, definition, join.Id).Single();
+            var joinExecution = await runtime.AddGatewayExecutionAsync(
+                instance.Id,
+                join.Id,
+                join.Type,
+                GatewayExecutionRecordDirections.Merge,
+                null,
+                null,
+                commonBranchId,
+                [outgoing.Id],
+                cancellationToken);
+            await AdvanceAutomaticTokenAsync(
+                instance,
+                survivor,
+                commonBranchId,
+                join,
+                outgoing,
+                "inclusiveMerge",
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+            await runtime.SetGatewayExecutionStatusAsync(
+                joinExecution.Id,
+                GatewayExecutionRecordStatuses.Joined,
+                "join",
+                null,
+                null,
+                cancellationToken);
+            var advancedSurvivor = await runtime.GetExecutionTokenAsync(
+                survivor.Id,
+                false,
+                cancellationToken);
+            if (advancedSurvivor?.Status == ExecutionTokenRecordStatuses.Active)
+            {
+                activeTokens.Add(advancedSurvivor);
+            }
+            released = true;
         }
 
-        var survivor = selected.OrderBy(token => token.Id).First();
-        var commonBranchId = await FindDeepestCommonParallelBranchAsync(
-            selected.Select(token => token.ParallelBranchId).ToList(), cancellationToken);
-        foreach (var merged in selected.Where(token => token.Id != survivor.Id))
+        if (released)
         {
-            await runtime.SetExecutionTokenStatusAsync(
-                merged.Id,
-                ExecutionTokenRecordStatuses.Merged,
-                ExecutionTokenTerminationReasons.ParallelJoinMerged,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Merged,
-                    NodeExecutionCompletionReasons.ParallelJoinMerged,
-                    null,
-                    null,
-                    commonBranchId,
-                    ToNodeExecutionActor(actor)),
+            await CloseInactiveGatewayScopesAsync(
+                instance.Id,
+                "join",
                 cancellationToken);
         }
-        foreach (var joined in selected)
+        return released;
+    }
+
+    private async Task RefreshActiveTokenSnapshotAsync(
+        List<ExecutionTokenRecord> tokens,
+        CancellationToken cancellationToken)
+    {
+        var currentById = (await runtime.GetExecutionTokensAsync(
+                tokens.Select(token => token.Id).ToArray(),
+                cancellationToken))
+            .ToDictionary(token => token.Id);
+        for (var index = tokens.Count - 1; index >= 0; index--)
         {
-            if (joined.ParallelBranchId is long branchId && branchId != commonBranchId)
+            if (!currentById.TryGetValue(tokens[index].Id, out var current)
+                || current.Status != ExecutionTokenRecordStatuses.Active)
             {
-                await runtime.SetParallelGatewayBranchStatusAsync(
-                    branchId, ParallelGatewayBranchRecordStatuses.Merged, cancellationToken);
+                tokens.RemoveAt(index);
+                continue;
+            }
+            tokens[index] = current;
+        }
+    }
+
+    private async Task<bool> TryReleaseEnabledInclusiveJoinsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var nodeById = definition.FlowNodes.ToDictionary(node => node.Id);
+        var activeTokens = await runtime.ListExecutionTokensAsync(
+            instance.Id,
+            ExecutionTokenRecordStatuses.Active,
+            cancellationToken);
+        var waitingJoinIds = activeTokens
+            .Select(token => token.NodeId)
+            .Distinct()
+            .Where(nodeId => nodeById.TryGetValue(nodeId, out var node)
+                             && BpmnFlowNodeTypes.IsInclusiveGateway(node.Type)
+                             && OutgoingFlows(
+                                 instance.WorkflowDefinitionId,
+                                 definition,
+                                 nodeId).Count == 1)
+            .OrderBy(nodeId => nodeId)
+            .ToList();
+
+        var released = false;
+        foreach (var joinId in waitingJoinIds)
+        {
+            released |= await TryReleaseInclusiveJoinAsync(
+                instance,
+                nodeById[joinId],
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+        }
+        return released;
+    }
+
+    private async Task TryProcessComplexGatewayAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord arrivingToken,
+        FlowNodeModel gateway,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, gateway.Id);
+        var state = await runtime.GetComplexGatewayStateAsync(
+            instance.Id, gateway.Id, true, cancellationToken)
+            ?? await runtime.SaveComplexGatewayStateAsync(
+                instance.Id,
+                gateway.Id,
+                ComplexGatewayStateRecordPhases.WaitingForStart,
+                0,
+                [],
+                incoming.Select(flow => flow.Id).ToArray(),
+                [],
+                [],
+                null,
+                cancellationToken);
+        await runtime.RegisterTokenAtComplexGatewayAsync(
+            arrivingToken.Id, state.Id, state.Cycle, cancellationToken);
+
+        if (state.Phase == ComplexGatewayStateRecordPhases.InterruptedDraining)
+        {
+            var belongsToInterruptedFrontier =
+                arrivingToken.ComplexDrainStateIds.Contains(state.Id);
+            if (!belongsToInterruptedFrontier
+                && await TryFinishInterruptedComplexDrainAsync(
+                    instance, gateway, definition, state, cancellationToken))
+            {
+                state = await runtime.GetComplexGatewayStateAsync(
+                        instance.Id, gateway.Id, true, cancellationToken)
+                    ?? throw new WorkflowConflictException(
+                        $"Complex gateway state for node #{gateway.Id} disappeared.");
+                await runtime.RegisterTokenAtComplexGatewayAsync(
+                    arrivingToken.Id, state.Id, state.Cycle, cancellationToken);
+            }
+            else
+            {
+                await runtime.SetExecutionTokenStatusAsync(
+                    arrivingToken.Id,
+                    ExecutionTokenRecordStatuses.Cancelled,
+                    ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+                    new NodeExecutionCompletionRecord(
+                        NodeExecutionRecordStatuses.Cancelled,
+                        NodeExecutionCompletionReasons.GatewayScopeCancelled,
+                        null,
+                        null,
+                        arrivingToken.GatewayBranchId,
+                        ToNodeExecutionActor(actor)),
+                    cancellationToken);
+                await TryFinishInterruptedComplexDrainAsync(
+                    instance, gateway, definition, state, cancellationToken);
+                await CloseInactiveGatewayScopesAsync(
+                    instance.Id,
+                    ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+                    cancellationToken);
+                var remainingActive = await runtime.ListExecutionTokensAsync(
+                    instance.Id,
+                    ExecutionTokenRecordStatuses.Active,
+                    cancellationToken);
+                if (remainingActive.Count == 0)
+                {
+                    await runtime.SetInstanceStatusAsync(
+                        instance.Id,
+                        WorkflowInstanceStatuses.Completed,
+                        cancellationToken);
+                }
+                return;
             }
         }
 
-        var outgoing = OutgoingFlows(definition, join.Id);
-        await AdvanceAutomaticTokenAsync(
+        if (state.Phase == ComplexGatewayStateRecordPhases.WaitingForReset)
+        {
+            await TryCompleteComplexResetAsync(
+                instance,
+                gateway,
+                definition,
+                state,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+            return;
+        }
+
+        var active = await runtime.ListExecutionTokensAsync(
+            instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+        var waiting = active
+            .Where(token => token.NodeId == gateway.Id
+                            && token.ComplexGatewayStateId == state.Id
+                            && token.ComplexGatewayCycle == state.Cycle
+                            && token.ArrivedViaFlowId is not null)
+            .OrderBy(token => token.Id)
+            .ToList();
+        var counts = incoming.ToDictionary(
+            flow => flow.Id,
+            flow => waiting.Count(token => token.ArrivedViaFlowId == flow.Id));
+        var conditionContext = new GatewayConditionContext(counts, WaitingForStart: true);
+        var variables = WithContext(
+            storedOverlay,
+            actor,
+            instance with
+            {
+                ActiveTokenId = arrivingToken.Id,
+                CurrentStepId = gateway.Id,
+                CurrentNodeExecutionId = arrivingToken.CurrentNodeExecutionId
+            },
+            definition,
+            gateway);
+        if (!SequenceFlowConditionEvaluator.EvaluateGateway(
+                gateway.ActivationCondition,
+                variables,
+                conditionContext))
+        {
+            return;
+        }
+
+        var selectedTokens = waiting
+            .Where(token => token.ArrivedViaFlowId is not null)
+            .GroupBy(token => token.ArrivedViaFlowId!.Value)
+            .OrderBy(group => group.Key)
+            .Select(group => group.OrderBy(token => token.Id).First())
+            .ToList();
+        if (selectedTokens.Count == 0)
+        {
+            return;
+        }
+        var activationDrainStateIds = selectedTokens
+            .SelectMany(token => token.ComplexDrainStateIds)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        var scopeSnapshot = await LoadActiveGatewayScopeSnapshotAsync(
+            instance.Id,
+            cancellationToken);
+        var priorCycleParents = FindPriorComplexCycleParents(
+            selectedTokens,
+            gateway.Id,
+            state.Cycle,
+            scopeSnapshot);
+        var (survivor, commonBranchId) = await ConsumeGatewayArrivalBatchAsync(
+            instance.Id,
+            selectedTokens,
+            actor,
+            cancellationToken,
+            scopeSnapshot,
+            priorCycleParents);
+        var contributing = selectedTokens
+            .Select(token => token.ArrivedViaFlowId!.Value)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        // Reset relevance is topology-driven, so every authored incoming flow
+        // remains eligible for a late/reset arrival, including an input that
+        // contributed to the start firing and can be reached again through a
+        // loop. Acyclic inputs are eliminated immediately by reachability.
+        var remaining = incoming
+            .Select(flow => flow.Id)
+            .ToArray();
+        state = await runtime.SaveComplexGatewayStateAsync(
+            instance.Id,
+            gateway.Id,
+            ComplexGatewayStateRecordPhases.WaitingForReset,
+            state.Cycle,
+            contributing,
+            remaining,
+            activationDrainStateIds,
+            [],
+            null,
+            cancellationToken);
+
+        var selectedFlows = SelectComplexOutgoingFlows(
+            OutgoingFlows(instance.WorkflowDefinitionId, definition, gateway.Id),
+            variables,
+            conditionContext,
+            flowInfo,
+            failWhenEmpty: true,
+            gateway.Id);
+        var execution = await EmitComplexGatewayFlowsAsync(
             instance,
             survivor,
             commonBranchId,
-            join,
-            outgoing.Single(),
-            "parallelJoin",
+            gateway,
+            selectedFlows,
+            "complexActivation",
+            "start",
+            state.Cycle,
             definition,
             actor,
             storedOverlay,
             flowInfo,
             queue,
             cancellationToken);
-        await CloseInactiveParallelScopesAsync(instance.Id, "join", cancellationToken);
+
+        if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+        {
+            return;
+        }
+
+        var latest = await runtime.GetComplexGatewayStateAsync(
+            instance.Id, gateway.Id, true, cancellationToken)
+            ?? throw new WorkflowConflictException(
+                $"Complex gateway #{gateway.Id} state disappeared during activation.");
+        if (latest.Phase == ComplexGatewayStateRecordPhases.WaitingForReset
+            && latest.Cycle == state.Cycle)
+        {
+            latest = await runtime.SaveComplexGatewayStateAsync(
+                instance.Id,
+                gateway.Id,
+                latest.Phase,
+                latest.Cycle,
+                latest.ContributingFlowIds,
+                latest.RemainingFlowIds,
+                latest.ActivationDrainStateIds,
+                latest.DrainingTokenIds,
+                execution.Id,
+                cancellationToken);
+            await TryCompleteComplexResetAsync(
+                instance,
+                gateway,
+                definition,
+                latest,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+        }
+        await CloseInactiveGatewayScopesAsync(
+            instance.Id,
+            "complex",
+            cancellationToken);
     }
 
-    private async Task<long?> FindDeepestCommonParallelBranchAsync(
+    private async Task<bool> TryCompleteComplexResetAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel gateway,
+        WorkflowModel definition,
+        ComplexGatewayStateRecord state,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        if (state.Phase != ComplexGatewayStateRecordPhases.WaitingForReset)
+        {
+            return false;
+        }
+        if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+        {
+            return false;
+        }
+        var remaining = state.RemainingFlowIds.ToHashSet();
+        var active = await runtime.ListExecutionTokensAsync(
+            instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+        var waiting = active
+            .Where(token => token.NodeId == gateway.Id
+                            && token.ComplexGatewayStateId == state.Id
+                            && token.ComplexGatewayCycle == state.Cycle
+                            && token.ArrivedViaFlowId is not null
+                            && remaining.Contains(token.ArrivedViaFlowId.Value))
+            .OrderBy(token => token.Id)
+            .ToList();
+        var populated = waiting
+            .Select(token => token.ArrivedViaFlowId!.Value)
+            .ToHashSet();
+        var missing = remaining.Where(id => !populated.Contains(id)).ToArray();
+        var topology = GatewayTopologyCache.Get(instance.WorkflowDefinitionId, definition);
+        if (active.Any(token =>
+                token.NodeId != gateway.Id
+                && topology.CanReachAnyInput(gateway.Id, token.NodeId, missing)))
+        {
+            return false;
+        }
+
+        var selectedTokens = populated
+            .OrderBy(id => id)
+            .Select(flowId => waiting.First(token => token.ArrivedViaFlowId == flowId))
+            .ToList();
+        if (state.ActiveExecutionId is not long executionId)
+        {
+            throw new WorkflowConflictException(
+                $"Complex gateway #{gateway.Id} cycle {state.Cycle} has no activation execution.");
+        }
+        var activationExecution = await runtime.GetGatewayExecutionAsync(
+            executionId,
+            cancellationToken);
+        if (activationExecution is null
+            || activationExecution.InstanceId != instance.Id
+            || activationExecution.GatewayNodeId != gateway.Id
+            || activationExecution.Phase != "start"
+            || activationExecution.Cycle != state.Cycle)
+        {
+            throw new WorkflowConflictException(
+                $"Complex gateway #{gateway.Id} cycle {state.Cycle} has an invalid activation execution.");
+        }
+        ExecutionTokenRecord? survivor = null;
+        long? resetParentBranchId;
+        if (selectedTokens.Count > 0)
+        {
+            (survivor, resetParentBranchId) = await ConsumeGatewayArrivalBatchAsync(
+                instance.Id,
+                selectedTokens,
+                actor,
+                cancellationToken,
+                reconcileWithBranchIds: [activationExecution.ParentBranchId]);
+        }
+        else
+        {
+            resetParentBranchId = activationExecution.ParentBranchId;
+        }
+        // Reset output starts the next Complex cycle outside the completed
+        // activation scope. Reconciliation also preserves any outer scope
+        // shared with a late arrival from a sibling branch.
+
+        var resetCounts = state.RemainingFlowIds.ToDictionary(
+            id => id,
+            id => waiting.Count(token => token.ArrivedViaFlowId == id));
+        var conditionContext = new GatewayConditionContext(resetCounts, WaitingForStart: false);
+        var variables = WithContext(
+            storedOverlay,
+            actor,
+            instance with
+            {
+                ActiveTokenId = survivor?.Id ?? instance.ActiveTokenId,
+                CurrentStepId = gateway.Id,
+                CurrentNodeExecutionId = survivor?.CurrentNodeExecutionId
+            },
+            definition,
+            gateway);
+        var selectedFlows = SelectComplexOutgoingFlows(
+            OutgoingFlows(instance.WorkflowDefinitionId, definition, gateway.Id),
+            variables,
+            conditionContext,
+            flowInfo,
+            failWhenEmpty: false,
+            gateway.Id);
+        var resetDrainStateIds = state.ActivationDrainStateIds
+            .Concat(selectedTokens.SelectMany(token => token.ComplexDrainStateIds))
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+
+        var nextState = await runtime.SaveComplexGatewayStateAsync(
+            instance.Id,
+            gateway.Id,
+            ComplexGatewayStateRecordPhases.WaitingForStart,
+            state.Cycle + 1,
+            [],
+            IncomingFlows(instance.WorkflowDefinitionId, definition, gateway.Id)
+                .Select(flow => flow.Id)
+                .ToArray(),
+            [],
+            [],
+            null,
+            cancellationToken);
+
+        if (selectedFlows.Count > 0)
+        {
+            survivor ??= await runtime.AddExecutionTokenAsync(
+                instance.Id,
+                ToSnapshot(gateway, variables, instance.Id),
+                resetParentBranchId,
+                null,
+                ToNodeExecutionActor(actor),
+                cancellationToken);
+            await runtime.SetComplexDrainMarkersAsync(
+                survivor.Id,
+                resetDrainStateIds,
+                cancellationToken);
+            survivor = await runtime.GetExecutionTokenAsync(
+                           survivor.Id,
+                           false,
+                           cancellationToken)
+                       ?? throw new WorkflowConflictException(
+                           "The Complex reset token disappeared while restoring drain provenance.");
+            await EmitComplexGatewayFlowsAsync(
+                instance,
+                survivor,
+                resetParentBranchId,
+                gateway,
+                selectedFlows,
+                "complexReset",
+                "reset",
+                state.Cycle,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+        }
+        else
+        {
+            var resetExecution = await runtime.AddGatewayExecutionAsync(
+                instance.Id,
+                gateway.Id,
+                gateway.Type,
+                OutgoingFlows(instance.WorkflowDefinitionId, definition, gateway.Id).Count >= 2
+                    ? GatewayExecutionRecordDirections.Split
+                    : GatewayExecutionRecordDirections.Merge,
+                "reset",
+                state.Cycle,
+                resetParentBranchId,
+                [],
+                cancellationToken);
+            await runtime.MergeExecutionTokensAsync(
+                selectedTokens.Select(token => token.Id).ToArray(),
+                resetParentBranchId,
+                NodeExecutionCompletionReasons.ComplexReset,
+                ToNodeExecutionActor(actor),
+                cancellationToken);
+            await runtime.SetGatewayExecutionStatusAsync(
+                resetExecution.Id,
+                GatewayExecutionRecordStatuses.Completed,
+                "resetNoOutput",
+                null,
+                null,
+                cancellationToken);
+        }
+
+        var surplus = (await runtime.ListExecutionTokensAsync(
+                instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken))
+            .Where(token => token.NodeId == gateway.Id
+                            && token.Id != survivor?.Id
+                            && token.ArrivedViaFlowId is not null)
+            .OrderBy(token => token.Id)
+            .ToList();
+        foreach (var token in surplus)
+        {
+            await runtime.RegisterTokenAtComplexGatewayAsync(
+                token.Id, nextState.Id, nextState.Cycle, cancellationToken);
+            queue.Enqueue(token.Id);
+        }
+
+        await CloseInactiveGatewayScopesAsync(
+            instance.Id,
+            "complex",
+            cancellationToken);
+
+        if (selectedFlows.Count == 0 && surplus.Count == 0)
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            var remainingActive = await runtime.ListExecutionTokensAsync(
+                instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+            if (remainingActive.Count == 0)
+            {
+                await runtime.SetInstanceStatusAsync(
+                    instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
+            }
+        }
+        return true;
+    }
+
+    private async Task<bool> TryCompleteEnabledComplexResetsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var states = await runtime.ListComplexGatewayStatesAsync(
+            instance.Id,
+            cancellationToken);
+        var completed = false;
+        foreach (var state in states
+                     .Where(state =>
+                         state.Phase == ComplexGatewayStateRecordPhases.WaitingForReset)
+                     .OrderBy(state => state.GatewayNodeId))
+        {
+            completed |= await TryCompleteComplexResetAsync(
+                instance,
+                GetFlowNode(definition, state.GatewayNodeId),
+                definition,
+                state,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+        }
+        return completed;
+    }
+
+    private async Task<GatewayExecutionRecord> EmitComplexGatewayFlowsAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord token,
+        long? parentBranchId,
+        FlowNodeModel gateway,
+        IReadOnlyList<SequenceFlowModel> selectedFlows,
+        string note,
+        string phase,
+        int cycle,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var authoredOutgoingCount = OutgoingFlows(
+            instance.WorkflowDefinitionId,
+            definition,
+            gateway.Id).Count;
+        if (authoredOutgoingCount >= 2)
+        {
+            return await ForkGatewayTokenAsync(
+                instance,
+                token,
+                parentBranchId,
+                gateway,
+                selectedFlows,
+                note,
+                phase,
+                cycle,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken);
+        }
+
+        var execution = await runtime.AddGatewayExecutionAsync(
+            instance.Id,
+            gateway.Id,
+            gateway.Type,
+            GatewayExecutionRecordDirections.Merge,
+            phase,
+            cycle,
+            parentBranchId,
+            selectedFlows.Select(flow => flow.Id).ToArray(),
+            cancellationToken);
+        await AdvanceAutomaticTokenAsync(
+            instance,
+            token,
+            parentBranchId,
+            gateway,
+            selectedFlows.Single(),
+            note,
+            definition,
+            actor,
+            storedOverlay,
+            flowInfo,
+            queue,
+            cancellationToken);
+        await runtime.SetGatewayExecutionStatusAsync(
+            execution.Id,
+            GatewayExecutionRecordStatuses.Joined,
+            phase,
+            null,
+            null,
+            cancellationToken);
+        return execution;
+    }
+
+    private async Task<(ExecutionTokenRecord Survivor, long? CommonBranchId)>
+        ConsumeGatewayArrivalBatchAsync(
+            long instanceId,
+            IReadOnlyList<ExecutionTokenRecord> selected,
+            ActorContext actor,
+            CancellationToken cancellationToken,
+            GatewayScopeSnapshot? scopeSnapshot = null,
+            IReadOnlyCollection<long?>? reconcileWithBranchIds = null)
+    {
+        var survivor = selected.OrderBy(token => token.Id).First();
+        var drainStateIds = selected
+            .SelectMany(token => token.ComplexDrainStateIds)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        var branchIds = selected
+            .Select(token => token.GatewayBranchId)
+            .Concat(reconcileWithBranchIds ?? [])
+            .ToList();
+        var commonBranchId = scopeSnapshot is null
+            ? await FindDeepestCommonGatewayBranchAsync(
+                instanceId,
+                branchIds,
+                cancellationToken)
+            : FindDeepestCommonGatewayBranch(
+                branchIds,
+                scopeSnapshot);
+        await runtime.MergeExecutionTokensAsync(
+            selected
+                .Where(token => token.Id != survivor.Id)
+                .Select(token => token.Id)
+                .ToArray(),
+            commonBranchId,
+            NodeExecutionCompletionReasons.GatewayJoinMerged,
+            ToNodeExecutionActor(actor),
+            cancellationToken);
+        await runtime.SetComplexDrainMarkersAsync(
+            survivor.Id,
+            drainStateIds,
+            cancellationToken);
+        survivor = await runtime.GetExecutionTokenAsync(
+                       survivor.Id,
+                       false,
+                       cancellationToken)
+                   ?? throw new WorkflowConflictException(
+                       "The surviving gateway token disappeared while merging drain provenance.");
+        return (survivor, commonBranchId);
+    }
+
+    private async Task<long?> FindDeepestCommonGatewayBranchAsync(
+        long instanceId,
         IReadOnlyCollection<long?> branchIds,
         CancellationToken cancellationToken)
     {
-        var ancestries = new List<IReadOnlyList<ParallelGatewayBranchRecord>>();
-        foreach (var branchId in branchIds)
+        var snapshot = await LoadActiveGatewayScopeSnapshotAsync(
+            instanceId,
+            cancellationToken);
+        return FindDeepestCommonGatewayBranch(branchIds, snapshot);
+    }
+
+    private async Task<GatewayScopeSnapshot> LoadActiveGatewayScopeSnapshotAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var branches = await runtime.ListGatewayBranchesForInstanceAsync(
+            instanceId, true, cancellationToken);
+        var executions = await runtime.ListGatewayExecutionsAsync(
+            instanceId, GatewayExecutionRecordStatuses.Active, cancellationToken);
+        return new GatewayScopeSnapshot(
+            branches.ToDictionary(branch => branch.Id),
+            executions.ToDictionary(execution => execution.Id));
+    }
+
+    private static long? FindDeepestCommonGatewayBranch(
+        IReadOnlyCollection<long?> branchIds,
+        GatewayScopeSnapshot snapshot)
+    {
+        var ancestries = new List<IReadOnlyList<GatewayBranchRecord>>();
+        foreach (var startBranchId in branchIds)
         {
-            ancestries.Add(await runtime.ListParallelBranchAncestryAsync(branchId, cancellationToken));
+            var ancestry = new List<GatewayBranchRecord>();
+            var branchId = startBranchId;
+            while (branchId is long id
+                   && snapshot.Branches.TryGetValue(id, out var branch)
+                   && snapshot.Executions.TryGetValue(branch.ExecutionId, out var execution))
+            {
+                ancestry.Add(branch);
+                branchId = execution.ParentBranchId;
+            }
+            ancestries.Add(ancestry);
         }
         if (ancestries.Count == 0 || ancestries.Any(ancestry => ancestry.Count == 0))
         {
@@ -3848,24 +4758,61 @@ public sealed class WorkflowEngineService(
         return ancestries[0].FirstOrDefault(branch => common.Contains(branch.Id))?.Id;
     }
 
-    private async Task<(bool Interrupted, long? ParentBranchId)> InterruptParallelScopeAsync(
+    private sealed record GatewayScopeSnapshot(
+        IReadOnlyDictionary<long, GatewayBranchRecord> Branches,
+        IReadOnlyDictionary<long, GatewayExecutionRecord> Executions);
+
+    private static IReadOnlyCollection<long?> FindPriorComplexCycleParents(
+        IReadOnlyCollection<ExecutionTokenRecord> tokens,
+        int gatewayNodeId,
+        int cycle,
+        GatewayScopeSnapshot snapshot)
+    {
+        var parents = new HashSet<long?>();
+        foreach (var token in tokens)
+        {
+            foreach (var branch in BuildGatewayAncestry(
+                         token.GatewayBranchId,
+                         snapshot.Branches,
+                         snapshot.Executions))
+            {
+                var execution = snapshot.Executions[branch.ExecutionId];
+                if (execution.GatewayNodeId == gatewayNodeId
+                    && execution.Cycle is int executionCycle
+                    && executionCycle < cycle)
+                {
+                    parents.Add(execution.ParentBranchId);
+                }
+            }
+        }
+        return parents;
+    }
+
+    private async Task<(bool Interrupted, long? ParentBranchId)> InterruptGatewayScopeAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
         FlowNodeModel interrupt,
+        WorkflowModel definition,
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        var executions = await runtime.ListParallelGatewayExecutionsAsync(instance.Id, cancellationToken);
-        var ancestry = await runtime.ListParallelBranchAncestryAsync(token.ParallelBranchId, cancellationToken);
+        var executions = await runtime.ListGatewayExecutionsAsync(
+            instance.Id, GatewayExecutionRecordStatuses.Active, cancellationToken);
+        var branches = await runtime.ListGatewayBranchesForInstanceAsync(
+            instance.Id, true, cancellationToken);
+        var executionById = executions.ToDictionary(execution => execution.Id);
+        var branchById = branches.ToDictionary(branch => branch.Id);
+        var ancestry = BuildGatewayAncestry(token.GatewayBranchId, branchById, executionById);
         var selected = ancestry
             .Select(branch => executions.SingleOrDefault(execution => execution.Id == branch.ExecutionId))
             .FirstOrDefault(execution =>
                 execution is not null
-                && execution.Status == ParallelGatewayExecutionRecordStatuses.Active
-                && execution.ForkNodeId == interrupt.ParallelGatewayRef);
+                && execution.Status == GatewayExecutionRecordStatuses.Active
+                && execution.Direction == GatewayExecutionRecordDirections.Split
+                && execution.GatewayNodeId == interrupt.GatewayRef);
         if (selected is null)
         {
-            return (false, token.ParallelBranchId);
+            return (false, token.GatewayBranchId);
         }
         var triggeringScopeBranchId = ancestry
             .First(branch => branch.ExecutionId == selected.Id)
@@ -3873,102 +4820,335 @@ public sealed class WorkflowEngineService(
 
         var activeTokens = await runtime.ListExecutionTokensAsync(
             instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
-        var cancelledTokenIds = new List<long>();
+        var cancelledTokenIds = new HashSet<long>();
         foreach (var candidate in activeTokens.Where(candidate => candidate.Id != token.Id))
         {
-            var candidateAncestry = await runtime.ListParallelBranchAncestryAsync(
-                candidate.ParallelBranchId, cancellationToken);
+            var candidateAncestry = BuildGatewayAncestry(
+                candidate.GatewayBranchId, branchById, executionById);
             if (candidateAncestry.Any(branch => branch.ExecutionId == selected.Id))
             {
                 cancelledTokenIds.Add(candidate.Id);
             }
         }
 
+        ComplexGatewayStateRecord? interruptedComplexState = null;
+        if (BpmnFlowNodeTypes.IsComplexGateway(selected.GatewayType)
+            && selected.Cycle is int selectedCycle)
+        {
+            interruptedComplexState = await runtime.GetComplexGatewayStateAsync(
+                instance.Id, selected.GatewayNodeId, true, cancellationToken);
+            if (interruptedComplexState is not null
+                && interruptedComplexState.Cycle == selectedCycle
+                && interruptedComplexState.Phase == ComplexGatewayStateRecordPhases.WaitingForReset
+                && (interruptedComplexState.ActiveExecutionId is null
+                    || interruptedComplexState.ActiveExecutionId == selected.Id))
+            {
+                foreach (var waiting in activeTokens.Where(candidate =>
+                             candidate.Id != token.Id
+                             && candidate.ComplexGatewayStateId == interruptedComplexState.Id
+                             && candidate.ComplexGatewayCycle == interruptedComplexState.Cycle))
+                {
+                    cancelledTokenIds.Add(waiting.Id);
+                }
+                var complexNode = GetFlowNode(definition, interruptedComplexState.GatewayNodeId);
+                var topology = GatewayTopologyCache.Get(
+                    instance.WorkflowDefinitionId,
+                    definition);
+                var drainingTokenIds = activeTokens
+                    .Where(candidate =>
+                        CanReachRemainingComplexInput(
+                            candidate,
+                            complexNode,
+                            interruptedComplexState.RemainingFlowIds,
+                            topology))
+                    .Select(candidate => candidate.Id)
+                    .OrderBy(id => id)
+                    .ToArray();
+                await runtime.AddComplexDrainMarkerAsync(
+                    drainingTokenIds,
+                    interruptedComplexState.Id,
+                    cancellationToken);
+                interruptedComplexState = await runtime.SaveComplexGatewayStateAsync(
+                    instance.Id,
+                    selected.GatewayNodeId,
+                    ComplexGatewayStateRecordPhases.InterruptedDraining,
+                    interruptedComplexState.Cycle,
+                    interruptedComplexState.ContributingFlowIds,
+                    interruptedComplexState.RemainingFlowIds,
+                    interruptedComplexState.ActivationDrainStateIds,
+                    drainingTokenIds,
+                    selected.Id,
+                    cancellationToken);
+            }
+            else
+            {
+                interruptedComplexState = null;
+            }
+        }
+
+        var nestedExecutions = executions
+            .Where(execution =>
+                execution.Id != selected.Id
+                && execution.Status == GatewayExecutionRecordStatuses.Active
+                && BuildGatewayAncestry(
+                        execution.ParentBranchId,
+                        branchById,
+                        executionById)
+                    .Any(branch => branch.ExecutionId == selected.Id))
+            .OrderByDescending(execution => execution.Id)
+            .ToList();
+        foreach (var nested in nestedExecutions.Where(execution =>
+                     BpmnFlowNodeTypes.IsComplexGateway(execution.GatewayType)
+                     && execution.Cycle is not null))
+        {
+            var nestedState = await runtime.GetComplexGatewayStateAsync(
+                instance.Id,
+                nested.GatewayNodeId,
+                true,
+                cancellationToken);
+            if (nestedState is null
+                || nestedState.Cycle != nested.Cycle
+                || nestedState.Phase != ComplexGatewayStateRecordPhases.WaitingForReset
+                || (nestedState.ActiveExecutionId is not null
+                    && nestedState.ActiveExecutionId != nested.Id))
+            {
+                continue;
+            }
+
+            foreach (var waiting in activeTokens.Where(candidate =>
+                         candidate.Id != token.Id
+                         && candidate.ComplexGatewayStateId == nestedState.Id
+                         && candidate.ComplexGatewayCycle == nestedState.Cycle))
+            {
+                cancelledTokenIds.Add(waiting.Id);
+            }
+            var nestedNode = GetFlowNode(definition, nested.GatewayNodeId);
+            var nestedTopology = GatewayTopologyCache.Get(
+                instance.WorkflowDefinitionId,
+                definition);
+            var nestedDrainingTokenIds = activeTokens
+                .Where(candidate =>
+                    CanReachRemainingComplexInput(
+                        candidate,
+                        nestedNode,
+                        nestedState.RemainingFlowIds,
+                        nestedTopology))
+                .Select(candidate => candidate.Id)
+                .OrderBy(id => id)
+                .ToArray();
+            await runtime.AddComplexDrainMarkerAsync(
+                nestedDrainingTokenIds,
+                nestedState.Id,
+                cancellationToken);
+            await runtime.SaveComplexGatewayStateAsync(
+                instance.Id,
+                nested.GatewayNodeId,
+                ComplexGatewayStateRecordPhases.InterruptedDraining,
+                nestedState.Cycle,
+                nestedState.ContributingFlowIds,
+                nestedState.RemainingFlowIds,
+                nestedState.ActivationDrainStateIds,
+                nestedDrainingTokenIds,
+                nested.Id,
+                cancellationToken);
+        }
+
         var interruptionActor = ToNodeExecutionActor(actor);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledTokenIds,
-            NodeExecutionCompletionReasons.ParallelScopeCancelled,
+            NodeExecutionCompletionReasons.GatewayScopeCancelled,
             interruptionActor,
             cancellationToken);
         await runtime.CancelActiveMultiInstancesForTokensAsync(
             cancelledTokenIds,
-            NodeExecutionCompletionReasons.ParallelScopeCancelled,
+            NodeExecutionCompletionReasons.GatewayScopeCancelled,
             interruptionActor,
             cancellationToken);
-        foreach (var cancelledTokenId in cancelledTokenIds)
-        {
-            await runtime.SetExecutionTokenStatusAsync(
-                cancelledTokenId,
-                ExecutionTokenRecordStatuses.Cancelled,
-                ExecutionTokenTerminationReasons.ParallelScopeCancelled,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Cancelled,
-                    NodeExecutionCompletionReasons.ParallelScopeCancelled,
-                    null,
-                    null,
-                    null,
-                    interruptionActor),
-                cancellationToken);
-        }
+        await runtime.SetExecutionTokensStatusAsync(
+            cancelledTokenIds,
+            ExecutionTokenRecordStatuses.Cancelled,
+            ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+            NodeExecutionCompletionReasons.GatewayScopeCancelled,
+            interruptionActor,
+            cancellationToken);
 
-        foreach (var execution in executions.Where(execution =>
-                     execution.Status == ParallelGatewayExecutionRecordStatuses.Active))
-        {
-            if (execution.Id == selected.Id)
-            {
-                continue;
-            }
-            var parentAncestry = await runtime.ListParallelBranchAncestryAsync(
-                execution.ParentBranchId, cancellationToken);
-            if (parentAncestry.Any(branch => branch.ExecutionId == selected.Id))
-            {
-                foreach (var branch in await runtime.ListParallelGatewayBranchesAsync(
-                             execution.Id, cancellationToken))
-                {
-                    if (branch.Status == ParallelGatewayBranchRecordStatuses.Active)
-                    {
-                        await runtime.SetParallelGatewayBranchStatusAsync(
-                            branch.Id,
-                            ParallelGatewayBranchRecordStatuses.Cancelled,
-                            cancellationToken);
-                    }
-                }
-                await runtime.SetParallelGatewayExecutionStatusAsync(
-                    execution.Id,
-                    ParallelGatewayExecutionRecordStatuses.Cancelled,
-                    "ancestorInterrupt",
-                    interrupt.Id,
-                    token.Id,
-                    cancellationToken);
-            }
-        }
-        await runtime.SetParallelGatewayExecutionStatusAsync(
+        var nestedExecutionIds = nestedExecutions
+            .Select(execution => execution.Id)
+            .ToHashSet();
+        await runtime.SetGatewayBranchesStatusAsync(
+            branches
+                .Where(branch =>
+                    nestedExecutionIds.Contains(branch.ExecutionId)
+                    && branch.Status == GatewayBranchRecordStatuses.Active)
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Cancelled,
+            cancellationToken);
+        await runtime.SetGatewayExecutionsStatusAsync(
+            nestedExecutionIds,
+            GatewayExecutionRecordStatuses.Cancelled,
+            "ancestorInterrupt",
+            interrupt.Id,
+            token.Id,
+            cancellationToken);
+        await runtime.SetGatewayExecutionStatusAsync(
             selected.Id,
-            ParallelGatewayExecutionRecordStatuses.Interrupted,
+            GatewayExecutionRecordStatuses.Interrupted,
             "interrupt",
             interrupt.Id,
             token.Id,
             cancellationToken);
-        foreach (var branch in await runtime.ListParallelGatewayBranchesAsync(selected.Id, cancellationToken))
+        var selectedBranches = await runtime.ListGatewayBranchesAsync(
+            selected.Id,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            selectedBranches
+                .Where(branch =>
+                    branch.Status == GatewayBranchRecordStatuses.Active
+                    && branch.Id != triggeringScopeBranchId)
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Cancelled,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            selectedBranches
+                .Where(branch =>
+                    branch.Status == GatewayBranchRecordStatuses.Active
+                    && branch.Id == triggeringScopeBranchId)
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Interrupted,
+            cancellationToken);
+        if (interruptedComplexState is not null)
         {
-            if (branch.Status != ParallelGatewayBranchRecordStatuses.Active)
-            {
-                continue;
-            }
-            await runtime.SetParallelGatewayBranchStatusAsync(
-                branch.Id,
-                branch.Id == triggeringScopeBranchId
-                    ? ParallelGatewayBranchRecordStatuses.Interrupted
-                    : ParallelGatewayBranchRecordStatuses.Cancelled,
+            var complexNode = GetFlowNode(definition, interruptedComplexState.GatewayNodeId);
+            await TryFinishInterruptedComplexDrainAsync(
+                instance,
+                complexNode,
+                definition,
+                interruptedComplexState,
                 cancellationToken);
         }
+        await TryFinishInterruptedComplexDrainsAsync(
+            instance,
+            definition,
+            cancellationToken);
+        await CloseInactiveGatewayScopesAsync(
+            instance.Id,
+            ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+            cancellationToken);
         return (true, selected.ParentBranchId);
+    }
+
+    private async Task<bool> TryFinishInterruptedComplexDrainAsync(
+        WorkflowInstanceRecord instance,
+        FlowNodeModel gateway,
+        WorkflowModel definition,
+        ComplexGatewayStateRecord state,
+        CancellationToken cancellationToken)
+    {
+        if (state.Phase != ComplexGatewayStateRecordPhases.InterruptedDraining)
+        {
+            return false;
+        }
+        var active = await runtime.ListExecutionTokensAsync(
+            instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+        var topology = GatewayTopologyCache.Get(instance.WorkflowDefinitionId, definition);
+        if (active.Any(token =>
+                token.ComplexDrainStateIds.Contains(state.Id)
+                && CanReachRemainingComplexInput(
+                    token,
+                    gateway,
+                    state.RemainingFlowIds,
+                    topology)))
+        {
+            return false;
+        }
+        await runtime.ClearComplexDrainMarkerAsync(
+            instance.Id,
+            state.Id,
+            cancellationToken);
+        await runtime.SaveComplexGatewayStateAsync(
+            instance.Id,
+            gateway.Id,
+            ComplexGatewayStateRecordPhases.WaitingForStart,
+            state.Cycle + 1,
+            [],
+            IncomingFlows(instance.WorkflowDefinitionId, definition, gateway.Id)
+                .Select(flow => flow.Id)
+                .ToArray(),
+            [],
+            [],
+            null,
+            cancellationToken);
+        return true;
+    }
+
+    private static bool CanReachRemainingComplexInput(
+        ExecutionTokenRecord token,
+        FlowNodeModel gateway,
+        IReadOnlyCollection<int> remainingFlowIds,
+        GatewayTopologyIndex topology)
+    {
+        if (token.NodeId == gateway.Id)
+        {
+            return token.ArrivedViaFlowId is int arrivedViaFlowId
+                   && remainingFlowIds.Contains(arrivedViaFlowId);
+        }
+
+        return topology.CanReachAnyInput(
+            gateway.Id,
+            token.NodeId,
+            remainingFlowIds);
+    }
+
+    private async Task<bool> TryFinishInterruptedComplexDrainsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var states = await runtime.ListComplexGatewayStatesAsync(
+            instance.Id,
+            cancellationToken);
+        var completed = false;
+        foreach (var state in states
+                     .Where(state =>
+                         state.Phase == ComplexGatewayStateRecordPhases.InterruptedDraining)
+                     .OrderBy(state => state.GatewayNodeId))
+        {
+            completed |= await TryFinishInterruptedComplexDrainAsync(
+                instance,
+                GetFlowNode(definition, state.GatewayNodeId),
+                definition,
+                state,
+                cancellationToken);
+        }
+        return completed;
+    }
+
+    private static IReadOnlyList<GatewayBranchRecord> BuildGatewayAncestry(
+        long? startBranchId,
+        IReadOnlyDictionary<long, GatewayBranchRecord> branches,
+        IReadOnlyDictionary<long, GatewayExecutionRecord> executions)
+    {
+        var result = new List<GatewayBranchRecord>();
+        var visited = new HashSet<long>();
+        var branchId = startBranchId;
+        while (branchId is long id
+               && visited.Add(id)
+               && branches.TryGetValue(id, out var branch)
+               && executions.TryGetValue(branch.ExecutionId, out var execution))
+        {
+            result.Add(branch);
+            branchId = execution.ParentBranchId;
+        }
+        return result;
     }
 
     private async Task AdvanceAutomaticTokenAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
-        long? parallelBranchId,
+        long? gatewayBranchId,
         FlowNodeModel currentNode,
         SequenceFlowModel flow,
         string note,
@@ -3978,7 +5158,8 @@ public sealed class WorkflowEngineService(
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
         CancellationToken cancellationToken,
-        int immediateInterruptHops = 0)
+        int immediateInterruptHops = 0,
+        bool deferSave = false)
     {
         var nextNode = GetFlowNode(definition, flow.TargetRef);
         await RecordSequenceFlowOccurrenceAsync(
@@ -4034,8 +5215,12 @@ public sealed class WorkflowEngineService(
         {
             "parallelFork" => NodeExecutionCompletionReasons.ParallelFork,
             "parallelJoin" => NodeExecutionCompletionReasons.ParallelJoin,
-            "parallelInterrupt" => NodeExecutionCompletionReasons.ParallelInterrupt,
-            "parallelInterruptSkipped" => NodeExecutionCompletionReasons.ParallelInterruptSkipped,
+            "inclusiveSplit" => NodeExecutionCompletionReasons.InclusiveSplit,
+            "inclusiveMerge" => NodeExecutionCompletionReasons.InclusiveMerge,
+            "complexActivation" => NodeExecutionCompletionReasons.ComplexActivation,
+            "complexReset" => NodeExecutionCompletionReasons.ComplexReset,
+            "scopedInterrupt" => NodeExecutionCompletionReasons.ScopedInterrupt,
+            "scopedInterruptSkipped" => NodeExecutionCompletionReasons.ScopedInterruptSkipped,
             "messageStart" => NodeExecutionCompletionReasons.MessageDelivery,
             _ => NodeExecutionCompletionReasons.Normal
         };
@@ -4043,7 +5228,7 @@ public sealed class WorkflowEngineService(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
             targetTokenStatus,
-            parallelBranchId,
+            gatewayBranchId,
             flow.Id,
             terminationReason,
             null,
@@ -4053,17 +5238,18 @@ public sealed class WorkflowEngineService(
                 nodeExecutionReason,
                 BpmnFlowNodeTypes.IsGateway(currentNode.Type) ? flow.Id : null,
                 flow.Id,
-                parallelBranchId,
+                gatewayBranchId,
                 ToNodeExecutionActor(actor),
-                HasExitParallelBranchSnapshot: true),
-            cancellationToken);
+                HasExitGatewayBranchSnapshot: true),
+            cancellationToken,
+            deferSave);
 
         // Entering a scoped interrupt takes effect immediately. Deferring it to
         // the queue would let a later fork branch execute a service/script or
         // terminal event even though an earlier (lower-flow-id) branch had
         // already entered the interrupt. Chained interrupt continuations remain
         // bounded just like normal pass-through routing.
-        if (BpmnFlowNodeTypes.IsParallelInterrupt(nextNode.Type))
+        if (BpmnFlowNodeTypes.IsScopedInterrupt(nextNode.Type))
         {
             if (immediateInterruptHops >= definition.FlowNodes.Count + 1)
             {
@@ -4072,25 +5258,30 @@ public sealed class WorkflowEngineService(
             var enteredToken = await runtime.GetExecutionTokenAsync(
                     token.Id, false, cancellationToken)
                 ?? throw new WorkflowConflictException(
-                    "The execution token disappeared while entering a parallel interrupt.");
-            var interrupted = await InterruptParallelScopeAsync(
-                instance, enteredToken, nextNode, actor, cancellationToken);
+                    "The execution token disappeared while entering a scoped interrupt.");
+            var interrupted = await InterruptGatewayScopeAsync(
+                instance, enteredToken, nextNode, definition, actor, cancellationToken);
             var interruptFlow = SelectPassThroughFlow(
-                definition, nextNode, nextContext, flowInfo);
+                instance.WorkflowDefinitionId,
+                definition,
+                nextNode,
+                nextContext,
+                flowInfo);
             await AdvanceAutomaticTokenAsync(
                 instance,
                 enteredToken,
                 interrupted.ParentBranchId,
                 nextNode,
                 interruptFlow,
-                interrupted.Interrupted ? "parallelInterrupt" : "parallelInterruptSkipped",
+                interrupted.Interrupted ? "scopedInterrupt" : "scopedInterruptSkipped",
                 definition,
                 actor,
                 storedOverlay,
                 flowInfo,
                 queue,
                 cancellationToken,
-                immediateInterruptHops + 1);
+                immediateInterruptHops + 1,
+                deferSave);
             return;
         }
 
@@ -4108,11 +5299,6 @@ public sealed class WorkflowEngineService(
         }
         if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
-            if (parallelBranchId is long branchId)
-            {
-                await runtime.SetParallelGatewayBranchStatusAsync(
-                    branchId, ParallelGatewayBranchRecordStatuses.Completed, cancellationToken);
-            }
             await unitOfWork.SaveChangesAsync(cancellationToken);
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
@@ -4122,7 +5308,7 @@ public sealed class WorkflowEngineService(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
                 instance = instance with { Status = WorkflowInstanceStatuses.Completed };
             }
-            await CloseInactiveParallelScopesAsync(instance.Id, "allEnded", cancellationToken);
+            await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
             return;
         }
 
@@ -4138,8 +5324,18 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var triggeringToken = await runtime.GetExecutionTokenAsync(
             triggeringTokenId, false, cancellationToken);
-        var triggeringAncestry = await runtime.ListParallelBranchAncestryAsync(
-            triggeringToken?.ParallelBranchId, cancellationToken);
+        var gatewayExecutions = await runtime.ListGatewayExecutionsAsync(
+            instanceId,
+            GatewayExecutionRecordStatuses.Active,
+            cancellationToken);
+        var gatewayBranches = await runtime.ListGatewayBranchesForInstanceAsync(
+            instanceId,
+            true,
+            cancellationToken);
+        var triggeringAncestry = BuildGatewayAncestry(
+            triggeringToken?.GatewayBranchId,
+            gatewayBranches.ToDictionary(branch => branch.Id),
+            gatewayExecutions.ToDictionary(execution => execution.Id));
         var triggeringBranchIds = triggeringAncestry.Select(branch => branch.Id).ToHashSet();
         var active = await runtime.ListExecutionTokensAsync(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
@@ -4155,47 +5351,34 @@ public sealed class WorkflowEngineService(
             NodeExecutionCompletionReasons.TerminateEnd,
             terminationActor,
             cancellationToken);
-        foreach (var cancelledToken in active.Where(token => token.Id != triggeringTokenId))
-        {
-            await runtime.SetExecutionTokenStatusAsync(
-                cancelledToken.Id,
-                ExecutionTokenRecordStatuses.Cancelled,
-                ExecutionTokenTerminationReasons.TerminateEnd,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Cancelled,
-                    NodeExecutionCompletionReasons.TerminateEnd,
-                    null,
-                    null,
-                    cancelledToken.ParallelBranchId,
-                    terminationActor),
-                cancellationToken);
-        }
-        foreach (var execution in await runtime.ListParallelGatewayExecutionsAsync(instanceId, cancellationToken))
-        {
-            if (execution.Status == ParallelGatewayExecutionRecordStatuses.Active)
-            {
-                foreach (var branch in await runtime.ListParallelGatewayBranchesAsync(
-                             execution.Id, cancellationToken))
-                {
-                    if (branch.Status == ParallelGatewayBranchRecordStatuses.Active)
-                    {
-                        await runtime.SetParallelGatewayBranchStatusAsync(
-                            branch.Id,
-                            triggeringBranchIds.Contains(branch.Id)
-                                ? ParallelGatewayBranchRecordStatuses.Completed
-                                : ParallelGatewayBranchRecordStatuses.Cancelled,
-                            cancellationToken);
-                    }
-                }
-                await runtime.SetParallelGatewayExecutionStatusAsync(
-                    execution.Id,
-                    ParallelGatewayExecutionRecordStatuses.Cancelled,
-                    "terminateEnd",
-                    null,
-                    triggeringTokenId,
-                    cancellationToken);
-            }
-        }
+        await runtime.SetExecutionTokensStatusAsync(
+            cancelledIds,
+            ExecutionTokenRecordStatuses.Cancelled,
+            ExecutionTokenTerminationReasons.TerminateEnd,
+            NodeExecutionCompletionReasons.TerminateEnd,
+            terminationActor,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            gatewayBranches
+                .Where(branch => triggeringBranchIds.Contains(branch.Id))
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Completed,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            gatewayBranches
+                .Where(branch => !triggeringBranchIds.Contains(branch.Id))
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Cancelled,
+            cancellationToken);
+        await runtime.SetGatewayExecutionsStatusAsync(
+            gatewayExecutions.Select(execution => execution.Id).ToArray(),
+            GatewayExecutionRecordStatuses.Cancelled,
+            "terminateEnd",
+            null,
+            triggeringTokenId,
+            cancellationToken);
         await runtime.SetInstanceStatusAsync(instanceId, WorkflowInstanceStatuses.Completed, cancellationToken);
     }
 
@@ -4208,8 +5391,18 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var triggeringToken = await runtime.GetExecutionTokenAsync(
             triggeringTokenId, false, cancellationToken);
-        var triggeringAncestry = await runtime.ListParallelBranchAncestryAsync(
-            triggeringToken?.ParallelBranchId, cancellationToken);
+        var gatewayExecutions = await runtime.ListGatewayExecutionsAsync(
+            instanceId,
+            GatewayExecutionRecordStatuses.Active,
+            cancellationToken);
+        var gatewayBranches = await runtime.ListGatewayBranchesForInstanceAsync(
+            instanceId,
+            true,
+            cancellationToken);
+        var triggeringAncestry = BuildGatewayAncestry(
+            triggeringToken?.GatewayBranchId,
+            gatewayBranches.ToDictionary(branch => branch.Id),
+            gatewayExecutions.ToDictionary(execution => execution.Id));
         var triggeringBranchIds = triggeringAncestry.Select(branch => branch.Id).ToHashSet();
         var active = await runtime.ListExecutionTokensAsync(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
@@ -4225,52 +5418,38 @@ public sealed class WorkflowEngineService(
             NodeExecutionCompletionReasons.ErrorEnd,
             faultActor,
             cancellationToken);
-        foreach (var cancelledToken in active.Where(token => token.Id != triggeringTokenId))
-        {
-            await runtime.SetExecutionTokenStatusAsync(
-                cancelledToken.Id,
-                ExecutionTokenRecordStatuses.Cancelled,
-                ExecutionTokenTerminationReasons.ErrorEnd,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Cancelled,
-                    NodeExecutionCompletionReasons.ErrorEnd,
-                    null,
-                    null,
-                    cancelledToken.ParallelBranchId,
-                    faultActor),
-                cancellationToken);
-        }
-        foreach (var execution in await runtime.ListParallelGatewayExecutionsAsync(instanceId, cancellationToken))
-        {
-            if (execution.Status != ParallelGatewayExecutionRecordStatuses.Active)
-            {
-                continue;
-            }
-            foreach (var branch in await runtime.ListParallelGatewayBranchesAsync(
-                         execution.Id, cancellationToken))
-            {
-                if (branch.Status == ParallelGatewayBranchRecordStatuses.Active)
-                {
-                    await runtime.SetParallelGatewayBranchStatusAsync(
-                        branch.Id,
-                        triggeringBranchIds.Contains(branch.Id)
-                            ? ParallelGatewayBranchRecordStatuses.Completed
-                            : ParallelGatewayBranchRecordStatuses.Cancelled,
-                        cancellationToken);
-                }
-            }
-            await runtime.SetParallelGatewayExecutionStatusAsync(
-                execution.Id,
-                ParallelGatewayExecutionRecordStatuses.Cancelled,
-                "errorEnd",
-                null,
-                triggeringTokenId,
-                cancellationToken);
-        }
+        await runtime.SetExecutionTokensStatusAsync(
+            cancelledIds,
+            ExecutionTokenRecordStatuses.Cancelled,
+            ExecutionTokenTerminationReasons.ErrorEnd,
+            NodeExecutionCompletionReasons.ErrorEnd,
+            faultActor,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            gatewayBranches
+                .Where(branch => triggeringBranchIds.Contains(branch.Id))
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Completed,
+            cancellationToken);
+        await runtime.SetGatewayBranchesStatusAsync(
+            gatewayBranches
+                .Where(branch => !triggeringBranchIds.Contains(branch.Id))
+                .Select(branch => branch.Id)
+                .ToArray(),
+            GatewayBranchRecordStatuses.Cancelled,
+            cancellationToken);
+        await runtime.SetGatewayExecutionsStatusAsync(
+            gatewayExecutions.Select(execution => execution.Id).ToArray(),
+            GatewayExecutionRecordStatuses.Cancelled,
+            "errorEnd",
+            null,
+            triggeringTokenId,
+            cancellationToken);
         await runtime.SetInstanceStatusAsync(instanceId, WorkflowInstanceStatuses.Faulted, cancellationToken);
     }
 
-    private async Task CloseInactiveParallelScopesAsync(
+    private async Task CloseInactiveGatewayScopesAsync(
         long instanceId,
         string completionReason,
         CancellationToken cancellationToken)
@@ -4278,28 +5457,85 @@ public sealed class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var activeTokens = await runtime.ListExecutionTokensAsync(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
+        var executions = await runtime.ListGatewayExecutionsAsync(
+            instanceId, GatewayExecutionRecordStatuses.Active, cancellationToken);
+        var branches = await runtime.ListGatewayBranchesForInstanceAsync(
+            instanceId, true, cancellationToken);
+        var executionById = executions.ToDictionary(execution => execution.Id);
+        var branchById = branches.ToDictionary(branch => branch.Id);
         var activeExecutionIds = new HashSet<long>();
+        var activeBranchIds = new HashSet<long>();
         foreach (var token in activeTokens)
         {
-            var ancestry = await runtime.ListParallelBranchAncestryAsync(token.ParallelBranchId, cancellationToken);
+            var ancestry = BuildGatewayAncestry(
+                token.GatewayBranchId, branchById, executionById);
+            activeBranchIds.UnionWith(ancestry.Select(branch => branch.Id));
             activeExecutionIds.UnionWith(ancestry.Select(branch => branch.ExecutionId));
         }
-        foreach (var execution in await runtime.ListParallelGatewayExecutionsAsync(instanceId, cancellationToken))
+        var complexStates = await runtime.ListComplexGatewayStatesAsync(
+            instanceId,
+            cancellationToken);
+        foreach (var state in complexStates.Where(state =>
+                     state.Phase == ComplexGatewayStateRecordPhases.WaitingForReset))
         {
-            if (execution.Status == ParallelGatewayExecutionRecordStatuses.Active
-                && !activeExecutionIds.Contains(execution.Id))
+            GatewayExecutionRecord? activationExecution = null;
+            if (state.ActiveExecutionId is long activationExecutionId)
             {
-                await runtime.SetParallelGatewayExecutionStatusAsync(
-                    execution.Id,
-                    completionReason == "join"
-                        ? ParallelGatewayExecutionRecordStatuses.Joined
-                        : ParallelGatewayExecutionRecordStatuses.Completed,
-                    completionReason,
-                    null,
-                    null,
-                    cancellationToken);
+                executionById.TryGetValue(activationExecutionId, out activationExecution);
             }
+            else
+            {
+                // A split starts routing immediately after its execution row is
+                // created. A synchronous branch can close before the caller
+                // stores ActiveExecutionId on the state, so protect the unique
+                // active start firing by its immutable node/cycle identity.
+                activationExecution = executions.SingleOrDefault(execution =>
+                    execution.GatewayNodeId == state.GatewayNodeId
+                    && BpmnFlowNodeTypes.IsComplexGateway(execution.GatewayType)
+                    && execution.Phase == "start"
+                    && execution.Cycle == state.Cycle);
+            }
+            if (activationExecution is null)
+            {
+                continue;
+            }
+            activeExecutionIds.Add(activationExecution.Id);
+            var ancestry = BuildGatewayAncestry(
+                activationExecution.ParentBranchId,
+                branchById,
+                executionById);
+            activeBranchIds.UnionWith(ancestry.Select(branch => branch.Id));
+            activeExecutionIds.UnionWith(ancestry.Select(branch => branch.ExecutionId));
         }
+        await runtime.SetGatewayBranchesStatusAsync(
+            branches
+                .Where(branch =>
+                    branch.Status == GatewayBranchRecordStatuses.Active
+                    && !activeBranchIds.Contains(branch.Id))
+                .Select(branch => branch.Id)
+                .ToArray(),
+            completionReason == "join"
+                ? GatewayBranchRecordStatuses.Merged
+                : completionReason == ExecutionTokenTerminationReasons.GatewayScopeCancelled
+                    ? GatewayBranchRecordStatuses.Cancelled
+                    : GatewayBranchRecordStatuses.Completed,
+            cancellationToken);
+        await runtime.SetGatewayExecutionsStatusAsync(
+            executions
+                .Where(execution =>
+                    execution.Status == GatewayExecutionRecordStatuses.Active
+                    && !activeExecutionIds.Contains(execution.Id))
+                .Select(execution => execution.Id)
+                .ToArray(),
+            completionReason == "join"
+                ? GatewayExecutionRecordStatuses.Joined
+                : completionReason == ExecutionTokenTerminationReasons.GatewayScopeCancelled
+                    ? GatewayExecutionRecordStatuses.Cancelled
+                    : GatewayExecutionRecordStatuses.Completed,
+            completionReason,
+            null,
+            null,
+            cancellationToken);
     }
 
     private async Task EnsureMultiInstanceInitializedAsync(
@@ -4422,7 +5658,7 @@ public sealed class WorkflowEngineService(
             cancellationToken,
             actingFor: actor.ActingFor,
             delegationId: actor.DelegationId);
-        var outcomeIds = OutgoingFlows(definition, node.Id)
+        var outcomeIds = OutgoingFlows(instance.WorkflowDefinitionId, definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault && !f.CancelRemainingInstances)
             .Select(f => f.Id).ToList();
         await runtime.AddMultiInstanceAsync(
@@ -4652,19 +5888,24 @@ public sealed class WorkflowEngineService(
             "gateway" or
             "parallelFork" or
             "parallelJoin" or
-            "parallelInterrupt" or
-            "parallelInterruptSkipped" or
+            "inclusiveSplit" or
+            "inclusiveMerge" or
+            "complexActivation" or
+            "complexReset" or
+            "scopedInterrupt" or
+            "scopedInterruptSkipped" or
             "boundary" or
             "error" or
             "message");
 
     private SequenceFlowModel SelectPassThroughFlow(
+        long definitionId,
         WorkflowModel definition,
         FlowNodeModel node,
         IReadOnlyDictionary<string, JsonElement> variables,
         SequenceFlowInfoSnapshot? flowInfo)
     {
-        var outgoing = OutgoingFlows(definition, node.Id);
+        var outgoing = OutgoingFlows(definitionId, definition, node.Id);
 
         if (BpmnFlowNodeTypes.IsEntry(node.Type))
         {
@@ -4673,6 +5914,10 @@ public sealed class WorkflowEngineService(
 
         if (BpmnFlowNodeTypes.IsExclusiveGateway(node.Type))
         {
+            if (outgoing.Count == 1)
+            {
+                return outgoing[0];
+            }
             logger.LogDebug("Evaluating exclusive gateway #{NodeId} ({NodeName}) outgoing flows...", node.Id, node.Name);
             var match = outgoing
                 .Where(f => !f.IsDefault && !string.IsNullOrWhiteSpace(f.Condition))
@@ -4714,6 +5959,60 @@ public sealed class WorkflowEngineService(
         }
 
         return outgoing[0];
+    }
+
+    private static IReadOnlyList<SequenceFlowModel> SelectInclusiveOutgoingFlows(
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        SequenceFlowInfoSnapshot? flowInfo,
+        int gatewayNodeId)
+    {
+        var selected = outgoing
+            .Where(flow => !flow.IsDefault
+                           && SequenceFlowConditionEvaluator.Evaluate(
+                               flow.Condition, variables, flowInfo))
+            .OrderBy(flow => flow.Id)
+            .ToList();
+        if (selected.Count > 0)
+        {
+            return selected;
+        }
+        var fallback = outgoing.SingleOrDefault(flow => flow.IsDefault);
+        return fallback is not null
+            ? [fallback]
+            : throw new WorkflowDomainException(
+                $"Inclusive gateway #{gatewayNodeId} has no matching condition and no default flow.");
+    }
+
+    private static IReadOnlyList<SequenceFlowModel> SelectComplexOutgoingFlows(
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        GatewayConditionContext gatewayContext,
+        SequenceFlowInfoSnapshot? flowInfo,
+        bool failWhenEmpty,
+        int gatewayNodeId)
+    {
+        var selected = outgoing
+            .Where(flow => !flow.IsDefault
+                           && SequenceFlowConditionEvaluator.EvaluateGateway(
+                               flow.Condition, variables, gatewayContext, flowInfo))
+            .OrderBy(flow => flow.Id)
+            .ToList();
+        if (selected.Count > 0)
+        {
+            return selected;
+        }
+        var fallback = outgoing.SingleOrDefault(flow => flow.IsDefault);
+        if (fallback is not null)
+        {
+            return [fallback];
+        }
+        if (failWhenEmpty)
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{gatewayNodeId} activation selected no outgoing flow and has no default.");
+        }
+        return [];
     }
 
     private static void EnsureEntryRuntimeContract(WorkflowModel definition, FlowNodeModel entry)
@@ -5760,7 +7059,10 @@ public sealed class WorkflowEngineService(
         var variables = await runtime.ListVariablesAsync(id, cancellationToken);
         var history = await runtime.ListHistoryAsync(id, cancellationToken);
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+        var projection = await BuildExecutionProjectionAsync(
+            instance,
+            cancellationToken,
+            includeHistory: true);
         var multiProgress = projection.MultiInstances
             .FirstOrDefault(progress =>
                 progress.Status == MultiInstanceRecordStatuses.Active
@@ -5820,18 +7122,29 @@ public sealed class WorkflowEngineService(
         {
             ExecutionPositions = projection.ExecutionPositions,
             MultiInstances = projection.MultiInstances,
-            ParallelGatewayExecutions = projection.ParallelGatewayExecutions,
+            GatewayExecutions = projection.GatewayExecutions,
+            ComplexGatewayStates = projection.ComplexGatewayStates,
             Completion = projection.Completion
         };
     }
 
     private async Task<InstanceExecutionProjection> BuildExecutionProjectionAsync(
         WorkflowInstanceRecord instance,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeHistory = false)
     {
-        var tokens = await runtime.ListExecutionTokensAsync(instance.Id, null, cancellationToken);
-        var tasks = await runtime.ListUserTasksAsync(instance.Id, null, cancellationToken);
-        var multiExecutions = await runtime.ListMultiInstancesAsync(instance.Id, null, cancellationToken);
+        var tokens = includeHistory
+            ? await runtime.ListExecutionTokensAsync(instance.Id, null, cancellationToken)
+            : await runtime.ListCurrentExecutionTokensAsync(
+                instance.Id,
+                instance.ActiveTokenId,
+                cancellationToken);
+        var tasks = includeHistory
+            ? await runtime.ListUserTasksAsync(instance.Id, null, cancellationToken)
+            : await runtime.ListCurrentUserTasksAsync(instance.Id, cancellationToken);
+        var multiExecutions = includeHistory
+            ? await runtime.ListMultiInstancesAsync(instance.Id, null, cancellationToken)
+            : await runtime.ListCurrentMultiInstancesAsync(instance.Id, cancellationToken);
 
         var taskByTokenAndNode = tasks
             .GroupBy(task => (task.TokenId, task.NodeId))
@@ -5884,26 +7197,34 @@ public sealed class WorkflowEngineService(
             .Cast<MultiInstanceProgressDto>()
             .ToList();
 
-        var parallelExecutions = await runtime.ListParallelGatewayExecutionsAsync(
-            instance.Id, cancellationToken);
-        var branches = new List<ParallelGatewayBranchRecord>();
-        foreach (var execution in parallelExecutions)
-        {
-            branches.AddRange(await runtime.ListParallelGatewayBranchesAsync(
-                execution.Id, cancellationToken));
-        }
+        var gatewayExecutions = includeHistory
+            ? await runtime.ListGatewayExecutionsAsync(
+                instance.Id, null, cancellationToken)
+            : await runtime.ListCurrentGatewayExecutionsAsync(
+                instance.Id, cancellationToken);
+        var branches = includeHistory
+            ? await runtime.ListGatewayBranchesForInstanceAsync(
+                instance.Id, false, cancellationToken)
+            : await runtime.ListGatewayBranchesForExecutionsAsync(
+                gatewayExecutions.Select(execution => execution.Id).ToArray(),
+                cancellationToken);
         var branchExecutionIds = branches.ToDictionary(branch => branch.Id, branch => branch.ExecutionId);
         var branchesByExecution = branches
             .GroupBy(branch => branch.ExecutionId)
             .ToDictionary(group => group.Key, group => group.ToList());
-        var parallelDtos = parallelExecutions
+        var gatewayDtos = gatewayExecutions
             .OrderBy(execution => execution.Id)
             .Select(execution =>
             {
                 var executionBranches = branchesByExecution.GetValueOrDefault(execution.Id) ?? [];
-                return new ParallelGatewayExecutionDto(
+                return new GatewayExecutionDto(
                     execution.Id,
-                    execution.ForkNodeId,
+                    execution.GatewayNodeId,
+                    execution.GatewayType,
+                    execution.Direction,
+                    execution.Phase,
+                    execution.Cycle,
+                    execution.SelectedFlowIds,
                     execution.ParentBranchId is long parentBranchId
                         ? branchExecutionIds.GetValueOrDefault(parentBranchId)
                         : null,
@@ -5913,19 +7234,31 @@ public sealed class WorkflowEngineService(
                     execution.InterruptingTokenId,
                     executionBranches.Count,
                     executionBranches.Count(branch =>
-                        branch.Status == ParallelGatewayBranchRecordStatuses.Active),
+                        branch.Status == GatewayBranchRecordStatuses.Active),
                     executionBranches.Count(branch =>
-                        branch.Status == ParallelGatewayBranchRecordStatuses.Completed),
+                        branch.Status == GatewayBranchRecordStatuses.Completed),
                     executionBranches.Count(branch =>
-                        branch.Status == ParallelGatewayBranchRecordStatuses.Merged),
+                        branch.Status == GatewayBranchRecordStatuses.Merged),
                     executionBranches.Count(branch =>
-                        branch.Status == ParallelGatewayBranchRecordStatuses.Interrupted),
+                        branch.Status == GatewayBranchRecordStatuses.Interrupted),
                     executionBranches.Count(branch =>
-                        branch.Status == ParallelGatewayBranchRecordStatuses.Cancelled),
+                        branch.Status == GatewayBranchRecordStatuses.Cancelled),
                     execution.CreatedAt,
                     execution.UpdatedAt,
                     execution.CompletedAt);
             })
+            .ToList();
+        var complexStateDtos = (await runtime.ListComplexGatewayStatesAsync(
+                instance.Id, cancellationToken))
+            .Select(state => new ComplexGatewayStateDto(
+                state.GatewayNodeId,
+                state.Phase,
+                state.Cycle,
+                state.ContributingFlowIds,
+                state.RemainingFlowIds,
+                state.DrainingTokenIds,
+                state.ActiveExecutionId,
+                state.UpdatedAt))
             .ToList();
 
         CompletionInfoDto? completion = null;
@@ -5958,14 +7291,16 @@ public sealed class WorkflowEngineService(
         return new InstanceExecutionProjection(
             positions,
             multiProgress,
-            parallelDtos,
+            gatewayDtos,
+            complexStateDtos,
             completion);
     }
 
     private sealed record InstanceExecutionProjection(
         IReadOnlyList<ExecutionPositionDto> ExecutionPositions,
         IReadOnlyList<MultiInstanceProgressDto> MultiInstances,
-        IReadOnlyList<ParallelGatewayExecutionDto> ParallelGatewayExecutions,
+        IReadOnlyList<GatewayExecutionDto> GatewayExecutions,
+        IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates,
         CompletionInfoDto? Completion);
 
     private static WorkflowDetailDto ToRuntimeWorkflowDetail(WorkflowDefinitionRecord workflow)
@@ -6415,7 +7750,7 @@ public sealed class WorkflowEngineService(
         var context = WithContext(stored, actor, instance, workflow.Definition, node);
         if (execution is not null) AddMultiInstanceContext(context, task, execution);
         var roles = NormalizeRoles(actor.Roles);
-        return OutgoingFlows(workflow.Definition, node.Id)
+        return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(flow => flow.IsSelectable && !flow.IsDefault
                            && RoleAllowed(flow.Roles, roles)
                            && (string.IsNullOrWhiteSpace(flow.Condition)
@@ -6814,11 +8149,17 @@ public sealed class WorkflowEngineService(
                 ? WorkflowInstanceStatuses.Completed
                 : WorkflowInstanceStatuses.Running;
 
-    private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(WorkflowModel definition, int nodeId) =>
-        definition.SequenceFlows.Where(f => f.SourceRef == nodeId).ToList();
+    private static IReadOnlyList<SequenceFlowModel> OutgoingFlows(
+        long definitionId,
+        WorkflowModel definition,
+        int nodeId) =>
+        GatewayTopologyCache.Get(definitionId, definition).OutgoingFlows(nodeId);
 
-    private static IReadOnlyList<SequenceFlowModel> IncomingFlows(WorkflowModel definition, int nodeId) =>
-        definition.SequenceFlows.Where(f => f.TargetRef == nodeId).ToList();
+    private static IReadOnlyList<SequenceFlowModel> IncomingFlows(
+        long definitionId,
+        WorkflowModel definition,
+        int nodeId) =>
+        GatewayTopologyCache.Get(definitionId, definition).IncomingFlows(nodeId);
 
     // Resolves the errorBoundaryEvent attached to a host activity, or null when
     // none is attached. ValidateDefinition enforces at most one boundary per host;
@@ -6952,7 +8293,9 @@ public sealed class WorkflowEngineService(
         var type when BpmnFlowNodeTypes.IsMessageStart(type) => "messageStart",
         var type when BpmnFlowNodeTypes.IsExclusiveGateway(type) => "gateway",
         var type when BpmnFlowNodeTypes.IsParallelGateway(type) => "parallelGateway",
-        var type when BpmnFlowNodeTypes.IsParallelInterrupt(type) => "parallelInterrupt",
+        var type when BpmnFlowNodeTypes.IsInclusiveGateway(type) => "inclusiveGateway",
+        var type when BpmnFlowNodeTypes.IsComplexGateway(type) => "complexGateway",
+        var type when BpmnFlowNodeTypes.IsScopedInterrupt(type) => "scopedInterrupt",
         var type when BpmnFlowNodeTypes.IsServiceTask(type) => "serviceTask",
         var type when BpmnFlowNodeTypes.IsScriptTask(type) => "scriptTask",
         var type when BpmnFlowNodeTypes.IsErrorBoundary(type) => "errorBoundary",

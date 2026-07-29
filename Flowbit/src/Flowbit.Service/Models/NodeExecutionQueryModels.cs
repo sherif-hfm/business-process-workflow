@@ -15,7 +15,7 @@ public sealed record NodeExecutionSearchRequest
     public long? TokenId { get; init; }
     public long? UserTaskId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
-    public long? ParallelBranchId { get; init; }
+    public long? GatewayBranchId { get; init; }
     public int? ItemIndex { get; init; }
 
     public string? ExecutionKind { get; init; }
@@ -83,7 +83,7 @@ public sealed record NodeExecutionQuery
     public long? TokenId { get; init; }
     public long? UserTaskId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
-    public long? ParallelBranchId { get; init; }
+    public long? GatewayBranchId { get; init; }
     public int? ItemIndex { get; init; }
 
     public string? ExecutionKind { get; init; }

@@ -567,12 +567,12 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
-    public void Validator_AcceptsBoundaryTriggeredParallelInterrupt()
+    public void Validator_AcceptsBoundaryTriggeredScopedInterrupt()
     {
         var model = new WorkflowModel
         {
-            Id = "editor-boundary-parallel-interrupt",
-            Name = "Editor boundary parallel interrupt",
+            Id = "editor-boundary-scoped-interrupt",
+            Name = "Editor boundary scoped interrupt",
             InitialEventId = 1,
             FlowNodes =
             [
@@ -602,8 +602,8 @@ public sealed class EditorValidatorTests
                 {
                     Id = 6,
                     Name = "Interrupt",
-                    Type = BpmnFlowNodeTypes.ParallelInterruptEvent,
-                    ParallelGatewayRef = 2
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 2
                 },
                 new FlowNodeModel { Id = 7, Name = "Service end", Type = BpmnFlowNodeTypes.EndEvent },
                 new FlowNodeModel { Id = 8, Name = "Sibling end", Type = BpmnFlowNodeTypes.EndEvent },
@@ -668,6 +668,8 @@ public sealed class EditorValidatorTests
               END_EVENT: 'endEvent', ERROR_END_EVENT: 'errorEndEvent',
               USER_TASK: 'userTask', TASK: 'task', SERVICE_TASK: 'serviceTask',
               SCRIPT_TASK: 'scriptTask', EXCLUSIVE_GATEWAY: 'exclusiveGateway',
+              PARALLEL_GATEWAY: 'parallelGateway', INCLUSIVE_GATEWAY: 'inclusiveGateway',
+              COMPLEX_GATEWAY: 'complexGateway', SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent', MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
@@ -679,6 +681,8 @@ public sealed class EditorValidatorTests
             function isErrorEndEventType(type) { return type === NODE_TYPE.ERROR_END_EVENT; }
             function isAutomaticType(type) { return type === NODE_TYPE.TASK; }
             function isGatewayType(type) { return type === NODE_TYPE.EXCLUSIVE_GATEWAY; }
+            function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
+            function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
             function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
             function isBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
@@ -1106,14 +1110,14 @@ public sealed class EditorValidatorTests
     };
 
     [Fact]
-    public void Validator_AcceptsExclusiveGatewayWithSeveralIncomingPathsAndOrderedFallback()
+    public void Validator_RejectsGatewayThatCombinesMergeAndSplitTopology()
     {
         var model = CreateExclusiveGatewayModel();
         model.FlowNodes.Add(new FlowNodeModel
         {
             Id = 6,
             Name = "Alternative incoming",
-            Type = BpmnFlowNodeTypes.Task
+            Type = BpmnFlowNodeTypes.StartEvent
         });
         model.SequenceFlows.Add(new SequenceFlowModel
         {
@@ -1122,11 +1126,12 @@ public sealed class EditorValidatorTests
             TargetRef = 3
         });
 
-        Assert.Empty(Validate(model));
+        Assert.Contains(Validate(model), error =>
+            error.Contains("use two adjacent gateways", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public void Validator_RejectsExclusiveGatewayWithoutExactlyOneDefaultOrTwoOutputs()
+    public void Validator_RequiresDefaultForExclusiveSplitAndAcceptsExclusiveMerge()
     {
         var noDefault = CreateExclusiveGatewayModel();
         var formerDefault = noDefault.SequenceFlows.Single(flow => flow.Id == 302);
@@ -1137,9 +1142,18 @@ public sealed class EditorValidatorTests
             error.Contains("exactly one default", StringComparison.OrdinalIgnoreCase));
 
         var pureMerge = CreateExclusiveGatewayModel();
+        pureMerge.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Alternative incoming",
+            Type = BpmnFlowNodeTypes.StartEvent
+        });
+        pureMerge.SequenceFlows.Add(new SequenceFlowModel { Id = 601, SourceRef = 6, TargetRef = 3 });
         pureMerge.SequenceFlows.RemoveAll(flow => flow.Id == 301);
-        Assert.Contains(Validate(pureMerge), error =>
-            error.Contains("at least two outgoing", StringComparison.OrdinalIgnoreCase));
+        pureMerge.FlowNodes.RemoveAll(node => node.Id == 4);
+        var continuation = pureMerge.SequenceFlows.Single(flow => flow.Id == 302);
+        continuation.IsDefault = false;
+        Assert.Empty(Validate(pureMerge));
     }
 
     [Fact]
@@ -1182,6 +1196,330 @@ public sealed class EditorValidatorTests
         nonGatewayPriority.SequenceFlows.Single(flow => flow.Id == 101).ConditionPriority = 9;
         Assert.Contains(Validate(nonGatewayPriority), error =>
             error.Contains("only when leaving an exclusive gateway", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Editor_ExposesInclusiveComplexAndScopedInterruptAuthoring()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("{ value: NODE_TYPE.INCLUSIVE_GATEWAY, label: \"Inclusive Gateway\" }", html, StringComparison.Ordinal);
+        Assert.Contains("{ value: NODE_TYPE.COMPLEX_GATEWAY, label: \"Complex Gateway\" }", html, StringComparison.Ordinal);
+        Assert.Contains("{ value: NODE_TYPE.SCOPED_INTERRUPT_EVENT, label: \"Scoped Interrupt Event\" }", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"icon-inclusive-gateway\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"icon-complex-gateway\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"icon-scoped-interrupt\"", html, StringComparison.Ordinal);
+        Assert.Contains("IncomingCount(301)", html, StringComparison.Ordinal);
+        Assert.Contains("TotalIncomingCount()", html, StringComparison.Ordinal);
+        Assert.Contains("gateway.waitingForStart", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_RoundTripsComplexAndScopedInterruptFieldsWithoutLegacyMetadata()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"function loadFromObject\(obj\) \{[\s\S]*?(?=/\* ---------- DOM helper ---------- \*/)");
+        Assert.True(match.Success, "The editor workflow loader was not found.");
+
+        var engine = new Engine();
+        engine.Execute(
+            """
+            const NODE_TYPE = {
+              START_EVENT: 'startEvent', USER_TASK: 'userTask',
+              COMPLEX_GATEWAY: 'complexGateway',
+              SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent'
+            };
+            const CLAIM_MODE = { FRESH: 'fresh' };
+            const CLAIM_MODE_OPTIONS = [{ value: 'fresh' }];
+            const ASSIGNMENT_MODE = { FRESH: 'fresh' };
+            const ASSIGNMENT_MODE_OPTIONS = [{ value: 'fresh' }];
+            const SCRIPT_FORMAT = { NCALC: 'ncalc', JAVASCRIPT: 'javascript' };
+            let model = null;
+            function normalizeVariable(value) { return value; }
+            function normalizeRoles(value) { return Array.isArray(value) ? value : []; }
+            function isServiceTaskType(type) { return type === 'serviceTask'; }
+            function isScriptTaskType(type) { return type === 'scriptTask'; }
+            function isErrorEndEventType(type) { return type === 'errorEndEvent'; }
+            function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
+            function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
+            function isMessageCatchEventType(type) { return type === 'intermediateMessageCatchEvent'; }
+            function isMessageStartEventType(type) { return type === 'messageStartEvent'; }
+            function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
+            function normalizeMultiInstanceForLoad(value) { return value; }
+            function normalizeService(value) { return value; }
+            function normalizeAssignments(value) { return value || []; }
+            function containsDirectJavaScriptFlowInfoCall() { return false; }
+            function normalizeMessage(value) { return value; }
+            function normalizeBusinessKeyForLoad(value) { return value; }
+            function normalizeIdempotencyForLoad(value) { return value; }
+            function migrateLegacyToNew() { throw new Error('legacy path not expected'); }
+            function normalizeLegacyMessageStartNode() {}
+            function migrateLegacyUserTaskDefaultFlows() {}
+            function normalizeExclusiveGatewayPriorities() {}
+            function clearSelection() {}
+            function resetHistory() {}
+            """);
+        engine.Execute(match.Value);
+        engine.SetValue(
+            "candidateJson",
+            """
+            {
+              "id": "round-trip",
+              "name": "Round trip",
+              "initialEventId": 1,
+              "variables": [],
+              "lanes": [],
+              "flowNodes": [
+                { "id": 1, "name": "Start", "type": "startEvent" },
+                {
+                  "id": 2,
+                  "name": "Activate",
+                  "type": "complexGateway",
+                  "activationCondition": "IncomingCount(101) > 0",
+                  "gatewayRef": 999
+                },
+                {
+                  "id": 3,
+                  "name": "Interrupt",
+                  "type": "scopedInterruptEvent",
+                  "gatewayRef": 2,
+                  "activationCondition": "invalid"
+                }
+              ],
+              "sequenceFlows": [],
+              "cancelRoles": [],
+              "unclaimRoles": [],
+              "taskAssignmentRoles": []
+            }
+            """);
+        using var loaded = JsonDocument.Parse(engine.Evaluate(
+            "loadFromObject(JSON.parse(candidateJson)); JSON.stringify(model.flowNodes);").AsString());
+
+        var complex = loaded.RootElement[1];
+        Assert.Equal("IncomingCount(101) > 0", complex.GetProperty("activationCondition").GetString());
+        Assert.False(complex.TryGetProperty("gatewayRef", out _));
+        var interrupt = loaded.RootElement[2];
+        Assert.Equal(2, interrupt.GetProperty("gatewayRef").GetInt32());
+        Assert.False(interrupt.TryGetProperty("activationCondition", out _));
+        Assert.DoesNotContain("parallelGatewayRef", loaded.RootElement.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TypeInvariants_KeepOnlyTheGatewaySpecificNodeField()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"function applyTypeInvariants\(node\) \{[\s\S]*?(?=function nextCompletionPriority)");
+        Assert.True(match.Success, "The editor type-invariant function was not found.");
+
+        var engine = new Engine();
+        engine.Execute(
+            """
+            const NODE_TYPE = {
+              START_EVENT: 'startEvent', MESSAGE_START_EVENT: 'messageStartEvent',
+              END_EVENT: 'endEvent', ERROR_END_EVENT: 'errorEndEvent',
+              TERMINATE_END_EVENT: 'terminateEndEvent', USER_TASK: 'userTask',
+              TASK: 'task', SERVICE_TASK: 'serviceTask', SCRIPT_TASK: 'scriptTask',
+              EXCLUSIVE_GATEWAY: 'exclusiveGateway', PARALLEL_GATEWAY: 'parallelGateway',
+              INCLUSIVE_GATEWAY: 'inclusiveGateway', COMPLEX_GATEWAY: 'complexGateway',
+              SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
+              ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent',
+              MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent'
+            };
+            const CLAIM_MODE = { FRESH: 'fresh' };
+            const ASSIGNMENT_MODE = { FRESH: 'fresh' };
+            function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
+            function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
+            function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
+            function isUserTaskType(type) { return type === NODE_TYPE.USER_TASK; }
+            function isErrorEndEventType(type) { return type === NODE_TYPE.ERROR_END_EVENT; }
+            function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
+            function isMessageStartEventType(type) { return type === NODE_TYPE.MESSAGE_START_EVENT; }
+            function isEndEventType(type) {
+              return type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT ||
+                type === NODE_TYPE.TERMINATE_END_EVENT;
+            }
+            function isAutomaticType(type) { return type === NODE_TYPE.TASK; }
+            function isGatewayType(type) {
+              return type === NODE_TYPE.EXCLUSIVE_GATEWAY ||
+                type === NODE_TYPE.PARALLEL_GATEWAY ||
+                type === NODE_TYPE.INCLUSIVE_GATEWAY ||
+                type === NODE_TYPE.COMPLEX_GATEWAY;
+            }
+            function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
+            function isBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
+            function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
+            function isSingleOutgoingType() { return false; }
+            """);
+        engine.Execute(match.Value);
+
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            const complex = {
+              type: 'complexGateway',
+              activationCondition: 'IncomingCount(101) > 0',
+              gatewayRef: 9,
+              roles: [], variables: []
+            };
+            const interrupt = {
+              type: 'scopedInterruptEvent',
+              activationCondition: 'invalid',
+              gatewayRef: 2,
+              roles: [], variables: []
+            };
+            applyTypeInvariants(complex);
+            applyTypeInvariants(interrupt);
+            JSON.stringify({ complex, interrupt });
+            """).AsString());
+
+        var complex = result.RootElement.GetProperty("complex");
+        Assert.Equal("IncomingCount(101) > 0", complex.GetProperty("activationCondition").GetString());
+        Assert.False(complex.TryGetProperty("gatewayRef", out _));
+        var interrupt = result.RootElement.GetProperty("interrupt");
+        Assert.Equal(2, interrupt.GetProperty("gatewayRef").GetInt32());
+        Assert.False(interrupt.TryGetProperty("activationCondition", out _));
+    }
+
+    [Fact]
+    public void Validator_AcceptsInclusiveSplitWithScopedInterrupt()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "editor-inclusive-scoped-interrupt",
+            Name = "Editor inclusive scoped interrupt",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Select", Type = BpmnFlowNodeTypes.InclusiveGateway },
+                new FlowNodeModel { Id = 3, Name = "Interrupt", Type = BpmnFlowNodeTypes.ScopedInterruptEvent, GatewayRef = 2 },
+                new FlowNodeModel { Id = 4, Name = "Selected end", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Fallback end", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3, Condition = "true" },
+                new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 5, IsDefault = true },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
+            ]
+        };
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_AllowsCrossTypeParallelSplitAndInclusiveMerge()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "editor-cross-type-gateways",
+            Name = "Editor cross-type gateways",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Fork", Type = BpmnFlowNodeTypes.ParallelGateway },
+                new FlowNodeModel { Id = 3, Name = "Branch A", Type = BpmnFlowNodeTypes.Task },
+                new FlowNodeModel { Id = 4, Name = "Branch B", Type = BpmnFlowNodeTypes.Task },
+                new FlowNodeModel { Id = 5, Name = "Merge", Type = BpmnFlowNodeTypes.InclusiveGateway },
+                new FlowNodeModel { Id = 6, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 4 },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 5 },
+                new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 5 },
+                new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 6 }
+            ]
+        };
+
+        Assert.Empty(Validate(model));
+
+        model.SequenceFlows.Single(flow => flow.Id == 501).Condition = "true";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("must be unconditional", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_ValidatesComplexActivationHelpersAndRouting()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "editor-complex-gateway",
+            Name = "Editor complex gateway",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Activate",
+                    Type = BpmnFlowNodeTypes.ComplexGateway,
+                    ActivationCondition = "IncomingCount(101) >= 1 and TotalIncomingCount() >= 1"
+                },
+                new FlowNodeModel { Id = 3, Name = "Start output", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 4, Name = "Fallback output", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel
+                {
+                    Id = 201,
+                    SourceRef = 2,
+                    TargetRef = 3,
+                    Condition = "[gateway.waitingForStart]"
+                },
+                new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 4, IsDefault = true }
+            ]
+        };
+
+        Assert.Empty(Validate(model));
+
+        model.FlowNodes.Single(node => node.Id == 2).ActivationCondition =
+            "IncomingCount(flowId) > 0 or IncomingCount(999) > 0 or FlowInfo(101, 'traversals.count') > 0";
+        var errors = Validate(model);
+        Assert.Contains(errors, error => error.Contains("literal integer incoming-flow id", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("not incoming", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("cannot use FlowInfo", StringComparison.OrdinalIgnoreCase));
+
+        model.FlowNodes.Single(node => node.Id == 2).ActivationCondition =
+            "[gateway.waitingForStart]";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("only in Complex gateway outgoing-flow conditions", StringComparison.OrdinalIgnoreCase));
+
+        model.FlowNodes.Single(node => node.Id == 2).ActivationCondition =
+            "TotalIncomingCount() >= 1";
+        model.SequenceFlows.Single(flow => flow.Id == 201).Condition =
+            "IncomingCount(notLiteral) > 0";
+        Assert.Contains(Validate(model), error =>
+            error.Contains("literal integer incoming-flow id", StringComparison.OrdinalIgnoreCase));
+
+        model.SequenceFlows.Single(flow => flow.Id == 201).Condition =
+            "IncomingCount(101) > 0 and [gateway.waitingForStart]";
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_RejectsComplexOnlyExpressionContextOutsideComplexGateway()
+    {
+        var model = CreateExclusiveGatewayModel();
+        model.SequenceFlows.Single(flow => flow.Id == 301).Condition =
+            "IncomingCount(201) > 0 or [gateway.waitingForStart]";
+
+        var errors = Validate(model);
+
+        Assert.Contains(errors, error =>
+            error.Contains("available only in Complex gateway expressions", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("only in Complex gateway outgoing-flow conditions", StringComparison.OrdinalIgnoreCase));
     }
 
     private static WorkflowModel CreateExclusiveGatewayModel() => new()

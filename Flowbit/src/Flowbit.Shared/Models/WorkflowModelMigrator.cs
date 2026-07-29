@@ -49,7 +49,7 @@ public static class WorkflowModelMigrator
             }
         }
 
-        NormalizeExclusiveGatewayPriorities(model);
+        NormalizeExclusiveSplitPriorities(model);
         NormalizeUserTaskDefaultFlows(model);
 
     }
@@ -159,10 +159,17 @@ public static class WorkflowModelMigrator
     /// on the gateway omits the new priority. Partially authored priorities are
     /// deliberately left untouched so definition validation can reject them.
     /// </summary>
-    private static void NormalizeExclusiveGatewayPriorities(WorkflowModel model)
+    private static void NormalizeExclusiveSplitPriorities(WorkflowModel model)
     {
         foreach (var gateway in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsExclusiveGateway(node.Type)))
         {
+            var incomingCount = model.SequenceFlows.Count(flow => flow.TargetRef == gateway.Id);
+            var outgoingCount = model.SequenceFlows.Count(flow => flow.SourceRef == gateway.Id);
+            if (incomingCount != 1 || outgoingCount < 2)
+            {
+                continue;
+            }
+
             var conditional = model.SequenceFlows
                 .Where(flow => flow.SourceRef == gateway.Id && !flow.IsDefault)
                 .ToList();
@@ -280,7 +287,9 @@ public static class WorkflowModelMigrator
         "userTask" => BpmnFlowNodeTypes.UserTask,
         "exclusiveGateway" => BpmnFlowNodeTypes.ExclusiveGateway,
         "parallelGateway" => BpmnFlowNodeTypes.ParallelGateway,
-        "parallelInterruptEvent" => BpmnFlowNodeTypes.ParallelInterruptEvent,
+        "inclusiveGateway" => BpmnFlowNodeTypes.InclusiveGateway,
+        "complexGateway" => BpmnFlowNodeTypes.ComplexGateway,
+        "scopedInterruptEvent" => BpmnFlowNodeTypes.ScopedInterruptEvent,
         _ => BpmnFlowNodeTypes.UserTask
     };
 
@@ -313,9 +322,18 @@ public static class WorkflowModelMigrator
             node.UsesFlowInfo = null;
         }
 
-        if (!BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+        if (BpmnFlowNodeTypes.IsComplexGateway(node.Type))
         {
-            node.ParallelGatewayRef = null;
+            node.ActivationCondition = TrimToNull(node.ActivationCondition);
+        }
+        else
+        {
+            node.ActivationCondition = null;
+        }
+
+        if (!BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
+        {
+            node.GatewayRef = null;
         }
 
         if (!BpmnFlowNodeTypes.IsEntry(node.Type))
@@ -372,11 +390,11 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
-        else if (BpmnFlowNodeTypes.IsParallelInterrupt(node.Type))
+        else if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
         {
-            // A parallel interrupt is a Flowbit pass-through control event. Its
-            // only authored behavior is the fork reference; routing lives on its
-            // sole unconditional outgoing sequence flow.
+            // A scoped interrupt is a Flowbit pass-through control event. Its
+            // only authored behavior is the gateway reference; routing lives on
+            // its sole unconditional outgoing sequence flow.
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;

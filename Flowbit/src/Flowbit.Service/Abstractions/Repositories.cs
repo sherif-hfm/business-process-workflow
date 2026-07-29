@@ -116,6 +116,8 @@ public interface IWorkflowRuntimeRepository
 
     Task<WorkflowInstanceRecord?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
+    Task<string?> GetInstanceStatusAsync(long id, CancellationToken cancellationToken);
+
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
         long id,
         bool lockActiveUserTask,
@@ -126,16 +128,34 @@ public interface IWorkflowRuntimeRepository
         bool forUpdate,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<ExecutionTokenRecord>> GetExecutionTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<ExecutionTokenRecord>> ListExecutionTokensAsync(
         long instanceId,
         string? status,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<ExecutionTokenRecord>> ListCurrentExecutionTokensAsync(
+        long instanceId,
+        long representativeTokenId,
+        CancellationToken cancellationToken);
+
     Task<ExecutionTokenRecord> AddExecutionTokenAsync(
         long instanceId,
         CurrentNodeSnapshot node,
-        long? parallelBranchId,
+        long? gatewayBranchId,
         int? arrivedViaFlowId,
+        NodeExecutionActorRecord triggeredBy,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ExecutionTokenRecord>> AddGatewayBranchTokensAsync(
+        long instanceId,
+        CurrentNodeSnapshot gateway,
+        long? parentBranchId,
+        IReadOnlyList<long> gatewayBranchIds,
+        IReadOnlyCollection<long> complexDrainStateIds,
         NodeExecutionActorRecord triggeredBy,
         CancellationToken cancellationToken);
 
@@ -143,13 +163,14 @@ public interface IWorkflowRuntimeRepository
         long tokenId,
         CurrentNodeSnapshot node,
         string tokenStatus,
-        long? parallelBranchId,
+        long? gatewayBranchId,
         int? arrivedViaFlowId,
         string? terminationReason,
         string? claimedBy,
         NodeExecutionActorRecord triggeredBy,
         NodeExecutionCompletionRecord? currentCompletion,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool deferSave = false);
 
     Task SetExecutionTokenStatusAsync(
         long tokenId,
@@ -158,31 +179,64 @@ public interface IWorkflowRuntimeRepository
         NodeExecutionCompletionRecord completion,
         CancellationToken cancellationToken);
 
+    Task SetExecutionTokensStatusAsync(
+        IReadOnlyCollection<long> tokenIds,
+        string tokenStatus,
+        string? terminationReason,
+        string completionReason,
+        NodeExecutionActorRecord actor,
+        CancellationToken cancellationToken);
+
+    Task MergeExecutionTokensAsync(
+        IReadOnlyCollection<long> tokenIds,
+        long? exitGatewayBranchId,
+        string completionReason,
+        NodeExecutionActorRecord actor,
+        CancellationToken cancellationToken);
+
     Task SetInstanceStatusAsync(
         long instanceId,
         string status,
         CancellationToken cancellationToken);
 
-    Task<ParallelGatewayExecutionRecord> AddParallelGatewayExecutionAsync(
+    Task<GatewayExecutionRecord> AddGatewayExecutionAsync(
         long instanceId,
-        int forkNodeId,
+        int gatewayNodeId,
+        string gatewayType,
+        string direction,
+        string? phase,
+        int? cycle,
         long? parentBranchId,
-        IReadOnlyList<int> originatingFlowIds,
+        IReadOnlyList<int> selectedFlowIds,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ParallelGatewayExecutionRecord>> ListParallelGatewayExecutionsAsync(
+    Task<IReadOnlyList<GatewayExecutionRecord>> ListGatewayExecutionsAsync(
+        long instanceId,
+        string? status,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GatewayExecutionRecord>> ListCurrentGatewayExecutionsAsync(
         long instanceId,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelGatewayBranchesAsync(
+    Task<GatewayExecutionRecord?> GetGatewayExecutionAsync(
         long executionId,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<ParallelGatewayBranchRecord>> ListParallelBranchAncestryAsync(
-        long? branchId,
+    Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesAsync(
+        long executionId,
         CancellationToken cancellationToken);
 
-    Task SetParallelGatewayExecutionStatusAsync(
+    Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesForInstanceAsync(
+        long instanceId,
+        bool activeOnly,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GatewayBranchRecord>> ListGatewayBranchesForExecutionsAsync(
+        IReadOnlyCollection<long> executionIds,
+        CancellationToken cancellationToken);
+
+    Task SetGatewayExecutionStatusAsync(
         long executionId,
         string status,
         string completionReason,
@@ -190,9 +244,65 @@ public interface IWorkflowRuntimeRepository
         long? interruptingTokenId,
         CancellationToken cancellationToken);
 
-    Task SetParallelGatewayBranchStatusAsync(
+    Task SetGatewayExecutionsStatusAsync(
+        IReadOnlyCollection<long> executionIds,
+        string status,
+        string completionReason,
+        int? interruptingNodeId,
+        long? interruptingTokenId,
+        CancellationToken cancellationToken);
+
+    Task SetGatewayBranchStatusAsync(
         long branchId,
         string status,
+        CancellationToken cancellationToken);
+
+    Task SetGatewayBranchesStatusAsync(
+        IReadOnlyCollection<long> branchIds,
+        string status,
+        CancellationToken cancellationToken);
+
+    Task<ComplexGatewayStateRecord?> GetComplexGatewayStateAsync(
+        long instanceId,
+        int gatewayNodeId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ComplexGatewayStateRecord>> ListComplexGatewayStatesAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<ComplexGatewayStateRecord> SaveComplexGatewayStateAsync(
+        long instanceId,
+        int gatewayNodeId,
+        string phase,
+        int cycle,
+        IReadOnlyCollection<int> contributingFlowIds,
+        IReadOnlyCollection<int> remainingFlowIds,
+        IReadOnlyCollection<long> activationDrainStateIds,
+        IReadOnlyCollection<long> drainingTokenIds,
+        long? activeExecutionId,
+        CancellationToken cancellationToken);
+
+    Task RegisterTokenAtComplexGatewayAsync(
+        long tokenId,
+        long? complexGatewayStateId,
+        int? complexGatewayCycle,
+        CancellationToken cancellationToken);
+
+    Task AddComplexDrainMarkerAsync(
+        IReadOnlyCollection<long> tokenIds,
+        long complexGatewayStateId,
+        CancellationToken cancellationToken);
+
+    Task SetComplexDrainMarkersAsync(
+        long tokenId,
+        IReadOnlyCollection<long> complexGatewayStateIds,
+        CancellationToken cancellationToken);
+
+    Task ClearComplexDrainMarkerAsync(
+        long instanceId,
+        long complexGatewayStateId,
         CancellationToken cancellationToken);
 
     Task CancelOpenUserTasksForTokensAsync(
@@ -227,6 +337,10 @@ public interface IWorkflowRuntimeRepository
         string? status,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<MultiInstanceExecutionRecord>> ListCurrentMultiInstancesAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
     Task<MultiInstanceExecutionRecord?> GetMultiInstanceAsync(
         long executionId,
         bool forUpdate,
@@ -242,6 +356,10 @@ public interface IWorkflowRuntimeRepository
     Task<IReadOnlyList<UserTaskRecord>> ListUserTasksAsync(
         long instanceId,
         string? status,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<UserTaskRecord>> ListCurrentUserTasksAsync(
+        long instanceId,
         CancellationToken cancellationToken);
 
     Task<PagedResult<UserTaskRecord>> ListUserTasksPageAsync(

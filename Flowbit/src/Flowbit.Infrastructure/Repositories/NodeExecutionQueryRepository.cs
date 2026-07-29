@@ -44,8 +44,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                ne."UserTaskId" AS "UserTaskId",
                ne."MultiInstanceExecutionId" AS "MultiInstanceExecutionId",
                ne."ItemIndex" AS "ItemIndex",
-               ne."EntryParallelBranchId" AS "EntryParallelBranchId",
-               ne."ExitParallelBranchId" AS "ExitParallelBranchId",
+               ne."EntryGatewayBranchId" AS "EntryGatewayBranchId",
+               ne."ExitGatewayBranchId" AS "ExitGatewayBranchId",
                ne."ExecutionKind" AS "ExecutionKind",
                ne."NodeId" AS "NodeId",
                ne."NodeName" AS "NodeName",
@@ -316,12 +316,12 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             "completedBy",
             query.CompletedBy);
 
-        if (query.ParallelBranchId is long parallelBranchId)
+        if (query.GatewayBranchId is long gatewayBranchId)
         {
-            arguments.Add(("parallelBranchId", parallelBranchId));
+            arguments.Add(("gatewayBranchId", gatewayBranchId));
             where.Append(
-                " AND (ne.\"EntryParallelBranchId\" = @parallelBranchId" +
-                " OR ne.\"ExitParallelBranchId\" = @parallelBranchId)");
+                " AND (ne.\"EntryGatewayBranchId\" = @gatewayBranchId" +
+                " OR ne.\"ExitGatewayBranchId\" = @gatewayBranchId)");
         }
 
         AppendArrayFilter(
@@ -574,8 +574,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             UserTaskId = row.UserTaskId,
             MultiInstanceExecutionId = row.MultiInstanceExecutionId,
             ItemIndex = row.ItemIndex,
-            EntryParallelBranchId = row.EntryParallelBranchId,
-            ExitParallelBranchId = row.ExitParallelBranchId,
+            EntryGatewayBranchId = row.EntryGatewayBranchId,
+            ExitGatewayBranchId = row.ExitGatewayBranchId,
             ExecutionKind = row.ExecutionKind,
             NodeId = row.NodeId,
             NodeName = row.NodeName,
@@ -620,8 +620,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             UserTaskId = row.UserTaskId,
             MultiInstanceExecutionId = row.MultiInstanceExecutionId,
             ItemIndex = row.ItemIndex,
-            EntryParallelBranchId = row.EntryParallelBranchId,
-            ExitParallelBranchId = row.ExitParallelBranchId,
+            EntryGatewayBranchId = row.EntryGatewayBranchId,
+            ExitGatewayBranchId = row.ExitGatewayBranchId,
             ExecutionKind = row.ExecutionKind,
             NodeId = row.NodeId,
             NodeName = row.NodeName,
@@ -755,8 +755,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         public long? UserTaskId { get; set; }
         public long? MultiInstanceExecutionId { get; set; }
         public int? ItemIndex { get; set; }
-        public long? EntryParallelBranchId { get; set; }
-        public long? ExitParallelBranchId { get; set; }
+        public long? EntryGatewayBranchId { get; set; }
+        public long? ExitGatewayBranchId { get; set; }
         public string ExecutionKind { get; set; } = string.Empty;
         public int NodeId { get; set; }
         public string NodeName { get; set; } = string.Empty;

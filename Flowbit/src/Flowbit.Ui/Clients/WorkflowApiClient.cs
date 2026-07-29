@@ -386,7 +386,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         AddQueryValue(parameters, "tokenId", query.TokenId);
         AddQueryValue(parameters, "userTaskId", query.UserTaskId);
         AddQueryValue(parameters, "multiInstanceExecutionId", query.MultiInstanceExecutionId);
-        AddQueryValue(parameters, "parallelBranchId", query.ParallelBranchId);
+        AddQueryValue(parameters, "gatewayBranchId", query.GatewayBranchId);
         AddQueryValue(parameters, "itemIndex", query.ItemIndex);
         AddQueryValue(parameters, "executionKind", query.ExecutionKind);
         AddQueryValue(parameters, "nodeId", query.NodeId);
@@ -668,7 +668,7 @@ public sealed class NodeExecutionSearchQuery
     public long? TokenId { get; init; }
     public long? UserTaskId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
-    public long? ParallelBranchId { get; init; }
+    public long? GatewayBranchId { get; init; }
     public int? ItemIndex { get; init; }
     public string? ExecutionKind { get; init; }
     public int? NodeId { get; init; }

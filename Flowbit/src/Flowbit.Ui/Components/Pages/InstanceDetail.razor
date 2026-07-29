@@ -102,25 +102,26 @@ else
 
     <nav class="status-tabs" aria-label="Instance sections">
         <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
-        @if (instance.ParallelGatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#parallel-scopes" @onclick='() => ScrollToSectionAsync("parallel-scopes")' @onclick:preventDefault>Parallel scopes</a> }
+        @if (instance.GatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#gateway-scopes" @onclick='() => ScrollToSectionAsync("gateway-scopes")' @onclick:preventDefault>Gateway scopes</a> }
+        @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
 
-    @if (instance.ParallelGatewayExecutions.Count > 0)
+    @if (instance.GatewayExecutions.Count > 0)
     {
-        <section id="parallel-scopes" class="panel mb-3">
+        <section id="gateway-scopes" class="panel mb-3">
             <div class="section-heading">
-                <div><h2>Parallel scopes</h2><p>Fork activations, branch state, and scoped interruption outcomes</p></div>
-                <span class="mono-id">@instance.ParallelGatewayExecutions.Count scope@(instance.ParallelGatewayExecutions.Count == 1 ? null : "s")</span>
+                <div><h2>Gateway scopes</h2><p>Parallel, Inclusive, and Complex branch activations</p></div>
+                <span class="mono-id">@instance.GatewayExecutions.Count scope@(instance.GatewayExecutions.Count == 1 ? null : "s")</span>
             </div>
             <div class="table-responsive">
                 <table class="table table-sm align-middle">
                     <thead>
                         <tr>
                             <th scope="col">Scope</th>
-                            <th scope="col">Fork</th>
+                            <th scope="col">Gateway</th>
                             <th scope="col">Status</th>
                             <th scope="col">Branches</th>
                             <th scope="col">Outcome</th>
@@ -128,11 +129,11 @@ else
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach (var scope in instance.ParallelGatewayExecutions.OrderByDescending(item => item.Id))
+                        @foreach (var scope in instance.GatewayExecutions.OrderByDescending(item => item.Id))
                         {
                             <tr>
                                 <td><span class="mono-id">#@scope.Id</span>@if (scope.ParentExecutionId is long parentId) { <span class="data-subtitle">Parent #@parentId</span> }</td>
-                                <td>@ParallelForkLabel(scope.ForkNodeId)</td>
+                                <td>@GatewayLabel(scope.GatewayNodeId)<span class="data-subtitle">@scope.GatewayType · @scope.Direction@if (scope.Phase is not null) { <text> · @scope.Phase</text> }</span></td>
                                 <td><StatusBadge Status="@scope.Status" /></td>
                                 <td>
                                     @scope.TotalBranchCount total
@@ -143,13 +144,52 @@ else
                                     </span>
                                 </td>
                                 <td>
-                                    @(string.IsNullOrWhiteSpace(scope.CompletionReason) ? "—" : ParallelCompletionReason(scope.CompletionReason))
+                                    @(string.IsNullOrWhiteSpace(scope.CompletionReason) ? "—" : GatewayCompletionReason(scope.CompletionReason))
                                     @if (scope.InterruptingTokenId is long tokenId)
                                     {
                                         <span class="data-subtitle">Token #@tokenId@if (scope.InterruptingNodeId is int nodeId) { <text> · Node #@nodeId</text> }</span>
                                     }
                                 </td>
                                 <td>@scope.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
+    @if (instance.ComplexGatewayStates.Count > 0)
+    {
+        <section id="complex-gateway-states" class="panel mb-3">
+            <div class="section-heading">
+                <div><h2>Complex gateway states</h2><p>Current phase, cycle, input sets, and interruption draining frontier</p></div>
+                <span class="mono-id">@instance.ComplexGatewayStates.Count state@(instance.ComplexGatewayStates.Count == 1 ? null : "s")</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr>
+                            <th scope="col">Gateway</th>
+                            <th scope="col">Phase</th>
+                            <th scope="col">Cycle</th>
+                            <th scope="col">Contributing</th>
+                            <th scope="col">Remaining</th>
+                            <th scope="col">Draining tokens</th>
+                            <th scope="col">Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var state in instance.ComplexGatewayStates.OrderBy(item => item.GatewayNodeId))
+                        {
+                            <tr>
+                                <td>@GatewayLabel(state.GatewayNodeId)</td>
+                                <td><StatusBadge Status="@state.Phase" /></td>
+                                <td>@state.Cycle</td>
+                                <td>@FormatIds(state.ContributingFlowIds)</td>
+                                <td>@FormatIds(state.RemainingFlowIds)</td>
+                                <td>@FormatLongIds(state.DrainingTokenIds)</td>
+                                <td>@state.UpdatedAt.ToLocalTime().ToString("g")</td>
                             </tr>
                         }
                     </tbody>
@@ -615,21 +655,23 @@ else
         return $"{kind} at {completion.NodeName} · {completion.CompletedAt.ToLocalTime():g}";
     }
 
-    private string ParallelForkLabel(int nodeId)
+    private string GatewayLabel(int nodeId)
     {
         var node = instance?.Workflow.Definition.FlowNodes
             .SingleOrDefault(candidate => candidate.Id == nodeId);
         return node is null ? $"Node #{nodeId}" : $"{node.Name} (#{nodeId})";
     }
 
-    private static string ParallelCompletionReason(string reason) => reason switch
+    private static string GatewayCompletionReason(string reason) => reason switch
     {
         "join" => "Joined",
-        "interrupt" or "parallelInterrupt" => "Scoped interrupt",
+        "interrupt" or "scopedInterrupt" => "Scoped interrupt",
         "terminateEnd" => "Terminate end",
         "errorEnd" => "Workflow fault",
         "instanceCancelled" => "Instance cancellation",
         "allEnded" => "All branches ended",
+        "resetNoOutput" => "Reset completed without output",
+        "complex" => "Complex phase completed",
         _ => reason
     };
 
@@ -647,19 +689,37 @@ else
                 ? $"Parallel join released token #{tokenId}"
                 : "Parallel join released";
         }
-        if (item.Note is "parallelInterrupt")
+        if (item.Note is "inclusiveSplit")
         {
             return item.TokenId is long tokenId
-                ? $"Parallel scope interrupted by token #{tokenId}; active sibling work was cancelled"
-                : "Parallel scope interrupted; active sibling work was cancelled";
+                ? $"Inclusive branches selected for token #{tokenId}"
+                : "Inclusive branches selected";
         }
-        if (item.Note is "parallelInterruptSkipped")
+        if (item.Note is "inclusiveMerge")
         {
-            return "No matching active parallel scope remained; continuation ran without cancellation";
+            return item.TokenId is long tokenId
+                ? $"Inclusive merge released token #{tokenId}"
+                : "Inclusive merge released";
         }
-        if (item.Note is "parallelScopeCancelled")
+        if (item.Note is "complexActivation" or "complexReset")
         {
-            return "Token cancelled by a scoped parallel interrupt";
+            return item.TokenId is long tokenId
+                ? $"Complex gateway {item.Note["complex".Length..].ToLowerInvariant()} routed token #{tokenId}"
+                : $"Complex gateway {item.Note["complex".Length..].ToLowerInvariant()}";
+        }
+        if (item.Note is "scopedInterrupt")
+        {
+            return item.TokenId is long tokenId
+                ? $"Gateway scope interrupted by token #{tokenId}; active sibling work was cancelled"
+                : "Gateway scope interrupted; active sibling work was cancelled";
+        }
+        if (item.Note is "scopedInterruptSkipped")
+        {
+            return "No matching active gateway scope remained; continuation ran without cancellation";
+        }
+        if (item.Note is "gatewayScopeCancelled")
+        {
+            return "Token cancelled by a scoped interrupt";
         }
         if (item.Note is "terminateEnd")
         {
@@ -930,6 +990,12 @@ else
 
     private static string FormatPayload(Dictionary<string, JsonElement>? payload) =>
         payload is null || payload.Count == 0 ? "-" : JsonSerializer.Serialize(payload);
+
+    private static string FormatIds(IReadOnlyList<int> ids) =>
+        ids.Count == 0 ? "—" : string.Join(", ", ids.Select(id => $"#{id}"));
+
+    private static string FormatLongIds(IReadOnlyList<long> ids) =>
+        ids.Count == 0 ? "—" : string.Join(", ", ids.Select(id => $"#{id}"));
 
     private static string FormatJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.String ? element.GetString() ?? string.Empty : element.GetRawText();

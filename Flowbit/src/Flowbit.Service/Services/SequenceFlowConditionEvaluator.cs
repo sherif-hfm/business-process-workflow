@@ -146,6 +146,51 @@ public static class SequenceFlowConditionEvaluator
     }
 
     /// <summary>
+    /// Evaluates a Complex gateway activation or outgoing-flow expression.
+    /// IncomingCount(flowId), TotalIncomingCount(), and the
+    /// [gateway.waitingForStart] parameter are populated from <paramref name="gateway"/>.
+    /// </summary>
+    public static bool EvaluateGateway(
+        string? condition,
+        IReadOnlyDictionary<string, JsonElement> variables,
+        GatewayConditionContext gateway,
+        SequenceFlowInfoSnapshot? flowInfo = null)
+    {
+        ArgumentNullException.ThrowIfNull(gateway);
+        var expression = Normalize(condition);
+        if (expression is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var ncalc = CreateExpression(
+                expression,
+                variables,
+                flowInfo: flowInfo,
+                gateway: gateway);
+            return IsTruthy(ncalc.Evaluate());
+        }
+        catch (NCalcException)
+        {
+            return false;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (ArithmeticException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns true when the expression parses successfully. Used for
     /// author-time validation of gateway conditions.
     /// </summary>
@@ -228,16 +273,28 @@ public static class SequenceFlowConditionEvaluator
         IReadOnlyDictionary<int, int>? flowCounts = null,
         int totalCount = 0,
         SequenceFlowInfoSnapshot? flowInfo = null,
-        bool preserveComplexTypes = false)
+        bool preserveComplexTypes = false,
+        GatewayConditionContext? gateway = null)
     {
         var ncalc = new Expression(expression, Options);
-        if (variables is not null)
+        if (variables is not null || gateway is not null)
         {
-            ncalc.Parameters = BuildParameters(variables, preserveComplexTypes);
+            var parameters = variables is null
+                ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                : BuildParameters(variables, preserveComplexTypes);
+            if (gateway is not null)
+            {
+                parameters["gateway.waitingForStart"] = gateway.WaitingForStart;
+            }
+            ncalc.Parameters = parameters;
         }
 
         ncalc.EvaluateFunction += (name, args) =>
         {
+            if (gateway is not null && TryEvaluateGatewayFunction(name, args, gateway))
+            {
+                return;
+            }
             if (flowCounts is not null && TryEvaluateMultiInstanceFunction(name, args, flowCounts, totalCount))
             {
                 return;
@@ -249,6 +306,42 @@ public static class SequenceFlowConditionEvaluator
             EvaluateCustomFunction(name, args);
         };
         return ncalc;
+    }
+
+    private static bool TryEvaluateGatewayFunction(
+        string name,
+        FunctionEventArgs args,
+        GatewayConditionContext gateway)
+    {
+        if (name.Equals("TotalIncomingCount", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Parameters.Count != 0)
+            {
+                return false;
+            }
+
+            args.Result = gateway.TotalIncomingCount;
+            return true;
+        }
+
+        if (!name.Equals("IncomingCount", StringComparison.OrdinalIgnoreCase)
+            || args.Parameters.Count != 1)
+        {
+            return false;
+        }
+
+        var rawFlowId = args.Parameters.Evaluate(0);
+        if (!int.TryParse(
+                Convert.ToString(rawFlowId, CultureInfo.InvariantCulture),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var flowId))
+        {
+            return false;
+        }
+
+        args.Result = gateway.IncomingCounts.GetValueOrDefault(flowId);
+        return true;
     }
 
     private static bool TryEvaluateFlowInfoFunction(
@@ -351,6 +444,25 @@ public static class SequenceFlowConditionEvaluator
             knownFlowIds,
             allowed,
             SupportedFlowInfoPaths,
+            out error);
+
+    /// <summary>
+    /// Performs semantic checks for Complex gateway helpers which NCalc's parser
+    /// cannot enforce. IncomingCount requires one literal incoming-flow ID;
+    /// TotalIncomingCount requires no arguments; [gateway.waitingForStart] is
+    /// restricted to Complex outgoing-flow conditions.
+    /// </summary>
+    public static bool TryValidateGatewayReferences(
+        string? expression,
+        IReadOnlySet<int> incomingFlowIds,
+        bool helpersAllowed,
+        bool waitingForStartAllowed,
+        out string? error) =>
+        GatewayExpressionInspector.TryValidate(
+            Normalize(expression),
+            incomingFlowIds,
+            helpersAllowed,
+            waitingForStartAllowed,
             out error);
 
     private static bool TryEvaluateMultiInstanceFunction(
@@ -798,6 +910,228 @@ internal static class FlowInfoExpressionInspector
             // Accept doubled quotes as an escaped quote while scanning. NCalc's
             // grammar validation remains authoritative for whether that spelling
             // is legal in an actual expression.
+            if (index + 1 < expression.Length && expression[index + 1] == quote)
+            {
+                index += 2;
+                continue;
+            }
+
+            index++;
+            return;
+        }
+    }
+
+    private static int SkipWhitespace(string expression, int index)
+    {
+        while (index < expression.Length && char.IsWhiteSpace(expression[index])) index++;
+        return index;
+    }
+
+    private static bool IsQuote(char value) => value is '\'' or '"';
+    private static bool IsIdentifierStart(char value) => char.IsLetter(value) || value == '_';
+    private static bool IsIdentifierPart(char value) => char.IsLetterOrDigit(value) || value == '_';
+}
+
+internal static class GatewayExpressionInspector
+{
+    private const string WaitingForStartParameter = "gateway.waitingForStart";
+
+    public static bool TryValidate(
+        string? expression,
+        IReadOnlySet<int> incomingFlowIds,
+        bool helpersAllowed,
+        bool waitingForStartAllowed,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(incomingFlowIds);
+        error = null;
+        if (string.IsNullOrEmpty(expression))
+        {
+            return true;
+        }
+
+        for (var index = 0; index < expression.Length;)
+        {
+            if (IsQuote(expression[index]))
+            {
+                SkipQuoted(expression, ref index);
+                continue;
+            }
+
+            if (!IsIdentifierStart(expression[index]))
+            {
+                index++;
+                continue;
+            }
+
+            if (MatchesParameter(expression, index, WaitingForStartParameter))
+            {
+                if (!waitingForStartAllowed)
+                {
+                    error = "[gateway.waitingForStart] is available only in Complex gateway outgoing-flow conditions.";
+                    return false;
+                }
+
+                index += WaitingForStartParameter.Length;
+                continue;
+            }
+
+            var identifierStart = index++;
+            while (index < expression.Length && IsIdentifierPart(expression[index])) index++;
+            var identifier = expression[identifierStart..index];
+            var isIncomingCount = identifier.Equals("IncomingCount", StringComparison.OrdinalIgnoreCase);
+            var isTotalIncomingCount = identifier.Equals("TotalIncomingCount", StringComparison.OrdinalIgnoreCase);
+            if (!isIncomingCount && !isTotalIncomingCount)
+            {
+                continue;
+            }
+
+            var openParenthesis = SkipWhitespace(expression, index);
+            if (openParenthesis >= expression.Length || expression[openParenthesis] != '(')
+            {
+                continue;
+            }
+
+            if (!helpersAllowed)
+            {
+                error = $"{identifier} is available only in Complex gateway expressions.";
+                return false;
+            }
+
+            if (!TryReadArguments(expression, openParenthesis, out var arguments, out var closeParenthesis))
+            {
+                error = $"{identifier} has an unterminated argument list.";
+                return false;
+            }
+
+            var hasNoArguments = arguments.Count == 1
+                && string.IsNullOrWhiteSpace(arguments[0]);
+            if (isTotalIncomingCount)
+            {
+                if (!hasNoArguments)
+                {
+                    error = "TotalIncomingCount requires no arguments.";
+                    return false;
+                }
+
+                index = closeParenthesis + 1;
+                continue;
+            }
+
+            if (hasNoArguments || arguments.Count != 1)
+            {
+                error = "IncomingCount requires exactly one literal incoming-flow id.";
+                return false;
+            }
+
+            var flowIdText = arguments[0].Trim();
+            if (!int.TryParse(
+                    flowIdText,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var flowId)
+                || !IsIntegerLiteral(flowIdText))
+            {
+                error = "IncomingCount's argument must be a literal integer incoming-flow id.";
+                return false;
+            }
+
+            if (!incomingFlowIds.Contains(flowId))
+            {
+                error = $"IncomingCount references sequence flow #{flowId}, which is not incoming to this Complex gateway.";
+                return false;
+            }
+
+            index = closeParenthesis + 1;
+        }
+
+        return true;
+    }
+
+    private static bool MatchesParameter(string expression, int index, string parameter)
+    {
+        if (expression.Length - index < parameter.Length
+            || !expression.AsSpan(index, parameter.Length).Equals(parameter, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var end = index + parameter.Length;
+        return end == expression.Length
+            || (!IsIdentifierPart(expression[end]) && expression[end] != '.');
+    }
+
+    private static bool TryReadArguments(
+        string expression,
+        int openParenthesis,
+        out List<string> arguments,
+        out int closeParenthesis)
+    {
+        arguments = [];
+        closeParenthesis = -1;
+        var argumentStart = openParenthesis + 1;
+        var depth = 0;
+
+        for (var index = argumentStart; index < expression.Length; index++)
+        {
+            if (IsQuote(expression[index]))
+            {
+                SkipQuoted(expression, ref index);
+                index--;
+                continue;
+            }
+
+            switch (expression[index])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')' when depth > 0:
+                    depth--;
+                    break;
+                case ')' when depth == 0:
+                    arguments.Add(expression[argumentStart..index]);
+                    closeParenthesis = index;
+                    return true;
+                case ',' when depth == 0:
+                    arguments.Add(expression[argumentStart..index]);
+                    argumentStart = index + 1;
+                    break;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsIntegerLiteral(string value)
+    {
+        if (value.Length == 0) return false;
+        var index = value[0] is '+' or '-' ? 1 : 0;
+        if (index == value.Length) return false;
+        for (; index < value.Length; index++)
+        {
+            if (!char.IsAsciiDigit(value[index])) return false;
+        }
+        return true;
+    }
+
+    private static void SkipQuoted(string expression, ref int index)
+    {
+        var quote = expression[index++];
+        while (index < expression.Length)
+        {
+            if (expression[index] == '\\')
+            {
+                index = Math.Min(index + 2, expression.Length);
+                continue;
+            }
+
+            if (expression[index] != quote)
+            {
+                index++;
+                continue;
+            }
+
             if (index + 1 < expression.Length && expression[index + 1] == quote)
             {
                 index += 2;

@@ -29,10 +29,10 @@ public sealed class NodeExecutionEntity
     public string Status { get; set; } = NodeExecutionStatuses.Active;
     public string? CompletionReason { get; set; }
 
-    public long? EntryParallelBranchId { get; set; }
-    public ParallelGatewayBranchEntity? EntryParallelBranch { get; set; }
-    public long? ExitParallelBranchId { get; set; }
-    public ParallelGatewayBranchEntity? ExitParallelBranch { get; set; }
+    public long? EntryGatewayBranchId { get; set; }
+    public GatewayBranchEntity? EntryGatewayBranch { get; set; }
+    public long? ExitGatewayBranchId { get; set; }
+    public GatewayBranchEntity? ExitGatewayBranch { get; set; }
 
     public int? EnteredViaFlowId { get; set; }
     public int? SelectedFlowId { get; set; }
