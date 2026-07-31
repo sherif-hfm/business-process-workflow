@@ -75,7 +75,10 @@ public sealed class NodeExecutionQueryServiceTests
         Assert.Equal(["userAction"], query.CompletionReasons);
         Assert.Equal(TimeSpan.Zero, query.CreatedFrom!.Value.Offset);
         Assert.Equal(TimeSpan.Zero, query.CreatedTo!.Value.Offset);
-        Assert.Equal(new VariableFilter("decision", "APPROVED"), Assert.Single(query.VariableFilters));
+        var variableFilter = Assert.IsType<VariableFilterComparisonExpression>(query.VariableFilter);
+        Assert.Equal("decision", variableFilter.Field.VariableName);
+        Assert.Equal(VariableFilterComparisonOperator.LegacyEqualIgnoreCase, variableFilter.Operator);
+        Assert.Equal("APPROVED", variableFilter.Operand.GetString());
         Assert.Equal(1, query.Page);
         Assert.Equal(200, query.PageSize);
         Assert.Equal(

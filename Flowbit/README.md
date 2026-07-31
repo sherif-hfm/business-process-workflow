@@ -28,6 +28,7 @@
   `flowbit.complex_gateway_states`,
   `flowbit.multi_instance_executions`, `flowbit.multi_instance_flow_counts`,
   `flowbit.node_executions`, `flowbit.instance_variables`,
+  `flowbit.instance_variable_current_values`,
   `flowbit.instance_history`,
   `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
 - Durable work is stored in `flowbit.workflow_jobs`,
@@ -52,6 +53,11 @@
   managers and the external distributor can still see it. `assignmentMode`
   supports `fresh`, `previous`, and `fromNode` ownership inheritance; this gate
   is intentionally separate from `requiresClaim` and cannot be combined with it.
+- `flowbit.instance_variables` remains the append-only variable audit history.
+  An `AFTER INSERT` trigger transactionally upserts the newest row per
+  `(InstanceId, VariableName)` into `flowbit.instance_variable_current_values`.
+  Search and latest-value enrichment read that bounded projection; execution
+  detail and audit reads continue to use history.
 
 ## Gateways and scoped interruption
 
@@ -256,9 +262,14 @@ and in-flight gateway executions are not migrated.
 - `POST /api/instances`
 - `GET /api/instances?status=running` (SQL-authorized, opaque cursor paging)
 - `GET /api/instances?includeVariables=true`
+- `POST /api/instances/search` (advanced SQL-backed variable search)
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/inbox?includeVariables=true` (actor-scoped)
+- `POST /api/instances/inbox/search` (advanced, actor-scoped)
+- `POST /api/user-tasks/manage/search` (advanced, assignment-manager scoped)
+- `POST /api/task-distribution/workflows/{workflowKey}/tasks/search`
 - `GET /api/node-executions` (authorized cross-workflow activity)
+- `POST /api/node-executions/search` (advanced authorized activity search)
 - `GET /api/node-executions/{id}` (authorized execution detail)
 - `GET /api/jobs` (admin by default; opaque cursor paging)
 - `GET /api/jobs/statistics`
@@ -285,8 +296,9 @@ and in-flight gateway executions are not migrated.
 
 ## Node execution activity
 
-`GET /api/node-executions` is the read-only, cross-workflow activity resource
-used by the Blazor **Activity** page. `GET /api/node-executions/{id}` returns one
+`GET /api/node-executions` and `POST /api/node-executions/search` are the
+read-only, cross-workflow activity search resources. The Blazor **Activity**
+page continues to use the GET route. `GET /api/node-executions/{id}` returns one
 authorized execution with its execution-local detail. These routes do not grant
 assignment, claim, cancellation, or workflow-mutation authority; the existing
 inbox and Task Assignments APIs remain the action surfaces for human work.
@@ -436,22 +448,188 @@ dotnet run --project .\tools\MultiInstanceApiTests\MultiInstanceApiTests.csproj 
 The live API runner writes Markdown and JSON evidence under the repository-level
 `TestResults` directory and includes restart recovery plus a 1,000-item load case.
 
-### Variable search
+## Advanced variable search
 
-The list (`GET /api/instances`) and inbox (`GET /api/instances/inbox`) endpoints
-accept repeated `var=name:value` query params to filter by instance variable
-values, e.g. `GET /api/instances?var=reqno:4711&var=priority:high`. Each pair is
-an exact, case-insensitive match on the variable's latest scalar value; multiple
-pairs are AND-combined, and on the inbox the filter is additive on top of the
-caller's role/claim scope. In the Blazor UI, the Instances and Inbox pages expose
-this as a comma-separated `name:value` filter box.
+Five additive POST endpoints accept endpoint-specific native selectors plus a
+shared Mongo-inspired `variableFilter` object:
 
-The instance list and inbox also accept `includeVariables=true`. Each returned
-item then includes a `variables` object containing the latest JSON value for
-every variable name; instances without variables receive an empty object. The
-property is omitted when the parameter is absent or false. The instance list
-loads variables only when requested; the inbox already projects them for its
-stored-state capability checks, so including them adds no database query.
+| Endpoint | Scope retained from its GET counterpart |
+| --- | --- |
+| `POST /api/instances/search` | Instance selectors, structured sort, cursor/paging, and `includeVariables` |
+| `POST /api/instances/inbox/search` | Actor inbox selectors, structured sort, paging, and `includeVariables` |
+| `POST /api/user-tasks/manage/search` | Task, instance, owner/ownership selectors and manager-scoped paging |
+| `POST /api/task-distribution/workflows/{workflowKey}/tasks/search` | Distribution selectors, paging, and `includeVariables`; workflow key stays in the route and credentials stay in headers |
+| `POST /api/node-executions/search` | All execution selectors/ranges, structured sort, and paging |
+
+An empty JSON object preserves the corresponding unfiltered GET defaults. POST
+sorting uses objects such as `{ "field": "updatedAt", "direction": "desc" }`;
+each endpoint retains its existing allowed fields, default order, cursor rules,
+page limits, authorization, status codes, and `PagedResult<T>` response shape.
+
+Instance search example:
+
+```http
+POST /api/instances/search
+Content-Type: application/json
+
+{
+  "workflowKey": "health-certificate",
+  "variableFilter": {
+    "$and": [
+      { "request.medicalCenter.id": { "$eq": "MC-1042" } },
+      { "request.services": { "$contains": "health-certificate" } }
+    ]
+  },
+  "sort": [{ "field": "updatedAt", "direction": "desc" }],
+  "pageSize": 50,
+  "includeVariables": true
+}
+```
+
+Actor inbox example:
+
+```http
+POST /api/instances/inbox/search
+Content-Type: application/json
+
+{
+  "variableFilter": {
+    "request.medicalCenter.id": { "$eq": "MC-1042" }
+  },
+  "sort": [{ "field": "taskUpdatedAt", "direction": "desc" }],
+  "page": 1,
+  "pageSize": 50,
+  "includeVariables": true
+}
+```
+
+Assignment-manager example:
+
+```http
+POST /api/user-tasks/manage/search
+Content-Type: application/json
+
+{
+  "ownership": "unassigned",
+  "variableFilter": { "request.region": { "$in": ["north", "central"] } },
+  "page": 1,
+  "pageSize": 50
+}
+```
+
+External distributor example (credentials remain transport headers, not body
+fields):
+
+```http
+POST /api/task-distribution/workflows/health-certificate/tasks/search
+X-Client-Id: workforce-service
+X-Client-Secret: <secret>
+Content-Type: application/json
+
+{
+  "owner": "clinic-queue",
+  "variableFilter": {
+    "request.services": { "$containsAny": ["health-certificate", "screening"] }
+  },
+  "includeVariables": true,
+  "page": 1,
+  "pageSize": 50
+}
+```
+
+Node-execution example:
+
+```http
+POST /api/node-executions/search
+Content-Type: application/json
+
+{
+  "statuses": ["completed"],
+  "createdFrom": "2026-07-01T00:00:00Z",
+  "variableFilter": { "request.medicalCenter.id": { "$eq": "MC-1042" } },
+  "sort": [{ "field": "updatedAt", "direction": "desc" }],
+  "page": 1,
+  "pageSize": 50
+}
+```
+
+The first segment of a dotted field identifies the Flowbit variable and later
+segments address JSON object properties. Array indexes are not supported; use
+containment operators or `$elemMatch`. If a variable name or JSON key itself
+contains a dot, use the unambiguous `$field` form:
+
+```json
+{
+  "$field": {
+    "$var": "request.medicalCenter",
+    "$path": ["id"],
+    "$eq": "MC-1042"
+  }
+}
+```
+
+Inside `$elemMatch`, the same escape hatch is element-relative: omit `$var`
+and provide `$path` for a dotted property name on the current array element.
+
+```json
+{
+  "items": {
+    "$elemMatch": {
+      "$field": {
+        "$path": ["medical.center", "id"],
+        "$eq": "MC-1042"
+      }
+    }
+  }
+}
+```
+
+Supported logical operators are `$and`, `$or`, and `$not`. Supported comparison
+operators are `$eq`, `$eqIgnoreCase`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`,
+`$lt`, `$lte`, `$exists`, `$contains`, `$containsAny`, `$containsAll`, and
+`$elemMatch`. Multiple ordinary fields are an implicit AND, as are multiple
+operators on one field. A logical node cannot mix logical and field members;
+wrap them in an explicit `$and` instead. `$elemMatch` evaluates its complete
+nested predicate against one array element.
+
+`$eq` is typed and case-sensitive; use `$eqIgnoreCase` for strings. Object
+equality follows normalized PostgreSQL `jsonb` equality, while array equality is
+order-sensitive. `$in` and `$nin` accept scalar alternatives; use containment
+operators for JSON arrays/objects. Range operators accept JSON numbers only in
+this version. Dates and datetimes support equality/membership but not ranges.
+Missing paths do not satisfy comparisons, including `$ne` and `$nin`;
+`$exists:false` is the only missing-path match, and explicit JSON `null` remains
+distinct from a missing path.
+
+Requests reject unknown operators, mixed node shapes, raw JSONPath, `$where`,
+regex, executable expressions, and type-invalid operands with 400. A search body
+is limited to 64 KiB; `variableFilter` is limited to five logical levels, 20
+comparison predicates, 100 values per membership operator, and 16 JSON path
+segments.
+
+The validated filter is compiled only from whitelisted, parameterized PostgreSQL
+templates and runs before count, sorting, and paging. Every repository composes
+its mandatory role, actor, assignment, claim, delegation, workflow-family, or
+execution-visibility predicate with the variable filter using AND. Consequently,
+a caller's `$or` or `$not` cannot weaken authorization. Variable filtering is a
+search predicate, not authorization: derive tenant/medical-center constraints
+from trusted identity data, and keep outgoing-flow conditions as action-time
+guards. No result membership is filtered in memory.
+
+`flowbit.instance_variables` remains the append-only audit source. Migration
+backfill plus an `AFTER INSERT` trigger maintains
+`flowbit.instance_variable_current_values`, keeping only the greatest source ID
+per instance/name. Its variable-name, `jsonb_ops` GIN, root case-insensitive
+string, and root numeric indexes support the shared SQL compiler; targeted
+expression indexes can be added later for measured hot nested paths. Latest
+`includeVariables` enrichment also reads this projection.
+
+All legacy GET routes remain unchanged. Repeated `var=name:value` filters retain
+their exact case-insensitive latest-scalar-text behavior and are translated to
+the shared SQL filter internally; repeated values remain AND-combined (including
+the node-execution route's existing ten-filter limit). The current Blazor UI
+continues to use these GET routes. `includeVariables=true` still returns the
+latest JSON value for each name, omitting the property when false or absent.
 
 ### Instance and inbox sorting
 

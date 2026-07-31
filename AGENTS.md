@@ -97,12 +97,13 @@ Storage follows the hybrid design:
   shown without that schema qualifier for readability.
 
 - Workflow definitions are immutable/versioned JSONB snapshots in
-  `workflow_definitions`. Each row also carries `WorkflowKey`, an indexed integer
+  `workflow_definitions`. Each row also carries `WorkflowKey`, an indexed string
   stamped from the editor JSON model `id` on every save; it is the same across all
   versions of a workflow, so it acts as a stable cross-version key for instance
   search (see the workflow key search below).
 - Runtime state is normalized in `workflow_instances`, `execution_tokens`,
-  `user_tasks`, `node_executions`, `instance_variables`, `instance_history`,
+  `user_tasks`, `node_executions`, `instance_variables`,
+  `instance_variable_current_values`, `instance_history`,
   `sequence_flow_occurrences`, `sequence_flow_summaries`, and
   `message_delivery_receipts`. An instance row
   owns lifecycle status and timestamps but no longer stores a single current
@@ -140,6 +141,20 @@ Storage follows the hybrid design:
   instance DTOs do not expose `ClaimedBy`; claim ownership belongs to task DTOs.
   Progress and work-summary projections use bounded grouped queries rather than
   loading every child item.
+- **Current-variable projection and advanced search.** `instance_variables`
+  remains the authoritative append-only history. The migration backfills the
+  greatest history ID for every `(InstanceId, VariableName)`, and an
+  `AFTER INSERT` PostgreSQL trigger upserts that row into
+  `instance_variable_current_values` only when its source ID is newer. The
+  projection has a composite primary key, variable-name lookup, default
+  `jsonb_ops` GIN, root case-insensitive-string, and root-numeric indexes.
+  Latest-value enrichment and all five advanced variable searches read this
+  projection; audit and execution-attributed-change reads continue to use
+  history. One validated service-layer AST and one infrastructure SQL compiler
+  serve runtime and node-execution queries. The compiler emits whitelisted SQL
+  shapes with bound variable names, paths, and values; membership, exact count,
+  ordering, and paging all remain PostgreSQL-authoritative with no in-memory
+  result filtering.
 - **Cross-workflow node execution activity.** `node_executions` is the
   authoritative read-only lifecycle ledger for committed node visits from its
   deployment cutover onward. One normal visit is correlated to an execution
@@ -162,8 +177,9 @@ Storage follows the hybrid design:
   Committed failure descriptions are bounded to 1,000 Unicode characters so a
   caught runtime diagnostic cannot prevent the execution and boundary records
   from committing.
-  `GET /api/node-executions` searches across workflow versions with SQL-backed
-  authorization, exact count, ordering, and paging; detail is
+  `GET /api/node-executions` and `POST /api/node-executions/search` search
+  across workflow versions with SQL-backed authorization, exact count, ordering,
+  and paging; detail is
   `GET /api/node-executions/{id}`. Repeated status/type/reason filters are
   OR-combined within their group, different groups are AND-combined, date
   `From` bounds are inclusive, and `To` bounds are exclusive. Repeated
@@ -734,7 +750,10 @@ what the cross-version `workflowKey` instance search matches.
   `startEventId`; a configured idempotency value is accepted only through its
   HTTP header and a duplicate returns `StartConflictDto` with 409/`Location`),
   `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged),
-  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped), `GET /{id}`,
+  `POST /search` (same native selectors/defaults plus an advanced JSON
+  `variableFilter` and structured sort),
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped),
+  `POST /inbox/search` (advanced actor-scoped search), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
@@ -742,12 +761,13 @@ what the cross-version `workflowKey` instance search matches.
   the user JWT; body is the raw JSON message payload; returns a slim
   `MessageDeliveryAckDto` (no definition/variables/history), 401 on a client
   id/secret mismatch, 400 on a header problem or when not running/waiting),
-  `POST /{id}/cancel`. The two list endpoints return
-  `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `page` defaults
-  to 1 and `pageSize` defaults to 50, clamped to a max of 200. Paging is
-  offset-based. Each endpoint accepts up to three repeated `sort=field:direction`
-  clauses, with case-insensitive `asc` or `desc` directions. Instance sortable
-  fields are `id`, `createdAt`, and `updatedAt`; inbox sortable fields are
+  `POST /{id}/cancel`. The instance-list and inbox GET/POST searches return
+  `PagedResult<T>` (`Items`, `Page`, `PageSize`, `TotalCount`); `pageSize`
+  defaults to 50 and is clamped to a max of 200. The inbox uses offset paging;
+  the instance list uses its documented opaque cursor contract. GET accepts up
+  to three repeated `sort=field:direction` clauses and POST uses the equivalent
+  structured objects, with case-insensitive `asc` or `desc` directions.
+  Instance sortable fields are `id`, `createdAt`, and `updatedAt`; inbox sortable fields are
   `userTaskId`, `instanceId`, `taskCreatedAt`, `taskUpdatedAt`,
   `instanceCreatedAt`, and `instanceUpdatedAt`. Instance ordering defaults to
   `updatedAt:desc`; inbox ordering defaults to `taskUpdatedAt:desc`. Unknown,
@@ -770,7 +790,9 @@ what the cross-version `workflowKey` instance search matches.
   calculate outgoing-flow `CanAct`/`CanClaim` flags.
 - `UserTaskEndpoints` (`/api/user-tasks`):
   `GET /manage?taskId=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&owner=&ownership=&var=&page=&pageSize=`
-  returns a role-scoped page of active work items for assignment managers;
+  and `POST /manage/search` return role-scoped pages of active work items for
+  assignment managers; the POST body preserves the native selectors/paging and
+  adds `variableFilter`;
   `POST /{taskId}/assign` accepts `actorId`, `expectedUpdatedAt`, and an optional
   `reason`; `POST /{taskId}/unassign` accepts `expectedUpdatedAt` and an optional
   `reason`. Unauthorized workflow managers receive 403 and stale mutations
@@ -790,29 +812,61 @@ what the cross-version `workflowKey` instance search matches.
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
   business-key, node, owner, ownership, and repeated `var=` filters as task
-  management. `includeVariables=true` adds the latest instance variables only
+  management. `POST /search` accepts the same native selectors plus advanced
+  `variableFilter`; the workflow key remains in the route and credentials remain
+  in `X-Client-Id` / `X-Client-Secret` headers. `includeVariables=true` adds the
+  latest instance variables only
   for the bounded page; the property is otherwise omitted. `POST
   /{taskId}/assign` and `POST /{taskId}/unassign` reuse the manager request and
-  acknowledgement DTOs. All three endpoints authenticate through
+  acknowledgement DTOs. All four endpoints authenticate through
   `X-Client-Id` / `X-Client-Secret`, return 401 for invalid credentials, 404 for
   unknown or cross-family targets, and 409 for stale/inactive task conflicts.
+- `NodeExecutionEndpoints` (`/api/node-executions`): `GET /` keeps the repeated
+  query-parameter contract and `POST /search` accepts every existing execution
+  selector/range plus structured sort, paging, and advanced `variableFilter`.
+  Both list paths apply the immutable-version visibility predicate before exact
+  count, ordering, and paging. `GET /{id}` remains the execution detail route.
 - `MultiInstanceExecutionEndpoints` (`/api/multi-instance-executions`):
   `GET /{executionId}/flows` returns the current actor's selectable parent-level
   interrupt flows for an active execution; `POST /{executionId}/flows/{flowId}`
   validates roles/condition/variables, atomically cancels unfinished child items,
   and advances the parent token through the interrupting flow.
-- **Variable search.** Both list endpoints accept repeated `var=name:value`
-  query params (split on the first `:`, so values may contain `:`). Each pair is
-  an exact, case-insensitive match on an instance variable's latest scalar value;
-  when several are supplied they are AND-combined. Matching selects the greatest
-  variable-row `Id` for the requested name before comparing its JSON scalar text,
-  with all values bound as parameters. The inbox filter is additive on top of the
-  actor role/claim scope.
-  For the list endpoint the `var` filter combines with `status`. Malformed
-  entries (missing `:` or empty name) are rejected via `WorkflowDomainException`.
-  Array/object variables never match, and value ranges/operators are out of
-  scope. The `(InstanceId, VariableName, Id DESC)` and
-  `(VariableName, InstanceId)` indexes back the latest lookup and name search.
+- **Advanced variable search.** The additive POST routes are
+  `/api/instances/search`, `/api/instances/inbox/search`,
+  `/api/user-tasks/manage/search`,
+  `/api/task-distribution/workflows/{workflowKey}/tasks/search`, and
+  `/api/node-executions/search`. Their endpoint-specific request DTOs preserve
+  native selectors, paging/cursor behavior, `includeVariables`, and structured
+  `{ field, direction }` sorting where supported. `{}` preserves the matching
+  unfiltered GET defaults and every response remains `PagedResult<T>`.
+  `variableFilter` uses Mongo-inspired dot notation: the first segment is the
+  variable name and later segments are JSON object keys. Numeric array indexes
+  are rejected; use `$contains`, `$containsAny`, `$containsAll`, or `$elemMatch`.
+  The `$field` escape hatch supplies an exact `$var`, a string-array `$path`, and
+  comparison operators when variable names or keys contain dots. Within
+  `$elemMatch`, an element-relative `$field` omits `$var` and requires `$path`,
+  so dotted keys on array elements remain addressable.
+  Logical operators are `$and`, `$or`, and `$not`; comparisons are `$eq`,
+  `$eqIgnoreCase`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, `$exists`,
+  `$contains`, `$containsAny`, `$containsAll`, and `$elemMatch`. Ordinary fields
+  and multiple operators on one field imply AND. `$eq` is typed/case-sensitive,
+  `$eqIgnoreCase` is string-only, numeric ranges require JSON numbers, and
+  `$elemMatch` binds its nested predicate to one array element. Missing paths do
+  not satisfy comparisons (`$exists:false` is the missing-path test), while JSON
+  null remains a concrete value. Unknown/mixed/executable/regex/JSONPath shapes
+  return 400. Limits are 64 KiB per search body, five logical levels, 20
+  comparisons, 100 membership values per operator, and 16 path segments.
+  Each repository constructs `(mandatory authorization) AND (compiled variable
+  filter)` before count/order/page, so a caller-controlled `$or` or `$not` cannot
+  weaken actor, role, assignment, claim, delegation, workflow-family, or
+  node-execution visibility. Filters are additional search predicates, not
+  authorization; trusted identity must supply tenant/medical-center constraints,
+  and user-task flow conditions remain action guards.
+  Existing GET `var=name:value` contracts remain unchanged and are internally
+  translated to the shared compiler as exact case-insensitive latest-scalar-text
+  comparisons. Repeated GET filters are AND-combined, including the
+  node-execution route's existing ten-filter maximum. The Blazor UI continues to
+  use GET in this change.
 - **Instance id / workflow id search.** Both list endpoints accept optional
   integer `instanceId=` and `workflowId=` query params: exact matches on the
   instance primary key (`w."Id" = @instanceId`) and the owning definition
@@ -822,7 +876,7 @@ what the cross-version `workflowKey` instance search matches.
   is convenient inside the shared filter/paging UI; `workflowId` scopes the list
   to a single workflow definition version. Both are backed by existing indexes
   (the primary key and the `WorkflowDefinitionId` foreign-key index).
-- **Workflow key search.** Both list endpoints accept an optional integer
+- **Workflow key search.** Both list endpoints accept an optional string
   `workflowKey=` query param that matches the stable, cross-version workflow key
   (`workflow_definitions.WorkflowKey`, stamped from the editor JSON model `id`).
   It is compiled to a correlated `EXISTS` joining each instance to its definition

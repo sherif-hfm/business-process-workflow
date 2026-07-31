@@ -162,7 +162,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             Statuses = [],
             InstanceStatuses = [],
             CompletionReasons = [],
-            VariableFilters = [],
+            VariableFilter = null,
             Sort =
             [
                 new NodeExecutionSortCriterion(
@@ -401,7 +401,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             where.Append($" AND ne.\"StartedAt\" IS NOT NULL AND {DurationSql} <= @maximumDuration");
         }
 
-        AppendVariableFilters(where, arguments, query.VariableFilters);
+        VariableFilterSqlCompiler.Append(where, arguments, query.VariableFilter, "w.\"Id\"");
         return (where, arguments);
     }
 
@@ -483,28 +483,6 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         {
             arguments.Add(($"{name}To", upper));
             where.Append($" AND {column} < @{name}To");
-        }
-    }
-
-    // Same semantics as existing instance/inbox search: only the latest row for
-    // each requested name participates; arrays/objects never match; values are
-    // compared exactly and case-insensitively; entries AND-combine.
-    private static void AppendVariableFilters(
-        StringBuilder where,
-        List<(string Name, object Value)> arguments,
-        IReadOnlyList<VariableFilter> filters)
-    {
-        for (var index = 0; index < filters.Count; index++)
-        {
-            arguments.Add(($"variableName{index}", filters[index].Name));
-            arguments.Add(($"variableValue{index}", filters[index].Value));
-            where.Append(
-                $" AND (SELECT CASE WHEN jsonb_typeof(v.\"ValueJson\") NOT IN ('array', 'object')" +
-                $" THEN lower(v.\"ValueJson\" #>> ARRAY[]::text[]) END" +
-                $" FROM flowbit.instance_variables v" +
-                $" WHERE v.\"InstanceId\" = w.\"Id\"" +
-                $" AND v.\"VariableName\" = @variableName{index}" +
-                $" ORDER BY v.\"Id\" DESC LIMIT 1) = lower(@variableValue{index})");
         }
     }
 

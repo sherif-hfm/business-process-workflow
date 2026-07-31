@@ -16,6 +16,8 @@ namespace Flowbit.Api.Endpoints;
 /// </summary>
 public static class WorkflowInstanceEndpoints
 {
+    private const long MaxSearchRequestBodyBytes = 64 * 1024;
+
     /// <summary>
     /// Maps the workflow instance endpoints to the application's route builder.
     /// </summary>
@@ -39,10 +41,36 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized);
 
+        group.MapPost("/search", SearchInstances)
+            .Accepts<InstanceSearchRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxSearchRequestBodyBytes))
+            .WithSummary("Search workflow instances with advanced variable predicates")
+            .WithDescription(
+                "Preserves the instance list selectors, structured sort, cursor, paging, and includeVariables contract. " +
+                "variableFilter is parsed into a bounded typed expression and evaluated in PostgreSQL after visibility authorization but before count, ordering, and paging.")
+            .Produces<PagedResult<InstanceSummaryDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
+
         group.MapGet("/inbox", GetInbox)
             .Produces<PagedResult<InboxItemDto>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized);
+
+        group.MapPost("/inbox/search", SearchInbox)
+            .Accepts<InboxSearchRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxSearchRequestBodyBytes))
+            .WithSummary("Search the actor inbox with advanced variable predicates")
+            .WithDescription(
+                "Preserves the actor-scoped inbox selectors, structured sort, paging, and includeVariables contract. " +
+                "The variable predicate is an additional SQL condition and cannot weaken role, assignment, claim, or delegation visibility.")
+            .Produces<PagedResult<InboxItemDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
 
         group.MapGet("/{id:long}", GetInstance)
             .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
@@ -241,6 +269,19 @@ public static class WorkflowInstanceEndpoints
             cancellationToken));
     }
 
+    private static async Task<IResult> SearchInstances(
+        InstanceSearchRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        return Results.Ok(await service.SearchInstancesAsync(
+            actorResolver.Resolve(principal),
+            request,
+            cancellationToken));
+    }
+
     /// <summary>
     /// Retrieves user tasks pending claim or action for the current authenticated actor.
     /// </summary>
@@ -287,6 +328,19 @@ public static class WorkflowInstanceEndpoints
     {
         var (p, s) = NormalizePaging(page, pageSize);
         return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, sort, includeVariables ?? false, p, s, cancellationToken));
+    }
+
+    private static async Task<IResult> SearchInbox(
+        InboxSearchRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        return Results.Ok(await service.SearchInboxAsync(
+            actorResolver.Resolve(principal),
+            request,
+            cancellationToken));
     }
 
     /// <summary>

@@ -80,7 +80,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
-        IReadOnlyList<VariableFilter> variableFilters,
+        VariableFilterExpression? variableFilter,
         IReadOnlyList<InstanceSortCriterion> sort,
         InstanceListAuthorization authorization,
         string? cursor,
@@ -126,7 +126,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId);
         AppendNodeExternalIdFilter(where, args, nodeExternalId);
-        AppendVariableFilters(where, args, variableFilters);
+        VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
@@ -208,7 +208,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
-        IReadOnlyList<VariableFilter> variableFilters,
+        VariableFilterExpression? variableFilter,
         IReadOnlyList<InboxSortCriterion> sort,
         int page,
         int pageSize,
@@ -218,7 +218,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // so compare lower-cased node roles against lower-cased actor roles.
         var (where, args) = BuildInboxWhere(
             user, roles, asOf, instanceId, workflowId, workflowKey, businessKey,
-            nodeId, nodeExternalId, variableFilters);
+            nodeId, nodeExternalId, variableFilter);
         var eligibleOrderBy = BuildInboxOrderBy(sort, "e");
         var pageOrderBy = BuildInboxOrderBy(sort, "page");
         var eligibleCte = $"""
@@ -315,17 +315,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     SELECT DISTINCT page."InstanceId"
                     FROM page_task_ids page
                 ),
-                latest_variables AS (
-                    SELECT DISTINCT ON (v."InstanceId", v."VariableName")
-                           v."InstanceId", v."VariableName", v."ValueJson"
-                    FROM flowbit.instance_variables v
-                    JOIN page_instances page ON page."InstanceId" = v."InstanceId"
-                    ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
-                ),
                 variable_values AS (
                     SELECT v."InstanceId",
                            jsonb_object_agg(v."VariableName", v."ValueJson") AS "VariablesJson"
-                    FROM latest_variables v
+                    FROM flowbit.instance_variable_current_values v
+                    JOIN page_instances page ON page."InstanceId" = v."InstanceId"
                     GROUP BY v."InstanceId"
                 ),
                 page_executions AS (
@@ -436,7 +430,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? nodeExternalId,
         string? owner,
         string? ownership,
-        IReadOnlyList<VariableFilter> variableFilters,
+        VariableFilterExpression? variableFilter,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
@@ -482,7 +476,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId, useUserTaskProjection: true);
         AppendNodeExternalIdFilter(where, args, nodeExternalId, useUserTaskProjection: true);
-        AppendVariableFilters(where, args, variableFilters);
+        VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         if (!string.IsNullOrWhiteSpace(owner))
         {
@@ -545,7 +539,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? nodeExternalId,
         string? owner,
         string? ownership,
-        IReadOnlyList<VariableFilter> variableFilters,
+        VariableFilterExpression? variableFilter,
         bool includeVariables,
         int page,
         int pageSize,
@@ -577,7 +571,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId, useUserTaskProjection: true);
         AppendNodeExternalIdFilter(where, args, nodeExternalId, useUserTaskProjection: true);
-        AppendVariableFilters(where, args, variableFilters);
+        VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         if (!string.IsNullOrWhiteSpace(owner))
         {
@@ -639,7 +633,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
-        IReadOnlyList<VariableFilter> variableFilters)
+        VariableFilterExpression? variableFilter)
     {
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
@@ -719,7 +713,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId, useUserTaskProjection: true);
         AppendNodeExternalIdFilter(where, args, nodeExternalId, useUserTaskProjection: true);
-        AppendVariableFilters(where, args, variableFilters);
+        VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         return (where, args);
     }
@@ -845,31 +839,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                       AND lower(position."NodeExternalId") = lower(@nodeExternalId)
                   )
               """);
-    }
-
-    // Appends one correlated lookup per filter. Only the newest row for the
-    // variable participates, and its scalar value must equal the target
-    // case-insensitively. A latest array/object value never matches, and an older
-    // scalar value cannot match through it.
-    // Names/values bind as parameters, so there is no SQL injection surface.
-    // `#>> ARRAY[]::text[]` extracts the root scalar as text (equivalent to the
-    // `#>> '{}'` literal but brace-free, since FromSqlRaw runs string.Format
-    // over the SQL and would treat literal braces as format placeholders).
-    private static void AppendVariableFilters(
-        StringBuilder where,
-        List<(string Name, object Value)> args,
-        IReadOnlyList<VariableFilter> filters)
-    {
-        for (var i = 0; i < filters.Count; i++)
-        {
-            args.Add(($"vn{i}", filters[i].Name));
-            args.Add(($"vv{i}", filters[i].Value));
-            where.Append(
-                $" AND (SELECT CASE WHEN jsonb_typeof(v.\"ValueJson\") NOT IN ('array', 'object')" +
-                $" THEN lower(v.\"ValueJson\" #>> ARRAY[]::text[]) END" +
-                $" FROM flowbit.instance_variables v WHERE v.\"InstanceId\" = w.\"Id\"" +
-                $" AND v.\"VariableName\" = @vn{i} ORDER BY v.\"Id\" DESC LIMIT 1) = lower(@vv{i})");
-        }
     }
 
     private static NpgsqlParameter[] BuildParameters(IEnumerable<(string Name, object Value)> args) =>
@@ -1172,13 +1141,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             CancellationToken cancellationToken)
     {
         var ids = instanceIds.ToArray();
-        var rows = await dbContext.InstanceVariables
-            .FromSqlInterpolated($"""
-                SELECT DISTINCT ON (v."InstanceId", v."VariableName") v.*
-                FROM flowbit.instance_variables AS v
-                WHERE v."InstanceId" = ANY ({ids})
-                ORDER BY v."InstanceId", v."VariableName", v."Id" DESC
-                """)
+        var rows = await dbContext.InstanceVariableCurrentValues
+            .Where(variable => ids.Contains(variable.InstanceId))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 

@@ -144,6 +144,13 @@ public sealed class NodeExecutionQueryService(
 
     internal static NodeExecutionQuery Normalize(NodeExecutionSearchRequest request)
     {
+        if (request.VariableFilter.HasValue
+            && request.Variables is { Count: > 0 })
+        {
+            throw new WorkflowDomainException(
+                "Legacy var filters and variableFilter cannot be combined.");
+        }
+
         ValidateNullablePositive(request.ExecutionId, "node execution id");
         ValidateNullablePositive(request.InstanceId, "instance id");
         ValidateNullablePositive(request.WorkflowId, "workflow id");
@@ -226,7 +233,9 @@ public sealed class NodeExecutionQueryService(
             CompletedTo = request.CompletedTo?.ToUniversalTime(),
             MinDurationMilliseconds = request.MinDurationMilliseconds,
             MaxDurationMilliseconds = request.MaxDurationMilliseconds,
-            VariableFilters = ParseVariableFilters(request.Variables),
+            VariableFilter = request.VariableFilter.HasValue
+                ? VariableFilterParser.Parse(request.VariableFilter)
+                : VariableFilterParser.FromLegacy(ParseVariableFilters(request.Variables)),
             Sort = ParseSort(request.Sort),
             Page = Math.Max(1, request.Page),
             PageSize = Math.Clamp(request.PageSize, 1, 200)

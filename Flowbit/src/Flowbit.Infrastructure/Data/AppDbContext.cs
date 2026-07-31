@@ -21,6 +21,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<InstanceVariableEntity> InstanceVariables => Set<InstanceVariableEntity>();
 
+    public DbSet<InstanceVariableCurrentValueEntity> InstanceVariableCurrentValues =>
+        Set<InstanceVariableCurrentValueEntity>();
+
     public DbSet<InstanceHistoryEntity> InstanceHistory => Set<InstanceHistoryEntity>();
 
     public DbSet<ExecutionTokenEntity> ExecutionTokens => Set<ExecutionTokenEntity>();
@@ -644,6 +647,23 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.NodeExecutionId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<InstanceVariableCurrentValueEntity>(entity =>
+        {
+            entity.ToTable("instance_variable_current_values");
+            entity.HasKey(e => new { e.InstanceId, e.VariableName });
+            entity.Property(e => e.VariableName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.ValueJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.SetAt).IsRequired();
+            entity.HasIndex(e => new { e.VariableName, e.InstanceId });
+            entity.HasIndex(e => e.ValueJson)
+                .HasDatabaseName("IX_instance_variable_current_values_ValueJson_gin")
+                .HasMethod("gin");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.CurrentVariableValues)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<InstanceHistoryEntity>(entity =>

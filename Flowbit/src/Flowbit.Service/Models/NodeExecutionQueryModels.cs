@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Flowbit.Service.Models;
 
 /// <summary>
@@ -49,6 +51,7 @@ public sealed record NodeExecutionSearchRequest
     public long? MaxDurationMilliseconds { get; init; }
 
     public IReadOnlyList<string>? Variables { get; init; }
+    public JsonElement? VariableFilter { get; init; }
     public IReadOnlyList<string>? Sort { get; init; }
     public int Page { get; init; } = 1;
     public int PageSize { get; init; } = 50;
@@ -116,7 +119,7 @@ public sealed record NodeExecutionQuery
     public long? MinDurationMilliseconds { get; init; }
     public long? MaxDurationMilliseconds { get; init; }
 
-    public required IReadOnlyList<VariableFilter> VariableFilters { get; init; }
+    public VariableFilterExpression? VariableFilter { get; init; }
     public required IReadOnlyList<NodeExecutionSortCriterion> Sort { get; init; }
     public required int Page { get; init; }
     public required int PageSize { get; init; }

@@ -9,6 +9,8 @@ namespace Flowbit.Api.Endpoints;
 
 public static class UserTaskEndpoints
 {
+    private const long MaxSearchRequestBodyBytes = 64 * 1024;
+
     public static IEndpointRouteBuilder MapUserTaskEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/user-tasks").WithTags("User Tasks").RequireAuthorization();
@@ -16,6 +18,18 @@ public static class UserTaskEndpoints
             .Produces<PagedResult<ManagedUserTaskDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized);
+        group.MapPost("/manage/search", SearchManageableTasks)
+            .Accepts<ManageableUserTaskSearchRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxSearchRequestBodyBytes))
+            .WithSummary("Search manageable user tasks with advanced variable predicates")
+            .WithDescription(
+                "Preserves the manager task, instance, owner, ownership, and paging selectors. " +
+                "Manager-role visibility and the variable predicate are both evaluated in PostgreSQL before count and paging.")
+            .Produces<PagedResult<ManagedUserTaskDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
         group.MapGet("/{taskId:long}", GetTask)
             .Produces<UserTaskDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -93,6 +107,19 @@ public static class UserTaskEndpoints
             variables,
             normalizedPage,
             normalizedPageSize,
+            cancellationToken));
+    }
+
+    private static async Task<IResult> SearchManageableTasks(
+        ManageableUserTaskSearchRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        return Results.Ok(await service.SearchManageableUserTasksAsync(
+            actorResolver.Resolve(principal),
+            request,
             cancellationToken));
     }
 

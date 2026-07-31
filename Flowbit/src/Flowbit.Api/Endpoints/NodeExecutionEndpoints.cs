@@ -13,6 +13,8 @@ namespace Flowbit.Api.Endpoints;
 /// </summary>
 public static class NodeExecutionEndpoints
 {
+    private const long MaxSearchRequestBodyBytes = 64 * 1024;
+
     public static IEndpointRouteBuilder MapNodeExecutionEndpoints(
         this IEndpointRouteBuilder app)
     {
@@ -47,6 +49,19 @@ public static class NodeExecutionEndpoints
             .Produces<PagedResult<NodeExecutionSummaryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized);
+
+        group.MapPost("/search", SearchAdvanced)
+            .WithSummary("Search node executions with advanced variable predicates")
+            .WithDescription(
+                "Preserves every node-execution selector and range, structured sort, and paging. " +
+                "Latest instance-variable predicates are conjoined with per-version SQL visibility before exact count, ordering, and paging.")
+            .Accepts<NodeExecutionSearchBodyRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxSearchRequestBodyBytes))
+            .Produces<PagedResult<NodeExecutionSummaryDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
 
         group.MapGet("/{id:long}", Get)
             .WithSummary("Get one authorized node execution")
@@ -115,6 +130,68 @@ public static class NodeExecutionEndpoints
             MaxDurationMilliseconds = query.MaxDurationMilliseconds,
             Variables = query.Variables,
             Sort = query.Sort,
+            Page = Math.Max(1, query.Page ?? 1),
+            PageSize = Math.Clamp(query.PageSize ?? 50, 1, 200)
+        };
+
+        return Results.Ok(await service.SearchAsync(
+            request,
+            actorResolver.Resolve(principal),
+            cancellationToken));
+    }
+
+    private static async Task<IResult> SearchAdvanced(
+        NodeExecutionSearchBodyRequest query,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        INodeExecutionQueryService service,
+        CancellationToken cancellationToken)
+    {
+        var request = new NodeExecutionSearchRequest
+        {
+            ExecutionId = query.ExecutionId,
+            InstanceId = query.InstanceId,
+            WorkflowId = query.WorkflowId,
+            WorkflowKey = query.WorkflowKey,
+            WorkflowVersion = query.WorkflowVersion,
+            BusinessKey = query.BusinessKey,
+            TokenId = query.TokenId,
+            UserTaskId = query.UserTaskId,
+            MultiInstanceExecutionId = query.MultiInstanceExecutionId,
+            GatewayBranchId = query.GatewayBranchId,
+            ItemIndex = query.ItemIndex,
+            ExecutionKind = query.ExecutionKind,
+            NodeId = query.NodeId,
+            NodeName = query.NodeName,
+            NodeExternalId = query.NodeExternalId,
+            NodeTypes = query.NodeTypes,
+            Statuses = query.Statuses,
+            InstanceStatuses = query.InstanceStatuses,
+            CompletionReasons = query.CompletionReasons,
+            IsMultiInstance = query.IsMultiInstance,
+            IsCutoverSeeded = query.IsCutoverSeeded,
+            Owner = query.Owner,
+            StartedBy = query.StartedBy,
+            CompletedBy = query.CompletedBy,
+            EnteredViaFlowId = query.EnteredViaFlowId,
+            SelectedFlowId = query.SelectedFlowId,
+            ExitedViaFlowId = query.ExitedViaFlowId,
+            AggregateFlowId = query.AggregateFlowId,
+            CreatedFrom = query.CreatedFrom,
+            CreatedTo = query.CreatedTo,
+            StartedFrom = query.StartedFrom,
+            StartedTo = query.StartedTo,
+            UpdatedFrom = query.UpdatedFrom,
+            UpdatedTo = query.UpdatedTo,
+            CompletedFrom = query.CompletedFrom,
+            CompletedTo = query.CompletedTo,
+            MinDurationMilliseconds = query.MinDurationMilliseconds,
+            MaxDurationMilliseconds = query.MaxDurationMilliseconds,
+            VariableFilter = query.VariableFilter,
+            Sort = query.Sort?.Select(static criterion =>
+                criterion is null
+                    ? string.Empty
+                    : $"{criterion.Field}:{criterion.Direction}").ToArray(),
             Page = Math.Max(1, query.Page ?? 1),
             PageSize = Math.Clamp(query.PageSize ?? 50, 1, 200)
         };

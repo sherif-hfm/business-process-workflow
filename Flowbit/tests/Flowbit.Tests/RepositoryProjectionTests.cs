@@ -91,7 +91,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var baselineContext = new AppDbContext(baselineOptions);
         var baselineRepository = new WorkflowRuntimeRepository(baselineContext);
         var baseline = await baselineRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], [],
+            null, null, null, workflowKey, null, null, null, null, [],
             InstanceListAuthorization.Global, null, false, 1, 2, CancellationToken.None);
 
         Assert.Equal(2, baseline.Items.Count);
@@ -106,7 +106,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var includedContext = new AppDbContext(includedOptions);
         var includedRepository = new WorkflowRuntimeRepository(includedContext);
         var included = await includedRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], [],
+            null, null, null, workflowKey, null, null, null, null, [],
             InstanceListAuthorization.Global, null, true, 1, 2, CancellationToken.None);
 
         Assert.Equal(baselineCounter.ReaderCommands + 1, includedCounter.ReaderCommands);
@@ -215,7 +215,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var firstContext = fixture.CreateDbContext();
         var firstRepository = new WorkflowRuntimeRepository(firstContext);
         var first = await firstRepository.ListInstancesAsync(
-            null, null, null, null, null, null, null, [], sort,
+            null, null, null, null, null, null, null, null, sort,
             authorization, null, false, 1, 2, CancellationToken.None);
 
         Assert.Equal(4, first.TotalCount);
@@ -226,7 +226,7 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var secondContext = fixture.CreateDbContext();
         var secondRepository = new WorkflowRuntimeRepository(secondContext);
         var second = await secondRepository.ListInstancesAsync(
-            null, null, null, null, null, null, null, [], sort,
+            null, null, null, null, null, null, null, null, sort,
             authorization, first.NextCursor, false, 2, 2, CancellationToken.None);
 
         Assert.Equal(4, second.TotalCount);
@@ -255,7 +255,17 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
                 Definition = new WorkflowModel
                 {
                     Id = $"projection-{suffix}",
-                    Name = $"projection-{suffix}"
+                    Name = $"projection-{suffix}",
+                    FlowNodes =
+                    [
+                        new FlowNodeModel
+                        {
+                            Id = 2,
+                            Name = "Review",
+                            Type = BpmnFlowNodeTypes.UserTask,
+                            RequiresClaim = true
+                        }
+                    ]
                 }
             };
             setup.WorkflowDefinitions.Add(definition);
@@ -380,13 +390,18 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
             CancellationToken cancellationToken = default)
         {
             ReaderCommands++;
-            if (command.CommandText.Contains("SELECT DISTINCT ON", StringComparison.Ordinal))
+            if (command.CommandText.Contains(
+                    "instance_variable_current_values",
+                    StringComparison.Ordinal))
             {
                 var ids = command.Parameters.Cast<DbParameter>()
                     .Select(parameter => parameter.Value)
                     .OfType<long[]>()
-                    .Single();
-                LatestVariableInstanceIds.Add(ids.ToArray());
+                    .SingleOrDefault();
+                if (ids is not null)
+                {
+                    LatestVariableInstanceIds.Add(ids.ToArray());
+                }
             }
             return ValueTask.FromResult(result);
         }

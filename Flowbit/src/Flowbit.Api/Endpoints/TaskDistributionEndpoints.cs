@@ -6,6 +6,8 @@ namespace Flowbit.Api.Endpoints;
 
 public static class TaskDistributionEndpoints
 {
+    private const long MaxSearchRequestBodyBytes = 64 * 1024;
+
     public static IEndpointRouteBuilder MapTaskDistributionEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/task-distribution/workflows/{workflowKey}/tasks")
@@ -17,6 +19,19 @@ public static class TaskDistributionEndpoints
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
+        group.MapPost("/search", SearchTasks)
+            .Accepts<DistributableUserTaskSearchRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxSearchRequestBodyBytes))
+            .WithSummary("Search distributable tasks with advanced variable predicates")
+            .WithDescription(
+                "Preserves workflow-family isolation, distribution credentials from headers, native task selectors, paging, and includeVariables. " +
+                "The advanced predicate is evaluated in PostgreSQL within the authenticated workflow family.")
+            .Produces<PagedResult<ManagedUserTaskDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
         group.MapPost("/{taskId:long}/assign", Assign)
             .Produces<UserTaskAssignmentAckDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -66,6 +81,22 @@ public static class TaskDistributionEndpoints
             includeVariables ?? false,
             Math.Max(1, page ?? 1),
             Math.Clamp(pageSize ?? 50, 1, 200),
+            cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
+    }
+
+    private static async Task<IResult> SearchTasks(
+        string workflowKey,
+        DistributableUserTaskSearchRequest request,
+        [FromHeader(Name = "X-Client-Id")] string? clientId,
+        [FromHeader(Name = "X-Client-Secret")] string? clientSecret,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.SearchDistributableUserTasksAsync(
+            workflowKey,
+            new TaskDistributionCredentials(clientId, clientSecret),
+            request,
             cancellationToken);
         return result is null ? Results.NotFound() : Results.Ok(result);
     }

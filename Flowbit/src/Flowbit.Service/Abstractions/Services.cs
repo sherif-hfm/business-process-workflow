@@ -175,6 +175,16 @@ public interface IWorkflowEngineService
         int pageSize,
         CancellationToken cancellationToken);
 
+    Task<PagedResult<InboxItemDto>> SearchInboxAsync(
+        ActorContext actor,
+        InboxSearchRequest request,
+        CancellationToken cancellationToken);
+
+    Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
+        ActorContext actor,
+        InstanceSearchRequest request,
+        CancellationToken cancellationToken);
+
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
@@ -205,6 +215,10 @@ public interface IWorkflowEngineService
         int page,
         int pageSize,
         CancellationToken cancellationToken);
+    Task<PagedResult<ManagedUserTaskDto>> SearchManageableUserTasksAsync(
+        ActorContext actor,
+        ManageableUserTaskSearchRequest request,
+        CancellationToken cancellationToken);
     Task<UserTaskAssignmentAckDto?> AssignUserTaskAsync(
         long taskId,
         string? actorId,
@@ -233,6 +247,11 @@ public interface IWorkflowEngineService
         bool includeVariables,
         int page,
         int pageSize,
+        CancellationToken cancellationToken);
+    Task<PagedResult<ManagedUserTaskDto>?> SearchDistributableUserTasksAsync(
+        string workflowKey,
+        TaskDistributionCredentials credentials,
+        DistributableUserTaskSearchRequest request,
         CancellationToken cancellationToken);
     Task<UserTaskAssignmentAckDto?> AssignDistributedUserTaskAsync(
         string workflowKey,

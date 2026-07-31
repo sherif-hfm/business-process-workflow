@@ -581,7 +581,7 @@ public sealed partial class WorkflowEngineService(
         };
     }
 
-    public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
+    public Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         ActorContext actor,
         string? status,
         long? instanceId,
@@ -596,11 +596,56 @@ public sealed partial class WorkflowEngineService(
         bool includeVariables,
         int page,
         int pageSize,
+        CancellationToken cancellationToken) =>
+        ListInstancesCoreAsync(
+            actor, status, instanceId, workflowId, workflowKey, businessKey,
+            nodeId, nodeExternalId,
+            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            ParseInstanceSort(sort), cursor, includeVariables, page, pageSize,
+            cancellationToken);
+
+    public Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
+        ActorContext actor,
+        InstanceSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ListInstancesCoreAsync(
+            actor,
+            request.Status,
+            request.InstanceId,
+            request.WorkflowId,
+            request.WorkflowKey,
+            request.BusinessKey,
+            request.NodeId,
+            request.NodeExternalId,
+            VariableFilterParser.Parse(request.VariableFilter),
+            ParseInstanceSort(ToLegacySort(request.Sort)),
+            request.Cursor,
+            request.IncludeVariables ?? false,
+            Math.Max(1, request.Page ?? 1),
+            Math.Clamp(request.PageSize ?? 50, 1, 200),
+            cancellationToken);
+    }
+
+    private async Task<PagedResult<InstanceSummaryDto>> ListInstancesCoreAsync(
+        ActorContext actor,
+        string? status,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        VariableFilterExpression? variableFilter,
+        IReadOnlyList<InstanceSortCriterion> sortCriteria,
+        string? cursor,
+        bool includeVariables,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(actor);
-        var variableFilters = ParseVariableFilters(variables);
-        var sortCriteria = ParseInstanceSort(sort);
         var normalizedSort = WorkflowInstanceCursor.NormalizeSort(sortCriteria);
         if (!string.IsNullOrWhiteSpace(cursor)
             && !WorkflowInstanceCursor.TryDecode(
@@ -628,7 +673,7 @@ public sealed partial class WorkflowEngineService(
             businessKey,
             nodeId,
             nodeExternalId,
-            variableFilters,
+            variableFilter,
             normalizedSort,
             authorization,
             cursor,
@@ -698,7 +743,7 @@ public sealed partial class WorkflowEngineService(
         return new InstanceListAuthorization(isGlobalReader, lowerCallerRoles);
     }
 
-    public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
+    public Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
         long? instanceId,
         long? workflowId,
@@ -711,17 +756,58 @@ public sealed partial class WorkflowEngineService(
         bool includeVariables,
         int page,
         int pageSize,
+        CancellationToken cancellationToken) =>
+        GetInboxCoreAsync(
+            actor, instanceId, workflowId, workflowKey, businessKey, nodeId,
+            nodeExternalId,
+            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            ParseInboxSort(sort), includeVariables, page, pageSize,
+            cancellationToken);
+
+    public Task<PagedResult<InboxItemDto>> SearchInboxAsync(
+        ActorContext actor,
+        InboxSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return GetInboxCoreAsync(
+            actor,
+            request.InstanceId,
+            request.WorkflowId,
+            request.WorkflowKey,
+            request.BusinessKey,
+            request.NodeId,
+            request.NodeExternalId,
+            VariableFilterParser.Parse(request.VariableFilter),
+            ParseInboxSort(ToLegacySort(request.Sort)),
+            request.IncludeVariables ?? false,
+            Math.Max(1, request.Page ?? 1),
+            Math.Clamp(request.PageSize ?? 50, 1, 200),
+            cancellationToken);
+    }
+
+    private async Task<PagedResult<InboxItemDto>> GetInboxCoreAsync(
+        ActorContext actor,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        VariableFilterExpression? variableFilter,
+        IReadOnlyList<InboxSortCriterion> sortCriteria,
+        bool includeVariables,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken)
     {
         await LoadSettingsAsync(cancellationToken);
         var normalizedUser = NormalizeUser(actor.User);
         var normalizedRoles = NormalizeRoles(actor.Roles);
-        var variableFilters = ParseVariableFilters(variables);
-        var sortCriteria = ParseInboxSort(sort);
         var paged = await runtime.ListInboxAsync(
             normalizedUser, normalizedRoles, timeProvider.GetUtcNow(),
             instanceId, workflowId, workflowKey, businessKey, nodeId,
-            nodeExternalId, variableFilters, sortCriteria, page, pageSize, cancellationToken);
+            nodeExternalId, variableFilter, sortCriteria, page, pageSize, cancellationToken);
 
         if (paged.Items.Count == 0)
         {
@@ -1197,7 +1283,33 @@ public sealed partial class WorkflowEngineService(
             nodeExternalId,
             owner,
             normalizedOwnership,
-            ParseVariableFilters(variables),
+            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            page,
+            pageSize,
+            cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>> SearchManageableUserTasksAsync(
+        ActorContext actor,
+        ManageableUserTaskSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var page = Math.Max(1, request.Page ?? 1);
+        var pageSize = Math.Clamp(request.PageSize ?? 50, 1, 200);
+        var paged = await runtime.ListManageableUserTasksAsync(
+            NormalizeRoles(actor.Roles),
+            request.TaskId,
+            request.InstanceId,
+            request.WorkflowId,
+            request.WorkflowKey,
+            request.BusinessKey,
+            request.NodeId,
+            request.NodeExternalId,
+            request.Owner,
+            NormalizeTaskOwnershipFilter(request.Ownership),
+            VariableFilterParser.Parse(request.VariableFilter),
             page,
             pageSize,
             cancellationToken);
@@ -1240,10 +1352,42 @@ public sealed partial class WorkflowEngineService(
             nodeExternalId,
             owner,
             NormalizeTaskOwnershipFilter(ownership),
-            ParseVariableFilters(variables),
+            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
             includeVariables,
             page,
             pageSize,
+            cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>?> SearchDistributableUserTasksAsync(
+        string workflowKey,
+        TaskDistributionCredentials credentials,
+        DistributableUserTaskSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var authorization = await AuthenticateTaskDistributionAsync(
+            workflowKey, credentials, cancellationToken);
+        if (authorization is null)
+        {
+            return null;
+        }
+
+        var paged = await runtime.ListDistributableUserTasksAsync(
+            authorization.Workflow.WorkflowKey,
+            request.TaskId,
+            request.InstanceId,
+            request.WorkflowId,
+            request.BusinessKey,
+            request.NodeId,
+            request.NodeExternalId,
+            request.Owner,
+            NormalizeTaskOwnershipFilter(request.Ownership),
+            VariableFilterParser.Parse(request.VariableFilter),
+            request.IncludeVariables ?? false,
+            Math.Max(1, request.Page ?? 1),
+            Math.Clamp(request.PageSize ?? 50, 1, 200),
             cancellationToken);
         return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
     }
@@ -7815,6 +7959,13 @@ public sealed partial class WorkflowEngineService(
 
         return filters;
     }
+
+    private static IReadOnlyList<string>? ToLegacySort(
+        IReadOnlyList<SearchSortDto>? sort) =>
+        sort?.Select(static criterion =>
+            criterion is null
+                ? string.Empty
+                : $"{criterion.Field}:{criterion.Direction}").ToArray();
 
     private static IReadOnlyList<InstanceSortCriterion> ParseInstanceSort(IReadOnlyList<string>? sort)
     {

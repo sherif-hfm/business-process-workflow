@@ -26,6 +26,8 @@ public sealed class WorkflowInstanceEntity
 
     public List<InstanceVariableEntity> Variables { get; set; } = [];
 
+    public List<InstanceVariableCurrentValueEntity> CurrentVariableValues { get; set; } = [];
+
     public List<InstanceHistoryEntity> History { get; set; } = [];
 
     public List<ExecutionTokenEntity> Tokens { get; set; } = [];
