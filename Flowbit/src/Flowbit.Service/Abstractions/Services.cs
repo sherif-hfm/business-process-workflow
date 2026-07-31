@@ -144,6 +144,7 @@ public interface IWorkflowEngineService
         CancellationToken cancellationToken);
 
     Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
+        ActorContext actor,
         string? status,
         long? instanceId,
         long? workflowId,
@@ -153,6 +154,7 @@ public interface IWorkflowEngineService
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
         IReadOnlyList<string>? sort,
+        string? cursor,
         bool includeVariables,
         int page,
         int pageSize,

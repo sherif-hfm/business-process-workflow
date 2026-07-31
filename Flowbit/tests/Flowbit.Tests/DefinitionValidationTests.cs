@@ -2777,6 +2777,187 @@ public sealed class DefinitionValidationTests
         return flow;
     }
 
+    [Fact]
+    public async Task CreateAsync_AcceptsTimerStartAndNormalizesAbsoluteDateToUtc()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.InitialEventId = null;
+        var timerStart = model.FlowNodes.Single(node => node.Id == 1);
+        timerStart.Type = BpmnFlowNodeTypes.TimerStartEvent;
+        timerStart.Timer = new TimerDefinitionModel
+        {
+            TimeDate = "2026-12-31T23:00:00+03:00"
+        };
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 1);
+        Assert.Equal("2026-12-31T20:00:00.0000000+00:00", saved.Timer!.TimeDate);
+        Assert.Null(saved.BusinessKey);
+        Assert.Null(saved.Idempotency);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsNonInterruptingTimerBoundaryOnUserTask()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Reminder",
+            Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+            AttachedToRef = 2,
+            CancelActivity = false,
+            Timer = new TimerDefinitionModel { TimeDuration = "P2D" }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 401,
+            Name = "Send reminder",
+            SourceRef = 4,
+            TargetRef = 3
+        });
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var boundary = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 4);
+        Assert.False(boundary.CancelActivity);
+        Assert.Equal("P2D", boundary.Timer!.TimeDuration);
+    }
+
+    [Fact]
+    public async Task CreateAsync_PublicationGateAllowsDraftButRejectsDurablePublish()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => node.Id == 2).AsyncBefore = true;
+        var disabled = new DurableProcessingOptions { PublicationEnabled = false };
+
+        await CreateService(out _, durableProcessing: disabled).CreateAsync(
+            Clone(model),
+            false,
+            CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, durableProcessing: disabled).CreateAsync(
+                Clone(model),
+                true,
+                CancellationToken.None));
+        Assert.Contains(
+            DurableProcessingOptions.SectionName,
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresAsyncBeforeForAutomaticTimerBoundaryHost()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var host = model.FlowNodes.Single(node => node.Id == 2);
+        host.Type = BpmnFlowNodeTypes.Task;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Timeout",
+            Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+            AttachedToRef = host.Id,
+            Timer = new TimerDefinitionModel { TimeDuration = "PT30S" }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 401,
+            SourceRef = 4,
+            TargetRef = 3
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("asyncBefore", error.Message, StringComparison.Ordinal);
+
+        host.AsyncBefore = true;
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("P1M")]
+    [InlineData("P1Y")]
+    [InlineData("cron:0 0 * * *")]
+    [InlineData("PT0S")]
+    public async Task CreateAsync_RejectsUnsupportedOrNonPositiveTimerDurations(string value)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.InitialEventId = null;
+        var start = model.FlowNodes.Single(node => node.Id == 1);
+        start.Type = BpmnFlowNodeTypes.TimerStartEvent;
+        start.Timer = new TimerDefinitionModel { TimeDuration = value };
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_CanonicalizesAsyncJobPolicyAndValidatesRetries()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.AsyncBefore = true;
+        task.AsyncAfter = true;
+        task.Job = new JobPolicyModel
+        {
+            FailureHandling = "ReTrYfIrSt",
+            RetryDelays = [" PT10S ", "PT1M", "PT5M"]
+        };
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 2);
+        Assert.Equal(JobFailureHandling.RetryFirst, saved.Job!.FailureHandling);
+        Assert.Equal(["PT10S", "PT1M", "PT5M"], saved.Job.RetryDelays);
+
+        task.Job.RetryDelays = ["P1M"];
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_PreservesOmittedAndExplicitlyEmptyRetrySchedules()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.AsyncBefore = true;
+        task.Job = new JobPolicyModel
+        {
+            FailureHandling = JobFailureHandling.RetryFirst
+        };
+
+        await CreateService(out var omittedRepository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var omitted = omittedRepository.Added!.Definition.FlowNodes
+            .Single(node => node.Id == 2);
+        Assert.Null(omitted.Job!.RetryDelays);
+
+        task.Job.RetryDelays = [];
+        await CreateService(out var emptyRepository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var explicitEmpty = emptyRepository.Added!.Definition.FlowNodes
+            .Single(node => node.Id == 2);
+        Assert.Empty(Assert.IsType<List<string>>(explicitEmpty.Job!.RetryDelays));
+    }
+
     private static WorkflowModel CreateTerminalModel(string terminalType) => new()
     {
         Id = "terminal-validation",
@@ -2804,14 +2985,16 @@ public sealed class DefinitionValidationTests
     private static WorkflowDefinitionService CreateService(
         out CapturingDefinitionRepository repository,
         ServiceTaskOptions? options = null,
-        IScriptEvaluator? scriptEvaluator = null)
+        IScriptEvaluator? scriptEvaluator = null,
+        DurableProcessingOptions? durableProcessing = null)
     {
         repository = new CapturingDefinitionRepository();
         return new WorkflowDefinitionService(
             repository,
             scriptEvaluator ?? new ParseOnlyScriptEvaluator(),
             options ?? new ServiceTaskOptions(),
-            NullLogger<WorkflowDefinitionService>.Instance);
+            NullLogger<WorkflowDefinitionService>.Instance,
+            durableProcessing);
     }
 
     internal static WorkflowModel LoadModel(string fileName)

@@ -665,12 +665,16 @@ public sealed class EditorValidatorTests
         engine.Execute("""
             const NODE_TYPE = {
               START_EVENT: 'startEvent', MESSAGE_START_EVENT: 'messageStartEvent',
+              TIMER_START_EVENT: 'timerStartEvent',
               END_EVENT: 'endEvent', ERROR_END_EVENT: 'errorEndEvent',
               USER_TASK: 'userTask', TASK: 'task', SERVICE_TASK: 'serviceTask',
               SCRIPT_TASK: 'scriptTask', EXCLUSIVE_GATEWAY: 'exclusiveGateway',
               PARALLEL_GATEWAY: 'parallelGateway', INCLUSIVE_GATEWAY: 'inclusiveGateway',
               COMPLEX_GATEWAY: 'complexGateway', SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
-              ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent', MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent'
+              ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent',
+              TIMER_BOUNDARY_EVENT: 'timerBoundaryEvent',
+              MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
+              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh', PREVIOUS: 'previous', FROM_NODE: 'fromNode' };
@@ -685,7 +689,21 @@ public sealed class EditorValidatorTests
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
             function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
-            function isBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
+            function isAsyncCapableTaskType(type) {
+              return isUserTaskType(type) || isAutomaticType(type) ||
+                isServiceTaskType(type) || isScriptTaskType(type);
+            }
+            function isTimerStartEventType(type) { return type === NODE_TYPE.TIMER_START_EVENT; }
+            function isTimerBoundaryEventType(type) { return type === NODE_TYPE.TIMER_BOUNDARY_EVENT; }
+            function isTimerCatchEventType(type) { return type === NODE_TYPE.TIMER_CATCH_EVENT; }
+            function isTimerEventType(type) {
+              return isTimerStartEventType(type) || isTimerBoundaryEventType(type) ||
+                isTimerCatchEventType(type);
+            }
+            function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
+            function isBoundaryEventType(type) {
+              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type);
+            }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSingleOutgoingType() { return false; }
             """);
@@ -1320,6 +1338,7 @@ public sealed class EditorValidatorTests
             """
             const NODE_TYPE = {
               START_EVENT: 'startEvent', MESSAGE_START_EVENT: 'messageStartEvent',
+              TIMER_START_EVENT: 'timerStartEvent',
               END_EVENT: 'endEvent', ERROR_END_EVENT: 'errorEndEvent',
               TERMINATE_END_EVENT: 'terminateEndEvent', USER_TASK: 'userTask',
               TASK: 'task', SERVICE_TASK: 'serviceTask', SCRIPT_TASK: 'scriptTask',
@@ -1327,7 +1346,9 @@ public sealed class EditorValidatorTests
               INCLUSIVE_GATEWAY: 'inclusiveGateway', COMPLEX_GATEWAY: 'complexGateway',
               SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent',
-              MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent'
+              TIMER_BOUNDARY_EVENT: 'timerBoundaryEvent',
+              MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
+              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh' };
@@ -1350,7 +1371,21 @@ public sealed class EditorValidatorTests
                 type === NODE_TYPE.COMPLEX_GATEWAY;
             }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
-            function isBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
+            function isAsyncCapableTaskType(type) {
+              return isUserTaskType(type) || isAutomaticType(type) ||
+                isServiceTaskType(type) || isScriptTaskType(type);
+            }
+            function isTimerStartEventType(type) { return type === NODE_TYPE.TIMER_START_EVENT; }
+            function isTimerBoundaryEventType(type) { return type === NODE_TYPE.TIMER_BOUNDARY_EVENT; }
+            function isTimerCatchEventType(type) { return type === NODE_TYPE.TIMER_CATCH_EVENT; }
+            function isTimerEventType(type) {
+              return isTimerStartEventType(type) || isTimerBoundaryEventType(type) ||
+                isTimerCatchEventType(type);
+            }
+            function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
+            function isBoundaryEventType(type) {
+              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type);
+            }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSingleOutgoingType() { return false; }
             """);
@@ -1588,7 +1623,454 @@ public sealed class EditorValidatorTests
         ]
     };
 
-    private static IReadOnlyList<string> Validate(WorkflowModel model)
+    [Fact]
+    public void Validator_AcceptsNonInterruptingReminderTimerBoundary()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "timer-reminder-editor",
+            Name = "Timer reminder",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = BpmnFlowNodeTypes.StartEvent
+                },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Approval",
+                    Type = BpmnFlowNodeTypes.UserTask
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Reminder after two days",
+                    Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+                    AttachedToRef = 2,
+                    CancelActivity = false,
+                    Timer = new TimerDefinitionModel { TimeDuration = "P2D" }
+                },
+                new FlowNodeModel
+                {
+                    Id = 4,
+                    Name = "Done",
+                    Type = BpmnFlowNodeTypes.EndEvent
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 4 },
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
+            ]
+        };
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void Validator_RejectsCalendarTimerAndJobPolicyWithoutAsyncBoundary()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "bad-timer-editor",
+            Name = "Bad timer",
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Scheduled",
+                    Type = BpmnFlowNodeTypes.TimerStartEvent,
+                    Timer = new TimerDefinitionModel { TimeDuration = "P1M" }
+                },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Review",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Job = new JobPolicyModel
+                    {
+                        RetryDelays = ["PT10S"]
+                    }
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "End",
+                    Type = BpmnFlowNodeTypes.EndEvent
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+
+        var errors = Validate(model);
+        Assert.Contains(errors, error =>
+            error.Contains("fixed-unit ISO-8601", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error =>
+            error.Contains("requires asyncBefore or asyncAfter", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validator_RejectsCalendarRolloverAndCycleCountsBeyondInt32()
+    {
+        var model = CreateTimerStartModel(
+            new TimerDefinitionModel { TimeDate = "2026-02-30T10:00:00Z" });
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains("explicit UTC offset", StringComparison.OrdinalIgnoreCase));
+
+        model.FlowNodes[0].Timer = new TimerDefinitionModel
+        {
+            TimeCycle = "R2147483648/PT1S"
+        };
+        Assert.Contains(Validate(model), error =>
+            error.Contains("positive fixed-unit ISO-8601 duration", StringComparison.OrdinalIgnoreCase));
+
+        model.FlowNodes[0].Timer = new TimerDefinitionModel
+        {
+            TimeCycle = "R2147483647/PT1S"
+        };
+        Assert.Empty(Validate(model));
+    }
+
+    [Fact]
+    public void DurationValidator_MatchesRuntimeTickPrecisionAndRange()
+    {
+        var engine = CreateValidatorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            JSON.stringify({
+              belowOneTick: validatorFixedDurationSeconds('PT0.000000001S'),
+              roundsToOneTick: validatorFixedDurationSeconds('PT0.00000005S'),
+              maximum: validatorFixedDurationSeconds('PT922337203685.4775807S'),
+              aboveMaximum: validatorFixedDurationSeconds('PT922337203685.4775808S'),
+              excessiveDays: validatorFixedDurationSeconds('P999999999999D'),
+              belowOneSecondCycle: validatorTimeCycle('R/PT0.5S')
+            })
+            """).AsString());
+
+        Assert.Equal(
+            JsonValueKind.Null,
+            result.RootElement.GetProperty("belowOneTick").ValueKind);
+        Assert.True(
+            result.RootElement.GetProperty("roundsToOneTick").GetDouble() > 0);
+        Assert.True(
+            result.RootElement.GetProperty("maximum").GetDouble() > 0);
+        Assert.Equal(
+            JsonValueKind.Null,
+            result.RootElement.GetProperty("aboveMaximum").ValueKind);
+        Assert.Equal(
+            JsonValueKind.Null,
+            result.RootElement.GetProperty("excessiveDays").ValueKind);
+        Assert.Equal(
+            0.5,
+            result.RootElement.GetProperty("belowOneSecondCycle").GetDouble(),
+            precision: 7);
+    }
+
+    [Fact]
+    public void Validator_RejectsMalformedImportedAsyncAndTimerMetadata()
+    {
+        var errors = ValidateJson(
+            """
+            {
+              "id": "malformed-durable-editor",
+              "name": "Malformed durable editor",
+              "initialEventId": 1,
+              "variables": [],
+              "lanes": [],
+              "flowNodes": [
+                { "id": 1, "name": "Start", "type": "startEvent", "variables": [] },
+                {
+                  "id": 2,
+                  "name": "Async host",
+                  "type": "task",
+                  "asyncBefore": "false",
+                  "asyncAfter": false,
+                  "job": {
+                    "failureHandling": 5,
+                    "retryDelays": "PT1S"
+                  }
+                },
+                {
+                  "id": 3,
+                  "name": "Timer",
+                  "type": "timerBoundaryEvent",
+                  "attachedToRef": 2,
+                  "cancelActivity": "false",
+                  "timer": {
+                    "timeDate": 5,
+                    "timeDuration": "PT1H",
+                    "timeCycle": null
+                  }
+                },
+                { "id": 4, "name": "End", "type": "endEvent" }
+              ],
+              "sequenceFlows": [
+                { "id": 101, "sourceRef": 1, "targetRef": 2 },
+                { "id": 201, "sourceRef": 2, "targetRef": 4 },
+                { "id": 301, "sourceRef": 3, "targetRef": 4 }
+              ]
+            }
+            """);
+
+        Assert.Contains(errors, error =>
+            error.Contains("asyncBefore must be a boolean", StringComparison.Ordinal));
+        Assert.Contains(errors, error =>
+            error.Contains("failureHandling", StringComparison.Ordinal));
+        Assert.Contains(errors, error =>
+            error.Contains("retryDelays must be an array", StringComparison.Ordinal));
+        Assert.Contains(errors, error =>
+            error.Contains("cancelActivity must be a boolean", StringComparison.Ordinal));
+        Assert.Contains(errors, error =>
+            error.Contains("timeDate must be a string", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validator_ReportsTimerBoundaryHostLimitOnce()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "timer-boundary-limit-editor",
+            Name = "Timer boundary limit",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = BpmnFlowNodeTypes.StartEvent
+                },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Wait",
+                    Type = BpmnFlowNodeTypes.UserTask
+                },
+                new FlowNodeModel
+                {
+                    Id = 20,
+                    Name = "End",
+                    Type = BpmnFlowNodeTypes.EndEvent
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 20 }
+            ]
+        };
+        for (var index = 0; index < 9; index++)
+        {
+            var nodeId = 3 + index;
+            model.FlowNodes.Add(new FlowNodeModel
+            {
+                Id = nodeId,
+                Name = $"Timer {index + 1}",
+                Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+                AttachedToRef = 2,
+                CancelActivity = false,
+                Timer = new TimerDefinitionModel { TimeDuration = "PT1H" }
+            });
+            model.SequenceFlows.Add(new SequenceFlowModel
+            {
+                Id = 300 + index,
+                SourceRef = nodeId,
+                TargetRef = 20
+            });
+        }
+
+        var errors = Validate(model);
+
+        Assert.Single(errors, error =>
+            error.Contains("more than eight timer boundary events",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void TimerNormalization_ConvertsValidOffsetsToUtcAndPreservesInvalidDates()
+    {
+        var html = ReadEditorSource();
+        var validator = Regex.Match(
+            html,
+            @"// BEGIN WORKFLOW SAVE VALIDATOR(?<code>[\s\S]*?)// END WORKFLOW SAVE VALIDATOR");
+        var normalization = Regex.Match(
+            html,
+            @"function normalizeTimerDefinition\(value\) \{[\s\S]*?(?=function applyTypeInvariants)");
+        Assert.True(validator.Success, "The marked workflow save validator was not found.");
+        Assert.True(normalization.Success, "The timer normalization helper was not found.");
+
+        var engine = new Engine();
+        engine.Execute(validator.Groups["code"].Value);
+        engine.Execute(normalization.Value);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            JSON.stringify({
+              offset: normalizeTimerDefinition({
+                timeDate: '2026-07-30T12:34:56.1234567+03:00'
+              }).timeDate,
+              noSeconds: normalizeTimerDefinition({
+                timeDate: '2026-07-30T00:15-01:30'
+              }).timeDate,
+              leapDay: normalizeTimerDefinition({
+                timeDate: '2024-02-29T23:00:00+02:00'
+              }).timeDate,
+              invalid: normalizeTimerDefinition({
+                timeDate: ' 2026-02-30T10:00:00Z '
+              }).timeDate,
+              malformedMember: normalizeTimerDefinition({
+                timeDate: 5,
+                timeDuration: 'PT1H'
+              }).timeDate,
+              malformedShape: normalizeTimerDefinition(5),
+              missing: normalizeTimerDefinition(null)
+            })
+            """).AsString());
+
+        Assert.Equal(
+            "2026-07-30T09:34:56.1234567Z",
+            result.RootElement.GetProperty("offset").GetString());
+        Assert.Equal(
+            "2026-07-30T01:45:00Z",
+            result.RootElement.GetProperty("noSeconds").GetString());
+        Assert.Equal(
+            "2024-02-29T21:00:00Z",
+            result.RootElement.GetProperty("leapDay").GetString());
+        Assert.Equal(
+            "2026-02-30T10:00:00Z",
+            result.RootElement.GetProperty("invalid").GetString());
+        Assert.Equal(
+            5,
+            result.RootElement.GetProperty("malformedMember").GetInt32());
+        Assert.Equal(
+            5,
+            result.RootElement.GetProperty("malformedShape").GetInt32());
+        var missing = result.RootElement.GetProperty("missing");
+        Assert.Equal(JsonValueKind.Null, missing.GetProperty("timeDate").ValueKind);
+        Assert.Equal(JsonValueKind.Null, missing.GetProperty("timeDuration").ValueKind);
+        Assert.Equal(JsonValueKind.Null, missing.GetProperty("timeCycle").ValueKind);
+    }
+
+    [Fact]
+    public void JobPolicyNormalization_PreservesUnsupportedFailureHandlingForValidation()
+    {
+        var html = ReadEditorSource();
+        var canonicalization = Regex.Match(
+            html,
+            @"function canonicalizeKnownValue\(value, supported, fallback\) \{[\s\S]*?(?=function normalizeMultiInstanceForLoad)");
+        var normalization = Regex.Match(
+            html,
+            @"function normalizeJobPolicy\(value\) \{[\s\S]*?(?=function normalizeTimerDefinition)");
+        Assert.True(canonicalization.Success, "The enum canonicalization helper was not found.");
+        Assert.True(normalization.Success, "The job policy normalization helper was not found.");
+
+        var engine = new Engine();
+        engine.Execute(canonicalization.Value);
+        engine.Execute(normalization.Value);
+        Assert.Equal(
+            "eventuallyFirst",
+            engine.Evaluate(
+                "normalizeJobPolicy({ failureHandling: 'eventuallyFirst', retryDelays: [] }).failureHandling")
+                .AsString());
+        Assert.Equal(
+            "retryFirst",
+            engine.Evaluate(
+                "normalizeJobPolicy({ failureHandling: 'RETRYFIRST', retryDelays: [] }).failureHandling")
+                .AsString());
+        Assert.Equal(
+            5,
+            engine.Evaluate("normalizeJobPolicy(5)").AsNumber());
+        Assert.Equal(
+            7,
+            engine.Evaluate(
+                "normalizeJobPolicy({ failureHandling: 7, retryDelays: 'PT1S' }).failureHandling")
+                .AsNumber());
+        Assert.Equal(
+            "PT1S",
+            engine.Evaluate(
+                "normalizeJobPolicy({ failureHandling: 7, retryDelays: 'PT1S' }).retryDelays")
+                .AsString());
+
+        var model = new WorkflowModel
+        {
+            Id = "unsupported-job-policy-editor",
+            Name = "Unsupported job policy",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Async task",
+                    Type = BpmnFlowNodeTypes.Task,
+                    AsyncBefore = true,
+                    Job = new JobPolicyModel
+                    {
+                        FailureHandling = "eventuallyFirst",
+                        RetryDelays = []
+                    }
+                },
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        };
+        Assert.Contains(Validate(model), error =>
+            error.Contains("failureHandling", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Editor_ExposesAsyncAndTimerAuthoring()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Timer Start Event (scheduled)", html, StringComparison.Ordinal);
+        Assert.Contains("Timer Catch Event (delay)", html, StringComparison.Ordinal);
+        Assert.Contains("+ Add timer boundary event", html, StringComparison.Ordinal);
+        Assert.Contains("Async before", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"icon-timer\"", html, StringComparison.Ordinal);
+        Assert.Contains("R/P2D", html, StringComparison.Ordinal);
+    }
+
+    private static WorkflowModel CreateTimerStartModel(TimerDefinitionModel timer) => new()
+    {
+        Id = "timer-start-editor-validation",
+        Name = "Timer start validation",
+        InitialEventId = 2,
+        FlowNodes =
+        [
+            new FlowNodeModel
+            {
+                Id = 1,
+                Name = "Scheduled",
+                Type = BpmnFlowNodeTypes.TimerStartEvent,
+                Timer = timer
+            },
+            new FlowNodeModel { Id = 2, Name = "Manual start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 3 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+        ]
+    };
+
+    private static Engine CreateValidatorEngine()
     {
         var html = ReadEditorSource();
         var match = Regex.Match(
@@ -1596,9 +2078,17 @@ public sealed class EditorValidatorTests
             @"// BEGIN WORKFLOW SAVE VALIDATOR(?<code>[\s\S]*?)// END WORKFLOW SAVE VALIDATOR");
         Assert.True(match.Success, "The marked workflow save validator was not found.");
 
-        var json = JsonSerializer.Serialize(model);
         var engine = new Engine();
         engine.Execute(match.Groups["code"].Value);
+        return engine;
+    }
+
+    private static IReadOnlyList<string> Validate(WorkflowModel model) =>
+        ValidateJson(JsonSerializer.Serialize(model));
+
+    private static IReadOnlyList<string> ValidateJson(string json)
+    {
+        var engine = CreateValidatorEngine();
         engine.SetValue("candidateJson", json);
         var resultJson = engine.Evaluate(
             "JSON.stringify(validateModelForSave(JSON.parse(candidateJson)))").AsString();

@@ -317,6 +317,54 @@ public static class WorkflowModelMigrator
         node.Variables ??= [];
         node.Assignments ??= [];
 
+        if (BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type))
+        {
+            if (node.Job is not null)
+            {
+                node.Job.FailureHandling = CanonicalizeKnown(
+                    node.Job.FailureHandling,
+                    JobFailureHandling.BoundaryFirst,
+                    JobFailureHandling.RetryFirst);
+                if (node.Job.RetryDelays is not null)
+                {
+                    node.Job.RetryDelays = node.Job.RetryDelays
+                        .Select(value => value?.Trim()!)
+                        .ToList();
+                }
+            }
+        }
+        else
+        {
+            node.AsyncBefore = false;
+            node.AsyncAfter = false;
+            node.Job = null;
+        }
+
+        if (BpmnFlowNodeTypes.IsTimer(node.Type))
+        {
+            node.Timer ??= new TimerDefinitionModel();
+            node.Timer.TimeDate = TrimToNull(node.Timer.TimeDate);
+            node.Timer.TimeDuration = TrimToNull(node.Timer.TimeDuration);
+            node.Timer.TimeCycle = TrimToNull(node.Timer.TimeCycle);
+            if (TimerDefinitionRules.TryParseTimeDate(node.Timer.TimeDate, out var timeDate))
+            {
+                node.Timer.TimeDate = timeDate.ToUniversalTime().ToString("O");
+            }
+        }
+        else
+        {
+            node.Timer = null;
+        }
+
+        if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+        {
+            node.CancelActivity ??= true;
+        }
+        else
+        {
+            node.CancelActivity = null;
+        }
+
         if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
         {
             node.UsesFlowInfo = null;
@@ -336,7 +384,7 @@ public static class WorkflowModelMigrator
             node.GatewayRef = null;
         }
 
-        if (!BpmnFlowNodeTypes.IsEntry(node.Type))
+        if (!BpmnFlowNodeTypes.IsEntry(node.Type) || BpmnFlowNodeTypes.IsTimerStart(node.Type))
         {
             node.BusinessKey = null;
             node.Idempotency = null;
@@ -349,7 +397,9 @@ public static class WorkflowModelMigrator
                 BusinessKeyUniqueness.All);
         }
 
-        if (BpmnFlowNodeTypes.IsEntry(node.Type) && node.Idempotency is not null)
+        if (BpmnFlowNodeTypes.IsEntry(node.Type)
+            && !BpmnFlowNodeTypes.IsTimerStart(node.Type)
+            && node.Idempotency is not null)
         {
             node.Idempotency.HeaderName = node.Idempotency.HeaderName?.Trim()!;
             node.Idempotency.Variable = node.Idempotency.Variable?.Trim()!;
@@ -509,6 +559,21 @@ public static class WorkflowModelMigrator
             node.ErrorVariable = null;
             node.Message = null;
         }
+        else if (BpmnFlowNodeTypes.IsTimerStart(node.Type))
+        {
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
+        }
         else if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
         {
             // A boundary event is attached to a service/script task; it carries
@@ -522,6 +587,20 @@ public static class WorkflowModelMigrator
             node.Assignments = [];
             node.Script = null;
             node.Message = null;
+        }
+        else if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+        {
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.ErrorVariable = null;
         }
         else if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
         {
@@ -547,6 +626,21 @@ public static class WorkflowModelMigrator
                     : node.Message.DeliveryIdempotencyHeaderName.Trim()
                 : null;
             NormalizeMessageCatchMappings(node.Message.OutputMappings, processVariables);
+        }
+        else if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
+        {
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
         }
         else if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
         {

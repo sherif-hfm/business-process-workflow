@@ -13,10 +13,10 @@
         : char.ToUpperInvariant(Status![0]) + Status[1..]);
     private string Tone => Normalized switch
     {
-        "running" or "active" or "published" or "ready" or "ready to act" => "success",
-        "pending" or "can claim" or "unpublished" or "warning" or "interrupted" => "warning",
-        "faulted" or "failed" or "error" or "cancelled" or "danger" => "danger",
-        "completed" or "merged" or "default" or "assigned" or "primary" => "primary",
+        "running" or "active" or "available" or "published" or "ready" or "ready to act" => "success",
+        "pending" or "queued" or "retry" or "leased" or "resultready" or "can claim" or "unpublished" or "warning" or "interrupted" => "warning",
+        "open" or "incident" or "faulted" or "failed" or "error" or "cancelled" or "danger" => "danger",
+        "completed" or "resolved" or "merged" or "default" or "assigned" or "primary" => "primary",
         _ => "neutral"
     };
 }

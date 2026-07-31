@@ -47,6 +47,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkflowDelegationPolicyEntity> WorkflowDelegationPolicies =>
         Set<WorkflowDelegationPolicyEntity>();
 
+    public DbSet<WorkflowJobEntity> WorkflowJobs => Set<WorkflowJobEntity>();
+
+    public DbSet<WorkflowJobAttemptEntity> WorkflowJobAttempts => Set<WorkflowJobAttemptEntity>();
+
+    public DbSet<WorkflowJobSnapshotEntity> WorkflowJobSnapshots => Set<WorkflowJobSnapshotEntity>();
+
+    public DbSet<WorkflowIncidentEntity> WorkflowIncidents => Set<WorkflowIncidentEntity>();
+
+    public DbSet<TimerSubscriptionEntity> TimerSubscriptions => Set<TimerSubscriptionEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
@@ -54,13 +64,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
         {
-            entity.ToTable("workflow_definitions");
+            entity.ToTable("workflow_definitions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_definitions_default_activation",
+                    "(\"IsPublished\" AND \"IsDefault\" "
+                    + "AND \"DefaultActivationId\" IS NOT NULL "
+                    + "AND \"DefaultActivatedAt\" IS NOT NULL) OR "
+                    + "((NOT \"IsPublished\" OR NOT \"IsDefault\") "
+                    + "AND \"DefaultActivationId\" IS NULL "
+                    + "AND \"DefaultActivatedAt\" IS NULL)");
+            });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
             entity.Property(e => e.Definition).HasColumnType("jsonb");
             entity.Property(e => e.IsPublished);
             entity.Property(e => e.IsDefault);
+            entity.Property(e => e.DefaultActivationId);
+            entity.Property(e => e.DefaultActivatedAt);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.WorkflowKey, e.Version }).IsUnique();
             // Supports the cross-version workflowKey instance search.
@@ -105,11 +127,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ExecutionTokenEntity>(entity =>
         {
             entity.ToTable("execution_tokens", table =>
+            {
                 table.HasCheckConstraint(
                     "CK_execution_tokens_complex_gateway_registration",
                     "(\"ComplexGatewayStateId\" IS NULL AND \"ComplexGatewayCycle\" IS NULL) OR "
                     + "(\"ComplexGatewayStateId\" IS NOT NULL AND \"ComplexGatewayCycle\" IS NOT NULL "
-                    + "AND \"ComplexGatewayCycle\" >= 0)"));
+                    + "AND \"ComplexGatewayCycle\" >= 0)");
+                table.HasCheckConstraint(
+                    "CK_execution_tokens_wait_shape",
+                    "(\"WaitState\" IS NULL AND \"WaitingJobId\" IS NULL "
+                    + "AND \"WaitingTimerSubscriptionId\" IS NULL) OR "
+                    + "(\"WaitState\" IS NOT NULL AND "
+                    + "(\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL))");
+            });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
@@ -117,6 +147,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.FaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
             entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.TerminationReason).HasMaxLength(64);
+            entity.Property(e => e.ActivationId).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.WaitState).HasMaxLength(32);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ComplexDrainStateIds)
                 .HasColumnType("bigint[]")
@@ -144,6 +176,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .HasMethod("gin")
                 .HasFilter("\"Status\" = 'active' AND cardinality(\"ComplexDrainStateIds\") > 0");
             entity.HasIndex(e => e.CurrentNodeExecutionId).IsUnique();
+            entity.HasIndex(e => e.WaitingJobId)
+                .HasFilter("\"WaitingJobId\" IS NOT NULL");
+            entity.HasIndex(e => e.WaitingTimerSubscriptionId)
+                .HasFilter("\"WaitingTimerSubscriptionId\" IS NOT NULL");
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Tokens)
                 .HasForeignKey(e => e.InstanceId)
@@ -183,7 +219,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', "
                     + "'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', "
                     + "'complexActivation', 'complexReset', 'scopedInterrupt', "
-                    + "'scopedInterruptSkipped')))");
+                    + "'scopedInterruptSkipped', 'timerFired')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
                     "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
@@ -751,6 +787,247 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<WorkflowJobSnapshotEntity>(entity =>
+        {
+            entity.ToTable("workflow_job_snapshots", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_job_snapshots_size",
+                    "\"SizeBytes\" >= 0 AND \"SizeBytes\" <= 1048576");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.InvocationJson).HasColumnType("jsonb");
+            entity.Property(e => e.VariablesJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.OutputVariableVersionsJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.FlowInfoJson).HasColumnType("jsonb");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.CreatedAt);
+        });
+
+        modelBuilder.Entity<TimerSubscriptionEntity>(entity =>
+        {
+            entity.ToTable("timer_subscriptions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_status",
+                    "\"Status\" IN ('active', 'paused', 'completed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_schedule_kind",
+                    "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle')");
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_occurrence",
+                    "\"Occurrence\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_terminal_time",
+                    "(\"Status\" IN ('active', 'paused') AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.TimerNodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.ScheduleKind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ScheduleExpression).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.NextDueAt, e.Id });
+            entity.HasIndex(e => new
+                {
+                    e.InstanceId,
+                    e.TokenId,
+                    e.ActivationId,
+                    e.TimerNodeId
+                })
+                .IsUnique()
+                .HasFilter("\"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.TimerNodeId })
+                .IsUnique()
+                .HasFilter(
+                    "\"InstanceId\" IS NULL AND \"Status\" IN ('active', 'paused')");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.TimerSubscriptions)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Token)
+                .WithMany(e => e.TimerSubscriptions)
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowJobEntity>(entity =>
+        {
+            entity.ToTable("workflow_jobs", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_status",
+                    "\"Status\" IN ('queued', 'running', 'resultReady', 'retry', "
+                    + "'completed', 'incident', 'cancelled', 'skipped')");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_queue_class",
+                    "\"QueueClass\" IN ('control', 'activity')");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_attempts",
+                    "\"AttemptCount\" >= 0 AND \"MaxAttempts\" > 0 AND \"AttemptCount\" <= \"MaxAttempts\"");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_lease_shape",
+                    "((\"Status\" IN ('running', 'resultReady') AND \"WorkerId\" IS NOT NULL "
+                    + "AND \"LeaseToken\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR "
+                    + "(\"Status\" NOT IN ('running', 'resultReady') AND \"WorkerId\" IS NULL "
+                    + "AND \"LeaseToken\" IS NULL AND \"LeaseExpiresAt\" IS NULL))");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_terminal_time",
+                    "(\"Status\" IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NOT NULL) "
+                    + "OR (\"Status\" NOT IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeType).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.Kind).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.QueueClass).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Phase).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.FailureHandling).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.RetryDelays).HasColumnType("interval[]").IsRequired();
+            entity.Property(e => e.PayloadJson).HasColumnType("jsonb");
+            entity.Property(e => e.WorkerId).HasMaxLength(300);
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastFailureCode).HasMaxLength(100);
+            entity.Property(e => e.LastFailureDescription).HasMaxLength(1000);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.QueueClass, e.Priority, e.DueAt, e.Id })
+                .HasDatabaseName("IX_workflow_jobs_runnable_class_priority_due")
+                .IsDescending(false, true, false, false)
+                .HasFilter("\"Status\" IN ('queued', 'retry')");
+            entity.HasIndex(e => new { e.QueueClass, e.Status, e.LeaseExpiresAt, e.Id })
+                .HasDatabaseName("IX_workflow_jobs_expired_lease_class")
+                .HasFilter("\"Status\" IN ('running', 'resultReady') AND \"LeaseExpiresAt\" IS NOT NULL");
+            entity.HasIndex(e => new { e.InstanceId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.TokenId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.UpdatedAt, e.Id })
+                .HasDatabaseName("IX_workflow_jobs_updated_id")
+                .IsDescending(true, true);
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id })
+                .HasDatabaseName("IX_workflow_jobs_status_updated_id")
+                .IsDescending(false, true, true);
+            entity.HasIndex(e => new { e.CompletedAt, e.Id })
+                .HasFilter("\"Status\" IN ('completed', 'cancelled', 'skipped')");
+            entity.HasIndex(e => new { e.TimerSubscriptionId, e.ScheduledOccurrenceAt })
+                .IsUnique()
+                .HasFilter("\"TimerSubscriptionId\" IS NOT NULL AND \"ScheduledOccurrenceAt\" IS NOT NULL");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.Jobs)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Token)
+                .WithMany(e => e.Jobs)
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.MultiInstanceExecution)
+                .WithMany()
+                .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.UserTask)
+                .WithMany()
+                .HasForeignKey(e => e.UserTaskId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.TimerSubscription)
+                .WithMany(e => e.Jobs)
+                .HasForeignKey(e => e.TimerSubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Snapshot)
+                .WithMany(e => e.Jobs)
+                .HasForeignKey(e => e.SnapshotId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowJobAttemptEntity>(entity =>
+        {
+            entity.ToTable("workflow_job_attempts", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_job_attempts_status",
+                    "\"Status\" IN ('running', 'resultReady', 'completed', 'failed', "
+                    + "'leaseLost', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_workflow_job_attempts_number",
+                    "\"AttemptNumber\" > 0 AND \"LeaseGeneration\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.WorkerId).HasMaxLength(300);
+            entity.Property(e => e.FailureCode).HasMaxLength(100);
+            entity.Property(e => e.FailureDescription).HasMaxLength(1000);
+            entity.HasIndex(e => new { e.JobId, e.AttemptNumber }).IsUnique();
+            entity.HasIndex(e => new { e.JobId, e.Id });
+            entity.HasOne(e => e.Job)
+                .WithMany(e => e.Attempts)
+                .HasForeignKey(e => e.JobId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WorkflowIncidentEntity>(entity =>
+        {
+            entity.ToTable("workflow_incidents", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_incidents_status",
+                    "\"Status\" IN ('open', 'resolved')");
+                table.HasCheckConstraint(
+                    "CK_workflow_incidents_resolution",
+                    "(\"Status\" = 'open' AND \"ResolvedAt\" IS NULL AND \"ResolvedBy\" IS NULL) OR "
+                    + "(\"Status\" = 'resolved' AND \"ResolvedAt\" IS NOT NULL AND \"ResolvedBy\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_workflow_incidents_job_identity",
+                    "\"OriginalJobId\" > 0 AND (\"Status\" <> 'open' OR \"JobId\" IS NOT NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Type).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Summary).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.Details).HasMaxLength(4000);
+            entity.Property(e => e.ResolvedBy).HasMaxLength(300);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.JobId);
+            entity.HasIndex(e => new { e.OriginalJobId, e.Id });
+            entity.HasIndex(e => new { e.JobId, e.Status })
+                .IsUnique()
+                .HasDatabaseName("IX_workflow_incidents_open_job")
+                .HasFilter("\"Status\" = 'open'");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.ResolvedAt, e.Id })
+                .HasFilter("\"Status\" = 'resolved'");
+            entity.HasOne(e => e.Job)
+                .WithMany(e => e.Incidents)
+                .HasForeignKey(e => e.JobId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.Incidents)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

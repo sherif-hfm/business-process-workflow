@@ -40,6 +40,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();
         services.AddScoped<IEngineSettingsRepository, EngineSettingsRepository>();
         services.AddScoped<IUserDelegationRepository, UserDelegationRepository>();
+        services.AddScoped<IWorkflowJobRepository, WorkflowJobRepository>();
+        services.AddScoped<ITimerSubscriptionRepository, TimerSubscriptionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>(client =>

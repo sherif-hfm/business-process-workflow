@@ -44,7 +44,8 @@ public sealed record CurrentNodeSnapshot(
     string? Assignee,
     bool IsMultiInstance = false,
     string? FaultCode = null,
-    string? FaultDescription = null);
+    string? FaultDescription = null,
+    bool AsyncBefore = false);
 
 public sealed record ExecutionTokenRecord(
     long Id,
@@ -64,7 +65,16 @@ public sealed record ExecutionTokenRecord(
     string? TerminationReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    long? CurrentNodeExecutionId = null);
+    long? CurrentNodeExecutionId = null,
+    Guid ActivationId = default,
+    string? WaitState = null,
+    long? WaitingJobId = null,
+    long? WaitingTimerSubscriptionId = null);
+
+public sealed record InstanceVariableVersionRecord(
+    string Name,
+    JsonElement Value,
+    long Version);
 
 public sealed record NodeExecutionActorRecord(
     string? User,
@@ -267,6 +277,30 @@ public sealed record MultiInstanceActorStateRecord(
     bool HasCompleted,
     long? OwnedTaskId);
 
+public sealed record InstanceExecutionPositionRecord(
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    string NodeType,
+    string Status,
+    int? ArrivedViaFlowId,
+    string? TerminationReason,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    Guid? ActivationId,
+    string? WaitState,
+    long? WaitingJobId,
+    long? WaitingTimerSubscriptionId);
+
+public sealed record InstanceCompletionProjectionRecord(
+    string Kind,
+    long TokenId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    DateTimeOffset CompletedAt);
+
 // Compatibility projection for the existing instance-oriented API. TokenId and
 // UserTaskId keep the persistence boundary ready for task/token-addressed APIs.
 public sealed record InstanceListItem(
@@ -299,7 +333,9 @@ public sealed record InstanceListItem(
     IReadOnlyDictionary<string, JsonElement>? Variables,
     MultiInstanceProgressRecord? MultiInstanceProgress = null,
     string? FaultCode = null,
-    string? FaultDescription = null);
+    string? FaultDescription = null,
+    IReadOnlyList<InstanceExecutionPositionRecord>? ExecutionPositions = null,
+    InstanceCompletionProjectionRecord? Completion = null);
 
 public sealed record BusinessKeyReservationRecord(bool Reserved, long? ExistingInstanceId);
 
@@ -337,6 +373,18 @@ public enum InstanceSortField
 public sealed record InstanceSortCriterion(
     InstanceSortField Field,
     SortDirection Direction);
+
+/// <summary>
+/// SQL visibility scope for instance-list queries. Global readers can inspect
+/// every immutable workflow version; other callers see only versions whose
+/// workflow-level assignment roles intersect their normalized roles.
+/// </summary>
+public sealed record InstanceListAuthorization(
+    bool IsGlobalReader,
+    IReadOnlyList<string> LowerCallerRoles)
+{
+    public static InstanceListAuthorization Global { get; } = new(true, []);
+}
 
 public enum InboxSortField
 {
@@ -502,6 +550,14 @@ public static class ExecutionTokenRecordStatuses
     public const string Merged = "merged";
 }
 
+public static class ExecutionTokenWaitStates
+{
+    public const string AsyncBefore = "asyncBefore";
+    public const string AsyncAfter = "asyncAfter";
+    public const string TimerCatch = "timerCatch";
+    public const string TimerBoundary = "timerBoundary";
+}
+
 public static class NodeExecutionRecordKinds
 {
     public const string Node = "node";
@@ -541,6 +597,7 @@ public static class NodeExecutionCompletionReasons
     public const string ComplexReset = "complexReset";
     public const string ScopedInterrupt = "scopedInterrupt";
     public const string ScopedInterruptSkipped = "scopedInterruptSkipped";
+    public const string TimerFired = "timerFired";
 }
 
 public static class ExecutionTokenTerminationReasons

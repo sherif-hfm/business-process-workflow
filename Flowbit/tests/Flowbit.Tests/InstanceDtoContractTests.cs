@@ -35,6 +35,10 @@ public sealed class InstanceDtoContractTests
         Assert.Contains(typeof(InboxItemDto).GetProperties(), property => property.Name == "Variables");
         Assert.Contains(typeof(StartInstanceResultDto).GetProperties(), property => property.Name == "Fault");
         Assert.Contains(typeof(InstanceSummaryDto).GetProperties(), property => property.Name == "Fault");
+        Assert.Contains(
+            typeof(InstanceSummaryDto).GetProperties(),
+            property => property.Name == "Jobs"
+                        && property.PropertyType == typeof(InstanceJobSummaryDto));
         Assert.Contains(typeof(InstanceDetailDto).GetProperties(), property => property.Name == "Fault");
         Assert.Contains(typeof(UserTaskActionAckDto).GetProperties(), property => property.Name == "Fault");
         Assert.Contains(typeof(MessageDeliveryAckDto).GetProperties(), property => property.Name == "Fault");
@@ -77,7 +81,11 @@ public sealed class InstanceDtoContractTests
                 "ArrivedViaFlowId",
                 "TerminationReason",
                 "UserTaskId",
-                "MultiInstanceExecutionId"
+                "MultiInstanceExecutionId",
+                "ActivationId",
+                "WaitState",
+                "WaitingJobId",
+                "WaitingTimerSubscriptionId"
             },
             typeof(ExecutionPositionDto).GetProperties().Select(property => property.Name));
         Assert.Equal(

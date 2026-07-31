@@ -5,6 +5,7 @@
     <Project Path="src/Flowbit.Service/Flowbit.Service.csproj" />
     <Project Path="src/Flowbit.Shared/Flowbit.Shared.csproj" />
     <Project Path="src/Flowbit.Ui/Flowbit.Ui.csproj" />
+    <Project Path="src/Flowbit.Worker/Flowbit.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Flowbit.Tests/Flowbit.Tests.csproj" />

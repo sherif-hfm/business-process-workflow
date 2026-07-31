@@ -298,6 +298,23 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
         Assert.Null(summary.Completion);
     }
 
+    [Fact]
+    public async Task SpawnedForkBranchCycle_IsStoppedByTransactionWideRoutingBudget()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateFreshTokenCycleWorkflow());
+
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            "/api/instances?detail=full",
+            new StartInstanceRequest(workflowId, null, null, null));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "Pass-through routing cycle detected",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
     private async Task<long> CreateWorkflowAsync(WorkflowModel model)
     {
         using var response = await SendAsync(
@@ -499,6 +516,54 @@ public sealed class ParallelGatewayApiTests(PostgresApiFixture fixture)
             InitialEventId = 1,
             FlowNodes = nodes,
             SequenceFlows = flows
+        };
+    }
+
+    private static WorkflowModel CreateFreshTokenCycleWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = $"fresh-token-cycle-{suffix}",
+            Name = "Fresh token gateway cycle",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = BpmnFlowNodeTypes.StartEvent
+                },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Loop body",
+                    Type = BpmnFlowNodeTypes.Task
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Fork",
+                    Type = BpmnFlowNodeTypes.ParallelGateway
+                },
+                new FlowNodeModel
+                {
+                    Id = 4,
+                    Name = "Discard reused token",
+                    Type = BpmnFlowNodeTypes.EndEvent
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                // The lower-id branch reuses the current token and terminates.
+                // The higher-id branch receives a fresh token and loops, which
+                // used to reset the per-token hop budget forever.
+                new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 },
+                new SequenceFlowModel { Id = 302, SourceRef = 3, TargetRef = 2 }
+            ]
         };
     }
 }

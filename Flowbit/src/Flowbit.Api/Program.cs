@@ -132,6 +132,16 @@ try
                 },
                 new()
                 {
+                    Name = "Workflow Jobs",
+                    Description = "Role-protected operations search for durable asynchronous and timer work."
+                },
+                new()
+                {
+                    Name = "Workflow Incidents",
+                    Description = "Role-protected incident inspection and fenced manual retry."
+                },
+                new()
+                {
                     Name = "Task Distribution",
                     Description = "List and assign workflow-family tasks using external distributor client credentials."
                 },
@@ -240,6 +250,11 @@ try
             $"{MessageDeliveryOptions.SectionName}:MaxPayloadBytes must be greater than zero.");
     }
     builder.Services.AddSingleton(messageDeliveryOptions);
+
+    var durableProcessingOptions = builder.Configuration
+        .GetSection(DurableProcessingOptions.SectionName)
+        .Get<DurableProcessingOptions>() ?? new DurableProcessingOptions();
+    builder.Services.AddSingleton(durableProcessingOptions);
 
     builder.Services
         .AddServiceLayer()
@@ -350,6 +365,7 @@ try
     app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
     app.MapNodeExecutionEndpoints();
+    app.MapWorkflowJobEndpoints();
     app.MapUserDelegationEndpoints();
 
     app.Run();

@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
+using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 using Xunit;
 
@@ -90,7 +91,8 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var baselineContext = new AppDbContext(baselineOptions);
         var baselineRepository = new WorkflowRuntimeRepository(baselineContext);
         var baseline = await baselineRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], [], false, 1, 2, CancellationToken.None);
+            null, null, null, workflowKey, null, null, null, [], [],
+            InstanceListAuthorization.Global, null, false, 1, 2, CancellationToken.None);
 
         Assert.Equal(2, baseline.Items.Count);
         Assert.All(baseline.Items, item => Assert.Null(item.Variables));
@@ -104,7 +106,8 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         await using var includedContext = new AppDbContext(includedOptions);
         var includedRepository = new WorkflowRuntimeRepository(includedContext);
         var included = await includedRepository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], [], true, 1, 2, CancellationToken.None);
+            null, null, null, workflowKey, null, null, null, [], [],
+            InstanceListAuthorization.Global, null, true, 1, 2, CancellationToken.None);
 
         Assert.Equal(baselineCounter.ReaderCommands + 1, includedCounter.ReaderCommands);
         Assert.Equal(baseline.Items.Select(item => item.Id), included.Items.Select(item => item.Id));
@@ -117,6 +120,121 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
         Assert.Equal(
             included.Items.Select(item => item.Id).OrderBy(id => id),
             queriedIds.OrderBy(id => id));
+    }
+
+    [Fact]
+    public async Task InstanceListAppliesRoleVisibilityBeforeCountAndUsesStableKeysetPages()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var visibleRole = $"instance-reader-{suffix}";
+        long hiddenInstanceId;
+        List<(long Id, DateTimeOffset UpdatedAt)> expected;
+
+        await using (var setup = fixture.CreateDbContext())
+        {
+            var visibleDefinition = new WorkflowDefinitionEntity
+            {
+                Name = $"visible-{suffix}",
+                WorkflowKey = $"visible-{suffix}",
+                Version = 1,
+                IsPublished = true,
+                Definition = new WorkflowModel
+                {
+                    Id = $"visible-{suffix}",
+                    Name = $"visible-{suffix}",
+                    TaskAssignmentRoles = [visibleRole]
+                }
+            };
+            var hiddenDefinition = new WorkflowDefinitionEntity
+            {
+                Name = $"hidden-{suffix}",
+                WorkflowKey = $"hidden-{suffix}",
+                Version = 1,
+                IsPublished = true,
+                Definition = new WorkflowModel
+                {
+                    Id = $"hidden-{suffix}",
+                    Name = $"hidden-{suffix}",
+                    TaskAssignmentRoles = [$"other-{suffix}"]
+                }
+            };
+            setup.WorkflowDefinitions.AddRange(visibleDefinition, hiddenDefinition);
+            await setup.SaveChangesAsync();
+
+            var now = DateTimeOffset.UtcNow;
+            var visibleInstances = Enumerable.Range(0, 4)
+                .Select(index => new WorkflowInstanceEntity
+                {
+                    WorkflowDefinitionId = visibleDefinition.Id,
+                    WorkflowKey = visibleDefinition.WorkflowKey,
+                    Status = WorkflowInstanceStatuses.Running,
+                    CreatedAt = now.AddMinutes(-index),
+                    // Deliberate ties prove the appended id direction is stable.
+                    UpdatedAt = now.AddMinutes(-(index / 2))
+                })
+                .ToList();
+            var hidden = new WorkflowInstanceEntity
+            {
+                WorkflowDefinitionId = hiddenDefinition.Id,
+                WorkflowKey = hiddenDefinition.WorkflowKey,
+                Status = WorkflowInstanceStatuses.Running,
+                CreatedAt = now.AddMinutes(1),
+                UpdatedAt = now.AddMinutes(1)
+            };
+            setup.WorkflowInstances.AddRange(visibleInstances);
+            setup.WorkflowInstances.Add(hidden);
+            await setup.SaveChangesAsync();
+            setup.ExecutionTokens.AddRange(
+                visibleInstances.Append(hidden).Select(instance =>
+                    new ExecutionTokenEntity
+                    {
+                        InstanceId = instance.Id,
+                        NodeId = 1,
+                        NodeName = "Wait",
+                        NodeType = BpmnFlowNodeTypes.UserTask,
+                        Status = ExecutionTokenStatuses.Active
+                    }));
+            await setup.SaveChangesAsync();
+
+            hiddenInstanceId = hidden.Id;
+            expected = visibleInstances
+                .OrderByDescending(instance => instance.UpdatedAt)
+                .ThenByDescending(instance => instance.Id)
+                .Select(instance => (instance.Id, instance.UpdatedAt))
+                .ToList();
+        }
+
+        var authorization = new InstanceListAuthorization(
+            false,
+            [visibleRole.ToLowerInvariant()]);
+        var sort =
+            new[] { new InstanceSortCriterion(
+                InstanceSortField.UpdatedAt,
+                SortDirection.Descending) };
+
+        await using var firstContext = fixture.CreateDbContext();
+        var firstRepository = new WorkflowRuntimeRepository(firstContext);
+        var first = await firstRepository.ListInstancesAsync(
+            null, null, null, null, null, null, null, [], sort,
+            authorization, null, false, 1, 2, CancellationToken.None);
+
+        Assert.Equal(4, first.TotalCount);
+        Assert.Equal(expected.Take(2).Select(item => item.Id), first.Items.Select(item => item.Id));
+        Assert.DoesNotContain(first.Items, item => item.Id == hiddenInstanceId);
+        Assert.False(string.IsNullOrWhiteSpace(first.NextCursor));
+
+        await using var secondContext = fixture.CreateDbContext();
+        var secondRepository = new WorkflowRuntimeRepository(secondContext);
+        var second = await secondRepository.ListInstancesAsync(
+            null, null, null, null, null, null, null, [], sort,
+            authorization, first.NextCursor, false, 2, 2, CancellationToken.None);
+
+        Assert.Equal(4, second.TotalCount);
+        Assert.Equal(expected.Skip(2).Select(item => item.Id), second.Items.Select(item => item.Id));
+        Assert.DoesNotContain(second.Items, item => item.Id == hiddenInstanceId);
+        Assert.Null(second.NextCursor);
+        Assert.Empty(first.Items.Select(item => item.Id)
+            .Intersect(second.Items.Select(item => item.Id)));
     }
 
     [Fact]

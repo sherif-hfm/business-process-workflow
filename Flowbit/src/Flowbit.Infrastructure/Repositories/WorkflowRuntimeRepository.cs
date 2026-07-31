@@ -1,11 +1,14 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
+using NpgsqlTypes;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
@@ -79,13 +82,37 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
         IReadOnlyList<InstanceSortCriterion> sort,
+        InstanceListAuthorization authorization,
+        string? cursor,
         bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
-        var where = new StringBuilder(" WHERE 1=1");
-        var args = new List<(string Name, object Value)>();
+        ArgumentNullException.ThrowIfNull(authorization);
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        var normalizedSort = WorkflowInstanceCursor.NormalizeSort(sort);
+        var where = new StringBuilder("""
+             WHERE (
+                    @isGlobalReader
+                 OR EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements_text(
+                            CASE
+                                WHEN jsonb_typeof(d."Definition" -> 'taskAssignmentRoles') = 'array'
+                                THEN d."Definition" -> 'taskAssignmentRoles'
+                                ELSE '[]'::jsonb
+                            END) AS workflow_reader_role
+                        WHERE lower(workflow_reader_role) = ANY(@lowerCallerRoles)
+                    )
+                  )
+            """);
+        var args = new List<(string Name, object Value)>
+        {
+            ("isGlobalReader", authorization.IsGlobalReader),
+            ("lowerCallerRoles", authorization.LowerCallerRoles.ToArray())
+        };
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -103,26 +130,72 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" FROM flowbit.workflow_instances w{where}",
+                $"""
+                 SELECT COUNT(*) AS "Value"
+                 FROM flowbit.workflow_instances AS w
+                 INNER JOIN flowbit.workflow_definitions AS d
+                    ON d."Id" = w."WorkflowDefinitionId"
+                 {where}
+                 """,
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
 
-        var skip = (page - 1) * pageSize;
-        var pageArgs = new List<(string Name, object Value)>(args)
+        var pageWhere = new StringBuilder(where.ToString());
+        var pageArgs = new List<(string Name, object Value)>(args);
+        if (!string.IsNullOrWhiteSpace(cursor))
         {
-            ("take", pageSize),
-            ("skip", skip)
-        };
-        var orderBy = BuildInstanceOrderBy(sort);
+            if (!WorkflowInstanceCursor.TryDecode(
+                    cursor,
+                    normalizedSort,
+                    out var cursorValues))
+            {
+                throw new WorkflowDomainException(
+                    "The instance cursor is invalid, expired, or belongs to a different sort order.");
+            }
+            AppendInstanceCursor(
+                pageWhere,
+                pageArgs,
+                normalizedSort,
+                cursorValues);
+        }
+        pageArgs.Add(("take", pageSize + 1));
+        var orderBy = BuildInstanceOrderBy(normalizedSort);
         var entities = await dbContext.WorkflowInstances
             .FromSqlRaw(
-                $"SELECT w.* FROM flowbit.workflow_instances w{where} ORDER BY {orderBy} LIMIT @take OFFSET @skip",
+                $"""
+                 SELECT w.*
+                 FROM flowbit.workflow_instances AS w
+                 INNER JOIN flowbit.workflow_definitions AS d
+                    ON d."Id" = w."WorkflowDefinitionId"
+                 {pageWhere}
+                 ORDER BY {orderBy}
+                 LIMIT @take
+                 """,
                 BuildParameters(pageArgs))
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
+        var hasMore = entities.Count > pageSize;
+        if (hasMore)
+        {
+            entities.RemoveAt(entities.Count - 1);
+        }
         var items = await ToListItemsAsync(entities, includeVariables, cancellationToken);
-        return new PagedResult<InstanceListItem>(items, page, pageSize, totalCount);
+        var nextCursor = hasMore && entities.Count > 0
+            ? WorkflowInstanceCursor.Encode(
+                normalizedSort,
+                entities[^1].Id,
+                entities[^1].CreatedAt,
+                entities[^1].UpdatedAt)
+            : null;
+        return new PagedResult<InstanceListItem>(
+            items,
+            page,
+            pageSize,
+            totalCount)
+        {
+            NextCursor = nextCursor
+        };
     }
 
     public async Task<PagedResult<InboxListItem>> ListInboxAsync(
@@ -802,30 +875,74 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     private static NpgsqlParameter[] BuildParameters(IEnumerable<(string Name, object Value)> args) =>
         args.Select(a => new NpgsqlParameter(a.Name, a.Value)).ToArray();
 
+    private static void AppendInstanceCursor(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        IReadOnlyList<InstanceSortCriterion> normalizedSort,
+        WorkflowInstanceCursorValues cursor)
+    {
+        var predicates = new List<string>(normalizedSort.Count);
+        var equalities = new List<string>(normalizedSort.Count);
+        var addedParameters = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var criterion in normalizedSort)
+        {
+            var (column, parameterName, value) = criterion.Field switch
+            {
+                InstanceSortField.Id =>
+                    ("w.\"Id\"", "cursorId", (object)cursor.Id),
+                InstanceSortField.CreatedAt =>
+                    ("w.\"CreatedAt\"", "cursorCreatedAt", cursor.CreatedAt),
+                InstanceSortField.UpdatedAt =>
+                    ("w.\"UpdatedAt\"", "cursorUpdatedAt", cursor.UpdatedAt),
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(normalizedSort),
+                    criterion.Field,
+                    "Unsupported instance sort field.")
+            };
+            if (addedParameters.Add(parameterName))
+            {
+                args.Add((parameterName, value));
+            }
+
+            var comparison = criterion.Direction == SortDirection.Ascending
+                ? ">"
+                : "<";
+            var prefix = equalities.Count == 0
+                ? string.Empty
+                : string.Join(" AND ", equalities) + " AND ";
+            predicates.Add(
+                $"({prefix}{column} {comparison} @{parameterName})");
+            equalities.Add($"{column} = @{parameterName}");
+        }
+
+        where.Append(" AND (")
+            .Append(string.Join(" OR ", predicates))
+            .Append(')');
+    }
+
     private static string BuildInstanceOrderBy(IReadOnlyList<InstanceSortCriterion> requested)
     {
-        IReadOnlyList<InstanceSortCriterion> sort = requested.Count == 0
-            ? [new InstanceSortCriterion(InstanceSortField.UpdatedAt, SortDirection.Descending)]
-            : requested;
+        var sort = WorkflowInstanceCursor.NormalizeSort(requested);
         var parts = sort.Select(criterion =>
         {
-            var column = criterion.Field switch
-            {
-                InstanceSortField.Id => "w.\"Id\"",
-                InstanceSortField.CreatedAt => "w.\"CreatedAt\"",
-                InstanceSortField.UpdatedAt => "w.\"UpdatedAt\"",
-                _ => throw new ArgumentOutOfRangeException(nameof(requested), criterion.Field, "Unsupported instance sort field.")
-            };
+            var column = InstanceSortSqlColumn(criterion.Field);
             return $"{column} {ToSqlDirection(criterion.Direction)}";
         }).ToList();
 
-        if (!sort.Any(criterion => criterion.Field == InstanceSortField.Id))
-        {
-            parts.Add($"w.\"Id\" {ToSqlDirection(sort[^1].Direction)}");
-        }
-
         return string.Join(", ", parts);
     }
+
+    private static string InstanceSortSqlColumn(InstanceSortField field) =>
+        field switch
+        {
+            InstanceSortField.Id => "w.\"Id\"",
+            InstanceSortField.CreatedAt => "w.\"CreatedAt\"",
+            InstanceSortField.UpdatedAt => "w.\"UpdatedAt\"",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(field),
+                field,
+                "Unsupported instance sort field.")
+        };
 
     private static string BuildInboxOrderBy(IReadOnlyList<InboxSortCriterion> requested, string alias)
     {
@@ -888,6 +1005,49 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var tokensByInstance = tokens
             .GroupBy(t => t.InstanceId)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<ExecutionTokenEntity>)g.ToList());
+        var currentTasks = await dbContext.UserTasks.AsNoTracking()
+            .Where(task =>
+                instanceIds.Contains(task.InstanceId)
+                && (task.Status == UserTaskStatuses.Active
+                    || task.Status == UserTaskStatuses.Pending))
+            .Select(task => new
+            {
+                task.Id,
+                task.TokenId,
+                task.NodeId,
+                task.Status,
+                task.UpdatedAt
+            })
+            .ToListAsync(cancellationToken);
+        var taskByTokenAndNode = currentTasks
+            .GroupBy(task => (task.TokenId, task.NodeId))
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(task => task.Status == UserTaskStatuses.Active ? 0 : 1)
+                    .ThenByDescending(task => task.UpdatedAt)
+                    .ThenByDescending(task => task.Id)
+                    .First().Id);
+        var currentMultiInstances = await dbContext.MultiInstanceExecutions.AsNoTracking()
+            .Where(execution =>
+                instanceIds.Contains(execution.InstanceId)
+                && execution.Status == MultiInstanceExecutionStatuses.Active)
+            .Select(execution => new
+            {
+                execution.Id,
+                execution.TokenId,
+                execution.NodeId,
+                execution.UpdatedAt
+            })
+            .ToListAsync(cancellationToken);
+        var multiByTokenAndNode = currentMultiInstances
+            .GroupBy(execution => (execution.TokenId, execution.NodeId))
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(execution => execution.UpdatedAt)
+                    .ThenByDescending(execution => execution.Id)
+                    .First().Id);
         var taskSummaries = await GetUserTaskWorkSummariesAsync(instanceIds, cancellationToken);
         var variablesByInstance = includeVariables
             ? await GetLatestVariableValuesAsync(instanceIds, cancellationToken)
@@ -900,6 +1060,66 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 || SelectRepresentativeToken(e.Status, instanceTokens) is not { } token)
             {
                 throw new InvalidOperationException($"Workflow instance #{e.Id} has no execution token.");
+            }
+            var currentTokens = instanceTokens
+                .Where(candidate =>
+                    candidate.Status != ExecutionTokenStatuses.Merged
+                    && (candidate.Status == ExecutionTokenStatuses.Active
+                        || candidate.Id == token.Id))
+                .OrderBy(candidate => candidate.Id)
+                .ToList();
+            var executionPositions = currentTokens.Select(candidate =>
+            {
+                taskByTokenAndNode.TryGetValue(
+                    (candidate.Id, candidate.NodeId),
+                    out var userTaskId);
+                multiByTokenAndNode.TryGetValue(
+                    (candidate.Id, candidate.NodeId),
+                    out var multiInstanceExecutionId);
+                return new InstanceExecutionPositionRecord(
+                    candidate.Id,
+                    candidate.NodeId,
+                    candidate.NodeName,
+                    candidate.NodeExternalId,
+                    candidate.NodeType,
+                    candidate.Status,
+                    candidate.ArrivedViaFlowId,
+                    candidate.TerminationReason,
+                    userTaskId == 0 ? null : userTaskId,
+                    multiInstanceExecutionId == 0 ? null : multiInstanceExecutionId,
+                    candidate.ActivationId == Guid.Empty ? null : candidate.ActivationId,
+                    candidate.WaitState,
+                    candidate.WaitingJobId,
+                    candidate.WaitingTimerSubscriptionId);
+            }).ToArray();
+            InstanceCompletionProjectionRecord? completion = null;
+            if (e.Status == WorkflowInstanceStatuses.Completed)
+            {
+                var terminal = currentTokens
+                    .Where(candidate =>
+                        candidate.Status == ExecutionTokenStatuses.Completed
+                        && candidate.TerminationReason is
+                            ExecutionTokenTerminationReasons.NormalEnd
+                            or ExecutionTokenTerminationReasons.TerminateEnd)
+                    .OrderByDescending(candidate =>
+                        candidate.TerminationReason
+                        == ExecutionTokenTerminationReasons.TerminateEnd)
+                    .ThenByDescending(candidate => candidate.UpdatedAt)
+                    .ThenByDescending(candidate => candidate.Id)
+                    .FirstOrDefault();
+                if (terminal is not null)
+                {
+                    completion = new InstanceCompletionProjectionRecord(
+                        terminal.TerminationReason
+                        == ExecutionTokenTerminationReasons.TerminateEnd
+                            ? WorkflowCompletionKinds.Terminate
+                            : WorkflowCompletionKinds.Normal,
+                        terminal.Id,
+                        terminal.NodeId,
+                        terminal.NodeName,
+                        terminal.NodeExternalId,
+                        terminal.UpdatedAt);
+                }
             }
             taskSummaries.TryGetValue(e.Id, out var taskSummary);
             IReadOnlyDictionary<string, System.Text.Json.JsonElement>? variables = null;
@@ -940,7 +1160,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 variables,
                 null,
                 token.FaultCode,
-                token.FaultDescription);
+                token.FaultDescription,
+                executionPositions,
+                completion);
         }).ToList();
     }
 
@@ -1226,15 +1448,23 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         UserTaskEntity? task = null;
         if (node.Type == BpmnFlowNodeTypes.UserTask && !node.IsMultiInstance)
         {
-            task = NewUserTask(instance, token, node, now);
+            task = NewUserTask(
+                instance,
+                token,
+                node,
+                now,
+                status: node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
             dbContext.UserTasks.Add(task);
         }
+        var nodeExecutionStatus = node.AsyncBefore
+            ? NodeExecutionStatuses.Pending
+            : NodeExecutionStatuses.Active;
         var nodeExecution = NewNodeExecution(
             instance,
             token,
             node,
             NodeExecutionKinds.Node,
-            NodeExecutionStatuses.Active,
+            nodeExecutionStatus,
             gatewayBranchId,
             arrivedViaFlowId,
             triggeredBy,
@@ -1346,6 +1576,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.ComplexGatewayStateId = null;
         token.ComplexGatewayCycle = null;
         token.TerminationReason = terminationReason;
+        token.ActivationId = Guid.NewGuid();
+        token.WaitState = null;
+        token.WaitingJobId = null;
+        token.WaitingTimerSubscriptionId = null;
         token.UpdatedAt = now;
         instance.UpdatedAt = now;
 
@@ -1354,7 +1588,13 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             && node.Type == BpmnFlowNodeTypes.UserTask
             && !node.IsMultiInstance)
         {
-            task = NewUserTask(instance, token, node, now, claimedBy);
+            task = NewUserTask(
+                instance,
+                token,
+                node,
+                now,
+                claimedBy,
+                node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
             dbContext.UserTasks.Add(task);
         }
 
@@ -1364,6 +1604,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             var executionStatus = tokenStatus switch
             {
+                ExecutionTokenStatuses.Active when node.AsyncBefore => NodeExecutionStatuses.Pending,
                 ExecutionTokenStatuses.Active => NodeExecutionStatuses.Active,
                 ExecutionTokenStatuses.Faulted => NodeExecutionStatuses.Faulted,
                 ExecutionTokenStatuses.Cancelled => NodeExecutionStatuses.Cancelled,
@@ -1375,13 +1616,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 token,
                 node,
                 NodeExecutionKinds.Node,
-                NodeExecutionStatuses.Active,
+                executionStatus is NodeExecutionStatuses.Pending
+                    ? NodeExecutionStatuses.Pending
+                    : NodeExecutionStatuses.Active,
                 gatewayBranchId,
                 arrivedViaFlowId,
                 triggeredBy,
                 now,
                 task);
-            if (executionStatus != NodeExecutionStatuses.Active)
+            if (executionStatus is not (
+                    NodeExecutionStatuses.Active
+                    or NodeExecutionStatuses.Pending))
             {
                 CompleteNodeExecution(
                     targetExecution,
@@ -1404,7 +1649,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     now);
             }
             dbContext.NodeExecutions.Add(targetExecution);
-            if (executionStatus == NodeExecutionStatuses.Active)
+            if (executionStatus is NodeExecutionStatuses.Active or NodeExecutionStatuses.Pending)
             {
                 token.CurrentNodeExecution = targetExecution;
             }
@@ -1413,6 +1658,151 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    public async Task<bool> SetExecutionTokenWaitAsync(
+        long tokenId,
+        Guid activationId,
+        string waitState,
+        long? waitingJobId,
+        long? waitingTimerSubscriptionId,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId)
+        {
+            return false;
+        }
+
+        if (token.WaitState is not null)
+        {
+            return token.WaitState == waitState
+                   && token.WaitingJobId == waitingJobId
+                   && token.WaitingTimerSubscriptionId == waitingTimerSubscriptionId;
+        }
+
+        token.WaitState = waitState;
+        token.WaitingJobId = waitingJobId;
+        token.WaitingTimerSubscriptionId = waitingTimerSubscriptionId;
+        token.UpdatedAt = DateTimeOffset.UtcNow;
+        return true;
+    }
+
+    public async Task<bool> ClearExecutionTokenWaitAsync(
+        long tokenId,
+        Guid activationId,
+        string waitState,
+        long? waitingJobId,
+        long? waitingTimerSubscriptionId,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId
+            || token.WaitState != waitState
+            || token.WaitingJobId != waitingJobId
+            || token.WaitingTimerSubscriptionId != waitingTimerSubscriptionId)
+        {
+            return false;
+        }
+
+        token.WaitState = null;
+        token.WaitingJobId = null;
+        token.WaitingTimerSubscriptionId = null;
+        token.UpdatedAt = DateTimeOffset.UtcNow;
+        return true;
+    }
+
+    public async Task<ExecutionTokenRecord?> ActivatePendingNodeAsync(
+        long tokenId,
+        Guid activationId,
+        string? claimedBy,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId
+            || token.CurrentNodeExecutionId is null)
+        {
+            return null;
+        }
+
+        var execution = token.CurrentNodeExecution
+            ?? dbContext.NodeExecutions.Local.SingleOrDefault(entity =>
+                entity.Id == token.CurrentNodeExecutionId.Value)
+            ?? await dbContext.NodeExecutions.SingleOrDefaultAsync(
+                entity => entity.Id == token.CurrentNodeExecutionId.Value,
+                cancellationToken);
+        if (execution?.Status == NodeExecutionStatuses.Active)
+        {
+            return ToRecord(token);
+        }
+        if (execution?.Status != NodeExecutionStatuses.Pending)
+        {
+            return null;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        execution.Status = NodeExecutionStatuses.Active;
+        execution.StartedAt = now;
+        execution.UpdatedAt = now;
+        var pendingTasks = await dbContext.UserTasks
+            .Where(task =>
+                task.TokenId == tokenId
+                && task.NodeId == token.NodeId
+                && task.Status == UserTaskStatuses.Pending)
+            .OrderBy(task => task.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var task in pendingTasks)
+        {
+            task.Status = UserTaskStatuses.Active;
+            if (claimedBy is not null)
+            {
+                task.ClaimedBy = claimedBy;
+            }
+            task.UpdatedAt = now;
+        }
+        token.UpdatedAt = now;
+        return ToRecord(token);
+    }
+
+    public async Task<bool> CompleteCurrentNodeForWaitAsync(
+        long tokenId,
+        Guid activationId,
+        NodeExecutionCompletionRecord completion,
+        CancellationToken cancellationToken)
+    {
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId
+            || token.CurrentNodeExecutionId is null)
+        {
+            return false;
+        }
+
+        await CompleteCurrentNodeExecutionAsync(
+            token,
+            completion,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return true;
     }
 
     public async Task SetExecutionTokenStatusAsync(
@@ -1429,6 +1819,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.TerminationReason = terminationReason;
         token.ComplexGatewayStateId = null;
         token.ComplexGatewayCycle = null;
+        token.WaitState = null;
+        token.WaitingJobId = null;
+        token.WaitingTimerSubscriptionId = null;
         token.UpdatedAt = now;
         await CompleteCurrentNodeExecutionAsync(token, completion, now, cancellationToken);
         var persistedTasks = await dbContext.UserTasks
@@ -1522,6 +1915,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             token.TerminationReason = terminationReason;
             token.ComplexGatewayStateId = null;
             token.ComplexGatewayCycle = null;
+            token.WaitState = null;
+            token.WaitingJobId = null;
+            token.WaitingTimerSubscriptionId = null;
             token.UpdatedAt = now;
             await CompleteCurrentNodeExecutionAsync(
                 token,
@@ -1587,6 +1983,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             token.TerminationReason = ExecutionTokenTerminationReasons.GatewayJoinMerged;
             token.ComplexGatewayStateId = null;
             token.ComplexGatewayCycle = null;
+            token.WaitState = null;
+            token.WaitingJobId = null;
+            token.WaitingTimerSubscriptionId = null;
             token.UpdatedAt = now;
             await CompleteCurrentNodeExecutionAsync(
                 token,
@@ -2188,37 +2587,88 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         if (tokenIds.Count == 0) return;
+        var distinctTokenIds = tokenIds.Distinct().ToArray();
         var now = DateTimeOffset.UtcNow;
-        var persistedTasks = await dbContext.UserTasks
-            .Include(task => task.Token)
-            .Include(task => task.NodeExecution)
-            .Where(task => tokenIds.Contains(task.TokenId)
-                           && (task.Status == UserTaskStatuses.Active || task.Status == UserTaskStatuses.Pending))
-            .ToListAsync(cancellationToken);
-        var tasks = persistedTasks
-            .Concat(dbContext.UserTasks.Local.Where(task =>
-                tokenIds.Contains(task.TokenId)
-                && (task.Status == UserTaskStatuses.Active
-                    || task.Status == UserTaskStatuses.Pending)))
-            .Distinct()
-            .ToList();
-        foreach (var task in tasks)
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        try
         {
-            if (task.Status is UserTaskStatuses.Active or UserTaskStatuses.Pending)
-            {
-                CompleteTask(task, true, now);
-                await CompleteUserTaskNodeExecutionAsync(
-                    task,
-                    new NodeExecutionCompletionRecord(
-                        NodeExecutionRecordStatuses.Cancelled,
-                        completionReason,
-                        null,
-                        null,
-                        task.Token?.GatewayBranchId,
-                        actor),
+            var locallyClosedMultiInstanceTaskIds = dbContext.UserTasks.Local
+                .Where(task =>
+                    task.Id > 0
+                    && task.MultiInstanceExecutionId is not null
+                    && distinctTokenIds.Contains(task.TokenId)
+                    && task.Status is not (UserTaskStatuses.Active or UserTaskStatuses.Pending))
+                .Select(task => task.Id)
+                .Distinct()
+                .ToArray();
+            var cancelledMultiInstanceTaskIds =
+                await CancelMultiInstanceTasksSetBasedAsync(
+                    executionId: null,
+                    distinctTokenIds,
+                    locallyClosedMultiInstanceTaskIds,
+                    completionReason,
+                    actor,
                     now,
                     cancellationToken);
+            AcceptBulkCancelledMultiInstanceTasks(
+                cancelledMultiInstanceTaskIds,
+                completionReason,
+                actor,
+                now);
+
+            var persistedTasks = await dbContext.UserTasks
+                .Include(task => task.Token)
+                .Include(task => task.NodeExecution)
+                .Where(task =>
+                    task.MultiInstanceExecutionId == null
+                    && distinctTokenIds.Contains(task.TokenId)
+                    && (task.Status == UserTaskStatuses.Active
+                        || task.Status == UserTaskStatuses.Pending))
+                .ToListAsync(cancellationToken);
+            var tasks = persistedTasks
+                .Concat(dbContext.UserTasks.Local.Where(task =>
+                    task.MultiInstanceExecutionId == null
+                    && distinctTokenIds.Contains(task.TokenId)
+                    && (task.Status == UserTaskStatuses.Active
+                        || task.Status == UserTaskStatuses.Pending)))
+                .Distinct()
+                .ToList();
+            foreach (var task in tasks)
+            {
+                if (task.Status is UserTaskStatuses.Active or UserTaskStatuses.Pending)
+                {
+                    CompleteTask(task, true, now);
+                    await CompleteUserTaskNodeExecutionAsync(
+                        task,
+                        new NodeExecutionCompletionRecord(
+                            NodeExecutionRecordStatuses.Cancelled,
+                            completionReason,
+                            null,
+                            null,
+                            task.Token?.GatewayBranchId,
+                            actor),
+                        now,
+                        cancellationToken);
+                }
             }
+
+            if (ownedTransaction is not null)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.RollbackAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+            }
+            throw;
         }
     }
 
@@ -2229,32 +2679,78 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         if (tokenIds.Count == 0) return;
+        var distinctTokenIds = tokenIds.Distinct().ToArray();
         var now = DateTimeOffset.UtcNow;
-        var executions = await dbContext.MultiInstanceExecutions
-            .Where(execution => tokenIds.Contains(execution.TokenId)
-                                && execution.Status == MultiInstanceExecutionStatuses.Active)
-            .ToListAsync(cancellationToken);
-        foreach (var execution in executions)
+        var normalizedCompletionReason = completionReason switch
         {
-            if (execution.Status != MultiInstanceExecutionStatuses.Active)
+            NodeExecutionCompletionReasons.InstanceCancelled => "instanceCancel",
+            NodeExecutionCompletionReasons.GatewayScopeCancelled =>
+                ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+            NodeExecutionCompletionReasons.TerminateEnd =>
+                ExecutionTokenTerminationReasons.TerminateEnd,
+            NodeExecutionCompletionReasons.ErrorEnd =>
+                ExecutionTokenTerminationReasons.ErrorEnd,
+            _ => completionReason
+        };
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        try
+        {
+            var localExecutions = dbContext.MultiInstanceExecutions.Local
+                .Where(execution =>
+                    distinctTokenIds.Contains(execution.TokenId)
+                    && execution.Status == MultiInstanceExecutionStatuses.Active)
+                .ToList();
+            if (localExecutions.Any(execution =>
+                    dbContext.Entry(execution).State is EntityState.Added or EntityState.Modified))
             {
-                continue;
+                await dbContext.SaveChangesAsync(cancellationToken);
             }
-            execution.Status = MultiInstanceExecutionStatuses.Cancelled;
-            execution.CancelledCount = execution.TotalCount - execution.CompletedCount;
-            execution.CompletionReason = completionReason switch
+
+            await dbContext.MultiInstanceExecutions
+                .Where(execution =>
+                    distinctTokenIds.Contains(execution.TokenId)
+                    && execution.Status == MultiInstanceExecutionStatuses.Active)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        execution => execution.Status,
+                        MultiInstanceExecutionStatuses.Cancelled)
+                    .SetProperty(
+                        execution => execution.CancelledCount,
+                        execution => execution.TotalCount - execution.CompletedCount)
+                    .SetProperty(
+                        execution => execution.CompletionReason,
+                        normalizedCompletionReason)
+                    .SetProperty(execution => execution.UpdatedAt, now)
+                    .SetProperty(execution => execution.CompletedAt, now),
+                    cancellationToken);
+            foreach (var execution in localExecutions)
             {
-                NodeExecutionCompletionReasons.InstanceCancelled => "instanceCancel",
-                NodeExecutionCompletionReasons.GatewayScopeCancelled =>
-                    ExecutionTokenTerminationReasons.GatewayScopeCancelled,
-                NodeExecutionCompletionReasons.TerminateEnd =>
-                    ExecutionTokenTerminationReasons.TerminateEnd,
-                NodeExecutionCompletionReasons.ErrorEnd =>
-                    ExecutionTokenTerminationReasons.ErrorEnd,
-                _ => completionReason
-            };
-            execution.UpdatedAt = now;
-            execution.CompletedAt = now;
+                execution.Status = MultiInstanceExecutionStatuses.Cancelled;
+                execution.CancelledCount = execution.TotalCount - execution.CompletedCount;
+                execution.CompletionReason = normalizedCompletionReason;
+                execution.UpdatedAt = now;
+                execution.CompletedAt = now;
+                var entry = dbContext.Entry(execution);
+                entry.OriginalValues.SetValues(entry.CurrentValues);
+                entry.State = EntityState.Unchanged;
+            }
+
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.RollbackAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+            }
+            throw;
         }
     }
 
@@ -2612,8 +3108,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         NodeExecutionActorRecord triggeredBy,
         CancellationToken cancellationToken)
     {
-        var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(i => i.Id == instanceId)
-            ?? await dbContext.WorkflowInstances.SingleAsync(i => i.Id == instanceId, cancellationToken);
         var token = dbContext.ExecutionTokens.Local.SingleOrDefault(t => t.Id == tokenId)
             ?? await dbContext.ExecutionTokens.SingleAsync(
                 t => t.Id == tokenId
@@ -2623,8 +3117,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var now = DateTimeOffset.UtcNow;
         var execution = new MultiInstanceExecutionEntity
         {
-            Instance = instance,
-            Token = token,
+            InstanceId = instanceId,
+            TokenId = tokenId,
             NodeId = node.Id,
             Mode = configuration.Mode,
             Source = configuration.Source,
@@ -2636,64 +3130,243 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             CreatedAt = now,
             UpdatedAt = now
         };
-        dbContext.MultiInstanceExecutions.Add(execution);
-        foreach (var flowId in outcomeFlowIds.Distinct())
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        try
         {
-            dbContext.MultiInstanceFlowCounts.Add(new MultiInstanceFlowCountEntity
-            {
-                Execution = execution,
-                FlowId = flowId
-            });
-        }
+            var transaction = (NpgsqlTransaction)(dbContext.Database.CurrentTransaction
+                ?? throw new InvalidOperationException(
+                    "Multi-instance fan-out requires a database transaction."))
+                .GetDbTransaction();
+            var connection = transaction.Connection
+                ?? throw new InvalidOperationException(
+                    "The multi-instance transaction has no PostgreSQL connection.");
 
-        for (var index = 0; index < items.Count; index++)
+            await using (var insertExecution = new NpgsqlCommand(
+                """
+                INSERT INTO flowbit.multi_instance_executions
+                    ("InstanceId", "TokenId", "NodeId", "Mode", "Source",
+                     "OnePerActor", "ResultVariable", "Status", "TotalCount",
+                     "CompletedCount", "CancelledCount", "CreatedAt", "UpdatedAt")
+                VALUES
+                    (@instance_id, @token_id, @node_id, @mode, @source,
+                     @one_per_actor, @result_variable, 'active', @total_count,
+                     0, 0, @now, @now)
+                RETURNING "Id"
+                """,
+                connection,
+                transaction))
+            {
+                insertExecution.Parameters.AddWithValue("instance_id", instanceId);
+                insertExecution.Parameters.AddWithValue("token_id", tokenId);
+                insertExecution.Parameters.AddWithValue("node_id", node.Id);
+                insertExecution.Parameters.AddWithValue("mode", configuration.Mode);
+                insertExecution.Parameters.AddWithValue("source", configuration.Source);
+                insertExecution.Parameters.AddWithValue("one_per_actor", execution.OnePerActor);
+                insertExecution.Parameters.AddWithValue("result_variable", configuration.ResultVariable);
+                insertExecution.Parameters.AddWithValue("total_count", items.Count);
+                insertExecution.Parameters.AddWithValue("now", now);
+                execution.Id = Convert.ToInt64(
+                    await insertExecution.ExecuteScalarAsync(cancellationToken),
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            await using (var insertFlowCounts = new NpgsqlCommand(
+                """
+                INSERT INTO flowbit.multi_instance_flow_counts
+                    ("ExecutionId", "FlowId", "CompletedCount")
+                SELECT @execution_id, flow_id, 0
+                FROM unnest(@flow_ids::integer[]) AS flow_id
+                """,
+                connection,
+                transaction))
+            {
+                insertFlowCounts.Parameters.AddWithValue("execution_id", execution.Id);
+                insertFlowCounts.Parameters.AddWithValue(
+                    "flow_ids",
+                    outcomeFlowIds.Distinct().ToArray());
+                await insertFlowCounts.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var itemValues = items
+                .Select(static item => item?.GetRawText())
+                .ToArray();
+            var assignees = configuration.Source == MultiInstanceSources.Collection
+                ? items.Select(static item => item?.GetString()?.Trim()).ToArray()
+                : new string?[items.Count];
+            await using (var insertItems = new NpgsqlCommand(
+                """
+                WITH item_source AS
+                (
+                    SELECT
+                        (ordinality - 1)::integer AS item_index,
+                        item_value,
+                        assignee,
+                        CASE
+                            WHEN @parallel OR ordinality = 1 THEN 'active'
+                            ELSE 'pending'
+                        END AS item_status
+                    FROM unnest(@item_values::text[], @assignees::text[])
+                        WITH ORDINALITY AS source(item_value, assignee, ordinality)
+                ),
+                inserted_tasks AS
+                (
+                    INSERT INTO flowbit.user_tasks
+                        ("InstanceId", "TokenId", "NodeId", "NodeName",
+                         "NodeExternalId", "Roles", "RequiresClaim",
+                         "RequiresAssignment", "Status", "CreatedAt", "UpdatedAt",
+                         "MultiInstanceExecutionId", "ItemIndex", "ItemValueJson",
+                         "Assignee")
+                    SELECT
+                        @instance_id, @token_id, @node_id, @node_name,
+                        @node_external_id, @roles, @requires_claim,
+                        @requires_assignment, item_status, @now, @now,
+                        @execution_id, item_index,
+                        CASE
+                            WHEN item_value IS NULL THEN NULL
+                            ELSE item_value::jsonb
+                        END,
+                        assignee
+                    FROM item_source
+                    ORDER BY item_index
+                    RETURNING "Id", "ItemIndex", "Status"
+                ),
+                inserted_executions AS
+                (
+                    INSERT INTO flowbit.node_executions
+                        ("InstanceId", "ExecutionTokenId", "UserTaskId",
+                         "MultiInstanceExecutionId", "ItemIndex", "NodeId",
+                         "NodeName", "NodeExternalId", "NodeType", "ExecutionKind",
+                         "Status", "EntryGatewayBranchId", "EnteredViaFlowId",
+                         "NodeRolesJson", "TriggeredBy", "TriggeredByRolesJson",
+                         "TriggeredActingFor", "TriggeredDelegationId", "CreatedAt",
+                         "StartedAt", "UpdatedAt", "IsCutoverSeeded")
+                    SELECT
+                        @instance_id, @token_id, task."Id",
+                        @execution_id, task."ItemIndex", @node_id,
+                        @node_name, @node_external_id, @node_type, 'userTaskItem',
+                        task."Status", @entry_gateway_branch_id, @entered_via_flow_id,
+                        @node_roles, @triggered_by, @triggered_by_roles,
+                        @triggered_acting_for, @triggered_delegation_id, @now,
+                        CASE WHEN task."Status" = 'pending' THEN NULL ELSE @now END,
+                        @now, false
+                    FROM inserted_tasks AS task
+                    ORDER BY task."ItemIndex"
+                    RETURNING "Id"
+                )
+                SELECT count(*) FROM inserted_executions
+                """,
+                connection,
+                transaction))
+            {
+                insertItems.Parameters.AddWithValue("instance_id", instanceId);
+                insertItems.Parameters.AddWithValue("token_id", tokenId);
+                insertItems.Parameters.AddWithValue("execution_id", execution.Id);
+                insertItems.Parameters.AddWithValue("node_id", node.Id);
+                insertItems.Parameters.AddWithValue("node_name", node.Name);
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "node_external_id",
+                    NpgsqlDbType.Text)
+                {
+                    Value = (object?)node.ExternalId ?? DBNull.Value
+                });
+                insertItems.Parameters.AddWithValue("node_type", node.Type);
+                insertItems.Parameters.AddWithValue("roles", node.Roles.ToArray());
+                insertItems.Parameters.AddWithValue(
+                    "requires_claim",
+                    configuration.Source == MultiInstanceSources.Cardinality && node.RequiresClaim);
+                insertItems.Parameters.AddWithValue(
+                    "requires_assignment",
+                    node.RequiresAssignment);
+                insertItems.Parameters.AddWithValue(
+                    "parallel",
+                    configuration.Mode == MultiInstanceModes.Parallel);
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "item_values",
+                    NpgsqlDbType.Array | NpgsqlDbType.Text)
+                {
+                    Value = itemValues
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "assignees",
+                    NpgsqlDbType.Array | NpgsqlDbType.Text)
+                {
+                    Value = assignees
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "entry_gateway_branch_id",
+                    NpgsqlDbType.Bigint)
+                {
+                    Value = (object?)token.GatewayBranchId ?? DBNull.Value
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "entered_via_flow_id",
+                    NpgsqlDbType.Integer)
+                {
+                    Value = (object?)token.ArrivedViaFlowId ?? DBNull.Value
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "node_roles",
+                    NpgsqlDbType.Jsonb)
+                {
+                    Value = JsonSerializer.Serialize(node.Roles)
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "triggered_by",
+                    NpgsqlDbType.Text)
+                {
+                    Value = (object?)triggeredBy.User ?? DBNull.Value
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "triggered_by_roles",
+                    NpgsqlDbType.Jsonb)
+                {
+                    Value = JsonSerializer.Serialize(triggeredBy.Roles)
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "triggered_acting_for",
+                    NpgsqlDbType.Text)
+                {
+                    Value = (object?)triggeredBy.ActingFor ?? DBNull.Value
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "triggered_delegation_id",
+                    NpgsqlDbType.Bigint)
+                {
+                    Value = (object?)triggeredBy.DelegationId ?? DBNull.Value
+                });
+                insertItems.Parameters.AddWithValue("now", now);
+                var inserted = Convert.ToInt32(
+                    await insertItems.ExecuteScalarAsync(cancellationToken),
+                    System.Globalization.CultureInfo.InvariantCulture);
+                if (inserted != items.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"Multi-instance fan-out created {inserted} item executions; expected {items.Count}.");
+                }
+            }
+
+            dbContext.MultiInstanceExecutions.Attach(execution);
+            token.CurrentNodeExecution = null;
+            token.CurrentNodeExecutionId = null;
+            if (ownedTransaction is not null)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+            return ToRecord(execution);
+        }
+        catch
         {
-            var item = items[index];
-            var assigned = configuration.Source == MultiInstanceSources.Collection
-                ? item?.GetString()?.Trim()
-                : null;
-            var task = new UserTaskEntity
+            if (ownedTransaction is not null)
             {
-                Instance = instance,
-                Token = token,
-                MultiInstanceExecution = execution,
-                NodeId = node.Id,
-                NodeName = node.Name,
-                NodeExternalId = node.ExternalId,
-                Roles = node.Roles.ToList(),
-                RequiresClaim = configuration.Source == MultiInstanceSources.Cardinality && node.RequiresClaim,
-                RequiresAssignment = node.RequiresAssignment,
-                Status = configuration.Mode == MultiInstanceModes.Parallel || index == 0
-                    ? UserTaskStatuses.Active
-                    : UserTaskStatuses.Pending,
-                ItemIndex = index,
-                ItemValueJson = item is null ? null : JsonMapping.ToJsonDocument(item.Value),
-                Assignee = assigned,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-            dbContext.UserTasks.Add(task);
-            var executionStatus = configuration.Mode == MultiInstanceModes.Parallel || index == 0
-                ? NodeExecutionStatuses.Active
-                : NodeExecutionStatuses.Pending;
-            dbContext.NodeExecutions.Add(NewNodeExecution(
-                instance,
-                token,
-                node,
-                NodeExecutionKinds.UserTaskItem,
-                executionStatus,
-                token.GatewayBranchId,
-                token.ArrivedViaFlowId,
-                triggeredBy,
-                now,
-                task,
-                execution,
-                index));
+                await ownedTransaction.RollbackAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+            }
+            throw;
         }
-
-        token.CurrentNodeExecution = null;
-        token.CurrentNodeExecutionId = null;
-        return ToRecord(execution);
     }
 
     public async Task<MultiInstanceExecutionRecord?> GetActiveMultiInstanceAsync(
@@ -3366,41 +4039,219 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken)
     {
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == executionId);
-        var remainingCandidates = await dbContext.UserTasks
-            .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"MultiInstanceExecutionId\" = {executionId} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
-            .ToListAsync(cancellationToken);
-        // The current item can already be marked completed in the change tracker
-        // while the database still reports it active until SaveChanges. Re-check
-        // tracked state in memory so the winning item is never cancelled.
-        var remaining = remainingCandidates
-            .Where(t => t.Status is UserTaskStatuses.Active or UserTaskStatuses.Pending)
-            .ToList();
         var now = DateTimeOffset.UtcNow;
-        foreach (var task in remaining)
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        try
         {
-            task.Status = UserTaskStatuses.Cancelled;
-            task.CompletedAt = now;
-            task.UpdatedAt = now;
-            await CompleteUserTaskNodeExecutionAsync(
-                task,
-                new NodeExecutionCompletionRecord(
-                    NodeExecutionRecordStatuses.Cancelled,
-                    ToNodeExecutionCompletionReason(completionReason),
-                    null,
-                    null,
-                    null,
-                    actor),
+            // The winning item can already be completed in the change tracker
+            // while its database row is still active. Excluding locally closed
+            // rows preserves that completion without flushing the whole fan-out.
+            var locallyClosedTaskIds = dbContext.UserTasks.Local
+                .Where(task =>
+                    task.Id > 0
+                    && task.MultiInstanceExecutionId == executionId
+                    && task.Status is not (UserTaskStatuses.Active or UserTaskStatuses.Pending))
+                .Select(task => task.Id)
+                .Distinct()
+                .ToArray();
+            var nodeCompletionReason = ToNodeExecutionCompletionReason(completionReason);
+            var cancelledTaskIds = await CancelMultiInstanceTasksSetBasedAsync(
+                executionId,
+                tokenIds: [],
+                locallyClosedTaskIds,
+                nodeCompletionReason,
+                actor,
                 now,
                 cancellationToken);
+            AcceptBulkCancelledMultiInstanceTasks(
+                cancelledTaskIds,
+                nodeCompletionReason,
+                actor,
+                now);
+
+            execution.CancelledCount += cancelledTaskIds.Count;
+            execution.WinningFlowId = winningFlowId;
+            execution.CompletionReason = completionReason;
+            execution.Status = completionReason == "interrupt"
+                ? MultiInstanceExecutionStatuses.Interrupted
+                : MultiInstanceExecutionStatuses.Completed;
+            execution.CompletedAt = now;
+            execution.UpdatedAt = now;
+            if (ownedTransaction is not null)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
         }
-        execution.CancelledCount += remaining.Count;
-        execution.WinningFlowId = winningFlowId;
-        execution.CompletionReason = completionReason;
-        execution.Status = completionReason == "interrupt"
-            ? MultiInstanceExecutionStatuses.Interrupted
-            : MultiInstanceExecutionStatuses.Completed;
-        execution.CompletedAt = now;
-        execution.UpdatedAt = now;
+        catch
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.RollbackAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+            }
+            throw;
+        }
+    }
+
+    private async Task<IReadOnlyList<long>> CancelMultiInstanceTasksSetBasedAsync(
+        long? executionId,
+        IReadOnlyCollection<long> tokenIds,
+        IReadOnlyCollection<long> excludedTaskIds,
+        string nodeExecutionCompletionReason,
+        NodeExecutionActorRecord actor,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var transaction = (NpgsqlTransaction)(dbContext.Database.CurrentTransaction
+            ?? throw new InvalidOperationException(
+                "Multi-instance cancellation requires a database transaction."))
+            .GetDbTransaction();
+        var connection = transaction.Connection
+            ?? throw new InvalidOperationException(
+                "The multi-instance transaction has no PostgreSQL connection.");
+        await using var command = new NpgsqlCommand(
+            """
+            WITH remaining AS MATERIALIZED
+            (
+                SELECT task."Id"
+                FROM flowbit.user_tasks AS task
+                WHERE task."MultiInstanceExecutionId" IS NOT NULL
+                  AND task."Status" IN ('active', 'pending')
+                  AND
+                  (
+                      (@execution_id > 0
+                       AND task."MultiInstanceExecutionId" = @execution_id)
+                      OR
+                      (@execution_id = 0
+                       AND task."TokenId" = ANY(@token_ids))
+                  )
+                  AND NOT (task."Id" = ANY(@excluded_task_ids))
+                ORDER BY task."Id"
+                FOR UPDATE
+            ),
+            cancelled_tasks AS
+            (
+                UPDATE flowbit.user_tasks AS task
+                SET "Status" = 'cancelled',
+                    "SelectedFlowId" = NULL,
+                    "ResultJson" = NULL,
+                    "CompletedBy" = NULL,
+                    "CompletedByRoles" = NULL,
+                    "CompletedAt" = @now,
+                    "UpdatedAt" = @now
+                FROM remaining
+                WHERE task."Id" = remaining."Id"
+                RETURNING task."Id"
+            ),
+            cancelled_executions AS
+            (
+                UPDATE flowbit.node_executions AS node_execution
+                SET "Status" = 'cancelled',
+                    "CompletionReason" = @completion_reason,
+                    "SelectedFlowId" = NULL,
+                    "ExitedViaFlowId" = NULL,
+                    "ExitGatewayBranchId" = node_execution."EntryGatewayBranchId",
+                    "CompletedBy" = @completed_by,
+                    "CompletedByRolesJson" = @completed_by_roles,
+                    "CompletedActingFor" = @completed_acting_for,
+                    "CompletedDelegationId" = @completed_delegation_id,
+                    "ErrorCode" = NULL,
+                    "ErrorDescription" = NULL,
+                    "CompletedAt" = @now,
+                    "UpdatedAt" = @now
+                FROM cancelled_tasks
+                WHERE node_execution."UserTaskId" = cancelled_tasks."Id"
+                  AND node_execution."Status" IN ('active', 'pending')
+                RETURNING node_execution."Id"
+            )
+            SELECT
+                COALESCE(
+                    (SELECT array_agg("Id" ORDER BY "Id") FROM cancelled_tasks),
+                    ARRAY[]::bigint[]),
+                (SELECT count(*) FROM cancelled_executions)
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("execution_id", executionId ?? 0L);
+        command.Parameters.AddWithValue("token_ids", tokenIds.Distinct().ToArray());
+        command.Parameters.AddWithValue(
+            "excluded_task_ids",
+            excludedTaskIds.Distinct().ToArray());
+        command.Parameters.AddWithValue(
+            "completion_reason",
+            nodeExecutionCompletionReason);
+        command.Parameters.Add(new NpgsqlParameter("completed_by", NpgsqlDbType.Text)
+        {
+            Value = (object?)actor.User ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter(
+            "completed_by_roles",
+            NpgsqlDbType.Jsonb)
+        {
+            Value = JsonSerializer.Serialize(actor.Roles)
+        });
+        command.Parameters.Add(new NpgsqlParameter(
+            "completed_acting_for",
+            NpgsqlDbType.Text)
+        {
+            Value = (object?)actor.ActingFor ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter(
+            "completed_delegation_id",
+            NpgsqlDbType.Bigint)
+        {
+            Value = (object?)actor.DelegationId ?? DBNull.Value
+        });
+        command.Parameters.AddWithValue("now", now);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return [];
+        }
+        return reader.GetFieldValue<long[]>(0);
+    }
+
+    private void AcceptBulkCancelledMultiInstanceTasks(
+        IReadOnlyCollection<long> taskIds,
+        string completionReason,
+        NodeExecutionActorRecord actor,
+        DateTimeOffset now)
+    {
+        if (taskIds.Count == 0)
+        {
+            return;
+        }
+
+        var ids = taskIds.ToHashSet();
+        foreach (var task in dbContext.UserTasks.Local.Where(task => ids.Contains(task.Id)))
+        {
+            CompleteTask(task, true, now);
+            var entry = dbContext.Entry(task);
+            entry.OriginalValues.SetValues(entry.CurrentValues);
+            entry.State = EntityState.Unchanged;
+        }
+
+        var completion = new NodeExecutionCompletionRecord(
+            NodeExecutionRecordStatuses.Cancelled,
+            completionReason,
+            null,
+            null,
+            null,
+            actor);
+        foreach (var nodeExecution in dbContext.NodeExecutions.Local.Where(
+                     execution =>
+                         execution.UserTaskId is long userTaskId
+                         && ids.Contains(userTaskId)))
+        {
+            CompleteNodeExecution(nodeExecution, completion, now);
+            var entry = dbContext.Entry(nodeExecution);
+            entry.OriginalValues.SetValues(entry.CurrentValues);
+            entry.State = EntityState.Unchanged;
+        }
     }
 
     private static string ToNodeExecutionCompletionReason(string completionReason) =>
@@ -3662,6 +4513,27 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ThenBy(h => h.Id)
             .ToListAsync(cancellationToken);
         return entities.Select(ToRecord).ToList();
+    }
+
+    public async Task<IReadOnlyList<InstanceVariableVersionRecord>> LoadLatestVariableVersionsAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var latestIds = dbContext.InstanceVariables
+            .Where(variable => variable.InstanceId == instanceId)
+            .GroupBy(variable => variable.VariableName)
+            .Select(group => group.Max(variable => variable.Id));
+        var entities = await dbContext.InstanceVariables
+            .AsNoTracking()
+            .Where(variable => latestIds.Contains(variable.Id))
+            .OrderBy(variable => variable.VariableName)
+            .ToListAsync(cancellationToken);
+        return entities
+            .Select(variable => new InstanceVariableVersionRecord(
+                variable.VariableName,
+                variable.ValueJson.RootElement.Clone(),
+                variable.Id))
+            .ToArray();
     }
 
     public Task<long?> GetLatestNodeEntryHistoryIdAsync(
@@ -4002,7 +4874,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.TerminationReason,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.CurrentNodeExecutionId);
+            entity.CurrentNodeExecutionId,
+            entity.ActivationId,
+            entity.WaitState,
+            entity.WaitingJobId,
+            entity.WaitingTimerSubscriptionId);
 
     private static GatewayExecutionRecord ToRecord(GatewayExecutionEntity entity) =>
         new(
@@ -4290,7 +5166,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         ExecutionTokenEntity token,
         CurrentNodeSnapshot node,
         DateTimeOffset now,
-        string? claimedBy = null) =>
+        string? claimedBy = null,
+        string status = UserTaskStatuses.Active) =>
         new()
         {
             Instance = instance,
@@ -4301,7 +5178,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Roles = node.Roles.ToList(),
             RequiresClaim = node.Assignee is null && node.RequiresClaim,
             RequiresAssignment = node.RequiresAssignment,
-            Status = UserTaskStatuses.Active,
+            Status = status,
             ClaimedBy = claimedBy,
             Assignee = node.Assignee,
             CreatedAt = now,

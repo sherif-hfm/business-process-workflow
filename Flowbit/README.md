@@ -9,6 +9,8 @@
 - `src/Flowbit.Infrastructure` - EF Core, PostgreSQL, migrations, repositories.
 - `src/Flowbit.Shared` - DTOs and C# workflow definition model.
 - `src/Flowbit.Ui` - Blazor Server UI that calls the API.
+- `src/Flowbit.Worker` - durable PostgreSQL job/timer dispatcher, lease
+  heartbeats, timer-start reconciliation, metrics, and retention cleanup.
 - `tests/Flowbit.Tests` - xUnit definition/editor tests plus an in-process
   API host backed by an isolated PostgreSQL Testcontainer.
 - `tools/*` - the existing definition verifier, live API regression runner, and
@@ -28,6 +30,9 @@
   `flowbit.node_executions`, `flowbit.instance_variables`,
   `flowbit.instance_history`,
   `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
+- Durable work is stored in `flowbit.workflow_jobs`,
+  `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
+  `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
 - Runtime mutations use one lock order: instance, active gateway
   executions/states/branches, active tokens, active multi-instance executions,
   then active/pending user tasks; rows are ordered by ID within each group.
@@ -133,6 +138,59 @@ summary query and write no occurrence or summary rows. The additive migration
 does not backfill or guess old events; existing instances expose only evidence
 recorded after deployment.
 
+## Durable async work and timers
+
+`task`, `serviceTask`, `scriptTask`, and `userTask` support `asyncBefore` and
+`asyncAfter`. A multi-instance user task applies those flags to its parent
+execution, not to every child item. Definitions may also use
+`timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with
+exactly one fixed ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule.
+Timer boundaries may be interrupting or noninterrupting and may recur.
+
+The worker leases bounded work with PostgreSQL `FOR UPDATE SKIP LOCKED`.
+Workflow mutations still use the instance-first runtime lock order and verify
+the job lease generation, token activation, wait phase, and subscription before
+committing. Service calls and JavaScript execution happen between short staging
+and finalization transactions, so the external/CPU-heavy body holds neither an
+instance lock nor a database transaction. Output targets use variable-version
+conflict detection; a concurrent write opens an incident instead of silently
+overwriting it.
+
+Worker defaults are eight total slots, six activity slots, and four concurrent
+activity jobs per instance. Two slots therefore remain available for
+timer/control work. PostgreSQL notifications are wake-up hints; one-second
+polling remains authoritative, and an idle dispatcher shortens its backoff to
+the next persisted due or lease-expiry deadline. Calls have at-least-once
+external semantics and receive stable `sys.jobId` and `sys.jobAttempt` values,
+so downstream services should use `sys.jobId` as an idempotency key.
+
+The Blazor **Operations** page and `/api/jobs` / `/api/incidents` resources
+default to the `admin` role. Override the comma-separated global role list with
+the `WorkflowJobs.RequiredRole` engine setting. Job, incident, and attempt
+collections use opaque keyset cursors; their list rows intentionally exclude
+snapshots, result payloads, stack traces, and embedded attempt collections.
+Instance summaries expose only grouped open/queued/running/incident counts and
+the nearest due time.
+
+For an additive rollout, first deploy the schema and API with
+`WorkflowDurableProcessing:PublicationEnabled=false`. Draft definitions may
+still be saved, but publishing or making an async/timer definition the default
+is rejected. Start at least one worker and confirm `/health/ready` returns 200
+after its first successful durable-queue query, then set the gate to `true`.
+Existing definitions and running instances remain synchronous and require no
+backfill.
+
+Standard .NET meters publish worker and engine signals under `Flowbit.Worker`
+and `Flowbit.Runtime.Jobs`. They include queue depth/age, timer lateness,
+acquisition and instance-lock wait latency, lease loss, retries, output
+conflicts, incidents, and cleanup volume. The worker also exposes these signals
+in Prometheus text format at `/metrics`; `/health/live` is its process liveness
+probe. These operational endpoints listen on `FlowbitWorker:HealthListenUrl`
+(`http://0.0.0.0:8081` by default). Timer-start reconciliation uses one
+transaction-scoped advisory leader and processes at most
+`FlowbitWorker:TimerStartReconcileBatchSize` workflow families per pass, so
+additional replicas provide failover without duplicating the full scan.
+
 ## Run Locally
 
 Start PostgreSQL:
@@ -155,6 +213,12 @@ Run the Blazor UI:
 
 ```powershell
 dotnet run --project .\src\Flowbit.Ui\Flowbit.Ui.csproj --launch-profile http
+```
+
+Run one or more worker replicas:
+
+```powershell
+dotnet run --project .\src\Flowbit.Worker\Flowbit.Worker.csproj
 ```
 
 Open:
@@ -190,12 +254,19 @@ and in-flight gateway executions are not migrated.
 - `PUT /api/workflows/{id}`
 - `POST /api/workflows/{id}/publish`
 - `POST /api/instances`
-- `GET /api/instances?status=running`
+- `GET /api/instances?status=running` (SQL-authorized, opaque cursor paging)
 - `GET /api/instances?includeVariables=true`
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/inbox?includeVariables=true` (actor-scoped)
 - `GET /api/node-executions` (authorized cross-workflow activity)
 - `GET /api/node-executions/{id}` (authorized execution detail)
+- `GET /api/jobs` (admin by default; opaque cursor paging)
+- `GET /api/jobs/statistics`
+- `GET /api/jobs/{id}`
+- `GET /api/jobs/{id}/attempts` (opaque cursor paging)
+- `GET /api/incidents` (admin by default; opaque cursor paging)
+- `GET /api/incidents/{id}`
+- `POST /api/incidents/{id}/retry`
 - `GET /api/instances/{id}`
 - `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`
@@ -397,8 +468,15 @@ Instance fields are `id`, `createdAt`, and `updatedAt`. Inbox fields are
 `instanceCreatedAt`, and `instanceUpdatedAt`. Without an explicit sort, the
 existing defaults remain `updatedAt DESC, id DESC` and
 `taskUpdatedAt DESC, userTaskId DESC`, respectively. An implicit unique-ID
-tie-breaker keeps offset pages deterministic. Invalid, duplicate, or excessive
-sort clauses return 400.
+tie-breaker keeps pages deterministic. The instance list returns an opaque
+`nextCursor`; pass it back as `cursor` for the next page. A cursor is bound to
+its sort order, and a later page without the preceding cursor is rejected.
+Instance visibility is applied in SQL before the exact count, ordering, paging,
+and grouped job enrichment: callers with a role in
+`WorkflowInstances.RequiredRole` (default `admin`) see every version, while
+other authenticated callers see versions whose `taskAssignmentRoles` intersect
+their JWT roles. Invalid, duplicate, or excessive sort clauses and malformed
+cursors return 400.
 
 Inbox responses expose explicit task and instance creation/update timestamps.
 The older `createdAt` and `updatedAt` properties remain compatibility aliases

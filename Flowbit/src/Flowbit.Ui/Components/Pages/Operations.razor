@@ -1,0 +1,407 @@
+@page "/operations"
+@inject WorkflowApiClient Api
+
+<PageTitle>Jobs &amp; incidents · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Operations" Title="Jobs &amp; incidents"
+            Description="Inspect durable async work, timer activity, retries, and workflow incidents.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@loading">
+            <AppIcon Name="refresh" /> @(loading ? "Refreshing…" : "Refresh")
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="alert alert-success" role="status">@notice</div>
+}
+
+@if (statistics is not null)
+{
+    <section class="metrics-grid mb-4" aria-label="Durable queue health">
+        <MetricCard Label="Runnable jobs"
+                    Value="@statistics.RunnableDepth.ToString("N0")"
+                    Icon="jobs"
+                    Hint="@($"{statistics.TimerControlRunnableCount:N0} timer/control")" />
+        <MetricCard Label="Queue lag"
+                    Value="@FormatLag(statistics.QueueLagSeconds)"
+                    Icon="timer"
+                    Tone="warning"
+                    Hint="Age of oldest runnable job" />
+        <MetricCard Label="Active leases"
+                    Value="@statistics.ActiveLeaseCount.ToString("N0")"
+                    Icon="activity"
+                    Tone="success"
+                    Hint="@($"Observed {statistics.ObservedAt.ToLocalTime():T}")" />
+        <MetricCard Label="Open incidents"
+                    Value="@statistics.OpenIncidentCount.ToString("N0")"
+                    Icon="alert"
+                    Tone="danger"
+                    Hint="Jobs requiring attention" />
+    </section>
+}
+
+<section class="panel panel-flush mb-4" aria-labelledby="incident-heading">
+    <div class="section-heading px-3 pt-3">
+        <div>
+            <h2 id="incident-heading">Incidents</h2>
+            <p>@(incidents is null ? "Loading incidents…" : $"{incidents.TotalCount:N0} matching incidents")</p>
+        </div>
+        <select class="form-select form-select-sm w-auto" aria-label="Incident status"
+                @bind="incidentStatus" @bind:after="ResetAndLoadIncidentsAsync">
+            <option value="open">Open</option>
+            <option value="resolved">Resolved</option>
+            <option value="">All</option>
+        </select>
+    </div>
+
+    @if (incidents is null)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (incidents.Items.Count == 0)
+    {
+        <div class="p-3"><EmptyState Icon="check" Title="No matching incidents"
+                                   Description="There are no incidents in the selected state." /></div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th scope="col">Incident</th>
+                        <th scope="col">Workflow / node</th>
+                        <th scope="col">Problem</th>
+                        <th scope="col">Updated</th>
+                        <th scope="col" class="text-end">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var incident in incidents.Items)
+                    {
+                        <tr>
+                            <td>
+                                <span class="mono-id">#@incident.Id</span>
+                                <span class="data-subtitle">Job #@incident.JobId</span>
+                                <StatusBadge Status="@incident.Status" />
+                            </td>
+                            <td>
+                                <span class="data-title">@incident.WorkflowKey</span>
+                                <span class="data-subtitle">@incident.NodeName · Node #@incident.NodeId</span>
+                                @if (incident.InstanceId is not null)
+                                {
+                                    <a class="data-subtitle" href="@($"instances/{incident.InstanceId}")">
+                                        Instance #@incident.InstanceId
+                                    </a>
+                                }
+                            </td>
+                            <td>
+                                <span>@incident.Summary</span>
+                                <span class="data-subtitle">@incident.Type</span>
+                            </td>
+                            <td title="@incident.UpdatedAt.ToString("O")">@incident.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            <td class="text-end">
+                                @if (string.Equals(incident.Status, "open", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    <div class="d-inline-flex gap-2">
+                                        <button class="btn btn-sm btn-primary"
+                                                disabled="@(retryingIncidentId is not null || cancellingInstanceId is not null)"
+                                                @onclick="() => RetryIncidentAsync(incident.Id)">
+                                            @(retryingIncidentId == incident.Id ? "Retrying…" : "Retry")
+                                        </button>
+                                        @if (incident.InstanceId is long instanceId)
+                                        {
+                                            <button class="btn btn-sm btn-outline-danger"
+                                                    disabled="@(retryingIncidentId is not null || cancellingInstanceId is not null)"
+                                                    @onclick="() => CancelInstanceAsync(instanceId)">
+                                                @(cancellingInstanceId == instanceId ? "Cancelling…" : "Cancel instance")
+                                            </button>
+                                        }
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @incidentCursors.Count · @incidents.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(incidentCursors.Count <= 1)"
+                        @onclick="PreviousIncidentPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm"
+                        disabled="@string.IsNullOrWhiteSpace(incidents.NextCursor)"
+                        @onclick="NextIncidentPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
+
+<section class="panel panel-flush" aria-labelledby="job-heading">
+    <div class="section-heading px-3 pt-3">
+        <div>
+            <h2 id="job-heading">Durable jobs</h2>
+            <p>@(jobs is null ? "Loading jobs…" : $"{jobs.TotalCount:N0} matching jobs")</p>
+        </div>
+        <select class="form-select form-select-sm w-auto" aria-label="Job status"
+                @bind="jobStatus" @bind:after="ResetAndLoadJobsAsync">
+            <option value="">All</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="retry">Retry</option>
+            <option value="resultReady">Result ready</option>
+            <option value="incident">Incident</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="skipped">Skipped</option>
+        </select>
+    </div>
+
+    @if (jobs is null)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (jobs.Items.Count == 0)
+    {
+        <div class="p-3"><EmptyState Icon="jobs" Title="No matching jobs"
+                                   Description="There are no durable jobs in the selected state." /></div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th scope="col">Job</th>
+                        <th scope="col">Workflow / node</th>
+                        <th scope="col">Kind</th>
+                        <th scope="col">State</th>
+                        <th scope="col">Due / updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var job in jobs.Items)
+                    {
+                        <tr>
+                            <td>
+                                <span class="mono-id">#@job.Id</span>
+                                @if (job.InstanceId is not null)
+                                {
+                                    <a class="data-subtitle" href="@($"instances/{job.InstanceId}")">
+                                        Instance #@job.InstanceId
+                                    </a>
+                                }
+                                @if (job.TokenId is not null)
+                                {
+                                    <span class="data-subtitle">Token #@job.TokenId</span>
+                                }
+                            </td>
+                            <td>
+                                <span class="data-title">@job.WorkflowKey</span>
+                                <span class="data-subtitle">@job.NodeName · @job.NodeType</span>
+                            </td>
+                            <td>
+                                <span>@job.Kind</span>
+                                <span class="data-subtitle">@job.Phase · @job.QueueClass</span>
+                            </td>
+                            <td>
+                                <StatusBadge Status="@job.Status" />
+                                <span class="data-subtitle">@job.AttemptCount attempt(s)</span>
+                            </td>
+                            <td>
+                                <span title="@job.DueAt.ToString("O")">Due @job.DueAt.ToLocalTime().ToString("g")</span>
+                                <span class="data-subtitle">Updated @job.UpdatedAt.ToLocalTime().ToString("g")</span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @jobCursors.Count · @jobs.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(jobCursors.Count <= 1)"
+                        @onclick="PreviousJobPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@string.IsNullOrWhiteSpace(jobs.NextCursor)"
+                        @onclick="NextJobPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
+
+@code {
+    private const int PageSize = 25;
+    private JobQueueStatisticsDto? statistics;
+    private PagedResult<JobSummaryDto>? jobs;
+    private PagedResult<IncidentSummaryDto>? incidents;
+    private string jobStatus = string.Empty;
+    private string incidentStatus = "open";
+    private readonly List<string?> jobCursors = [null];
+    private readonly List<string?> incidentCursors = [null];
+    private long? retryingIncidentId;
+    private long? cancellingInstanceId;
+    private bool loading;
+    private string? error;
+    private string? notice;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            await Task.WhenAll(
+                LoadStatisticsAsync(),
+                LoadJobsAsync(),
+                LoadIncidentsAsync());
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task LoadStatisticsAsync() =>
+        statistics = await Api.GetJobQueueStatisticsAsync();
+
+    private async Task LoadJobsAsync() =>
+        jobs = await Api.GetJobsAsync(jobStatus, jobCursors[^1], PageSize);
+
+    private async Task LoadIncidentsAsync() =>
+        incidents = await Api.GetIncidentsAsync(incidentStatus, incidentCursors[^1], PageSize);
+
+    private async Task ResetAndLoadJobsAsync()
+    {
+        jobCursors.Clear();
+        jobCursors.Add(null);
+        await SafeLoadAsync(LoadJobsAsync);
+    }
+
+    private async Task ResetAndLoadIncidentsAsync()
+    {
+        incidentCursors.Clear();
+        incidentCursors.Add(null);
+        await SafeLoadAsync(LoadIncidentsAsync);
+    }
+
+    private async Task PreviousJobPageAsync()
+    {
+        if (jobCursors.Count > 1)
+        {
+            jobCursors.RemoveAt(jobCursors.Count - 1);
+        }
+        await SafeLoadAsync(LoadJobsAsync);
+    }
+
+    private async Task NextJobPageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(jobs?.NextCursor))
+        {
+            return;
+        }
+        jobCursors.Add(jobs.NextCursor);
+        await SafeLoadAsync(LoadJobsAsync);
+    }
+
+    private async Task PreviousIncidentPageAsync()
+    {
+        if (incidentCursors.Count > 1)
+        {
+            incidentCursors.RemoveAt(incidentCursors.Count - 1);
+        }
+        await SafeLoadAsync(LoadIncidentsAsync);
+    }
+
+    private async Task NextIncidentPageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(incidents?.NextCursor))
+        {
+            return;
+        }
+        incidentCursors.Add(incidents.NextCursor);
+        await SafeLoadAsync(LoadIncidentsAsync);
+    }
+
+    private async Task RetryIncidentAsync(long id)
+    {
+        retryingIncidentId = id;
+        notice = null;
+        try
+        {
+            var result = await Api.RetryIncidentAsync(id);
+            notice = result is null
+                ? $"Incident #{id} was queued for retry."
+                : $"Incident #{result.IncidentId} queued job #{result.JobId} for retry.";
+            await Task.WhenAll(
+                LoadStatisticsAsync(),
+                LoadJobsAsync(),
+                LoadIncidentsAsync());
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            retryingIncidentId = null;
+        }
+    }
+
+    private async Task CancelInstanceAsync(long instanceId)
+    {
+        cancellingInstanceId = instanceId;
+        notice = null;
+        try
+        {
+            await Api.CancelAsync(instanceId);
+            notice = $"Instance #{instanceId} was cancelled; its open jobs and incidents were resolved.";
+            await Task.WhenAll(
+                LoadStatisticsAsync(),
+                LoadJobsAsync(),
+                LoadIncidentsAsync());
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            cancellingInstanceId = null;
+        }
+    }
+
+    private async Task SafeLoadAsync(Func<Task> action)
+    {
+        error = null;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private static string FormatLag(double seconds) =>
+        seconds < 1
+            ? "<1s"
+            : seconds < 60
+                ? $"{seconds:F0}s"
+                : seconds < 3600
+                    ? $"{seconds / 60:F1}m"
+                    : $"{seconds / 3600:F1}h";
+}

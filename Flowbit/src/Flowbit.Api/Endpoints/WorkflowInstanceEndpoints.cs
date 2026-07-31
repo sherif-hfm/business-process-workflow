@@ -188,8 +188,9 @@ public static class WorkflowInstanceEndpoints
     /// <param name="nodeExternalId">Optional. Filter by the external ID of the current resting flow node (case-insensitive).</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
     /// <param name="sort">Optional. Up to three repeated <c>sort=field:direction</c> clauses. Fields: <c>id</c>, <c>createdAt</c>, <c>updatedAt</c>; directions: <c>asc</c>, <c>desc</c>.</param>
+    /// <param name="cursor">Optional. Opaque keyset cursor returned as <c>nextCursor</c> by the preceding page. The cursor is bound to the requested sort order.</param>
     /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each summary (default false).</param>
-    /// <param name="page">Optional. The 1-based page index (default 1).</param>
+    /// <param name="page">Optional display index (default 1). Pages after the first also require <paramref name="cursor"/>.</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
     /// <param name="principal">The security principal containing the actor identity.</param>
     /// <param name="actorResolver">Validates the configured canonical actor identity.</param>
@@ -211,6 +212,7 @@ public static class WorkflowInstanceEndpoints
         string? nodeExternalId,
         [FromQuery(Name = "var")] string[]? variables,
         [FromQuery(Name = "sort")] string[]? sort,
+        string? cursor,
         bool? includeVariables,
         int? page,
         int? pageSize,
@@ -219,9 +221,24 @@ public static class WorkflowInstanceEndpoints
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        _ = actorResolver.Resolve(principal);
+        var actor = actorResolver.Resolve(principal);
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, sort, includeVariables ?? false, p, s, cancellationToken));
+        return Results.Ok(await service.ListInstancesAsync(
+            actor,
+            status,
+            instanceId,
+            workflowId,
+            workflowKey,
+            businessKey,
+            nodeId,
+            nodeExternalId,
+            variables,
+            sort,
+            cursor,
+            includeVariables ?? false,
+            p,
+            s,
+            cancellationToken));
     }
 
     /// <summary>

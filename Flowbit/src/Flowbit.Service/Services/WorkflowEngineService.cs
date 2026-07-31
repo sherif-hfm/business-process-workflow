@@ -13,9 +13,11 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
 
-public sealed class WorkflowEngineService(
+public sealed partial class WorkflowEngineService(
     IWorkflowDefinitionRepository definitions,
     IWorkflowRuntimeRepository runtime,
+    IWorkflowJobRepository jobs,
+    ITimerSubscriptionRepository timerSubscriptions,
     IUserDelegationRepository delegations,
     IUnitOfWork unitOfWork,
     IServiceTaskInvoker serviceTaskInvoker,
@@ -25,8 +27,11 @@ public sealed class WorkflowEngineService(
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger)
-    : IWorkflowEngineService
+    : IWorkflowEngineService, IWorkflowJobProcessor
 {
+    private const string InstanceListRequiredRoleSettingKey =
+        "WorkflowInstances.RequiredRole";
+    private const string DefaultInstanceListRequiredRole = "admin";
     private Dictionary<string, JsonElement>? _settingsCache;
 
     private async Task LoadSettingsAsync(CancellationToken cancellationToken)
@@ -100,7 +105,11 @@ public sealed class WorkflowEngineService(
         int? startEventId,
         Dictionary<string, JsonElement>? variableValues,
         IReadOnlyDictionary<string, IReadOnlyList<string>> requestHeaders,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowTimerStart = false,
+        bool joinAmbientTransaction = false,
+        bool forceDurableActivities = false,
+        long? requiredDefaultWorkflowId = null)
     {
         await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
@@ -131,165 +140,198 @@ public sealed class WorkflowEngineService(
             throw new WorkflowDomainException("Either WorkflowId or WorkflowKey must be specified to start an instance.");
         }
 
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        await definitions.LockFamilyForStartAsync(workflow.WorkflowKey, cancellationToken);
-        workflow = workflowId.HasValue
-            ? await GetPublishedWorkflowAsync(workflowId.Value, cancellationToken)
-            : await definitions.GetDefaultByWorkflowKeyAsync(workflowKey!, cancellationToken)
-                ?? throw new WorkflowDomainException($"No default workflow found for workflowKey '{workflowKey}'.");
-
-        await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
-        await EnsureRequiredAssignmentFamilyStartableAsync(workflow, cancellationToken);
-
-        logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
-
-        var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
-            ?? throw new WorkflowDomainException("Workflow has no default start event.");
-
-        var startEvent = GetFlowNode(workflow.Definition, resolvedStartEventId);
-        if (!BpmnFlowNodeTypes.IsStart(startEvent.Type))
+        IWorkflowTransaction? ownedTransaction = null;
+        if (!joinAmbientTransaction)
         {
-            logger.LogWarning("Start instance rejected: flow node #{NodeId} is not a start event.", resolvedStartEventId);
-            throw new WorkflowDomainException($"Flow node #{resolvedStartEventId} is not a start event.");
+            ownedTransaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         }
 
-        EnsureEntryRuntimeContract(workflow.Definition, startEvent);
-
-        EnsureRoleAllowed(startEvent, actor);
-
-        var idempotency = ResolveIdempotencyInput(startEvent, requestHeaders);
-
-        if (idempotency is not null)
+        try
         {
-            var reservation = await runtime.ReserveIdempotencyKeyAsync(
-                workflow.WorkflowKey,
-                idempotency.Key,
-                cancellationToken);
-            if (!reservation.Reserved)
+            await definitions.LockFamilyForStartAsync(workflow.WorkflowKey, cancellationToken);
+            workflow = workflowId.HasValue
+                ? await GetPublishedWorkflowAsync(workflowId.Value, cancellationToken)
+                : await definitions.GetDefaultByWorkflowKeyAsync(workflowKey!, cancellationToken)
+                    ?? throw new WorkflowDomainException($"No default workflow found for workflowKey '{workflowKey}'.");
+            if (requiredDefaultWorkflowId is long requiredId
+                && (workflow.Id != requiredId
+                    || !workflow.IsPublished
+                    || !workflow.IsDefault))
             {
-                throw new IdempotencyKeyConflictException(reservation.ExistingInstanceId
-                    ?? throw new InvalidOperationException("A conflicting idempotency claim has no instance."));
+                throw new WorkflowConflictException(
+                    "The timer-start definition is no longer the published default.");
             }
-        }
 
-        if (idempotency is not null
-            && variableValues?.Keys.Any(name =>
-                string.Equals(name, idempotency.Variable, StringComparison.OrdinalIgnoreCase)) == true)
-        {
-            throw new WorkflowDomainException(
-                $"Entry event #{startEvent.Id} idempotency variable '{idempotency.Variable}' must be supplied only through header '{idempotency.HeaderName}'.");
-        }
+            await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
+            await EnsureRequiredAssignmentFamilyStartableAsync(workflow, cancellationToken);
 
-        var normalizedStart = NormalizeBusinessKeyInput(startEvent, variableValues);
-        variableValues = normalizedStart.Values;
-        ValidateVariableValues(startEvent.Variables, variableValues);
+            logger.LogDebug("Starting workflow instance for definition {WorkflowKey} (ID: {WorkflowId}) by user {User}", workflowKey ?? workflow.WorkflowKey.ToString(), workflow.Id, startedBy ?? "anonymous");
 
-        if (normalizedStart.BusinessKey is not null)
-        {
-            var reservation = await runtime.ReserveBusinessKeyAsync(
+            var resolvedStartEventId = startEventId ?? workflow.Definition.InitialEventId
+                ?? throw new WorkflowDomainException("Workflow has no default start event.");
+
+            var startEvent = GetFlowNode(workflow.Definition, resolvedStartEventId);
+            if (!BpmnFlowNodeTypes.IsStart(startEvent.Type)
+                && !(allowTimerStart && BpmnFlowNodeTypes.IsTimerStart(startEvent.Type)))
+            {
+                logger.LogWarning("Start instance rejected: flow node #{NodeId} is not a start event.", resolvedStartEventId);
+                throw new WorkflowDomainException($"Flow node #{resolvedStartEventId} is not a start event.");
+            }
+
+            EnsureEntryRuntimeContract(workflow.Definition, startEvent);
+
+            EnsureRoleAllowed(startEvent, actor);
+
+            var idempotency = ResolveIdempotencyInput(startEvent, requestHeaders);
+
+            if (idempotency is not null)
+            {
+                var reservation = await runtime.ReserveIdempotencyKeyAsync(
+                    workflow.WorkflowKey,
+                    idempotency.Key,
+                    cancellationToken);
+                if (!reservation.Reserved)
+                {
+                    throw new IdempotencyKeyConflictException(reservation.ExistingInstanceId
+                        ?? throw new InvalidOperationException("A conflicting idempotency claim has no instance."));
+                }
+            }
+
+            if (idempotency is not null
+                && variableValues?.Keys.Any(name =>
+                    string.Equals(name, idempotency.Variable, StringComparison.OrdinalIgnoreCase)) == true)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{startEvent.Id} idempotency variable '{idempotency.Variable}' must be supplied only through header '{idempotency.HeaderName}'.");
+            }
+
+            var normalizedStart = NormalizeBusinessKeyInput(startEvent, variableValues);
+            variableValues = normalizedStart.Values;
+            ValidateVariableValues(startEvent.Variables, variableValues);
+
+            if (normalizedStart.BusinessKey is not null)
+            {
+                var reservation = await runtime.ReserveBusinessKeyAsync(
+                    workflow.WorkflowKey,
+                    normalizedStart.BusinessKey,
+                    normalizedStart.Uniqueness!,
+                    cancellationToken);
+                if (!reservation.Reserved)
+                {
+                    throw new BusinessKeyConflictException(reservation.ExistingInstanceId
+                        ?? throw new InvalidOperationException("A conflicting business-key claim has no instance."));
+                }
+            }
+
+            var instance = await runtime.AddInstanceAsync(
+                workflow.Id,
                 workflow.WorkflowKey,
+                idempotency?.Key,
                 normalizedStart.BusinessKey,
-                normalizedStart.Uniqueness!,
+                normalizedStart.Uniqueness,
+                ToSnapshot(startEvent),
+                startedBy,
+                SnapshotRoles(actor.Roles),
                 cancellationToken);
-            if (!reservation.Reserved)
+            if (idempotency is not null)
             {
-                throw new BusinessKeyConflictException(reservation.ExistingInstanceId
-                    ?? throw new InvalidOperationException("A conflicting business-key claim has no instance."));
+                await runtime.BindIdempotencyKeyAsync(
+                    workflow.WorkflowKey, idempotency.Key, instance.Id, cancellationToken);
+            }
+            if (normalizedStart.BusinessKey is not null)
+            {
+                await runtime.BindBusinessKeyAsync(
+                    workflow.WorkflowKey, normalizedStart.BusinessKey, instance.Id, cancellationToken);
+            }
+
+            // Resolve templated defaults and run NCalc validation against the final values
+            // overlaid with sys.*/config.* context, then persist each resolved value.
+            var startContext = WithContext(
+                new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                actor, instance, workflow.Definition, startEvent);
+            if (idempotency is not null)
+            {
+                startContext[idempotency.Variable] = idempotency.Value;
+                await runtime.AddVariableAsync(
+                    instance.Id,
+                    idempotency.Variable,
+                    null,
+                    startedBy,
+                    idempotency.Value,
+                    cancellationToken,
+                    instance.CurrentNodeExecutionId);
+            }
+            var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
+            foreach (var pair in startValues)
+            {
+                await runtime.AddVariableAsync(
+                    instance.Id,
+                    pair.Key,
+                    null,
+                    startedBy,
+                    pair.Value,
+                    cancellationToken,
+                    instance.CurrentNodeExecutionId);
+            }
+
+            // Initialize process-level variables from their authored defaults so every
+            // declared name is readable from hop 0. Defaults are templated/coerced like
+            // start-variable defaults and validated against the start values + context.
+            var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in startValues)
+            {
+                processContext[pair.Key] = pair.Value;
+            }
+            var processValues = ResolveAndValidateVariables(
+                workflow.Definition.Variables,
+                null,
+                processContext,
+                enforceRequired: false,
+                materializeNullableNullDefaults: true);
+            foreach (var pair in processValues)
+            {
+                await runtime.AddVariableAsync(
+                    instance.Id,
+                    pair.Key,
+                    null,
+                    startedBy,
+                    pair.Value,
+                    cancellationToken,
+                    instance.CurrentNodeExecutionId);
+            }
+
+            // Flush variables so pass-through gateways can read them within this transaction.
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            var flowInfo = await LoadSequenceFlowInfoAsync(
+                instance.Id, workflow.Definition, cancellationToken);
+            instance = await ResolvePassThroughAsync(
+                instance,
+                workflow.Definition,
+                actor,
+                flowInfo,
+                instance.ActiveTokenId,
+                cancellationToken,
+                forceDurableActivities: forceDurableActivities);
+            await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
+            instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+
+            var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
+            logger.LogDebug("Successfully started workflow instance {InstanceId} resting on step {CurrentStepId} ({CurrentStepType})", instance.Id, instance.CurrentStepId, restingNode.Type);
+
+            return (instance, workflow.Definition);
+        }
+        finally
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.DisposeAsync();
             }
         }
-
-        var instance = await runtime.AddInstanceAsync(
-            workflow.Id,
-            workflow.WorkflowKey,
-            idempotency?.Key,
-            normalizedStart.BusinessKey,
-            normalizedStart.Uniqueness,
-            ToSnapshot(startEvent),
-            startedBy,
-            SnapshotRoles(actor.Roles),
-            cancellationToken);
-        if (idempotency is not null)
-        {
-            await runtime.BindIdempotencyKeyAsync(
-                workflow.WorkflowKey, idempotency.Key, instance.Id, cancellationToken);
-        }
-        if (normalizedStart.BusinessKey is not null)
-        {
-            await runtime.BindBusinessKeyAsync(
-                workflow.WorkflowKey, normalizedStart.BusinessKey, instance.Id, cancellationToken);
-        }
-
-        // Resolve templated defaults and run NCalc validation against the final values
-        // overlaid with sys.*/config.* context, then persist each resolved value.
-        var startContext = WithContext(
-            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-            actor, instance, workflow.Definition, startEvent);
-        if (idempotency is not null)
-        {
-            startContext[idempotency.Variable] = idempotency.Value;
-            await runtime.AddVariableAsync(
-                instance.Id,
-                idempotency.Variable,
-                null,
-                startedBy,
-                idempotency.Value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId);
-        }
-        var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
-        foreach (var pair in startValues)
-        {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                pair.Key,
-                null,
-                startedBy,
-                pair.Value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId);
-        }
-
-        // Initialize process-level variables from their authored defaults so every
-        // declared name is readable from hop 0. Defaults are templated/coerced like
-        // start-variable defaults and validated against the start values + context.
-        var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in startValues)
-        {
-            processContext[pair.Key] = pair.Value;
-        }
-        var processValues = ResolveAndValidateVariables(
-            workflow.Definition.Variables,
-            null,
-            processContext,
-            enforceRequired: false,
-            materializeNullableNullDefaults: true);
-        foreach (var pair in processValues)
-        {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                pair.Key,
-                null,
-                startedBy,
-                pair.Value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId);
-        }
-
-        // Flush variables so pass-through gateways can read them within this transaction.
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        var flowInfo = await LoadSequenceFlowInfoAsync(
-            instance.Id, workflow.Definition, cancellationToken);
-        instance = await ResolvePassThroughAsync(
-            instance, workflow.Definition, actor, flowInfo, cancellationToken);
-        await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
-        instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        var restingNode = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        logger.LogDebug("Successfully started workflow instance {InstanceId} resting on step {CurrentStepId} ({CurrentStepType})", instance.Id, instance.CurrentStepId, restingNode.Type);
-
-        return (instance, workflow.Definition);
     }
 
     public async Task<MessageStartAckDto> StartByMessageAsync(
@@ -540,6 +582,7 @@ public sealed class WorkflowEngineService(
     }
 
     public async Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
+        ActorContext actor,
         string? status,
         long? instanceId,
         long? workflowId,
@@ -549,31 +592,110 @@ public sealed class WorkflowEngineService(
         string? nodeExternalId,
         IReadOnlyList<string>? variables,
         IReadOnlyList<string>? sort,
+        string? cursor,
         bool includeVariables,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(actor);
         var variableFilters = ParseVariableFilters(variables);
         var sortCriteria = ParseInstanceSort(sort);
-        var paged = await runtime.ListInstancesAsync(status, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variableFilters, sortCriteria, includeVariables, page, pageSize, cancellationToken);
-        var items = new List<InstanceSummaryDto>(paged.Items.Count);
-        foreach (var row in paged.Items)
+        var normalizedSort = WorkflowInstanceCursor.NormalizeSort(sortCriteria);
+        if (!string.IsNullOrWhiteSpace(cursor)
+            && !WorkflowInstanceCursor.TryDecode(
+                cursor,
+                normalizedSort,
+                out _))
+        {
+            throw new WorkflowDomainException(
+                "The instance cursor is invalid, expired, or belongs to a different sort order.");
+        }
+        if (string.IsNullOrWhiteSpace(cursor) && page > 1)
+        {
+            throw new WorkflowDomainException(
+                "Instance pages after the first require the opaque cursor returned by the preceding page.");
+        }
+
+        var authorization = await ResolveInstanceListAuthorizationAsync(
+            actor,
+            cancellationToken);
+        var paged = await runtime.ListInstancesAsync(
+            status,
+            instanceId,
+            workflowId,
+            workflowKey,
+            businessKey,
+            nodeId,
+            nodeExternalId,
+            variableFilters,
+            normalizedSort,
+            authorization,
+            cursor,
+            includeVariables,
+            page,
+            pageSize,
+            cancellationToken);
+        var jobSummaries = await jobs.GetInstanceJobSummariesAsync(
+            paged.Items.Select(item => item.Id).ToArray(),
+            cancellationToken);
+        var items = paged.Items.Select(row =>
         {
             var summary = ToSummary(row);
-            var instance = await runtime.GetInstanceAsync(row.Id, cancellationToken);
-            if (instance is not null)
-            {
-                var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
-                summary = summary with
+            return jobSummaries.TryGetValue(row.Id, out var jobsForInstance)
+                ? summary with
                 {
-                    ExecutionPositions = projection.ExecutionPositions,
-                    Completion = projection.Completion
-                };
-            }
-            items.Add(summary);
+                    Jobs = new InstanceJobSummaryDto(
+                        jobsForInstance.OpenCount,
+                        jobsForInstance.QueuedCount,
+                        jobsForInstance.RunningCount,
+                        jobsForInstance.IncidentCount,
+                        jobsForInstance.NearestDueAt)
+                }
+                : summary;
+        }).ToArray();
+        return new PagedResult<InstanceSummaryDto>(
+            items,
+            paged.Page,
+            paged.PageSize,
+            paged.TotalCount)
+        {
+            NextCursor = paged.NextCursor
+        };
+    }
+
+    private async Task<InstanceListAuthorization> ResolveInstanceListAuthorizationAsync(
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        var setting = await engineSettings.GetByKeyAsync(
+            InstanceListRequiredRoleSettingKey,
+            cancellationToken);
+        var configuredGlobalRoles = string.IsNullOrWhiteSpace(setting?.Value)
+            ? [DefaultInstanceListRequiredRole]
+            : setting.Value
+                .Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries
+                    | StringSplitOptions.TrimEntries)
+                .Where(static role => role.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        if (configuredGlobalRoles.Length == 0)
+        {
+            configuredGlobalRoles = [DefaultInstanceListRequiredRole];
         }
-        return new PagedResult<InstanceSummaryDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
+
+        var lowerCallerRoles = actor.Roles
+            .Where(static role => !string.IsNullOrWhiteSpace(role))
+            .Select(static role => role.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var isGlobalReader = configuredGlobalRoles
+            .Select(static role => role.ToLowerInvariant())
+            .Intersect(lowerCallerRoles, StringComparer.Ordinal)
+            .Any();
+        return new InstanceListAuthorization(isGlobalReader, lowerCallerRoles);
     }
 
     public async Task<PagedResult<InboxItemDto>> GetInboxAsync(
@@ -1799,7 +1921,7 @@ public sealed class WorkflowEngineService(
             winning,
             directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome",
             isAction: directParentInterrupt,
-            isTraversal: true,
+            isTraversal: !node.AsyncAfter,
             actor: actor,
             values: directParentInterrupt ? variableValues : null,
             cancellationToken: cancellationToken);
@@ -1855,6 +1977,39 @@ public sealed class WorkflowEngineService(
             ?? throw new WorkflowConflictException("The multi-instance parent token no longer exists.");
         if (token.Status != ExecutionTokenRecordStatuses.Active)
             throw new WorkflowConflictException("The multi-instance parent token is no longer active.");
+        if (node.AsyncAfter)
+        {
+            var waitingInstance = instance with
+            {
+                ActiveTokenId = token.Id,
+                CurrentStepId = token.NodeId,
+                CurrentNodeExecutionId = token.CurrentNodeExecutionId,
+                ClaimedBy = null,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await EnsureAsyncAfterWaitAsync(
+                waitingInstance,
+                token,
+                node,
+                workflow.Definition,
+                actor,
+                cancellationToken,
+                selectedFlowId: winning.Id,
+                multiInstanceExecutionId: execution.Id,
+                userTaskId: userTaskId);
+            await CancelAttachedTimerBoundaryWaitsAsync(
+                instance.Id,
+                [token.Id],
+                cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return await runtime.GetInstanceAsync(instance.Id, cancellationToken)
+                ?? waitingInstance;
+        }
+
+        await CancelAttachedTimerBoundaryWaitsAsync(
+            instance.Id,
+            [token.Id],
+            cancellationToken);
         var nextNode = GetFlowNode(workflow.Definition, winning.TargetRef);
         var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
             ? ExecutionTokenRecordStatuses.Faulted
@@ -2093,7 +2248,7 @@ public sealed class WorkflowEngineService(
             flow,
             "userTaskAction",
             isAction: true,
-            isTraversal: true,
+            isTraversal: !node.AsyncAfter,
             actor: executionActor,
             values: flowValues,
             cancellationToken: cancellationToken);
@@ -2126,6 +2281,32 @@ public sealed class WorkflowEngineService(
             executionActor.ActingFor,
             executionActor.DelegationId);
 
+        if (node.AsyncAfter)
+        {
+            var waitingToken = await runtime.GetExecutionTokenAsync(
+                    token.Id,
+                    false,
+                    cancellationToken)
+                ?? throw new WorkflowConflictException(
+                    "The user-task execution token disappeared before async-after.");
+            await EnsureAsyncAfterWaitAsync(
+                taskInstance,
+                waitingToken,
+                node,
+                workflow.Definition,
+                executionActor,
+                cancellationToken,
+                selectedFlowId: flow.Id,
+                userTaskId: task.Id);
+            await CancelAttachedTimerBoundaryWaitsAsync(
+                instance.Id,
+                [token.Id],
+                cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return await BuildDetailAsync(id, cancellationToken);
+        }
+
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
         var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
             ? ExecutionTokenRecordStatuses.Faulted
@@ -2153,6 +2334,10 @@ public sealed class WorkflowEngineService(
 
         var nextContext = WithContext(
             flowContext, executionActor, taskInstance, workflow.Definition, nextNode);
+        await CancelAttachedTimerBoundaryWaitsAsync(
+            instance.Id,
+            [token.Id],
+            cancellationToken);
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
@@ -2428,6 +2613,10 @@ public sealed class WorkflowEngineService(
         };
 
         var nextContext = WithContext(stored, actor, tokenInstance, workflow.Definition, nextNode);
+        await CancelAttachedTimerBoundaryWaitsAsync(
+            instance.Id,
+            [token.Id],
+            cancellationToken);
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
@@ -3424,6 +3613,11 @@ public sealed class WorkflowEngineService(
             id, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var activeTokenIds = activeTokens.Select(token => token.Id).ToList();
         var cancellationActor = ToNodeExecutionActor(actor);
+        await CancelDurableWorkForTokensAsync(
+            instance.Id,
+            activeTokenIds,
+            "instanceCancelled",
+            cancellationToken);
         await runtime.CancelActiveMultiInstancesForTokensAsync(
             activeTokenIds,
             NodeExecutionCompletionReasons.InstanceCancelled,
@@ -3465,12 +3659,26 @@ public sealed class WorkflowEngineService(
         ActorContext actor,
         SequenceFlowInfoSnapshot? flowInfo,
         long startingTokenId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PassThroughResume? resume = null,
+        bool forceDurableActivities = false)
     {
         var queue = new Queue<long>();
         queue.Enqueue(startingTokenId);
         var tokenHops = new Dictionary<long, int>();
         var maxHops = definition.FlowNodes.Count + 1;
+        // The per-token guard catches ordinary automatic cycles, but a gateway
+        // fork assigns fresh token ids. Without a second, transaction-wide
+        // budget, a fork whose reused branch terminates and whose spawned branch
+        // loops back to the split can reset the per-token budget forever while
+        // retaining the instance lock. The graph-derived global bound remains
+        // generous for finite fan-out while guaranteeing that every routing
+        // transaction eventually yields or fails.
+        const long hardRoutingStepLimit = 10_000;
+        var maxRoutingSteps = Math.Min(
+            hardRoutingStepLimit,
+            (long)maxHops * Math.Max(maxHops, definition.SequenceFlows.Count + 1));
+        long routingSteps = 0;
         var storedOverlay = await LoadVariablesAsync(instance.Id, cancellationToken);
 
         while (true)
@@ -3489,6 +3697,17 @@ public sealed class WorkflowEngineService(
                 {
                     continue;
                 }
+
+                if (routingSteps >= maxRoutingSteps)
+                {
+                    logger.LogError(
+                        "Pass-through routing work limit reached on instance {InstanceId} after {RoutingSteps} steps (limit {MaxRoutingSteps}).",
+                        instance.Id,
+                        routingSteps,
+                        maxRoutingSteps);
+                    throw new WorkflowDomainException("Pass-through routing cycle detected.");
+                }
+                routingSteps++;
 
                 var hop = tokenHops.GetValueOrDefault(tokenId);
                 if (hop >= maxHops)
@@ -3509,20 +3728,87 @@ public sealed class WorkflowEngineService(
                     FaultCode = token.FaultCode,
                     FaultDescription = token.FaultDescription
                 };
+
+                var resumesCurrentActivation = resume is not null
+                    && resume.ActivationId == token.ActivationId;
+                var isExternalOrCpuActivity =
+                    BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
+                    || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
+                var requiresDurableEntry = currentNode.AsyncBefore
+                    || isExternalOrCpuActivity
+                       && (currentNode.AsyncAfter || forceDurableActivities);
+                var resumesCurrentDurablePhase = resumesCurrentActivation
+                    && resume!.Phase is WorkflowJobKinds.AsyncBefore
+                        or WorkflowJobKinds.AsyncAfter;
+                if (requiresDurableEntry && !resumesCurrentDurablePhase)
+                {
+                    await EnsureAsyncBeforeWaitAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        actor,
+                        cancellationToken);
+                    // Boundary clocks start when the durable entry job actually
+                    // activates the node, not while async-before is queued.
+                    // Service/script staging creates them in that activation
+                    // transaction immediately before the external body runs.
+                    continue;
+                }
+
+                if (BpmnFlowNodeTypes.IsTimerCatch(currentNode.Type))
+                {
+                    await EnsureTimerCatchWaitAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        actor,
+                        cancellationToken);
+                    // A timer catch is a resting activity too. Its own catch
+                    // subscription and every attached boundary subscription are
+                    // staged in the same instance transaction so either the
+                    // complete wait-set is visible or none of it is.
+                    await EnsureAttachedTimerBoundaryWaitsAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        actor,
+                        cancellationToken);
+                    continue;
+                }
+
                 if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
                 {
+                    // This is activation time for a resting activity. The
+                    // repository's activation/node uniqueness makes the call
+                    // idempotent for normal re-entry while keeping async-before
+                    // queue time outside the user-task boundary duration.
+                    await EnsureAttachedTimerBoundaryWaitsAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        actor,
+                        cancellationToken);
                     continue;
                 }
 
                 var variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
-                TaskExecutionOutcome? outcome = null;
-                if (BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
+                TaskExecutionOutcome? outcome = resumesCurrentActivation
+                    && resume!.ActivityAlreadyExecuted
+                    ? resume.Outcome
+                    : null;
+                if (!(resumesCurrentActivation && resume!.ActivityAlreadyExecuted)
+                    && BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
                 {
                     outcome = await ExecuteServiceTaskAsync(
                         tokenInstance, currentNode, definition, actor, variables, storedOverlay, cancellationToken);
                     variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
                 }
-                else if (BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
+                else if (!(resumesCurrentActivation && resume!.ActivityAlreadyExecuted)
+                         && BpmnFlowNodeTypes.IsScriptTask(currentNode.Type))
                 {
                     outcome = await ExecuteScriptTaskAsync(
                         tokenInstance,
@@ -3572,6 +3858,10 @@ public sealed class WorkflowEngineService(
                     cancellationToken,
                     actor.ActingFor,
                     actor.DelegationId);
+                await CancelAttachedTimerBoundaryWaitsAsync(
+                    instance.Id,
+                    [token.Id],
+                    cancellationToken);
                 await runtime.UpdateExecutionTokenAsync(
                     token.Id,
                     ToSnapshot(boundary),
@@ -3592,6 +3882,24 @@ public sealed class WorkflowEngineService(
                         outcome.Reason),
                     cancellationToken);
                 queue.Enqueue(token.Id);
+                continue;
+            }
+
+            if (currentNode.AsyncAfter
+                && !(resumesCurrentActivation
+                     && resume!.Phase == WorkflowJobKinds.AsyncAfter))
+            {
+                await EnsureAsyncAfterWaitAsync(
+                    tokenInstance,
+                    token,
+                    currentNode,
+                    definition,
+                    actor,
+                    cancellationToken);
+                await CancelAttachedTimerBoundaryWaitsAsync(
+                    instance.Id,
+                    [token.Id],
+                    cancellationToken);
                 continue;
             }
 
@@ -4954,6 +5262,11 @@ public sealed class WorkflowEngineService(
         }
 
         var interruptionActor = ToNodeExecutionActor(actor);
+        await CancelDurableWorkForTokensAsync(
+            instance.Id,
+            cancelledTokenIds,
+            "gatewayScopeCancelled",
+            cancellationToken);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledTokenIds,
             NodeExecutionCompletionReasons.GatewayScopeCancelled,
@@ -5222,8 +5535,16 @@ public sealed class WorkflowEngineService(
             "scopedInterrupt" => NodeExecutionCompletionReasons.ScopedInterrupt,
             "scopedInterruptSkipped" => NodeExecutionCompletionReasons.ScopedInterruptSkipped,
             "messageStart" => NodeExecutionCompletionReasons.MessageDelivery,
+            "timer" => NodeExecutionCompletionReasons.TimerFired,
             _ => NodeExecutionCompletionReasons.Normal
         };
+        if (!BpmnFlowNodeTypes.IsTimer(currentNode.Type))
+        {
+            await CancelAttachedTimerBoundaryWaitsAsync(
+                instance.Id,
+                [token.Id],
+                cancellationToken);
+        }
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
@@ -5341,6 +5662,11 @@ public sealed class WorkflowEngineService(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var cancelledIds = active.Where(token => token.Id != triggeringTokenId).Select(token => token.Id).ToList();
         var terminationActor = ToNodeExecutionActor(actor);
+        await CancelDurableWorkForTokensAsync(
+            instanceId,
+            cancelledIds,
+            "terminateEnd",
+            cancellationToken);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledIds,
             NodeExecutionCompletionReasons.TerminateEnd,
@@ -5408,6 +5734,11 @@ public sealed class WorkflowEngineService(
             instanceId, ExecutionTokenRecordStatuses.Active, cancellationToken);
         var cancelledIds = active.Where(token => token.Id != triggeringTokenId).Select(token => token.Id).ToList();
         var faultActor = ToNodeExecutionActor(actor);
+        await CancelDurableWorkForTokensAsync(
+            instanceId,
+            cancelledIds,
+            "errorEnd",
+            cancellationToken);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledIds,
             NodeExecutionCompletionReasons.ErrorEnd,
@@ -5572,6 +5903,10 @@ public sealed class WorkflowEngineService(
     {
         var multi = node.MultiInstance;
         if (multi is null)
+        {
+            return;
+        }
+        if (token.WaitState == ExecutionTokenWaitStates.AsyncBefore)
         {
             return;
         }
@@ -6745,11 +7080,13 @@ public sealed class WorkflowEngineService(
         long instanceId,
         CancellationToken cancellationToken)
     {
-        var stored = await runtime.ListVariablesAsync(instanceId, cancellationToken);
+        var stored = await runtime.LoadLatestVariableVersionsAsync(
+            instanceId,
+            cancellationToken);
         var result = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         foreach (var variable in stored)
         {
-            result[variable.VariableName] = variable.Value;
+            result[variable.Name] = variable.Value;
         }
 
         return result;
@@ -7183,7 +7520,11 @@ public sealed class WorkflowEngineService(
                     token.ArrivedViaFlowId,
                     token.TerminationReason,
                     task?.Id,
-                    multi?.Id);
+                    multi?.Id,
+                    token.ActivationId == Guid.Empty ? null : token.ActivationId,
+                    token.WaitState,
+                    token.WaitingJobId,
+                    token.WaitingTimerSubscriptionId);
             })
             .ToList();
 
@@ -7590,7 +7931,35 @@ public sealed class WorkflowEngineService(
             row.UpdatedAt,
             row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks),
             row.Variables,
-            ToFault(row.Status, row.FaultCode, row.FaultDescription, row.CurrentNodeName));
+            ToFault(row.Status, row.FaultCode, row.FaultDescription, row.CurrentNodeName))
+        {
+            ExecutionPositions = (row.ExecutionPositions ?? [])
+                .Select(position => new ExecutionPositionDto(
+                    position.TokenId,
+                    position.NodeId,
+                    position.NodeName,
+                    position.NodeExternalId,
+                    position.NodeType,
+                    position.Status,
+                    position.ArrivedViaFlowId,
+                    position.TerminationReason,
+                    position.UserTaskId,
+                    position.MultiInstanceExecutionId,
+                    position.ActivationId,
+                    position.WaitState,
+                    position.WaitingJobId,
+                    position.WaitingTimerSubscriptionId))
+                .ToArray(),
+            Completion = row.Completion is null
+                ? null
+                : new CompletionInfoDto(
+                    row.Completion.Kind,
+                    row.Completion.TokenId,
+                    row.Completion.NodeId,
+                    row.Completion.NodeName,
+                    row.Completion.NodeExternalId,
+                    row.Completion.CompletedAt)
+        };
 
     private async Task<UserTaskDto> BuildUserTaskDtoAsync(
         UserTaskRecord task,
@@ -8126,7 +8495,8 @@ public sealed class WorkflowEngineService(
             assignee,
             node.MultiInstance is not null,
             BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorCode : null,
-            BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorDescription ?? node.Name : null);
+            BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorDescription ?? node.Name : null,
+            node.AsyncBefore);
     }
 
     private static FaultInfoDto? ToFault(

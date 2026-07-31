@@ -86,6 +86,7 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         string? businessKey = null,
         bool includeVariables = false,
         IReadOnlyList<string>? sort = null,
+        string? cursor = null,
         CancellationToken cancellationToken = default)
     {
         var url = $"/api/instances?page={page}&pageSize={pageSize}";
@@ -131,6 +132,10 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
 
         url += BuildVariableQuery(variables);
         url += BuildSortQuery(sort);
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
 
         return await httpClient.GetFromJsonAsync<PagedResult<InstanceSummaryDto>>(url, cancellationToken)
             ?? new PagedResult<InstanceSummaryDto>([], page, pageSize, 0);
@@ -633,6 +638,89 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
     {
         var response = await httpClient.PostAsync($"/api/instances/{id}/cancel", null, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task<JobQueueStatisticsDto> GetJobQueueStatisticsAsync(
+        CancellationToken cancellationToken = default) =>
+        await httpClient.GetFromJsonAsync<JobQueueStatisticsDto>(
+            "/api/jobs/statistics",
+            cancellationToken)
+        ?? throw new InvalidOperationException(
+            "The workflow queue statistics response was empty.");
+
+    public async Task<PagedResult<JobSummaryDto>> GetJobsAsync(
+        string? status = null,
+        string? cursor = null,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/jobs?pageSize={Math.Clamp(pageSize, 1, 200)}";
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            url += $"&status={Uri.EscapeDataString(status.Trim())}";
+        }
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
+
+        return await httpClient.GetFromJsonAsync<PagedResult<JobSummaryDto>>(url, cancellationToken)
+            ?? new PagedResult<JobSummaryDto>([], 1, pageSize, 0);
+    }
+
+    public Task<JobDetailDto?> GetJobAsync(
+        long id,
+        CancellationToken cancellationToken = default) =>
+        httpClient.GetFromJsonAsync<JobDetailDto>($"/api/jobs/{id}", cancellationToken);
+
+    public async Task<PagedResult<JobAttemptDto>> GetJobAttemptsAsync(
+        long id,
+        string? cursor = null,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/jobs/{id}/attempts?pageSize={Math.Clamp(pageSize, 1, 200)}";
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
+
+        return await httpClient.GetFromJsonAsync<PagedResult<JobAttemptDto>>(url, cancellationToken)
+            ?? new PagedResult<JobAttemptDto>([], 1, pageSize, 0);
+    }
+
+    public async Task<PagedResult<IncidentSummaryDto>> GetIncidentsAsync(
+        string? status = "open",
+        string? cursor = null,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/incidents?pageSize={Math.Clamp(pageSize, 1, 200)}";
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            url += $"&status={Uri.EscapeDataString(status.Trim())}";
+        }
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
+
+        return await httpClient.GetFromJsonAsync<PagedResult<IncidentSummaryDto>>(url, cancellationToken)
+            ?? new PagedResult<IncidentSummaryDto>([], 1, pageSize, 0);
+    }
+
+    public Task<IncidentDetailDto?> GetIncidentAsync(
+        long id,
+        CancellationToken cancellationToken = default) =>
+        httpClient.GetFromJsonAsync<IncidentDetailDto>($"/api/incidents/{id}", cancellationToken);
+
+    public async Task<RetryIncidentResultDto?> RetryIncidentAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsync($"/api/incidents/{id}/retry", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RetryIncidentResultDto>(cancellationToken);
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)

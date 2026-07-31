@@ -11,9 +11,15 @@ public static class ServiceCollectionExtensions
     {
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
+        services.TryAddSingleton(new DurableProcessingOptions());
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
-        services.AddScoped<IWorkflowEngineService, WorkflowEngineService>();
+        services.AddScoped<WorkflowEngineService>();
+        services.AddScoped<IWorkflowEngineService>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
+        services.AddScoped<IWorkflowJobProcessor>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
+        services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();
         services.AddScoped<IUserDelegationService, UserDelegationService>();

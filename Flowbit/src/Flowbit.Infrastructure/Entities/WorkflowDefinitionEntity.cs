@@ -18,6 +18,10 @@ public sealed class WorkflowDefinitionEntity
 
     public bool IsDefault { get; set; }
 
+    public Guid? DefaultActivationId { get; set; }
+
+    public DateTimeOffset? DefaultActivatedAt { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<WorkflowInstanceEntity> Instances { get; set; } = [];

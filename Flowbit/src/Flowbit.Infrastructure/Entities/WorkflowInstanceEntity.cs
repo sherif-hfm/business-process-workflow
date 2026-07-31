@@ -45,4 +45,10 @@ public sealed class WorkflowInstanceEntity
     public List<SequenceFlowSummaryEntity> SequenceFlowSummaries { get; set; } = [];
 
     public List<MessageDeliveryReceiptEntity> MessageDeliveryReceipts { get; set; } = [];
+
+    public List<WorkflowJobEntity> Jobs { get; set; } = [];
+
+    public List<WorkflowIncidentEntity> Incidents { get; set; } = [];
+
+    public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
 }

@@ -131,6 +131,7 @@
     private string? error;
     private bool advancedOpen;
     private int page = 1;
+    private readonly List<string?> pageCursors = [null];
     private const int PageSize = 50;
     private IReadOnlyList<string> sortClauses = ["updatedAt:desc"];
     private static readonly IReadOnlyList<SortFieldOption> InstanceSortOptions =
@@ -149,7 +150,8 @@
             : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-    private bool HasNextPage => result is not null && page < TotalPages;
+    private bool HasNextPage =>
+        result is not null && !string.IsNullOrWhiteSpace(result.NextCursor);
 
     private static string FormatTaskState(UserTaskWorkSummaryDto? tasks)
     {
@@ -175,27 +177,65 @@
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
-    private async Task SetStatusAsync(string? value) { status = value; page = 1; await LoadAsync(); }
-    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task SetStatusAsync(string? value) { status = value; ResetPaging(); await LoadAsync(); }
+    private async Task ApplyFiltersAsync() { ResetPaging(); await LoadAsync(); }
     private async Task ClearFiltersAsync()
     {
         variableFilter = workflowKey = businessKey = nodeExternalId = null;
         instanceId = workflowId = null;
         nodeId = null;
-        page = 1;
+        ResetPaging();
         await LoadAsync();
     }
 
-    private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
-    private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
-    private async Task ApplySortAsync(IReadOnlyList<string> value) { sortClauses = value; page = 1; await LoadAsync(); }
+    private async Task PreviousPageAsync()
+    {
+        if (page <= 1) return;
+        pageCursors.RemoveAt(pageCursors.Count - 1);
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        pageCursors.Add(result!.NextCursor);
+        page++;
+        await LoadAsync();
+    }
+
+    private async Task ApplySortAsync(IReadOnlyList<string> value)
+    {
+        sortClauses = value;
+        ResetPaging();
+        await LoadAsync();
+    }
+
+    private void ResetPaging()
+    {
+        page = 1;
+        pageCursors.Clear();
+        pageCursors.Add(null);
+    }
 
     private async Task LoadAsync()
     {
         try
         {
             error = null;
-            result = await Api.GetInstancesAsync(status, page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey, sort: sortClauses);
+            result = await Api.GetInstancesAsync(
+                status,
+                page,
+                PageSize,
+                ParseVariableFilter(),
+                nodeExternalId,
+                nodeId,
+                instanceId,
+                workflowId,
+                workflowKey,
+                businessKey,
+                sort: sortClauses,
+                cursor: pageCursors[page - 1]);
         }
         catch (Exception ex)
         {

@@ -155,6 +155,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<Guid>("ActivationId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
                     b.Property<int?>("ArrivedViaFlowId")
                         .HasColumnType("integer");
 
@@ -223,6 +228,16 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<string>("WaitState")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long?>("WaitingJobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("WaitingTimerSubscriptionId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ComplexDrainStateIds")
@@ -232,6 +247,12 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasIndex("CurrentNodeExecutionId")
                         .IsUnique();
+
+                    b.HasIndex("WaitingJobId")
+                        .HasFilter("\"WaitingJobId\" IS NOT NULL");
+
+                    b.HasIndex("WaitingTimerSubscriptionId")
+                        .HasFilter("\"WaitingTimerSubscriptionId\" IS NOT NULL");
 
                     b.HasIndex("GatewayBranchId", "Status")
                         .HasFilter("\"GatewayBranchId\" IS NOT NULL AND \"Status\" = 'active'");
@@ -253,6 +274,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("execution_tokens", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_execution_tokens_complex_gateway_registration", "(\"ComplexGatewayStateId\" IS NULL AND \"ComplexGatewayCycle\" IS NULL) OR (\"ComplexGatewayStateId\" IS NOT NULL AND \"ComplexGatewayCycle\" IS NOT NULL AND \"ComplexGatewayCycle\" >= 0)");
+
+                            t.HasCheckConstraint("CK_execution_tokens_wait_shape", "(\"WaitState\" IS NULL AND \"WaitingJobId\" IS NULL AND \"WaitingTimerSubscriptionId\" IS NULL) OR (\"WaitState\" IS NOT NULL AND (\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL))");
                         });
                 });
 
@@ -851,7 +874,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.ToTable("node_executions", "flowbit", t =>
                         {
-                            t.HasCheckConstraint("CK_node_executions_completion_reason", "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') AND \"CompletionReason\" IN ('normal', 'userAction', 'messageDelivery', 'multiInstanceItem', 'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', 'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', 'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', 'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', 'complexActivation', 'complexReset', 'scopedInterrupt', 'scopedInterruptSkipped')))");
+                            t.HasCheckConstraint("CK_node_executions_completion_reason", "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') AND \"CompletionReason\" IN ('normal', 'userAction', 'messageDelivery', 'multiInstanceItem', 'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', 'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', 'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', 'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', 'complexActivation', 'complexReset', 'scopedInterrupt', 'scopedInterruptSkipped', 'timerFired')))");
 
                             t.HasCheckConstraint("CK_node_executions_execution_kind", "\"ExecutionKind\" IN ('node', 'userTaskItem')");
 
@@ -1028,6 +1051,105 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("sequence_flow_summaries", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("AttachedToNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("CancelActivity")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("NextDueAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Occurrence")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ScheduleExpression")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ScheduleKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("TimerNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TimerNodeName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long?>("TokenId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenId");
+
+                    b.HasIndex("WorkflowDefinitionId", "TimerNodeId")
+                        .IsUnique()
+                        .HasFilter("\"InstanceId\" IS NULL AND \"Status\" IN ('active', 'paused')");
+
+                    b.HasIndex("Status", "NextDueAt", "Id");
+
+                    b.HasIndex("InstanceId", "TokenId", "ActivationId", "TimerNodeId")
+                        .IsUnique()
+                        .HasFilter("\"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL");
+
+                    b.ToTable("timer_subscriptions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_timer_subscriptions_occurrence", "\"Occurrence\" >= 0");
+
+                            t.HasCheckConstraint("CK_timer_subscriptions_schedule_kind", "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle')");
+
+                            t.HasCheckConstraint("CK_timer_subscriptions_status", "\"Status\" IN ('active', 'paused', 'completed', 'cancelled')");
+
+                            t.HasCheckConstraint("CK_timer_subscriptions_terminal_time", "(\"Status\" IN ('active', 'paused') AND \"CompletedAt\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.UserDelegationEntity", b =>
@@ -1313,6 +1435,12 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<DateTimeOffset?>("DefaultActivatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DefaultActivationId")
+                        .HasColumnType("uuid");
+
                     b.Property<WorkflowModel>("Definition")
                         .IsRequired()
                         .HasColumnType("jsonb");
@@ -1349,7 +1477,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("WorkflowKey", "Version")
                         .IsUnique();
 
-                    b.ToTable("workflow_definitions", "flowbit");
+                    b.ToTable("workflow_definitions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_definitions_default_activation", "(\"IsPublished\" AND \"IsDefault\" AND \"DefaultActivationId\" IS NOT NULL AND \"DefaultActivatedAt\" IS NOT NULL) OR ((NOT \"IsPublished\" OR NOT \"IsDefault\") AND \"DefaultActivationId\" IS NULL AND \"DefaultActivatedAt\" IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDelegationPolicyEntity", b =>
@@ -1411,6 +1542,105 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("workflow_idempotency_claims", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowIncidentEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Details")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("JobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("NodeName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long>("OriginalJobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ResolvedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId");
+
+                    b.HasIndex("JobId", "Status")
+                        .IsUnique()
+                        .HasDatabaseName("IX_workflow_incidents_open_job")
+                        .HasFilter("\"Status\" = 'open'");
+
+                    b.HasIndex("OriginalJobId", "Id");
+
+                    b.HasIndex("ResolvedAt", "Id")
+                        .HasFilter("\"Status\" = 'resolved'");
+
+                    b.HasIndex("InstanceId", "Status", "Id");
+
+                    b.HasIndex("Status", "UpdatedAt", "Id");
+
+                    b.HasIndex("WorkflowDefinitionId", "Status", "Id");
+
+                    b.ToTable("workflow_incidents", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_incidents_job_identity", "\"OriginalJobId\" > 0 AND (\"Status\" <> 'open' OR \"JobId\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_workflow_incidents_resolution", "(\"Status\" = 'open' AND \"ResolvedAt\" IS NULL AND \"ResolvedBy\" IS NULL) OR (\"Status\" = 'resolved' AND \"ResolvedAt\" IS NOT NULL AND \"ResolvedBy\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_workflow_incidents_status", "\"Status\" IN ('open', 'resolved')");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", b =>
@@ -1477,6 +1707,307 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("WorkflowKey", "BusinessKey", "Status");
 
                     b.ToTable("workflow_instances", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobAttemptEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FailureDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("JobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("WorkerId")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("JobId", "Id");
+
+                    b.ToTable("workflow_job_attempts", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_job_attempts_number", "\"AttemptNumber\" > 0 AND \"LeaseGeneration\" > 0");
+
+                            t.HasCheckConstraint("CK_workflow_job_attempts_status", "\"Status\" IN ('running', 'resultReady', 'completed', 'failed', 'leaseLost', 'cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset>("DueAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<JsonDocument>("ErrorJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("FailureHandling")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset?>("HeartbeatAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("LastFailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("LastFailureDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("MaxAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("MultiInstanceExecutionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("NodeName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("NodeType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<JsonDocument>("PayloadJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("QueueClass")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<JsonDocument>("ResultJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("ResultReadyAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.PrimitiveCollection<TimeSpan[]>("RetryDelays")
+                        .IsRequired()
+                        .HasColumnType("interval[]");
+
+                    b.Property<DateTimeOffset?>("ScheduledOccurrenceAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("SnapshotId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long?>("TimerSubscriptionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("TokenId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long?>("UserTaskId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkerId")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MultiInstanceExecutionId");
+
+                    b.HasIndex("SnapshotId");
+
+                    b.HasIndex("UserTaskId");
+
+                    b.HasIndex("CompletedAt", "Id")
+                        .HasFilter("\"Status\" IN ('completed', 'cancelled', 'skipped')");
+
+                    b.HasIndex("TimerSubscriptionId", "ScheduledOccurrenceAt")
+                        .IsUnique()
+                        .HasFilter("\"TimerSubscriptionId\" IS NOT NULL AND \"ScheduledOccurrenceAt\" IS NOT NULL");
+
+                    b.HasIndex("UpdatedAt", "Id")
+                        .IsDescending()
+                        .HasDatabaseName("IX_workflow_jobs_updated_id");
+
+                    b.HasIndex("InstanceId", "Status", "Id");
+
+                    b.HasIndex("Status", "UpdatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("IX_workflow_jobs_status_updated_id");
+
+                    b.HasIndex("TokenId", "Status", "Id");
+
+                    b.HasIndex("WorkflowDefinitionId", "Status", "Id");
+
+                    b.HasIndex("QueueClass", "Priority", "DueAt", "Id")
+                        .IsDescending(false, true, false, false)
+                        .HasDatabaseName("IX_workflow_jobs_runnable_class_priority_due")
+                        .HasFilter("\"Status\" IN ('queued', 'retry')");
+
+                    b.HasIndex("QueueClass", "Status", "LeaseExpiresAt", "Id")
+                        .HasDatabaseName("IX_workflow_jobs_expired_lease_class")
+                        .HasFilter("\"Status\" IN ('running', 'resultReady') AND \"LeaseExpiresAt\" IS NOT NULL");
+
+                    b.ToTable("workflow_jobs", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_jobs_attempts", "\"AttemptCount\" >= 0 AND \"MaxAttempts\" > 0 AND \"AttemptCount\" <= \"MaxAttempts\"");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_lease_shape", "((\"Status\" IN ('running', 'resultReady') AND \"WorkerId\" IS NOT NULL AND \"LeaseToken\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR (\"Status\" NOT IN ('running', 'resultReady') AND \"WorkerId\" IS NULL AND \"LeaseToken\" IS NULL AND \"LeaseExpiresAt\" IS NULL))");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_queue_class", "\"QueueClass\" IN ('control', 'activity')");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_status", "\"Status\" IN ('queued', 'running', 'resultReady', 'retry', 'completed', 'incident', 'cancelled', 'skipped')");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_terminal_time", "(\"Status\" IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NOT NULL) OR (\"Status\" NOT IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobSnapshotEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset>("EvaluationTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<JsonDocument>("FlowInfoJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<JsonDocument>("InvocationJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<JsonDocument>("OutputVariableVersionsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("SizeBytes")
+                        .HasColumnType("integer");
+
+                    b.Property<JsonDocument>("VariablesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("workflow_job_snapshots", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_job_snapshots_size", "\"SizeBytes\" >= 0 AND \"SizeBytes\" <= 1048576");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowSettingEntity", b =>
@@ -1750,6 +2281,31 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("Instance");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany("TimerSubscriptions")
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.ExecutionTokenEntity", "Token")
+                        .WithMany("TimerSubscriptions")
+                        .HasForeignKey("TokenId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("Token");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.UserTaskEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
@@ -1797,6 +2353,31 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowIncidentEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany("Incidents")
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowJobEntity", "Job")
+                        .WithMany("Incidents")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("Job");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
@@ -1818,6 +2399,70 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("WorkflowDefinition");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobAttemptEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowJobEntity", "Job")
+                        .WithMany("Attempts")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany("Jobs")
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", "MultiInstanceExecution")
+                        .WithMany()
+                        .HasForeignKey("MultiInstanceExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowJobSnapshotEntity", "Snapshot")
+                        .WithMany("Jobs")
+                        .HasForeignKey("SnapshotId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", "TimerSubscription")
+                        .WithMany("Jobs")
+                        .HasForeignKey("TimerSubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.ExecutionTokenEntity", "Token")
+                        .WithMany("Jobs")
+                        .HasForeignKey("TokenId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.UserTaskEntity", "UserTask")
+                        .WithMany()
+                        .HasForeignKey("UserTaskId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("MultiInstanceExecution");
+
+                    b.Navigation("Snapshot");
+
+                    b.Navigation("TimerSubscription");
+
+                    b.Navigation("Token");
+
+                    b.Navigation("UserTask");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.ComplexGatewayStateEntity", b =>
                 {
                     b.Navigation("WaitingTokens");
@@ -1827,9 +2472,13 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 {
                     b.Navigation("InterruptedGatewayExecutions");
 
+                    b.Navigation("Jobs");
+
                     b.Navigation("MultiInstanceExecutions");
 
                     b.Navigation("NodeExecutions");
+
+                    b.Navigation("TimerSubscriptions");
 
                     b.Navigation("UserTasks");
                 });
@@ -1861,6 +2510,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("UserTasks");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
+                {
+                    b.Navigation("Jobs");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.UserTaskEntity", b =>
                 {
                     b.Navigation("NodeExecution");
@@ -1879,6 +2533,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Navigation("History");
 
+                    b.Navigation("Incidents");
+
+                    b.Navigation("Jobs");
+
                     b.Navigation("MessageDeliveryReceipts");
 
                     b.Navigation("MultiInstanceExecutions");
@@ -1889,11 +2547,25 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Navigation("SequenceFlowSummaries");
 
+                    b.Navigation("TimerSubscriptions");
+
                     b.Navigation("Tokens");
 
                     b.Navigation("UserTasks");
 
                     b.Navigation("Variables");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobEntity", b =>
+                {
+                    b.Navigation("Attempts");
+
+                    b.Navigation("Incidents");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobSnapshotEntity", b =>
+                {
+                    b.Navigation("Jobs");
                 });
 #pragma warning restore 612, 618
         }

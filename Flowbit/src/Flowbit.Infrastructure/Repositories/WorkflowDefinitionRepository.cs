@@ -176,6 +176,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 $"Workflow key '{definition.Id}' has business keys enabled; new versions must configure businessKey on every entry event.");
         }
 
+        var createdAt = DateTimeOffset.UtcNow;
         var entity = new WorkflowDefinitionEntity
         {
             Name = name,
@@ -184,7 +185,9 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             Definition = definition,
             IsPublished = isPublished,
             IsDefault = isDefault,
-            CreatedAt = DateTimeOffset.UtcNow
+            DefaultActivationId = isDefault && isPublished ? Guid.NewGuid() : null,
+            DefaultActivatedAt = isDefault && isPublished ? createdAt : null,
+            CreatedAt = createdAt
         };
 
         dbContext.WorkflowDefinitions.Add(entity);
@@ -227,6 +230,11 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 await publishTransaction.CommitAsync(cancellationToken);
                 return false;
             }
+            if (target.IsPublished)
+            {
+                await publishTransaction.CommitAsync(cancellationToken);
+                return true;
+            }
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
                 .AnyAsync(scope => scope.WorkflowKey == target.WorkflowKey, cancellationToken);
             var hasBusinessKeys = HasBusinessKeys(target.Definition);
@@ -246,9 +254,20 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 await dbContext.SaveChangesAsync(cancellationToken);
             }
 
-            var publishAffected = await dbContext.WorkflowDefinitions
-                .Where(w => w.Id == id)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.IsPublished, true), cancellationToken);
+            var publishAffected = target.IsDefault
+                ? await dbContext.WorkflowDefinitions
+                    .Where(w => w.Id == id)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(w => w.IsPublished, true)
+                            .SetProperty(w => w.DefaultActivationId, Guid.NewGuid())
+                            .SetProperty(w => w.DefaultActivatedAt, DateTimeOffset.UtcNow),
+                        cancellationToken)
+                : await dbContext.WorkflowDefinitions
+                    .Where(w => w.Id == id)
+                    .ExecuteUpdateAsync(
+                        setters => setters.SetProperty(w => w.IsPublished, true),
+                        cancellationToken);
             await publishTransaction.CommitAsync(cancellationToken);
             if (publishAffected > 0)
             {
@@ -315,7 +334,15 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
 
         var entity = await dbContext.WorkflowDefinitions.AsNoTracking()
             .Where(w => w.Id == id)
-            .Select(w => new { w.WorkflowKey, w.IsPublished, w.Definition })
+            .Select(w => new
+            {
+                w.WorkflowKey,
+                w.IsPublished,
+                w.IsDefault,
+                w.DefaultActivationId,
+                w.DefaultActivatedAt,
+                w.Definition
+            })
             .SingleOrDefaultAsync(cancellationToken);
         if (entity is null)
         {
@@ -368,15 +395,46 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             await dbContext.WorkflowDefinitions
                 .Where(w => w.WorkflowKey == entity.WorkflowKey && w.IsDefault && w.Id != id)
                 .ExecuteUpdateAsync(
-                    setters => setters.SetProperty(w => w.IsDefault, false),
+                    setters => setters
+                        .SetProperty(w => w.IsDefault, false)
+                        .SetProperty(w => w.DefaultActivationId, (Guid?)null)
+                        .SetProperty(w => w.DefaultActivatedAt, (DateTimeOffset?)null),
                     cancellationToken);
         }
 
+        var defaultActivationId = isDefault
+            ? entity.IsDefault && entity.DefaultActivationId is not null
+                ? entity.DefaultActivationId
+                : Guid.NewGuid()
+            : null;
+        var defaultActivatedAt = isDefault
+            ? entity.IsDefault && entity.DefaultActivatedAt is not null
+                ? entity.DefaultActivatedAt
+                : DateTimeOffset.UtcNow
+            : null;
         var affected = await dbContext.WorkflowDefinitions
             .Where(w => w.Id == id)
             .ExecuteUpdateAsync(
-                setters => setters.SetProperty(w => w.IsDefault, isDefault),
+                setters => setters
+                    .SetProperty(w => w.IsDefault, isDefault)
+                    .SetProperty(w => w.DefaultActivationId, defaultActivationId)
+                    .SetProperty(w => w.DefaultActivatedAt, defaultActivatedAt),
                 cancellationToken);
+
+        // Timer-start ownership follows the published default version. Fence
+        // occurrence jobs before retiring their subscriptions in this same
+        // workflow-family transaction. This prevents obsolete far-future jobs
+        // from remaining visible in the durable queue after a default switch.
+        var obsoleteTimerStarts = dbContext.TimerSubscriptions.Where(subscription =>
+            subscription.InstanceId == null
+            && subscription.WorkflowKey == entity.WorkflowKey);
+        obsoleteTimerStarts = isDefault
+            ? obsoleteTimerStarts.Where(subscription => subscription.WorkflowDefinitionId != id)
+            : obsoleteTimerStarts.Where(subscription => subscription.WorkflowDefinitionId == id);
+        await RetireTimerStartsAsync(
+            obsoleteTimerStarts,
+            "Timer-start definition is no longer the published default.",
+            cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
 
@@ -448,6 +506,31 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             }
         }
 
+        // A published timer start creates definition-scoped durable rows even
+        // before the first instance exists. Explicit definition deletion owns
+        // those rows, so fence any outstanding occurrence, remove its audit
+        // children, then remove jobs and subscriptions before deleting the
+        // immutable definition. Instance-scoped runtime data remains protected
+        // by the existing restrictive definition foreign keys.
+        var timerStarts = dbContext.TimerSubscriptions.Where(subscription =>
+            subscription.InstanceId == null
+            && subscription.WorkflowDefinitionId == id);
+        await RetireTimerStartsAsync(
+            timerStarts,
+            "Timer-start workflow definition was deleted.",
+            cancellationToken);
+        await dbContext.WorkflowIncidents
+            .Where(incident =>
+                incident.WorkflowDefinitionId == id
+                && incident.InstanceId == null)
+            .ExecuteDeleteAsync(cancellationToken);
+        await dbContext.WorkflowJobs
+            .Where(job =>
+                job.WorkflowDefinitionId == id
+                && job.InstanceId == null)
+            .ExecuteDeleteAsync(cancellationToken);
+        await timerStarts.ExecuteDeleteAsync(cancellationToken);
+
         var affected = await dbContext.WorkflowDefinitions
             .Where(w => w.Id == id)
             .ExecuteDeleteAsync(cancellationToken);
@@ -467,7 +550,10 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                     await dbContext.WorkflowDefinitions
                         .Where(w => w.Id == successor.Id)
                         .ExecuteUpdateAsync(
-                            setters => setters.SetProperty(w => w.IsDefault, true),
+                            setters => setters
+                                .SetProperty(w => w.IsDefault, true)
+                                .SetProperty(w => w.DefaultActivationId, Guid.NewGuid())
+                                .SetProperty(w => w.DefaultActivatedAt, DateTimeOffset.UtcNow),
                             cancellationToken);
 
                 }
@@ -486,6 +572,72 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         }
 
         return affected > 0;
+    }
+
+    private async Task RetireTimerStartsAsync(
+        IQueryable<TimerSubscriptionEntity> subscriptions,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var subscriptionIds = subscriptions.Select(subscription => subscription.Id);
+        var jobs = dbContext.WorkflowJobs.Where(job =>
+            job.TimerSubscriptionId != null
+            && subscriptionIds.Contains(job.TimerSubscriptionId.Value));
+        var openJobs = jobs.Where(job =>
+            job.Status == WorkflowJobStatuses.Queued
+            || job.Status == WorkflowJobStatuses.Retry
+            || job.Status == WorkflowJobStatuses.Running
+            || job.Status == WorkflowJobStatuses.ResultReady
+            || job.Status == WorkflowJobStatuses.Incident);
+
+        // Preserve the runtime's jobs -> subscriptions lock order. Clearing the
+        // lease is the complete resume fence for any replica already holding an
+        // obsolete occurrence.
+        await openJobs.ExecuteUpdateAsync(setters => setters
+            .SetProperty(job => job.Status, WorkflowJobStatuses.Cancelled)
+            .SetProperty(job => job.CompletedAt, now)
+            .SetProperty(job => job.UpdatedAt, now)
+            .SetProperty(job => job.LastFailureCode, "cancelled")
+            .SetProperty(job => job.LastFailureDescription, reason)
+            .SetProperty(job => job.WorkerId, (string?)null)
+            .SetProperty(job => job.LeaseToken, (Guid?)null)
+            .SetProperty(job => job.LeaseExpiresAt, (DateTimeOffset?)null)
+            .SetProperty(job => job.HeartbeatAt, (DateTimeOffset?)null),
+            cancellationToken);
+
+        var jobIds = jobs.Select(job => job.Id);
+        await dbContext.WorkflowJobAttempts
+            .Where(attempt =>
+                jobIds.Contains(attempt.JobId)
+                && (attempt.Status == WorkflowJobAttemptStatuses.Running
+                    || attempt.Status == WorkflowJobAttemptStatuses.ResultReady))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(attempt => attempt.Status, WorkflowJobAttemptStatuses.Cancelled)
+                .SetProperty(attempt => attempt.FinishedAt, now)
+                .SetProperty(attempt => attempt.FailureCode, "cancelled")
+                .SetProperty(attempt => attempt.FailureDescription, reason),
+                cancellationToken);
+        await dbContext.WorkflowIncidents
+            .Where(incident =>
+                incident.JobId != null
+                && jobIds.Contains(incident.JobId.Value)
+                && incident.Status == WorkflowIncidentStatuses.Open)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(incident => incident.Status, WorkflowIncidentStatuses.Resolved)
+                .SetProperty(incident => incident.ResolvedAt, now)
+                .SetProperty(incident => incident.ResolvedBy, "system:definition-retirement")
+                .SetProperty(incident => incident.UpdatedAt, now),
+                cancellationToken);
+        await subscriptions
+            .Where(subscription =>
+                subscription.Status == TimerSubscriptionStatuses.Active
+                || subscription.Status == TimerSubscriptionStatuses.Paused)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(subscription => subscription.Status, TimerSubscriptionStatuses.Cancelled)
+                .SetProperty(subscription => subscription.CompletedAt, now)
+                .SetProperty(subscription => subscription.UpdatedAt, now),
+                cancellationToken);
     }
 
     private async Task<bool> HasRunningRequiredAssignmentInstancesAsync(

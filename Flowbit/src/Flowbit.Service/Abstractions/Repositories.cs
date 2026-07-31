@@ -61,6 +61,8 @@ public interface IWorkflowRuntimeRepository
         string? nodeExternalId,
         IReadOnlyList<VariableFilter> variableFilters,
         IReadOnlyList<InstanceSortCriterion> sort,
+        InstanceListAuthorization authorization,
+        string? cursor,
         bool includeVariables,
         int page,
         int pageSize,
@@ -171,6 +173,51 @@ public interface IWorkflowRuntimeRepository
         NodeExecutionCompletionRecord? currentCompletion,
         CancellationToken cancellationToken,
         bool deferSave = false);
+
+    /// <summary>
+    /// Fences an active token at a durable async/timer wait. The update succeeds
+    /// only when the token still owns <paramref name="activationId"/> and is not
+    /// already waiting on another job.
+    /// </summary>
+    Task<bool> SetExecutionTokenWaitAsync(
+        long tokenId,
+        Guid activationId,
+        string waitState,
+        long? waitingJobId,
+        long? waitingTimerSubscriptionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Clears an exact durable wait after the owning job has been fenced under
+    /// the instance lock. A stale job receives false and must not write state.
+    /// </summary>
+    Task<bool> ClearExecutionTokenWaitAsync(
+        long tokenId,
+        Guid activationId,
+        string waitState,
+        long? waitingJobId,
+        long? waitingTimerSubscriptionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Activates the pending node execution created for asyncBefore and creates
+    /// its normal user-task work item when applicable.
+    /// </summary>
+    Task<ExecutionTokenRecord?> ActivatePendingNodeAsync(
+        long tokenId,
+        Guid activationId,
+        string? claimedBy,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Completes the current node execution without moving the token. Used by
+    /// asyncAfter before the outgoing traversal is committed by a later job.
+    /// </summary>
+    Task<bool> CompleteCurrentNodeForWaitAsync(
+        long tokenId,
+        Guid activationId,
+        NodeExecutionCompletionRecord completion,
+        CancellationToken cancellationToken);
 
     Task SetExecutionTokenStatusAsync(
         long tokenId,
@@ -560,6 +607,10 @@ public interface IWorkflowRuntimeRepository
         MessageDeliveryReceiptRecord receipt,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<InstanceVariableVersionRecord>> LoadLatestVariableVersionsAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
         long instanceId,
         CancellationToken cancellationToken);
@@ -617,4 +668,11 @@ public interface IUnitOfWork
     Task<IWorkflowTransaction> BeginTransactionAsync(CancellationToken cancellationToken);
 
     Task SaveChangesAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Detaches state left in the unit of work after a rolled-back transaction.
+    /// Durable job retry/incident writes must never flush workflow mutations
+    /// that belonged to the failed transaction.
+    /// </summary>
+    void DiscardChanges();
 }

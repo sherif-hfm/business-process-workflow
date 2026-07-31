@@ -22,7 +22,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(22, mappedTables.Length);
+        Assert.Equal(27, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
         Assert.Contains(mappedTables, table => table.Name == "gateway_branches");
@@ -32,6 +32,11 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Contains(mappedTables, table => table.Name == "node_executions");
         Assert.Contains(mappedTables, table => table.Name == "user_delegations");
         Assert.Contains(mappedTables, table => table.Name == "workflow_delegation_policies");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_jobs");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_job_attempts");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_job_snapshots");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_incidents");
+        Assert.Contains(mappedTables, table => table.Name == "timer_subscriptions");
 
         var expectedNames = mappedTables
             .Select(table => table.Name!)
@@ -58,5 +63,36 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Equal(expectedNames.Length, actual.Count);
         Assert.All(actual, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Equal(expectedNames, actual.Select(table => table.Table).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task WorkflowJobOperationsIndexesAreApplied()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT indexname
+            FROM pg_catalog.pg_indexes
+            WHERE schemaname = 'flowbit'
+              AND tablename = 'workflow_jobs'
+              AND indexname = ANY (@indexNames)
+            ORDER BY indexname
+            """,
+            connection);
+        var expected = new[]
+        {
+            "IX_workflow_jobs_status_updated_id",
+            "IX_workflow_jobs_updated_id"
+        };
+        command.Parameters.AddWithValue("indexNames", expected);
+
+        var actual = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            actual.Add(reader.GetString(0));
+        }
+
+        Assert.Equal(expected, actual);
     }
 }

@@ -908,6 +908,7 @@
   .node circle.body { stroke-width: 2; }
   .node polygon.body { stroke-width: 2; cursor: grab; }
   .node.startEvent circle.body { fill: var(--node-start-fill); stroke: var(--green); }
+  .node.timerStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); }
   .node.endEvent circle.body   { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
   .node.userTask rect { fill: var(--node-user-fill); stroke: var(--node-user-stroke); }
   .node.task rect     { fill: var(--node-task-fill); stroke: var(--node-task-stroke); }
@@ -923,8 +924,12 @@
   .node.scopedInterruptEvent circle.ring { fill: none; stroke: var(--node-interrupt-stroke); stroke-width: 1.5; }
   .node.errorBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--red); stroke-width: 3; }
   .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
+  .node.timerBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--node-message-stroke); stroke-width: 3; }
+  .node.timerBoundaryEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .node.intermediateMessageCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .node.intermediateTimerCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .node.intermediateTimerCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .node { transition: filter .15s, opacity .15s; }
   .node:hover { filter: drop-shadow(0 6px 10px var(--node-hover-shadow)); }
@@ -937,6 +942,7 @@
   .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
   .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .node.selected.timerBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node text { fill: var(--node-text); font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: var(--node-id-text); font-size: 10.5px; }
   .node .roles { fill: var(--node-role-text); font-size: 10px; }
@@ -945,7 +951,9 @@
   .node .node-icon { color: var(--node-icon); pointer-events: none; }
   .node .node-separator { stroke: var(--node-separator); stroke-width: 1; pointer-events: none; }
   .node.startEvent .node-icon { color: var(--node-start-icon); }
-  .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon { color: var(--node-message-icon); }
+  .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon,
+  .node.timerStartEvent .node-icon, .node.intermediateTimerCatchEvent .node-icon,
+  .node.timerBoundaryEvent .node-icon { color: var(--node-message-icon); }
   .node.endEvent .node-icon, .node.errorEndEvent .node-icon, .node.terminateEndEvent .node-icon,
   .node.scopedInterruptEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
   .node.exclusiveGateway .node-icon, .node.parallelGateway .node-icon,
@@ -1319,6 +1327,7 @@
         <symbol id="icon-scoped-interrupt" viewBox="0 0 24 24"><path d="M12 3v6M12 15v6M3 12h6M15 12h6M8.5 8.5l7 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></symbol>
         <symbol id="icon-terminate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="currentColor"/></symbol>
         <symbol id="icon-message" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-timer" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3.5 2M9 2h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
         <symbol id="icon-error-throw" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
         <symbol id="icon-error-catch" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-assignee" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.3 2.4-5 5.5-5 1.4 0 2.6.3 3.5 1M15 16l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -1462,6 +1471,7 @@ const MIN_LANE_W = 220, MIN_LANE_H = 150;
 const ZOOM_MIN = 0.35, ZOOM_MAX = 2.5;
 const NODE_TYPE = {
   START_EVENT: "startEvent",
+  TIMER_START_EVENT: "timerStartEvent",
   END_EVENT: "endEvent",
   USER_TASK: "userTask",
   TASK: "task",
@@ -1475,11 +1485,14 @@ const NODE_TYPE = {
   TERMINATE_END_EVENT: "terminateEndEvent",
   ERROR_END_EVENT: "errorEndEvent",
   ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
+  TIMER_BOUNDARY_EVENT: "timerBoundaryEvent",
   MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
+  TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
   MESSAGE_START_EVENT: "messageStartEvent"
 };
 const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.START_EVENT, label: "Start Event" },
+  { value: NODE_TYPE.TIMER_START_EVENT, label: "Timer Start Event (scheduled)" },
   { value: NODE_TYPE.END_EVENT, label: "End Event" },
   { value: NODE_TYPE.USER_TASK, label: "User Task" },
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
@@ -1493,6 +1506,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.TERMINATE_END_EVENT, label: "Terminate End Event" },
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
+  { value: NODE_TYPE.TIMER_CATCH_EVENT, label: "Timer Catch Event (delay)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" }
 ];
 
@@ -1572,7 +1586,8 @@ function buildDiagramTraceContext(candidate, selection, mode) {
   for (const nodeId of [...nodeIds]) {
     const node = nodeById.get(nodeId);
     if (!node) continue;
-    if (node.type === "errorBoundaryEvent" && nodeById.has(node.attachedToRef)) {
+    if ((node.type === "errorBoundaryEvent" || node.type === "timerBoundaryEvent") &&
+        nodeById.has(node.attachedToRef)) {
       contextNodeIds.add(node.attachedToRef);
     }
     if (node.type === "scopedInterruptEvent" && nodeById.has(node.gatewayRef)) {
@@ -1580,7 +1595,9 @@ function buildDiagramTraceContext(candidate, selection, mode) {
     }
     for (const candidateNode of nodes) {
       if (!candidateNode) continue;
-      if (candidateNode.type === "errorBoundaryEvent" && candidateNode.attachedToRef === nodeId) {
+      if ((candidateNode.type === "errorBoundaryEvent" ||
+          candidateNode.type === "timerBoundaryEvent") &&
+          candidateNode.attachedToRef === nodeId) {
         contextNodeIds.add(candidateNode.id);
       }
       if (candidateNode.type === "scopedInterruptEvent" && candidateNode.gatewayRef === nodeId) {
@@ -1614,6 +1631,7 @@ function searchDiagram(candidate, query, limit = 20) {
   const nodeById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
   const typeNames = {
     startEvent: "Start Event",
+    timerStartEvent: "Timer Start Event",
     messageStartEvent: "Message Start Event",
     userTask: "User Task",
     task: "Task",
@@ -1628,7 +1646,9 @@ function searchDiagram(candidate, query, limit = 20) {
     terminateEndEvent: "Terminate End Event",
     errorEndEvent: "Error End Event",
     errorBoundaryEvent: "Error Boundary Event",
-    intermediateMessageCatchEvent: "Message Catch Event"
+    timerBoundaryEvent: "Timer Boundary Event",
+    intermediateMessageCatchEvent: "Message Catch Event",
+    intermediateTimerCatchEvent: "Timer Catch Event"
   };
   const candidates = [];
   const addCandidate = (kind, id, label, detail, rawFields) => {
@@ -2334,6 +2354,11 @@ function selectedLane() {
 function findErrorBoundary(hostNodeId) {
   return model.flowNodes.find(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
 }
+function findTimerBoundaries(hostNodeId) {
+  return model.flowNodes
+    .filter(n => n.type === NODE_TYPE.TIMER_BOUNDARY_EVENT && n.attachedToRef === hostNodeId)
+    .sort((a, b) => a.id - b.id);
+}
 function normalizeRoles(roles) {
   if (Array.isArray(roles)) return roles.map(role => String(role).trim()).filter(Boolean);
   if (typeof roles === "string" && roles.trim()) return [roles.trim()];
@@ -2347,7 +2372,8 @@ function isEventType(type) {
   return type === NODE_TYPE.START_EVENT || type === NODE_TYPE.END_EVENT ||
     type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.TERMINATE_END_EVENT ||
     type === NODE_TYPE.SCOPED_INTERRUPT_EVENT ||
-    type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT;
+    type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT ||
+    type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT;
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -2364,6 +2390,9 @@ function isUserTaskType(type) {
 function isStartEventType(type) {
   return type === NODE_TYPE.START_EVENT;
 }
+function isTimerStartEventType(type) {
+  return type === NODE_TYPE.TIMER_START_EVENT;
+}
 function isEndEventType(type) {
   return type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT ||
     type === NODE_TYPE.TERMINATE_END_EVENT;
@@ -2378,13 +2407,30 @@ function isScopedInterruptEventType(type) {
   return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT;
 }
 function isBoundaryEventType(type) {
+  return type === NODE_TYPE.ERROR_BOUNDARY_EVENT || type === NODE_TYPE.TIMER_BOUNDARY_EVENT;
+}
+function isErrorBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
+}
+function isTimerBoundaryEventType(type) {
+  return type === NODE_TYPE.TIMER_BOUNDARY_EVENT;
 }
 function isMessageCatchEventType(type) {
   return type === NODE_TYPE.MESSAGE_CATCH_EVENT;
 }
 function isMessageStartEventType(type) {
   return type === NODE_TYPE.MESSAGE_START_EVENT;
+}
+function isTimerCatchEventType(type) {
+  return type === NODE_TYPE.TIMER_CATCH_EVENT;
+}
+function isTimerEventType(type) {
+  return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
+    isTimerBoundaryEventType(type);
+}
+function isAsyncCapableTaskType(type) {
+  return isUserTaskType(type) || isAutomaticType(type) ||
+    isServiceTaskType(type) || isScriptTaskType(type);
 }
 function isExclusiveGatewayType(type) {
   return type === NODE_TYPE.EXCLUSIVE_GATEWAY;
@@ -2544,17 +2590,23 @@ function gatewayTopologyWarnings(node) {
 }
 function isSingleOutgoingType(type) {
   return type === NODE_TYPE.START_EVENT
+    || type === NODE_TYPE.TIMER_START_EVENT
     || type === NODE_TYPE.TASK
     || type === NODE_TYPE.SERVICE_TASK
     || type === NODE_TYPE.SCRIPT_TASK
     || type === NODE_TYPE.SCOPED_INTERRUPT_EVENT
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
+    || type === NODE_TYPE.TIMER_BOUNDARY_EVENT
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
+    || type === NODE_TYPE.TIMER_CATCH_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT;
 }
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
-  return match ? match.label : type;
+  if (match) return match.label;
+  if (type === NODE_TYPE.ERROR_BOUNDARY_EVENT) return "Error Boundary Event";
+  if (type === NODE_TYPE.TIMER_BOUNDARY_EVENT) return "Timer Boundary Event";
+  return type;
 }
 function nodeSize(node) {
   if (isBoundaryEventType(node.type)) return { w: BOUNDARY_D, h: BOUNDARY_D };
@@ -2566,10 +2618,74 @@ function nodeSize(node) {
 // automatic task / service task / script task / gateway / interrupt / boundary).
 function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) ||
-    isStartEventType(type) || isMessageStartEventType(type) || isGatewayType(type) ||
+    isStartEventType(type) || isMessageStartEventType(type) || isTimerStartEventType(type) ||
+    isGatewayType(type) ||
     isScopedInterruptEventType(type) || isBoundaryEventType(type);
 }
+function normalizeJobPolicy(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return value;
+  const authoredFailureHandling = value.failureHandling;
+  return {
+    // Preserve unsupported authored values so save validation can report them.
+    // Only an omitted value receives the compatibility default.
+    failureHandling: authoredFailureHandling === undefined
+      ? "boundaryFirst"
+      : canonicalizeKnownValue(
+          authoredFailureHandling,
+          ["boundaryFirst", "retryFirst"],
+          authoredFailureHandling),
+    retryDelays: value.retryDelays === undefined
+      ? []
+      : Array.isArray(value.retryDelays)
+      ? value.retryDelays.map(delay => typeof delay === "string" ? delay.trim() : delay)
+      : value.retryDelays
+  };
+}
+function normalizeTimerDefinition(value) {
+  // Compatibility normalization must preserve a malformed/missing timer so
+  // save validation can report it. Defaults are assigned only when the user
+  // explicitly creates or changes a node to a timer type.
+  if (value !== undefined && value !== null &&
+      (typeof value !== "object" || Array.isArray(value))) {
+    return value;
+  }
+  const source = value || {};
+  const normalizeMember = (member, normalizeDate = false) => {
+    if (member === undefined || member === null) return null;
+    if (typeof member !== "string") return member;
+    const trimmed = member.trim();
+    if (!trimmed) return null;
+    return normalizeDate ? normalizeTimerTimeDate(trimmed) : trimmed;
+  };
+  return {
+    timeDate: normalizeMember(source.timeDate, true),
+    timeDuration: normalizeMember(source.timeDuration),
+    timeCycle: normalizeMember(source.timeCycle)
+  };
+}
 function applyTypeInvariants(node) {
+  if (isAsyncCapableTaskType(node.type)) {
+    if (node.asyncBefore === undefined) node.asyncBefore = false;
+    if (node.asyncAfter === undefined) node.asyncAfter = false;
+    if (node.job != null) node.job = normalizeJobPolicy(node.job);
+  } else {
+    delete node.asyncBefore;
+    delete node.asyncAfter;
+    delete node.job;
+  }
+  if (isTimerEventType(node.type)) {
+    node.timer = normalizeTimerDefinition(node.timer);
+  } else {
+    delete node.timer;
+  }
+  if (isTimerBoundaryEventType(node.type)) {
+    if (node.cancelActivity === undefined || node.cancelActivity === null) {
+      node.cancelActivity = true;
+    }
+  } else {
+    delete node.cancelActivity;
+  }
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
   if (!isComplexGatewayType(node.type)) delete node.activationCondition;
   if (!isScopedInterruptEventType(node.type)) delete node.gatewayRef;
@@ -2678,7 +2794,7 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     delete node.message;
-  } else if (isBoundaryEventType(node.type)) {
+  } else if (isErrorBoundaryEventType(node.type)) {
     // A boundary event is attached to a service/script task; it carries only
     // attachedToRef and the optional errorVariable, nothing else.
     node.requiresClaim = false;
@@ -2694,6 +2810,20 @@ function applyTypeInvariants(node) {
     delete node.message;
     if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
     if (typeof node.errorVariable !== "string" || !node.errorVariable.trim()) node.errorVariable = null;
+  } else if (isTimerBoundaryEventType(node.type)) {
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.message;
+    delete node.errorVariable;
+    if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
   } else if (isScopedInterruptEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2747,6 +2877,20 @@ function applyTypeInvariants(node) {
     delete node.message.deliveryIdempotency;
     delete node.message.deliveryIdempotencyHeaderName;
     normalizeLegacyMessageStartNode(node);
+  } else if (isTimerStartEventType(node.type) || isTimerCatchEventType(node.type)) {
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    delete node.message;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
   } else if (isUserTaskType(node.type)) {
     node.variables = node.variables || [];
     node.requiresAssignment = !!node.requiresAssignment;
@@ -2948,11 +3092,14 @@ function applyFlowInvariants(flow) {
 }
 const NODE_ICON_SYMBOL = {
   [NODE_TYPE.START_EVENT]: "icon-start",
+  [NODE_TYPE.TIMER_START_EVENT]: "icon-timer",
   [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
   [NODE_TYPE.END_EVENT]: null,
   [NODE_TYPE.ERROR_END_EVENT]: "icon-error-throw",
   [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error-catch",
+  [NODE_TYPE.TIMER_BOUNDARY_EVENT]: "icon-timer",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
+  [NODE_TYPE.TIMER_CATCH_EVENT]: "icon-timer",
   [NODE_TYPE.USER_TASK]: "icon-user",
   [NODE_TYPE.TASK]: "icon-task",
   [NODE_TYPE.SERVICE_TASK]: "icon-service",
@@ -3133,7 +3280,38 @@ function nodePosition(node) {
     const host = getNode(node.attachedToRef);
     if (host) {
       const hs = nodeSize(host);
-      return { x: host.x + hs.w - BOUNDARY_D / 2, y: host.y + hs.h - BOUNDARY_D / 2 };
+      const siblings = model.flowNodes
+        .filter(candidate => isBoundaryEventType(candidate.type) &&
+          candidate.attachedToRef === host.id)
+        .sort((left, right) => left.id - right.id);
+      const index = Math.max(0, siblings.findIndex(candidate => candidate.id === node.id));
+      const perimeter = 2 * (hs.w + hs.h);
+      let distance = siblings.length > 1
+        ? index * perimeter / siblings.length
+        : 0;
+      let centerX;
+      let centerY;
+      // Distribute all attached boundaries around the complete host border.
+      // This keeps the supported eight timer boundaries (plus an error
+      // boundary on service/script tasks) usable even on compact catch events.
+      if (distance <= hs.w) {
+        centerX = host.x + hs.w - distance;
+        centerY = host.y + hs.h;
+      } else if ((distance -= hs.w) <= hs.h) {
+        centerX = host.x;
+        centerY = host.y + hs.h - distance;
+      } else if ((distance -= hs.h) <= hs.w) {
+        centerX = host.x + distance;
+        centerY = host.y;
+      } else {
+        distance -= hs.w;
+        centerX = host.x + hs.w;
+        centerY = host.y + distance;
+      }
+      return {
+        x: centerX - BOUNDARY_D / 2,
+        y: centerY - BOUNDARY_D / 2
+      };
     }
   }
   return { x: node.x, y: node.y };
@@ -3271,7 +3449,7 @@ function renderNodes() {
     } else if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
-      if (isMessageCatchEventType(node.type)) {
+      if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
       if (isScopedInterruptEventType(node.type)) {
@@ -3885,7 +4063,7 @@ function renderEdges() {
     if (!source || !target || !geometry) continue;
 
     const dashed = isPassThroughType(source.type);
-    const isError = isBoundaryEventType(source.type);
+    const isError = isErrorBoundaryEventType(source.type);
     const selectedFlow = isSel('flow', flow.id);
     const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""} ${traceClass('flow', flow.id)}`;
     const labelInfo = flowLabelInfo(flow, source);
@@ -3945,7 +4123,8 @@ function flowLabel(flow, source) {
   if (flow.name && flow.name.trim()) return flow.name.trim();
   source = source || getNode(flow.sourceRef);
   if (!source) return "";
-  if (isBoundaryEventType(source.type)) return "error";
+  if (isErrorBoundaryEventType(source.type)) return "error";
+  if (isTimerBoundaryEventType(source.type)) return "timer";
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
   if (isScriptTaskType(source.type)) return "script";
@@ -4074,7 +4253,7 @@ function addInitialSelector() {
   if (startEvents.length === 0) {
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "No user start events are defined (the workflow may be started via a message-start event instead).";
+    note.textContent = "No user start events are defined (the workflow may be started by a message or timer start event instead).";
     f.appendChild(note);
   } else {
     const sel = document.createElement("select");
@@ -4095,7 +4274,7 @@ function renderNodeInspector() {
   field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
   field("External ID", "text", node.externalId ?? "", v => { node.externalId = v.trim() ? v : null; });
   if (isBoundaryEventType(node.type)) {
-    // Boundary events are created via a host's "+ Add error boundary event"
+    // Boundary events are created via their host's add-boundary controls
     // button, not the Type dropdown (the type is absent from NODE_TYPE_OPTIONS
     // by design). Show a read-only label so the field cannot be edited away.
     const typeField = document.createElement("div");
@@ -4133,6 +4312,9 @@ function renderNodeInspector() {
         node.variables = materializeMessageStartVariables(node);
       }
       node.type = v;
+      if (isTimerEventType(v) && !isTimerEventType(previousType)) {
+        node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+      }
       if (changesGatewaySemantics) {
         outgoingFlows(node.id).forEach(flow => {
           flow.isDefault = false;
@@ -4158,6 +4340,21 @@ function renderNodeInspector() {
           model.flowNodes = model.flowNodes.filter(n => !boundaryIds.has(n.id));
           model.sequenceFlows = model.sequenceFlows.filter(f =>
             !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
+        }
+      }
+      const timerHostIsDurable = isUserTaskType(v) ||
+        isMessageCatchEventType(v) || isTimerCatchEventType(v);
+      const timerHostIsAsyncAutomatic = (isAutomaticType(v) ||
+        isServiceTaskType(v) || isScriptTaskType(v)) && node.asyncBefore === true;
+      if (!timerHostIsDurable && !timerHostIsAsyncAutomatic) {
+        const attachedTimers = model.flowNodes.filter(candidate =>
+          isTimerBoundaryEventType(candidate.type) &&
+          candidate.attachedToRef === node.id);
+        const timerIds = new Set(attachedTimers.map(candidate => candidate.id));
+        if (timerIds.size > 0) {
+          model.flowNodes = model.flowNodes.filter(candidate => !timerIds.has(candidate.id));
+          model.sequenceFlows = model.sequenceFlows.filter(flow =>
+            !timerIds.has(flow.sourceRef) && !timerIds.has(flow.targetRef));
         }
       }
       // If the node was the default start event but is no longer a valid
@@ -4415,7 +4612,11 @@ function renderNodeInspector() {
     }
   }
 
-  if (isBoundaryEventType(node.type)) {
+  if (isAsyncCapableTaskType(node.type)) {
+    renderAsyncJobSection(node);
+  }
+
+  if (isErrorBoundaryEventType(node.type)) {
     const host = getNode(node.attachedToRef);
     const hostField = document.createElement("div");
     hostField.className = "field";
@@ -4435,6 +4636,33 @@ function renderNodeInspector() {
     field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
       node.errorVariable = v.trim() ? v : null;
     });
+  }
+
+  if (isTimerBoundaryEventType(node.type)) {
+    const host = getNode(node.attachedToRef);
+    const hostField = document.createElement("div");
+    hostField.className = "field";
+    hostField.innerHTML = `<label>Attached to</label>`;
+    const hostInput = document.createElement("input");
+    hostInput.type = "text";
+    hostInput.disabled = true;
+    hostInput.value = host ? `#${host.id} ${host.name}` : "(missing host)";
+    hostField.appendChild(hostInput);
+    inspector.appendChild(hostField);
+    inspector.appendChild(variableCheckbox(
+      "Interrupt attached activity",
+      node.cancelActivity === true,
+      checked => { node.cancelActivity = checked; renderInspector(); }));
+    const hint = document.createElement("p");
+    hint.className = "empty-note";
+    hint.textContent = node.cancelActivity === false
+      ? "When due, a sibling execution follows the timer path while the attached task or multi-instance execution keeps waiting."
+      : "When due, the attached activity and its open work are cancelled before the timer path continues.";
+    inspector.appendChild(hint);
+  }
+
+  if (isTimerEventType(node.type)) {
+    renderTimerSection(node);
   }
 
   if (isServiceTaskType(node.type)) {
@@ -4460,6 +4688,12 @@ function renderNodeInspector() {
     renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
     renderIdempotencySection(node);
     renderBusinessKeySection(node);
+  }
+
+  if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
+      isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
+      isServiceTaskType(node.type) || isScriptTaskType(node.type)) {
+    renderTimerBoundaryHostSection(node);
   }
 
   if (!isEndEventType(node.type)) {
@@ -4955,6 +5189,221 @@ function renderErrorBoundarySection(hostNode) {
     addBtn.onclick = () => addErrorBoundary(hostNode);
     inspector.appendChild(addBtn);
   }
+}
+
+function renderAsyncJobSection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Durable async";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  inspector.appendChild(variableCheckbox("Async before", node.asyncBefore === true, checked => {
+    if (!checked && findTimerBoundaries(node.id).length > 0 &&
+        (isAutomaticType(node.type) || isServiceTaskType(node.type) || isScriptTaskType(node.type))) {
+      if (!confirm("Disabling async before removes attached timer boundary events and their outgoing flows. Continue?")) {
+        renderInspector();
+        return;
+      }
+      const timerIds = new Set(findTimerBoundaries(node.id).map(boundary => boundary.id));
+      model.flowNodes = model.flowNodes.filter(candidate => !timerIds.has(candidate.id));
+      model.sequenceFlows = model.sequenceFlows.filter(flow =>
+        !timerIds.has(flow.sourceRef) && !timerIds.has(flow.targetRef));
+    }
+    node.asyncBefore = checked;
+    if (node.asyncBefore !== true && node.asyncAfter !== true) node.job = null;
+    render();
+  }));
+  inspector.appendChild(variableCheckbox("Async after", node.asyncAfter === true, checked => {
+    node.asyncAfter = checked;
+    if (node.asyncBefore !== true && node.asyncAfter !== true) node.job = null;
+    renderInspector();
+  }));
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Async before pauses before activation. Async after commits completion and queues outgoing routing. Multi-instance settings wrap the parent task body.";
+  inspector.appendChild(hint);
+
+  if (node.asyncBefore !== true && node.asyncAfter !== true) {
+    if (isServiceTaskType(node.type)) {
+      const warning = document.createElement("p");
+      warning.className = "empty-note";
+      warning.style.color = "var(--warning-text)";
+      warning.textContent = "Without async before, the REST call keeps the historical synchronous transaction behavior.";
+      inspector.appendChild(warning);
+    }
+    return;
+  }
+
+  inspector.appendChild(variableCheckbox(
+    "Override job retry policy",
+    node.job !== null && node.job !== undefined,
+    checked => {
+      node.job = checked
+        ? { failureHandling: "boundaryFirst", retryDelays: ["PT10S", "PT1M", "PT5M"] }
+        : null;
+      renderInspector();
+    }));
+  if (node.job === null || node.job === undefined) {
+    const defaults = document.createElement("p");
+    defaults.className = "empty-note";
+    defaults.textContent = "Deployment retry defaults apply.";
+    inspector.appendChild(defaults);
+    return;
+  }
+
+  node.job = normalizeJobPolicy(node.job);
+  if (!node.job || typeof node.job !== "object" || Array.isArray(node.job)) {
+    const malformed = document.createElement("p");
+    malformed.className = "empty-note";
+    malformed.style.color = "var(--warning-text)";
+    malformed.textContent = "The imported job policy is malformed. Disable and re-enable the override to replace it.";
+    inspector.appendChild(malformed);
+    return;
+  }
+  selectField("Failure order", [
+    { value: "boundaryFirst", label: "Boundary first" },
+    { value: "retryFirst", label: "Retries first" }
+  ], node.job.failureHandling, value => { node.job.failureHandling = value; });
+  textareaField(
+    "Retry delays (one ISO duration per line)",
+    Array.isArray(node.job.retryDelays) ? node.job.retryDelays.join("\n") : "",
+    value => {
+      node.job.retryDelays = value.split(/\r?\n|,/)
+        .map(item => item.trim())
+        .filter(Boolean);
+    },
+    4);
+}
+
+function renderTimerSection(node) {
+  node.timer = normalizeTimerDefinition(node.timer);
+  const title = document.createElement("h2");
+  title.textContent = "Timer";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  if (!node.timer || typeof node.timer !== "object" || Array.isArray(node.timer)) {
+    const malformed = document.createElement("p");
+    malformed.className = "empty-note";
+    malformed.style.color = "var(--warning-text)";
+    malformed.textContent = "The imported timer configuration is malformed. Choose a timer expression to replace it.";
+    inspector.appendChild(malformed);
+    const reset = document.createElement("button");
+    reset.textContent = "Reset timer configuration";
+    reset.style.width = "100%";
+    reset.onclick = () => {
+      node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+      renderInspector();
+    };
+    inspector.appendChild(reset);
+    return;
+  }
+
+  const selectedKind = node.timer.timeDate != null
+    ? "timeDate"
+    : node.timer.timeCycle != null ? "timeCycle" : "timeDuration";
+  selectField("Timer expression", [
+    { value: "timeDate", label: "Absolute date/time" },
+    { value: "timeDuration", label: "Duration after activation" },
+    { value: "timeCycle", label: "Repeating cycle" }
+  ], selectedKind, value => {
+    node.timer = value === "timeDate"
+      ? { timeDate: "2026-12-31T23:00:00Z", timeDuration: null, timeCycle: null }
+      : value === "timeCycle"
+        ? { timeDate: null, timeDuration: null, timeCycle: "R/P2D" }
+        : { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+    renderInspector();
+  });
+
+  const label = selectedKind === "timeDate"
+    ? "ISO date/time with offset"
+    : selectedKind === "timeCycle" ? "ISO repeating interval" : "ISO duration";
+  field(label, "text", node.timer[selectedKind] ?? "", value => {
+    node.timer[selectedKind] = value;
+  });
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = selectedKind === "timeDate"
+    ? "Example: 2026-12-31T23:00:00Z. An explicit Z or ±HH:mm offset is required."
+    : selectedKind === "timeCycle"
+      ? "Examples: R/P2D (forever) or R5/PT1H (five occurrences). The interval must be at least one second."
+      : "Examples: P2D, PT30M, PT0.5S. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years/months and cron are not.";
+  inspector.appendChild(hint);
+}
+
+function renderTimerBoundaryHostSection(hostNode) {
+  const title = document.createElement("h2");
+  title.textContent = "Timer boundaries";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const automatic = isAutomaticType(hostNode.type) ||
+    isServiceTaskType(hostNode.type) || isScriptTaskType(hostNode.type);
+  const eligible = !automatic || hostNode.asyncBefore === true;
+  const boundaries = findTimerBoundaries(hostNode.id);
+  for (const boundary of boundaries) {
+    const box = document.createElement("div");
+    box.className = "field inspector-card clickable";
+    const out = outgoingFlows(boundary.id);
+    const target = out.length ? getNode(out[0].targetRef) : null;
+    const behavior = boundary.cancelActivity === false ? "non-interrupting" : "interrupting";
+    box.innerHTML = `<div class="badge">timer #${boundary.id} · ${behavior} → ${target ? '#' + target.id + ' ' + target.name : 'no flow yet'}</div>`;
+    box.onclick = () => select("node", boundary.id);
+    inspector.appendChild(box);
+  }
+
+  if (!eligible) {
+    const hint = document.createElement("p");
+    hint.className = "empty-note";
+    hint.textContent = "Enable async before to attach a timer safely; the durable wait must exist before external or scripted work begins.";
+    inspector.appendChild(hint);
+    return;
+  }
+  if (boundaries.length >= 8) {
+    const limit = document.createElement("p");
+    limit.className = "empty-note";
+    limit.textContent = "The limit of eight timer boundaries on this host has been reached.";
+    inspector.appendChild(limit);
+    return;
+  }
+  const add = document.createElement("button");
+  add.textContent = "+ Add timer boundary event";
+  add.style.width = "100%";
+  add.style.marginTop = "8px";
+  add.onclick = () => addTimerBoundary(hostNode);
+  inspector.appendChild(add);
+}
+
+function addTimerBoundary(hostNode) {
+  const boundary = {
+    id: nextNodeId(),
+    name: hostNode.name ? `${hostNode.name} timer` : "Timer",
+    externalId: null,
+    type: NODE_TYPE.TIMER_BOUNDARY_EVENT,
+    laneId: hostNode.laneId ?? null,
+    x: hostNode.x,
+    y: hostNode.y,
+    roles: [],
+    requiresClaim: false,
+    claimMode: CLAIM_MODE.FRESH,
+    inheritClaimFromNodeId: null,
+    requiresAssignment: false,
+    assignmentMode: ASSIGNMENT_MODE.FRESH,
+    inheritAssignmentFromNodeId: null,
+    variables: [],
+    assignee: null,
+    attachedToRef: hostNode.id,
+    cancelActivity: true,
+    timer: { timeDate: null, timeDuration: "P2D", timeCycle: null }
+  };
+  model.flowNodes.push(boundary);
+  applyTypeInvariants(boundary);
+  select("node", boundary.id);
+  setConnectMode(true);
+  connectSource = boundary.id;
+  renderHint();
+  render();
 }
 
 // Creates an errorBoundaryEvent attached to a host service/script task and
@@ -6318,11 +6767,12 @@ function scopedInterruptTargetProblem(source, target, prospective = false) {
   if (target.id === source.id) {
     return "A scoped interrupt event cannot continue to itself.";
   }
-  if (isStartEventType(target.type) || isMessageStartEventType(target.type)) {
+  if (isStartEventType(target.type) || isMessageStartEventType(target.type) ||
+      isTimerStartEventType(target.type)) {
     return "A scoped interrupt event cannot continue to an entry event.";
   }
   if (isBoundaryEventType(target.type)) {
-    return "A scoped interrupt event cannot continue to an error boundary event.";
+    return "A scoped interrupt event cannot continue to a boundary event.";
   }
   if (isForbiddenInterruptMerge(target, prospective ? 1 : 0)) {
     return "A scoped interrupt event cannot continue directly to a Parallel or Complex merge.";
@@ -6332,9 +6782,10 @@ function scopedInterruptTargetProblem(source, target, prospective = false) {
 
 function connectionTargetProblem(node) {
   if (!node) return "Drop the connection on a target node.";
-  if (isBoundaryEventType(node.type)) return "An error boundary event cannot have an incoming sequence flow.";
-  if (isStartEventType(node.type) || isMessageStartEventType(node.type)) {
-    return "A start event cannot have an incoming sequence flow.";
+  if (isBoundaryEventType(node.type)) return "A boundary event cannot have an incoming sequence flow.";
+  if (isStartEventType(node.type) || isMessageStartEventType(node.type) ||
+      isTimerStartEventType(node.type)) {
+    return "An entry event cannot have an incoming sequence flow.";
   }
   if (isGatewayType(node.type) &&
       outgoingFlows(node.id).length >= 2 && incomingFlows(node.id).length >= 1) {
@@ -6766,7 +7217,8 @@ function addNode() {
 function deleteNode(id) {
   // A boundary event's host is independent; but deleting the host also removes
   // any boundary events attached to it (plus their flows).
-  const attachedBoundaries = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === id);
+  const attachedBoundaries = model.flowNodes.filter(n =>
+    isBoundaryEventType(n.type) && n.attachedToRef === id);
   const boundaryIds = new Set(attachedBoundaries.map(n => n.id));
   model.flowNodes = model.flowNodes.filter(s => s.id !== id && !boundaryIds.has(s.id));
   model.sequenceFlows = model.sequenceFlows.filter(f =>
@@ -6843,6 +7295,122 @@ function validatorContainsDirectJavaScriptFlowInfoCall(script) {
   }
   return false;
 }
+function validatorFixedDurationSeconds(value) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim().length > 128) {
+    return null;
+  }
+  const match = /^P(?:(\d+(?:[\.,]\d+)?)W|(?:(\d+(?:[\.,]\d+)?)D)?(?:T(?:(\d+(?:[\.,]\d+)?)H)?(?:(\d+(?:[\.,]\d+)?)M)?(?:(\d+(?:[\.,]\d+)?)S)?)?)$/.exec(value.trim());
+  if (!match || /T$/.test(value.trim()) ||
+      !match.slice(1).some(part => part !== undefined)) return null;
+  const components = match.slice(1).map(part => {
+    if (part === undefined) return { digits: 0n, scale: 0 };
+    const normalized = part.replace(",", ".");
+    const pieces = normalized.split(".");
+    const fraction = pieces[1] || "";
+    return {
+      digits: BigInt(pieces[0] + fraction),
+      scale: fraction.length
+    };
+  });
+  const unitTicks = [
+    6048000000000n,
+    864000000000n,
+    36000000000n,
+    600000000n,
+    10000000n
+  ];
+  const scale = components.reduce(
+    (maximum, component) => Math.max(maximum, component.scale),
+    0);
+  const denominator = 10n ** BigInt(scale);
+  let scaledTicks = 0n;
+  components.forEach((component, index) => {
+    scaledTicks += component.digits * unitTicks[index] *
+      (10n ** BigInt(scale - component.scale));
+  });
+  let ticks = scaledTicks / denominator;
+  const remainder = scaledTicks % denominator;
+  // Match decimal.Round(..., MidpointRounding.AwayFromZero) in the runtime.
+  if (remainder * 2n >= denominator) ticks += 1n;
+  if (ticks <= 0n || ticks > 9223372036854775807n) return null;
+  return Number(ticks) / 10000000;
+}
+function validatorTimeCycle(value) {
+  if (typeof value !== "string" || value.trim().length > 128) return null;
+  const match = /^R(\d*)\/(.+)$/.exec(value.trim());
+  if (!match) return null;
+  const repetitions = match[1] ? Number(match[1]) : null;
+  if (repetitions != null &&
+      (!Number.isSafeInteger(repetitions) || repetitions <= 0 || repetitions > 2147483647)) {
+    return null;
+  }
+  return validatorFixedDurationSeconds(match[2]);
+}
+function parseTimerTimeDate(value) {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 128) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:[\.,](\d{1,7}))?)?(Z|([+-])(\d{2}):(\d{2}))$/i.exec(candidate);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31, leapYear ? 29 : 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31
+  ];
+  if (year < 1 || month < 1 || month > 12 ||
+      day < 1 || day > daysInMonth[month - 1] ||
+      hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+
+  let offsetMinutes = 0;
+  if (match[8].toUpperCase() !== "Z") {
+    const offsetHours = Number(match[10]);
+    const offsetMinutePart = Number(match[11]);
+    if (offsetHours > 14 || offsetMinutePart > 59 ||
+        (offsetHours === 14 && offsetMinutePart !== 0)) {
+      return null;
+    }
+    offsetMinutes = (offsetHours * 60 + offsetMinutePart) *
+      (match[9] === "-" ? -1 : 1);
+  }
+
+  // Build the wall-clock value without Date.UTC's special handling for years
+  // 00-99, then apply the authored offset explicitly.
+  const wallClock = new Date(0);
+  wallClock.setUTCHours(0, 0, 0, 0);
+  wallClock.setUTCFullYear(year, month - 1, day);
+  wallClock.setUTCHours(hour, minute, second, 0);
+  const utcMillis = wallClock.getTime() - offsetMinutes * 60 * 1000;
+  if (!Number.isFinite(utcMillis)) return null;
+  const utc = new Date(utcMillis);
+  const utcYear = utc.getUTCFullYear();
+  if (utcYear < 1 || utcYear > 9999) return null;
+
+  const pad2 = number => ("0" + number).slice(-2);
+  const fraction = match[7] ? "." + match[7] : "";
+  return {
+    canonical: ("000" + utcYear).slice(-4) + "-" +
+      pad2(utc.getUTCMonth() + 1) + "-" + pad2(utc.getUTCDate()) + "T" +
+      pad2(utc.getUTCHours()) + ":" + pad2(utc.getUTCMinutes()) + ":" +
+      pad2(utc.getUTCSeconds()) + fraction + "Z"
+  };
+}
+function normalizeTimerTimeDate(value) {
+  const candidate = typeof value === "string" ? value.trim() : value;
+  const parsed = parseTimerTimeDate(candidate);
+  return parsed ? parsed.canonical : candidate;
+}
+function validatorTimeDate(value) {
+  return parseTimerTimeDate(value) !== null;
+}
 function validateModelForSave(candidate) {
   const errors = [];
   const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
@@ -6899,7 +7467,8 @@ function validateModelForSave(candidate) {
     addStructuralTarget(flow.sourceRef, flow.targetRef);
   }
   for (const boundary of nodes) {
-    if (boundary && boundary.type === "errorBoundaryEvent" &&
+    if (boundary && (boundary.type === "errorBoundaryEvent" ||
+        boundary.type === "timerBoundaryEvent") &&
         Number.isInteger(boundary.attachedToRef)) {
       addStructuralTarget(boundary.attachedToRef, boundary.id);
     }
@@ -7569,6 +8138,101 @@ function validateModelForSave(candidate) {
     }
   }
 
+  const asyncTaskTypes = new Set(["userTask", "task", "serviceTask", "scriptTask"]);
+  const timerTypes = new Set([
+    "timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"
+  ]);
+  for (const node of nodes.filter(Boolean)) {
+    const asyncMetadata = !!node.asyncBefore || !!node.asyncAfter || node.job != null;
+    if (!asyncTaskTypes.has(node.type) && asyncMetadata) {
+      errors.push("Flow node #" + node.id +
+        " defines async job metadata but is not a task activity.");
+    }
+    if (asyncTaskTypes.has(node.type)) {
+      for (const name of ["asyncBefore", "asyncAfter"]) {
+        if (node[name] !== undefined && typeof node[name] !== "boolean") {
+          errors.push("Flow node #" + node.id + " " + name + " must be a boolean.");
+        }
+      }
+    }
+    if (node.job != null) {
+      const label = "Flow node #" + node.id + " job";
+      if (node.asyncBefore !== true && node.asyncAfter !== true) {
+        errors.push(label + " requires asyncBefore or asyncAfter.");
+      }
+      if (!node.job || typeof node.job !== "object" || Array.isArray(node.job) ||
+          !["boundaryFirst", "retryFirst"].includes(node.job.failureHandling)) {
+        errors.push(label + " failureHandling must be boundaryFirst or retryFirst.");
+      }
+      const retries = node.job && node.job.retryDelays;
+      if (!Array.isArray(retries)) {
+        errors.push(label + " retryDelays must be an array.");
+      } else {
+        if (retries.length > 10) errors.push(label + " retryDelays may contain at most 10 entries.");
+        retries.forEach((delay, index) => {
+          if (validatorFixedDurationSeconds(delay) == null) {
+            errors.push(label + " retryDelays[" + index +
+              "] must be a positive fixed-unit ISO-8601 duration.");
+          }
+        });
+      }
+    }
+
+    if (!timerTypes.has(node.type) && node.timer != null) {
+      errors.push("Flow node #" + node.id + " defines a timer but is not a timer event.");
+    }
+    if (node.type === "timerStartEvent" &&
+        (node.businessKey != null || node.idempotency != null)) {
+      errors.push("Timer start event #" + node.id +
+        " cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
+    }
+    if (node.type !== "timerBoundaryEvent" && node.cancelActivity != null) {
+      errors.push("Flow node #" + node.id +
+        " defines cancelActivity but is not a timer boundary event.");
+    }
+    if (node.type === "timerBoundaryEvent" && node.cancelActivity != null &&
+        typeof node.cancelActivity !== "boolean") {
+      errors.push("Timer boundary event #" + node.id +
+        " cancelActivity must be a boolean.");
+    }
+    if (!timerTypes.has(node.type)) continue;
+    const label = "Timer event #" + node.id;
+    const timer = node.timer && typeof node.timer === "object" &&
+      !Array.isArray(node.timer) ? node.timer : null;
+    if (!timer) {
+      errors.push(label + " must have a timer configuration.");
+      continue;
+    }
+    for (const name of ["timeDate", "timeDuration", "timeCycle"]) {
+      if (timer[name] !== undefined && timer[name] !== null &&
+          typeof timer[name] !== "string") {
+        errors.push(label + " " + name + " must be a string.");
+      }
+    }
+    const configured = ["timeDate", "timeDuration", "timeCycle"]
+      .filter(name => hasText(timer[name]));
+    if (configured.length !== 1) {
+      errors.push(label + " must define exactly one of timeDate, timeDuration, or timeCycle.");
+      continue;
+    }
+    if (configured[0] === "timeDate" && !validatorTimeDate(timer.timeDate)) {
+      errors.push(label + " timeDate must be an ISO-8601 timestamp with an explicit UTC offset.");
+    }
+    if (configured[0] === "timeDuration" &&
+        validatorFixedDurationSeconds(timer.timeDuration) == null) {
+      errors.push(label + " timeDuration must be a positive fixed-unit ISO-8601 duration.");
+    }
+    if (configured[0] === "timeCycle") {
+      const interval = validatorTimeCycle(timer.timeCycle);
+      if (interval == null) {
+        errors.push(label +
+          " timeCycle must use R/Duration or R<n>/Duration with a positive fixed-unit ISO-8601 duration.");
+      } else if (interval < 1) {
+        errors.push(label + " timeCycle interval must be at least one second.");
+      }
+    }
+  }
+
   for (const node of nodes.filter(candidate => candidate && candidate.type === "serviceTask")) {
     const service = node.service && typeof node.service === "object" ? node.service : {};
     const label = "Service task #" + String(node.id);
@@ -7666,6 +8330,41 @@ function validateModelForSave(candidate) {
     }
   }
 
+  for (const node of nodes.filter(candidate => candidate && candidate.type === "timerBoundaryEvent")) {
+    const label = "Timer boundary event #" + String(node.id);
+    const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
+    const durableWait = host && ["userTask", "intermediateMessageCatchEvent",
+      "intermediateTimerCatchEvent"].includes(host.type);
+    const asyncAutomatic = host && ["task", "serviceTask", "scriptTask"].includes(host.type) &&
+      host.asyncBefore === true;
+    if (!durableWait && !asyncAutomatic) {
+      errors.push(label +
+        " attachedToRef must reference a durable wait or an automatic task with asyncBefore enabled.");
+    }
+    const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+  }
+  const timerBoundaryHostIds = new Set(nodes
+    .filter(candidate => candidate && candidate.type === "timerBoundaryEvent" &&
+      Number.isInteger(candidate.attachedToRef))
+    .map(candidate => candidate.attachedToRef));
+  for (const hostId of timerBoundaryHostIds) {
+    const siblingCount = nodes.filter(candidate => candidate &&
+      candidate.type === "timerBoundaryEvent" &&
+      candidate.attachedToRef === hostId).length;
+    if (siblingCount > 8) {
+      errors.push("Host node #" + String(hostId) +
+        " has more than eight timer boundary events.");
+    }
+  }
+
   for (const node of nodes.filter(candidate => candidate && candidate.type === "intermediateMessageCatchEvent")) {
     const label = "Message catch event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
@@ -7682,6 +8381,22 @@ function validateModelForSave(candidate) {
       message.outputMappings,
       "body",
       true);
+  }
+
+  for (const node of nodes.filter(candidate => candidate &&
+      candidate.type === "intermediateTimerCatchEvent")) {
+    const label = "Timer catch event #" + String(node.id);
+    const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    if (incoming.length === 0) {
+      errors.push(label + " must have at least one incoming sequence flow.");
+    }
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
   }
 
   const messageStarts = nodes.filter(candidate => candidate && candidate.type === "messageStartEvent");
@@ -7716,9 +8431,11 @@ function validateModelForSave(candidate) {
   }
 
   const entries = nodes.filter(node => node &&
-    (node.type === "startEvent" || node.type === "messageStartEvent"));
+    (node.type === "startEvent" || node.type === "messageStartEvent" ||
+     node.type === "timerStartEvent"));
   if (entries.length === 0) {
-    errors.push("Workflow must have at least one entry event (startEvent or messageStartEvent).");
+    errors.push("Workflow must have at least one entry event " +
+      "(startEvent, messageStartEvent, or timerStartEvent).");
   }
   if (candidate && candidate.initialEventId != null) {
     const initial = nodes.find(node => node && node.id === candidate.initialEventId);
@@ -7727,7 +8444,9 @@ function validateModelForSave(candidate) {
     }
   }
   for (const entry of entries) {
-    const label = (entry.type === "messageStartEvent" ? "Message start event #" : "Start event #") + entry.id;
+    const label = (entry.type === "messageStartEvent"
+      ? "Message start event #"
+      : entry.type === "timerStartEvent" ? "Timer start event #" : "Start event #") + entry.id;
     const incoming = flows.filter(flow => flow && flow.targetRef === entry.id);
     const outgoing = flows.filter(flow => flow && flow.sourceRef === entry.id);
     if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
@@ -7741,7 +8460,9 @@ function validateModelForSave(candidate) {
       }
     }
 
-    const entryNames = entry.type === "messageStartEvent"
+    const entryNames = entry.type === "timerStartEvent"
+      ? []
+      : entry.type === "messageStartEvent"
       ? ((entry.message && entry.message.outputMappings) || []).map(mapping => mapping && mapping.variable)
       : (entry.variables || []).map(variable => variable && variable.name);
     if (entry.idempotency) entryNames.push(entry.idempotency.variable);
@@ -7780,10 +8501,11 @@ function validateModelForSave(candidate) {
   }
 
   const supportedNodeTypes = new Set([
-    "startEvent", "messageStartEvent", "userTask", "task", "serviceTask",
+    "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
     "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
     "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
-    "errorEndEvent", "errorBoundaryEvent", "intermediateMessageCatchEvent"
+    "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent",
+    "intermediateMessageCatchEvent", "intermediateTimerCatchEvent"
   ]);
   for (const node of nodes.filter(Boolean)) {
     if (!supportedNodeTypes.has(node.type)) {
@@ -8031,8 +8753,9 @@ function validateModelForSave(candidate) {
     }
   }
 
-  const keyedEntries = entries.filter(node => node.businessKey != null);
-  if (keyedEntries.length > 0 && keyedEntries.length !== entries.length) {
+  const businessKeyEntries = entries.filter(node => node.type !== "timerStartEvent");
+  const keyedEntries = businessKeyEntries.filter(node => node.businessKey != null);
+  if (keyedEntries.length > 0 && keyedEntries.length !== businessKeyEntries.length) {
     errors.push("Every startEvent and messageStartEvent must configure businessKey once business keys are enabled.");
   }
   for (const node of keyedEntries) {
@@ -8249,6 +8972,12 @@ async function save() {
         ? node.errorDescription.trim() : null;
     }
     if (isMessageStartEventType(node.type)) normalizeLegacyMessageStartNode(node);
+    if (isTimerEventType(node.type)) {
+      node.timer = normalizeTimerDefinition(node.timer);
+    }
+    if (isAsyncCapableTaskType(node.type) && node.job) {
+      node.job = normalizeJobPolicy(node.job);
+    }
     if (isServiceTaskType(node.type)) {
       node.service = normalizeService(node.service, model.variables);
     }
@@ -8295,7 +9024,9 @@ async function save() {
   }
   const canonical = JSON.parse(JSON.stringify(model));
   canonical.flowNodes.forEach(node => {
-    if (isMessageStartEventType(node.type)) delete node.variables;
+    if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
+      delete node.variables;
+    }
   });
   const data = JSON.stringify(canonical, null, 2);
 
@@ -8463,6 +9194,21 @@ function loadFromObject(obj) {
         name: s.name ?? `Node ${s.id}`,
         externalId: s.externalId ?? null,
         type: s.type ?? NODE_TYPE.USER_TASK,
+        asyncBefore: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type)
+          ? (s.asyncBefore === undefined ? false : s.asyncBefore) : undefined,
+        asyncAfter: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type)
+          ? (s.asyncAfter === undefined ? false : s.asyncAfter) : undefined,
+        job: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type) &&
+          s.job !== undefined && s.job !== null
+          ? normalizeJobPolicy(s.job)
+          : undefined,
+        timer: ["timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"].includes(s.type)
+          ? normalizeTimerDefinition(s.timer)
+          : undefined,
+        cancelActivity: s.type === "timerBoundaryEvent"
+          ? (s.cancelActivity === undefined || s.cancelActivity === null
+              ? true : s.cancelActivity)
+          : undefined,
         laneId: s.laneId ?? null,
         x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,

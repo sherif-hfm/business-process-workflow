@@ -19,6 +19,10 @@ public sealed class ExecutionTokenEntity
     public long[] ComplexDrainStateIds { get; set; } = [];
     public int? ArrivedViaFlowId { get; set; }
     public string? TerminationReason { get; set; }
+    public Guid ActivationId { get; set; } = Guid.NewGuid();
+    public string? WaitState { get; set; }
+    public long? WaitingJobId { get; set; }
+    public long? WaitingTimerSubscriptionId { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
     public long? CurrentNodeExecutionId { get; set; }
     public NodeExecutionEntity? CurrentNodeExecution { get; set; }
@@ -28,6 +32,8 @@ public sealed class ExecutionTokenEntity
     public List<UserTaskEntity> UserTasks { get; set; } = [];
     public List<MultiInstanceExecutionEntity> MultiInstanceExecutions { get; set; } = [];
     public List<GatewayExecutionEntity> InterruptedGatewayExecutions { get; set; } = [];
+    public List<WorkflowJobEntity> Jobs { get; set; } = [];
+    public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
 }
 
 public static class ExecutionTokenStatuses

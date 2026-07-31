@@ -74,14 +74,18 @@ public sealed class ParallelGatewayPersistenceTests(PostgresApiFixture fixture)
         var repository = new WorkflowRuntimeRepository(db);
 
         var byManager = await repository.ListInstancesAsync(
-            null, null, null, workflowKey, null, 10, null, [], [], false, 1, 20, CancellationToken.None);
+            null, null, null, workflowKey, null, 10, null, [], [],
+            InstanceListAuthorization.Global, null, false, 1, 20, CancellationToken.None);
         var byFinanceExternalId = await repository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, "FINANCE-REVIEW", [], [], false, 1, 20,
+            null, null, null, workflowKey, null, null, "FINANCE-REVIEW", [], [],
+            InstanceListAuthorization.Global, null, false, 1, 20,
             CancellationToken.None);
         var byMerged = await repository.ListInstancesAsync(
-            null, null, null, workflowKey, null, 30, null, [], [], false, 1, 20, CancellationToken.None);
+            null, null, null, workflowKey, null, 30, null, [], [],
+            InstanceListAuthorization.Global, null, false, 1, 20, CancellationToken.None);
         var unfiltered = await repository.ListInstancesAsync(
-            null, null, null, workflowKey, null, null, null, [], [], false, 1, 20, CancellationToken.None);
+            null, null, null, workflowKey, null, null, null, [], [],
+            InstanceListAuthorization.Global, null, false, 1, 20, CancellationToken.None);
 
         Assert.Equal(instanceId, Assert.Single(byManager.Items).Id);
         Assert.Equal(instanceId, Assert.Single(byFinanceExternalId.Items).Id);

@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace Flowbit.Shared.Models;
 
@@ -194,6 +196,47 @@ public sealed class FlowNodeModel
     public string Type { get; set; } = BpmnFlowNodeTypes.UserTask;
 
     /// <summary>
+    /// Creates a durable transaction boundary before this task activity is
+    /// activated. Omitted/false preserves the historical synchronous behavior.
+    /// </summary>
+    [JsonPropertyName("asyncBefore")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool AsyncBefore { get; set; }
+
+    /// <summary>
+    /// Creates a durable transaction boundary after this task activity completes
+    /// and before its outgoing sequence flow is traversed.
+    /// </summary>
+    [JsonPropertyName("asyncAfter")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool AsyncAfter { get; set; }
+
+    /// <summary>
+    /// Optional retry/failure policy for authored asynchronous transaction
+    /// boundaries. Deployment defaults apply when this value is absent.
+    /// </summary>
+    [JsonPropertyName("job")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JobPolicyModel? Job { get; set; }
+
+    /// <summary>
+    /// Timer definition used by timer start, intermediate catch, and boundary
+    /// events. Exactly one timer expression is allowed.
+    /// </summary>
+    [JsonPropertyName("timer")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimerDefinitionModel? Timer { get; set; }
+
+    /// <summary>
+    /// Timer boundary event only: true interrupts the attached activity; false
+    /// creates a sibling reminder/escalation branch while the activity keeps waiting.
+    /// Missing legacy values normalize to true.
+    /// </summary>
+    [JsonPropertyName("cancelActivity")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CancelActivity { get; set; }
+
+    /// <summary>
     /// The ID of the lane this node resides in.
     /// </summary>
     [JsonPropertyName("laneId")]
@@ -249,7 +292,9 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<VariableModel>? SerializedVariables
     {
-        get => BpmnFlowNodeTypes.IsMessageStart(Type) ? null : Variables;
+        get => BpmnFlowNodeTypes.IsMessageStart(Type) || BpmnFlowNodeTypes.IsTimerStart(Type)
+            ? null
+            : Variables;
         set => Variables = value ?? [];
     }
 
@@ -419,6 +464,181 @@ public sealed class FlowNodeModel
     [JsonPropertyName("gatewayRef")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? GatewayRef { get; set; }
+}
+
+/// <summary>
+/// Per-node durable job retry and failure-order policy.
+/// </summary>
+public sealed class JobPolicyModel
+{
+    [JsonPropertyName("failureHandling")]
+    public string FailureHandling { get; set; } = JobFailureHandling.BoundaryFirst;
+
+    [JsonPropertyName("retryDelays")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? RetryDelays { get; set; }
+}
+
+public static class JobFailureHandling
+{
+    public const string BoundaryFirst = "boundaryFirst";
+    public const string RetryFirst = "retryFirst";
+}
+
+/// <summary>
+/// BPMN-aligned timer expression. Exactly one member must be nonblank.
+/// </summary>
+public sealed class TimerDefinitionModel
+{
+    [JsonPropertyName("timeDate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimeDate { get; set; }
+
+    [JsonPropertyName("timeDuration")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimeDuration { get; set; }
+
+    [JsonPropertyName("timeCycle")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimeCycle { get; set; }
+}
+
+/// <summary>
+/// Shared authoring/runtime rules for Flowbit's fixed-unit ISO-8601 timer subset.
+/// Calendar years/months and cron syntax are deliberately unsupported.
+/// </summary>
+public static class TimerDefinitionRules
+{
+    public const int MaxExpressionLength = 128;
+    public const int MaxRetryDelays = 10;
+    public const int MaxBoundaryTimersPerHost = 8;
+    public static readonly TimeSpan MinimumRecurringInterval = TimeSpan.FromSeconds(1);
+
+    private static readonly Regex FixedDurationPattern = new(
+        @"^P(?:(?<weeks>\d+(?:[\.,]\d+)?)W|(?:(?<days>\d+(?:[\.,]\d+)?)D)?(?:T(?:(?<hours>\d+(?:[\.,]\d+)?)H)?(?:(?<minutes>\d+(?:[\.,]\d+)?)M)?(?:(?<seconds>\d+(?:[\.,]\d+)?)S)?)?)$",
+        RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture);
+
+    private static readonly Regex CyclePattern = new(
+        @"^R(?<count>\d*)/(?<duration>.+)$",
+        RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture);
+
+    private static readonly Regex IsoDateWithOffsetPattern = new(
+        @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:[\.,]\d{1,7})?)?(?:Z|[+-]\d{2}:\d{2})$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    public static int CountConfiguredExpressions(TimerDefinitionModel timer) =>
+        (string.IsNullOrWhiteSpace(timer.TimeDate) ? 0 : 1)
+        + (string.IsNullOrWhiteSpace(timer.TimeDuration) ? 0 : 1)
+        + (string.IsNullOrWhiteSpace(timer.TimeCycle) ? 0 : 1);
+
+    public static bool TryParseTimeDate(string? value, out DateTimeOffset timestamp)
+    {
+        timestamp = default;
+        var candidate = value?.Trim();
+        return !string.IsNullOrEmpty(candidate)
+            && candidate.Length <= MaxExpressionLength
+            && IsoDateWithOffsetPattern.IsMatch(candidate)
+            && DateTimeOffset.TryParse(
+                candidate,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
+                out timestamp);
+    }
+
+    public static bool TryParseFixedDuration(string? value, out TimeSpan duration)
+    {
+        duration = default;
+        var candidate = value?.Trim();
+        if (string.IsNullOrEmpty(candidate) || candidate.Length > MaxExpressionLength)
+        {
+            return false;
+        }
+
+        var match = FixedDurationPattern.Match(candidate);
+        if (!match.Success
+            || candidate.EndsWith('T')
+            || !new[] { "weeks", "days", "hours", "minutes", "seconds" }
+                .Any(name => match.Groups[name].Success))
+        {
+            return false;
+        }
+
+        try
+        {
+            var totalSeconds =
+                ReadDecimal(match, "weeks") * 7m * 24m * 60m * 60m
+                + ReadDecimal(match, "days") * 24m * 60m * 60m
+                + ReadDecimal(match, "hours") * 60m * 60m
+                + ReadDecimal(match, "minutes") * 60m
+                + ReadDecimal(match, "seconds");
+            if (totalSeconds <= 0)
+            {
+                return false;
+            }
+
+            var ticks = decimal.Round(
+                totalSeconds * TimeSpan.TicksPerSecond,
+                0,
+                MidpointRounding.AwayFromZero);
+            if (ticks <= 0 || ticks > long.MaxValue)
+            {
+                return false;
+            }
+
+            duration = TimeSpan.FromTicks(decimal.ToInt64(ticks));
+            return true;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    public static bool TryParseTimeCycle(
+        string? value,
+        out int? repetitions,
+        out TimeSpan interval)
+    {
+        repetitions = null;
+        interval = default;
+        var candidate = value?.Trim();
+        if (string.IsNullOrEmpty(candidate) || candidate.Length > MaxExpressionLength)
+        {
+            return false;
+        }
+
+        var match = CyclePattern.Match(candidate);
+        if (!match.Success || !TryParseFixedDuration(match.Groups["duration"].Value, out interval))
+        {
+            return false;
+        }
+
+        var count = match.Groups["count"].Value;
+        if (count.Length == 0)
+        {
+            return true;
+        }
+
+        if (!int.TryParse(count, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+            || parsed <= 0)
+        {
+            return false;
+        }
+
+        repetitions = parsed;
+        return true;
+    }
+
+    private static decimal ReadDecimal(Match match, string groupName)
+    {
+        var group = match.Groups[groupName];
+        return group.Success
+            ? decimal.Parse(
+                group.Value.Replace(',', '.'),
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture)
+            : 0m;
+    }
 }
 
 public static class ErrorEndConstraints
@@ -1200,6 +1420,7 @@ public sealed class LegacyActionModel
 public static class BpmnFlowNodeTypes
 {
     public const string StartEvent = "startEvent";
+    public const string TimerStartEvent = "timerStartEvent";
     public const string EndEvent = "endEvent";
     public const string UserTask = "userTask";
     public const string Task = "task";
@@ -1223,10 +1444,14 @@ public static class BpmnFlowNodeTypes
     // the host fails at runtime, the token routes out the boundary's single
     // outgoing "error" flow instead of failing the transition.
     public const string ErrorBoundaryEvent = "errorBoundaryEvent";
+    // Boundary timer attached to a durable wait or an async-before automatic
+    // activity. cancelActivity=false creates a non-interrupting sibling branch.
+    public const string TimerBoundaryEvent = "timerBoundaryEvent";
     // Intermediate catch event that rests (like a userTask) until a matching
     // message is delivered via POST /api/instances/{id}/message, then advances
     // down its single outgoing flow. Async integration / webhook / callback step.
     public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
+    public const string IntermediateTimerCatchEvent = "intermediateTimerCatchEvent";
     // Entry event started by an external system via
     // POST /api/workflows/{workflowKey}/message-start. Typed outputMappings on its
     // message config are the start-variable declarations. Optional transport
@@ -1238,6 +1463,9 @@ public static class BpmnFlowNodeTypes
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
+
+    public static bool IsTimerStart(string type) =>
+        string.Equals(type, TimerStartEvent, StringComparison.Ordinal);
 
     // A plain endEvent completes one branch, an errorEndEvent faults the
     // instance, and a terminateEndEvent completes the instance while cancelling
@@ -1255,6 +1483,9 @@ public static class BpmnFlowNodeTypes
 
     public static bool IsErrorBoundary(string type) =>
         string.Equals(type, ErrorBoundaryEvent, StringComparison.Ordinal);
+
+    public static bool IsTimerBoundary(string type) =>
+        string.Equals(type, TimerBoundaryEvent, StringComparison.Ordinal);
 
     public static bool IsUserTask(string type) =>
         string.Equals(type, UserTask, StringComparison.Ordinal);
@@ -1295,13 +1526,22 @@ public static class BpmnFlowNodeTypes
     public static bool IsMessageCatch(string type) =>
         string.Equals(type, IntermediateMessageCatchEvent, StringComparison.Ordinal);
 
+    public static bool IsTimerCatch(string type) =>
+        string.Equals(type, IntermediateTimerCatchEvent, StringComparison.Ordinal);
+
     public static bool IsMessageStart(string type) =>
         string.Equals(type, MessageStartEvent, StringComparison.Ordinal);
 
     // Either kind of entry event: a user-facing startEvent or a system-only
     // messageStartEvent. A workflow must have at least one entry event.
     public static bool IsEntry(string type) =>
-        IsStart(type) || IsMessageStart(type);
+        IsStart(type) || IsMessageStart(type) || IsTimerStart(type);
+
+    public static bool IsAsyncCapableTask(string type) =>
+        IsUserTask(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type);
+
+    public static bool IsTimer(string type) =>
+        IsTimerStart(type) || IsTimerCatch(type) || IsTimerBoundary(type);
 
     // A boundary event auto-advances down its single outgoing error flow once
     // the token is routed onto it, so it behaves as a pass-through node.
@@ -1310,16 +1550,18 @@ public static class BpmnFlowNodeTypes
     // A message start event IS pass-through: the engine creates the instance on
     // it then auto-advances, exactly like a plain startEvent.
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsMessageStart(type) || IsAutomatic(type) || IsServiceTask(type)
+        IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
+        || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
+        || IsTimerBoundary(type)
         || IsScopedInterrupt(type);
 
     public static bool IsSupported(string type) =>
-        type is StartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
+        type is StartEvent or TimerStartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
             or ExclusiveGateway or ParallelGateway or InclusiveGateway or ComplexGateway
             or ScopedInterruptEvent
-            or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent
-            or IntermediateMessageCatchEvent or MessageStartEvent;
+            or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent or TimerBoundaryEvent
+            or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent or MessageStartEvent;
 }
 
 public static class WorkflowVariableTypes

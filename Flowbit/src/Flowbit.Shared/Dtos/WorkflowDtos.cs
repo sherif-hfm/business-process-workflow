@@ -89,7 +89,11 @@ public sealed record ExecutionPositionDto(
     int? ArrivedViaFlowId,
     string? TerminationReason,
     long? UserTaskId,
-    long? MultiInstanceExecutionId);
+    long? MultiInstanceExecutionId,
+    Guid? ActivationId = null,
+    string? WaitState = null,
+    long? WaitingJobId = null,
+    long? WaitingTimerSubscriptionId = null);
 
 public static class WorkflowCompletionKinds
 {
@@ -170,6 +174,7 @@ public sealed record StartInstanceResultDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionInfoDto? Completion { get; init; }
+
 }
 
 /// <summary>
@@ -388,6 +393,9 @@ public sealed record InstanceSummaryDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionInfoDto? Completion { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InstanceJobSummaryDto? Jobs { get; init; }
 }
 
 /// <summary>
@@ -580,7 +588,15 @@ public sealed record PagedResult<T>(
     IReadOnlyList<T> Items,
     int Page,
     int PageSize,
-    long TotalCount);
+    long TotalCount)
+{
+    /// <summary>
+    /// Opaque keyset cursor for the next page when this endpoint supports
+    /// cursor paging. Null means there is no later page.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NextCursor { get; init; }
+}
 
 /// <summary>
 /// Represents a user task in the inbox of an actor.

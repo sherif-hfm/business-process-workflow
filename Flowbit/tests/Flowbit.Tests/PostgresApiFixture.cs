@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Data;
 using System.Data.Common;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
@@ -38,6 +40,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public HttpClient Client { get; private set; } = null!;
     public ApiDbCommandCounter CommandCounter { get; } = new();
+    public ServiceInvocationProbe ServiceInvocations { get; } = new();
     public string ConnectionString => _postgres.GetConnectionString();
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
@@ -65,7 +68,10 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             await migrationDb.Database.MigrateAsync();
         }
 
-        Factory = new WorkflowApiFactory(_postgres.GetConnectionString(), CommandCounter);
+        Factory = new WorkflowApiFactory(
+            _postgres.GetConnectionString(),
+            CommandCounter,
+            ServiceInvocations);
         Client = Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
@@ -102,7 +108,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
 
     private sealed class WorkflowApiFactory(
         string connectionString,
-        ApiDbCommandCounter commandCounter) : WebApplicationFactory<Program>
+        ApiDbCommandCounter commandCounter,
+        ServiceInvocationProbe serviceInvocations) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -131,17 +138,24 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                         TestAuthenticationHandler.SchemeName,
                         _ => { });
                 services.RemoveAll<IServiceTaskInvoker>();
-                services.AddSingleton<IServiceTaskInvoker, DeterministicServiceTaskInvoker>();
+                services.AddSingleton(serviceInvocations);
+                services.AddScoped<IServiceTaskInvoker, DeterministicServiceTaskInvoker>();
             });
         }
     }
 
-    private sealed class DeterministicServiceTaskInvoker : IServiceTaskInvoker
+    private sealed class DeterministicServiceTaskInvoker(
+        AppDbContext dbContext,
+        ServiceInvocationProbe probe) : IServiceTaskInvoker
     {
-        public Task<ServiceTaskResult> InvokeAsync(
+        public async Task<ServiceTaskResult> InvokeAsync(
             ServiceTaskRequest request,
             CancellationToken cancellationToken)
         {
+            probe.Record(
+                dbContext.Database.CurrentTransaction is not null,
+                dbContext.Database.GetDbConnection().State);
+            await probe.WaitIfBlockedAsync(request.Url, cancellationToken);
             var body = request.Url switch
             {
                 var url when url.EndsWith("/typed-output-success", StringComparison.Ordinal) =>
@@ -152,11 +166,15 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                     """{"result":{"decision":"blocked","score":12},"tags":["safe"],"businessDate":"2026-07-15","approved":true,"receivedAt":"2026-07-15T10:30:00Z","metadata":{},"ratings":[1]}""",
                 var url when url.EndsWith("/nullable-output", StringComparison.Ordinal) =>
                     """{"value":null}""",
+                var url when url.EndsWith("/send-reminder", StringComparison.Ordinal) =>
+                    """{"sent":true}""",
+                var url when url.EndsWith("/parallel-stale", StringComparison.Ordinal) =>
+                    """{"ok":true}""",
                 _ => null
             };
-            return Task.FromResult(body is null
+            return body is null
                 ? new ServiceTaskResult(true, 404, null, "No deterministic test response configured.")
-                : new ServiceTaskResult(true, 200, body, null));
+                : new ServiceTaskResult(true, 200, body, null);
         }
     }
 
@@ -199,6 +217,113 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 new AuthenticationTicket(principal, SchemeName)));
         }
     }
+}
+
+public sealed record ServiceInvocationObservation(
+    bool HasTransaction,
+    ConnectionState ConnectionState);
+
+public sealed class ServiceInvocationProbe
+{
+    private readonly ConcurrentQueue<ServiceInvocationObservation> observations = new();
+    private readonly object blockLock = new();
+    private ServiceInvocationBlock? pendingBlock;
+
+    public IReadOnlyList<ServiceInvocationObservation> Snapshot() =>
+        observations.ToArray();
+
+    public void Record(bool hasTransaction, ConnectionState connectionState) =>
+        observations.Enqueue(new ServiceInvocationObservation(
+            hasTransaction,
+            connectionState));
+
+    public ServiceInvocationBlock BlockNext(string urlSuffix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(urlSuffix);
+        lock (blockLock)
+        {
+            if (pendingBlock is not null)
+            {
+                throw new InvalidOperationException(
+                    "A deterministic service invocation is already blocked.");
+            }
+            pendingBlock = new ServiceInvocationBlock(urlSuffix);
+            return pendingBlock;
+        }
+    }
+
+    internal async Task WaitIfBlockedAsync(
+        string url,
+        CancellationToken cancellationToken)
+    {
+        ServiceInvocationBlock? block;
+        lock (blockLock)
+        {
+            block = pendingBlock is not null
+                    && url.EndsWith(
+                        pendingBlock.UrlSuffix,
+                        StringComparison.Ordinal)
+                ? pendingBlock
+                : null;
+        }
+        if (block is null)
+        {
+            return;
+        }
+
+        block.SignalEntered();
+        try
+        {
+            await block.WaitForReleaseAsync(cancellationToken);
+        }
+        finally
+        {
+            lock (blockLock)
+            {
+                if (ReferenceEquals(pendingBlock, block))
+                {
+                    pendingBlock = null;
+                }
+            }
+        }
+    }
+
+    public void Reset()
+    {
+        lock (blockLock)
+        {
+            pendingBlock?.Release();
+            pendingBlock = null;
+        }
+        while (observations.TryDequeue(out _))
+        {
+        }
+    }
+}
+
+public sealed class ServiceInvocationBlock
+{
+    private readonly TaskCompletionSource entered = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource released = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal ServiceInvocationBlock(string urlSuffix)
+    {
+        UrlSuffix = urlSuffix;
+    }
+
+    internal string UrlSuffix { get; }
+
+    public Task WaitUntilEnteredAsync(CancellationToken cancellationToken) =>
+        entered.Task.WaitAsync(cancellationToken);
+
+    public void Release() => released.TrySetResult();
+
+    internal void SignalEntered() => entered.TrySetResult();
+
+    internal Task WaitForReleaseAsync(CancellationToken cancellationToken) =>
+        released.Task.WaitAsync(cancellationToken);
 }
 
 public sealed class ApiDbCommandCounter : DbCommandInterceptor

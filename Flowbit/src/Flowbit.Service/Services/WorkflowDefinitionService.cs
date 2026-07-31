@@ -14,9 +14,12 @@ public sealed class WorkflowDefinitionService(
     IWorkflowDefinitionRepository definitions,
     IScriptEvaluator scriptEvaluator,
     ServiceTaskOptions serviceTaskOptions,
-    ILogger<WorkflowDefinitionService> logger)
+    ILogger<WorkflowDefinitionService> logger,
+    DurableProcessingOptions? durableProcessingOptions = null)
     : IWorkflowDefinitionService
 {
+    private readonly DurableProcessingOptions durableProcessing =
+        durableProcessingOptions ?? new DurableProcessingOptions();
     private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
@@ -65,8 +68,10 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
         ValidateAuthoredMessageStartMetadata(definition);
+        ValidateAuthoredAsyncTimerMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
+        EnsureDurablePublicationAllowed(definition, publish);
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, created.Version, publish, created.IsDefault);
@@ -92,8 +97,10 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredScriptTaskMetadata(definition);
         ValidateAuthoredExclusiveGatewayMetadata(definition);
         ValidateAuthoredMessageStartMetadata(definition);
+        ValidateAuthoredAsyncTimerMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
+        EnsureDurablePublicationAllowed(definition, publish);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, created.Version, sourceWorkflowId, publish, created.IsDefault);
@@ -102,6 +109,13 @@ public sealed class WorkflowDefinitionService(
 
     public async Task<bool> PublishAsync(long id, CancellationToken cancellationToken)
     {
+        var definition = await definitions.GetAsync(id, cancellationToken);
+        if (definition is null)
+        {
+            logger.LogInformation("Publish workflow {WorkflowId}: definition not found.", id);
+            return false;
+        }
+        EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
         if (published)
         {
@@ -130,6 +144,13 @@ public sealed class WorkflowDefinitionService(
 
     public async Task<bool> SetDefaultAsync(long id, CancellationToken cancellationToken)
     {
+        var definition = await definitions.GetAsync(id, cancellationToken);
+        if (definition is null)
+        {
+            logger.LogInformation("Set default workflow {WorkflowId}: definition not found.", id);
+            return false;
+        }
+        EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
         if (set)
         {
@@ -140,6 +161,27 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Set default workflow {WorkflowId}: definition not found.", id);
         }
         return set;
+    }
+
+    private void EnsureDurablePublicationAllowed(
+        WorkflowModel definition,
+        bool publish)
+    {
+        if (!publish
+            || durableProcessing.PublicationEnabled
+            || !definition.FlowNodes.Any(node =>
+                node.AsyncBefore
+                || node.AsyncAfter
+                || BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)))
+        {
+            return;
+        }
+
+        throw new WorkflowDomainException(
+            $"{DurableProcessingOptions.SectionName}:PublicationEnabled is false; "
+            + "async and timer definitions cannot be published until the durable worker is ready.");
     }
 
     public async Task<bool> DeleteAsync(long id, CancellationToken cancellationToken)
@@ -205,7 +247,8 @@ public sealed class WorkflowDefinitionService(
         // via POST /api/instances, or a messageStartEvent started via the webhook).
         if (!definition.FlowNodes.Any(n => BpmnFlowNodeTypes.IsEntry(n.Type)))
         {
-            throw new WorkflowDomainException("Workflow must have at least one entry event (startEvent or messageStartEvent).");
+            throw new WorkflowDomainException(
+                "Workflow must have at least one entry event (startEvent, messageStartEvent, or timerStartEvent).");
         }
 
         ValidateBusinessKeys(definition);
@@ -267,6 +310,13 @@ public sealed class WorkflowDefinitionService(
 
             var outgoing = outgoingByNodeId[node.Id];
             var incoming = incomingByNodeId[node.Id];
+
+            ValidateAsyncConfiguration(node);
+
+            if (BpmnFlowNodeTypes.IsTimer(node.Type))
+            {
+                ValidateTimerDefinition(node);
+            }
 
             if (BpmnFlowNodeTypes.IsEntry(node.Type))
             {
@@ -331,7 +381,10 @@ public sealed class WorkflowDefinitionService(
                     || BpmnFlowNodeTypes.IsServiceTask(node.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(node.Type)
                     || BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
                     || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                     || BpmnFlowNodeTypes.IsMessageStart(node.Type))
                 && outgoing.Count != 1)
             {
@@ -343,8 +396,14 @@ public sealed class WorkflowDefinitionService(
                             ? "Script task"
                             : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                                 ? "Error boundary event"
+                                : BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                                    ? "Timer boundary event"
                                 : BpmnFlowNodeTypes.IsMessageCatch(node.Type)
                                     ? "Message catch event"
+                                    : BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                                        ? "Timer catch event"
+                                        : BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                                            ? "Timer start event"
                                     : BpmnFlowNodeTypes.IsMessageStart(node.Type)
                                         ? "Message start event"
                                         : "Automatic task";
@@ -354,6 +413,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
             {
                 ValidateErrorBoundary(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+            {
+                ValidateTimerBoundary(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -370,6 +434,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
             {
                 ValidateMessageCatch(node, outgoing, definition.Variables);
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
+            {
+                ValidateTimerCatch(node, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -650,6 +719,52 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"Message start event #{node.Id} cannot define deliveryIdempotency; use node-level idempotency instead.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects async/timer fields that tolerant compatibility normalization would
+    /// otherwise discard from an inapplicable node type.
+    /// </summary>
+    private static void ValidateAuthoredAsyncTimerMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type)
+                && (node.AsyncBefore || node.AsyncAfter || node.Job is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines async job metadata but is not a task activity.");
+            }
+
+            if (node.Job is not null)
+            {
+                if (!node.AsyncBefore && !node.AsyncAfter)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines a job policy but has neither asyncBefore nor asyncAfter enabled.");
+                }
+            }
+
+            if (!BpmnFlowNodeTypes.IsTimer(node.Type) && node.Timer is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines a timer but is not a timer event.");
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                && (node.BusinessKey is not null || node.Idempotency is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Timer start event #{node.Id} cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                && node.CancelActivity is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines cancelActivity but is not a timer boundary event.");
             }
         }
     }
@@ -1320,7 +1435,8 @@ public sealed class WorkflowDefinitionService(
             .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
             .Concat(definition.FlowNodes
                 .Where(node =>
-                    BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                    (BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                        || BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
                     && node.AttachedToRef is not null)
                 .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
             .GroupBy(edge => edge.Source)
@@ -1852,6 +1968,178 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
+    private static void ValidateTimerBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (node.AttachedToRef is null)
+        {
+            throw new WorkflowDomainException(
+                $"Timer boundary event #{node.Id} must reference a host via attachedToRef.");
+        }
+
+        var host = definition.FlowNodes.SingleOrDefault(candidate => candidate.Id == node.AttachedToRef);
+        if (host is null)
+        {
+            throw new WorkflowDomainException(
+                $"Timer boundary event #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
+        }
+
+        var durableWait = BpmnFlowNodeTypes.IsUserTask(host.Type)
+            || BpmnFlowNodeTypes.IsMessageCatch(host.Type)
+            || BpmnFlowNodeTypes.IsTimerCatch(host.Type);
+        var asyncAutomatic = (BpmnFlowNodeTypes.IsAutomatic(host.Type)
+                || BpmnFlowNodeTypes.IsServiceTask(host.Type)
+                || BpmnFlowNodeTypes.IsScriptTask(host.Type))
+            && host.AsyncBefore;
+        if (!durableWait && !asyncAutomatic)
+        {
+            throw new WorkflowDomainException(
+                $"Timer boundary event #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
+        }
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException(
+                $"Timer boundary event #{node.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Timer boundary event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        var siblingCount = definition.FlowNodes.Count(candidate =>
+            BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
+            && candidate.AttachedToRef == node.AttachedToRef);
+        if (siblingCount > TimerDefinitionRules.MaxBoundaryTimersPerHost)
+        {
+            throw new WorkflowDomainException(
+                $"Host node #{host.Id} has {siblingCount} timer boundary events; at most {TimerDefinitionRules.MaxBoundaryTimersPerHost} are allowed.");
+        }
+    }
+
+    private static void ValidateTimerCatch(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Timer catch event #{node.Id} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Timer catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateAsyncConfiguration(FlowNodeModel node)
+    {
+        if (!BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type))
+        {
+            if (node.AsyncBefore || node.AsyncAfter || node.Job is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines async job metadata but is not a task activity.");
+            }
+            return;
+        }
+
+        if (node.Job is null)
+        {
+            return;
+        }
+
+        if (!node.AsyncBefore && !node.AsyncAfter)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} defines a job policy but has neither asyncBefore nor asyncAfter enabled.");
+        }
+
+        if (node.Job.FailureHandling is not (
+                JobFailureHandling.BoundaryFirst or JobFailureHandling.RetryFirst))
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} has unsupported job.failureHandling '{node.Job.FailureHandling ?? "null"}'.");
+        }
+
+        if (node.Job.RetryDelays is null)
+        {
+            // Omission selects the deployment-wide default retry schedule.
+            // An explicitly authored empty array remains the opt-out for
+            // automatic retries.
+            return;
+        }
+
+        if (node.Job.RetryDelays.Count > TimerDefinitionRules.MaxRetryDelays)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} job.retryDelays may contain at most {TimerDefinitionRules.MaxRetryDelays} entries.");
+        }
+
+        for (var index = 0; index < node.Job.RetryDelays.Count; index++)
+        {
+            if (!TimerDefinitionRules.TryParseFixedDuration(
+                    node.Job.RetryDelays[index],
+                    out _))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} job.retryDelays[{index}] must be a positive fixed-unit ISO-8601 duration.");
+            }
+        }
+    }
+
+    private static void ValidateTimerDefinition(FlowNodeModel node)
+    {
+        var timer = node.Timer
+            ?? throw new WorkflowDomainException(
+                $"Timer event #{node.Id} must have a timer configuration.");
+        if (TimerDefinitionRules.CountConfiguredExpressions(timer) != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, or timeCycle.");
+        }
+
+        if (timer.TimeDate is not null
+            && !TimerDefinitionRules.TryParseTimeDate(timer.TimeDate, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} timeDate must be an ISO-8601 timestamp with an explicit UTC offset.");
+        }
+
+        if (timer.TimeDuration is not null
+            && !TimerDefinitionRules.TryParseFixedDuration(timer.TimeDuration, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} timeDuration must be a positive fixed-unit ISO-8601 duration.");
+        }
+
+        if (timer.TimeCycle is not null)
+        {
+            if (!TimerDefinitionRules.TryParseTimeCycle(
+                    timer.TimeCycle,
+                    out _,
+                    out var interval))
+            {
+                throw new WorkflowDomainException(
+                    $"Timer event #{node.Id} timeCycle must use 'R/Duration' or 'R<n>/Duration' with a positive fixed-unit ISO-8601 duration.");
+            }
+
+            if (interval < TimerDefinitionRules.MinimumRecurringInterval)
+            {
+                throw new WorkflowDomainException(
+                    $"Timer event #{node.Id} timeCycle interval must be at least one second.");
+            }
+        }
+    }
+
     private static void ValidateMultiInstance(
         FlowNodeModel node,
         IReadOnlyList<SequenceFlowModel> outgoing,
@@ -2027,7 +2315,13 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateBusinessKeys(WorkflowModel definition)
     {
-        var entries = definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsEntry(n.Type)).ToList();
+        // Timer starts are scheduler-owned and deliberately have no domain
+        // business key. They do not participate in the all-external-entries
+        // business-key consistency contract.
+        var entries = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)
+                && !BpmnFlowNodeTypes.IsTimerStart(node.Type))
+            .ToList();
         if (entries.All(n => n.BusinessKey is null))
         {
             return;
@@ -2215,6 +2509,8 @@ public sealed class WorkflowDefinitionService(
     {
         var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
             ? "Message start event"
+            : BpmnFlowNodeTypes.IsTimerStart(entry.Type)
+                ? "Timer start event"
             : "Start event";
 
         if (incoming.Count != 0)
