@@ -373,6 +373,7 @@ try
 catch (Exception ex)
 {
     Log.Fatal(ex, "API Host terminated unexpectedly");
+    throw;
 }
 finally
 {

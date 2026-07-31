@@ -92,6 +92,20 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 UPDATE flowbit.node_executions
                 SET "EntryGatewayBranchId" = NULL,
                     "ExitGatewayBranchId" = NULL;
+
+                UPDATE flowbit.node_executions
+                SET "CompletionReason" = CASE "CompletionReason"
+                    WHEN 'parallelScopeCancelled' THEN 'gatewayScopeCancelled'
+                    WHEN 'parallelJoinMerged' THEN 'gatewayJoinMerged'
+                    WHEN 'parallelInterrupt' THEN 'scopedInterrupt'
+                    WHEN 'parallelInterruptSkipped' THEN 'scopedInterruptSkipped'
+                    ELSE "CompletionReason"
+                END
+                WHERE "CompletionReason" IN (
+                    'parallelScopeCancelled',
+                    'parallelJoinMerged',
+                    'parallelInterrupt',
+                    'parallelInterruptSkipped');
                 """);
 
             migrationBuilder.AddColumn<long[]>(
@@ -429,6 +443,33 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 name: "CK_node_executions_completion_reason",
                 schema: "flowbit",
                 table: "node_executions");
+
+            migrationBuilder.Sql(
+                """
+                -- The legacy parallel-only schema has no distinct completion
+                -- reason for Inclusive or Complex gateway activity.
+                UPDATE flowbit.node_executions
+                SET "CompletionReason" = CASE "CompletionReason"
+                    WHEN 'gatewayScopeCancelled' THEN 'parallelScopeCancelled'
+                    WHEN 'gatewayJoinMerged' THEN 'parallelJoinMerged'
+                    WHEN 'scopedInterrupt' THEN 'parallelInterrupt'
+                    WHEN 'scopedInterruptSkipped' THEN 'parallelInterruptSkipped'
+                    WHEN 'inclusiveSplit' THEN 'normal'
+                    WHEN 'inclusiveMerge' THEN 'normal'
+                    WHEN 'complexActivation' THEN 'normal'
+                    WHEN 'complexReset' THEN 'normal'
+                    ELSE "CompletionReason"
+                END
+                WHERE "CompletionReason" IN (
+                    'gatewayScopeCancelled',
+                    'gatewayJoinMerged',
+                    'scopedInterrupt',
+                    'scopedInterruptSkipped',
+                    'inclusiveSplit',
+                    'inclusiveMerge',
+                    'complexActivation',
+                    'complexReset');
+                """);
 
             migrationBuilder.DropIndex(
                 name: "IX_execution_tokens_ComplexDrainStateIds",
