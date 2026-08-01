@@ -22,13 +22,27 @@ public sealed class DefinitionValidationTests
     }
 
     [Theory]
-    [InlineData("examples/01-async-before-after.json")]
-    [InlineData("examples/02-intermediate-timer-delay.json")]
-    [InlineData("examples/03-recurring-timer-start.json")]
-    [InlineData("examples/04-absolute-timer-start.json")]
-    [InlineData("examples/05-user-task-reminder-and-deadline.json")]
-    [InlineData("examples/06-multi-instance-reminder.json")]
+    [InlineData("examples/durable-jobs/01-async-before-after.json")]
+    [InlineData("examples/timers/02-intermediate-timer-delay.json")]
+    [InlineData("examples/timers/03-recurring-timer-start.json")]
+    [InlineData("examples/timers/04-absolute-timer-start.json")]
+    [InlineData("examples/timers/05-user-task-reminder-and-deadline.json")]
+    [InlineData("examples/multi-instance/06-multi-instance-reminder.json")]
     public async Task CreateAsync_AcceptsDurableAsyncAndTimerExample(string fileName)
+    {
+        var model = LoadModel(fileName);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("examples/gateways/01-exclusive-priority-and-default.json")]
+    [InlineData("examples/gateways/02-parallel-fork-and-join.json")]
+    [InlineData("examples/gateways/03-inclusive-conditional-split-and-merge.json")]
+    [InlineData("examples/gateways/04-complex-two-of-three-merge.json")]
+    [InlineData("examples/gateways/05-complex-start-reset-cycle.json")]
+    [InlineData("examples/gateways/06-scoped-interrupt-parallel-branch.json")]
+    public async Task CreateAsync_AcceptsGatewayExample(string fileName)
     {
         var model = LoadModel(fileName);
 

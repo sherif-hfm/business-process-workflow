@@ -1,0 +1,152 @@
+{
+  "id": "example-complex-start-reset-cycle",
+  "name": "Gateway Example 05 - Complex Start and Reset Cycle",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Complex Gateway Cycle",
+      "externalId": "LANE_COMPLEX_CYCLE",
+      "x": 30,
+      "y": 30,
+      "w": 1450,
+      "h": 520
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start First Cycle",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 235,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Collect Start or Loop Token",
+      "type": "exclusiveGateway",
+      "laneId": 1,
+      "x": 285,
+      "y": 230,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Route by Complex Phase",
+      "type": "complexGateway",
+      "activationCondition": "IncomingCount(201) >= 1",
+      "laneId": 1,
+      "x": 500,
+      "y": 230,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Start-Phase Work",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 730,
+      "y": 110,
+      "roles": ["Operator"],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Reset-Phase Work",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 730,
+      "y": 355,
+      "roles": ["Operator"],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Cycle Demonstration Completed",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1190,
+      "y": 235,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Initial token",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Activate complex gateway",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Waiting for start",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": "[gateway.waitingForStart]"
+    },
+    {
+      "id": 302,
+      "name": "Waiting for reset",
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": "not [gateway.waitingForStart]"
+    },
+    {
+      "id": 401,
+      "name": "Demonstrate reset phase",
+      "sourceRef": 4,
+      "targetRef": 2,
+      "roles": ["Operator"],
+      "variables": []
+    },
+    {
+      "id": 402,
+      "name": "Finish from start phase",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": ["Operator"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Begin the next cycle",
+      "sourceRef": 5,
+      "targetRef": 2,
+      "roles": ["Operator"],
+      "variables": []
+    },
+    {
+      "id": 502,
+      "name": "Finish from reset phase",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": ["Operator"],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["Operator"],
+  "unclaimRoles": ["Operator"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

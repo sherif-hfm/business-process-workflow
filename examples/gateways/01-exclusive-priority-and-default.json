@@ -1,0 +1,197 @@
+{
+  "id": "example-exclusive-priority-default",
+  "name": "Gateway Example 01 - Exclusive Priority and Default",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Purchase Routing",
+      "externalId": "LANE_PURCHASE_ROUTING",
+      "x": 30,
+      "y": 30,
+      "w": 1500,
+      "h": 560
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Purchase Submitted",
+      "externalId": "START_PURCHASE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 260,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": false,
+          "defaultValue": 25000,
+          "validation": "amount >= 0"
+        },
+        {
+          "id": 2,
+          "name": "urgent",
+          "dataType": "boolean",
+          "isArray": false,
+          "required": false,
+          "defaultValue": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Choose One Route",
+      "externalId": "GATEWAY_ROUTE_PURCHASE",
+      "type": "exclusiveGateway",
+      "laneId": 1,
+      "x": 300,
+      "y": 255,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Expedited Review",
+      "externalId": "TASK_EXPEDITED_REVIEW",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 100,
+      "roles": ["Operations"],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Manager Approval",
+      "externalId": "TASK_MANAGER_APPROVAL",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 255,
+      "roles": ["Manager"],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 5,
+      "name": "Standard Processing",
+      "externalId": "TASK_STANDARD_PROCESSING",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 410,
+      "roles": ["Operations"],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Merge Selected Route",
+      "externalId": "GATEWAY_MERGE_PURCHASE",
+      "type": "exclusiveGateway",
+      "laneId": 1,
+      "x": 940,
+      "y": 255,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Routing Completed",
+      "externalId": "END_ROUTING_COMPLETED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1230,
+      "y": 260,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Evaluate request",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Urgent takes precedence",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": "urgent == true",
+      "conditionPriority": 1,
+      "isDefault": false
+    },
+    {
+      "id": 202,
+      "name": "High value",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": "amount >= 10000",
+      "conditionPriority": 2,
+      "isDefault": false
+    },
+    {
+      "id": 203,
+      "name": "Default standard route",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "isDefault": true
+    },
+    {
+      "id": 301,
+      "name": "Expedited review completed",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": ["Operations"],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Manager approved",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": ["Manager"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Standard processing completed",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": ["Operations"],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Continue after merge",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["Manager"],
+  "unclaimRoles": ["Manager"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

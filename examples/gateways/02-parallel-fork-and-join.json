@@ -1,0 +1,177 @@
+{
+  "id": "example-parallel-fork-join",
+  "name": "Gateway Example 02 - Parallel Fork and Join",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Parallel Review",
+      "externalId": "LANE_PARALLEL_REVIEW",
+      "x": 30,
+      "y": 30,
+      "w": 1550,
+      "h": 620
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Review Requested",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Start All Reviews",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 285,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Finance Review",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 95,
+      "roles": ["Finance"],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Legal Review",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 280,
+      "roles": ["Legal"],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Security Review",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 465,
+      "roles": ["Security"],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Wait for Every Review",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 900,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Consolidate Reviews",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1080,
+      "y": 270,
+      "roles": ["Coordinator"],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Review Completed",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1390,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Fork reviews",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Finance branch",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Legal branch",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 203,
+      "name": "Security branch",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Finance finished",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": ["Finance"],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Legal finished",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": ["Legal"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Security finished",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": ["Security"],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "All three are complete",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 701,
+      "name": "Finish",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": ["Coordinator"],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["Coordinator"],
+  "unclaimRoles": ["Coordinator"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -34,6 +34,6 @@
     <None Include="..\..\..\votes-users-list.json" Link="Fixtures\votes-users-list.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\votes-sequence-users-list.json" Link="Fixtures\votes-sequence-users-list.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\votes-cardinality-approve-reject.json" Link="Fixtures\votes-cardinality-approve-reject.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\examples\*.json" Link="Fixtures\examples\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\examples\**\*.json" Link="Fixtures\examples\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

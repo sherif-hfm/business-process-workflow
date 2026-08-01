@@ -1,0 +1,162 @@
+{
+  "id": "example-scoped-interrupt-parallel",
+  "name": "Gateway Example 06 - Scoped Interrupt of Parallel Branches",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Parallel Work with Emergency Exit",
+      "externalId": "LANE_SCOPED_INTERRUPT",
+      "x": 30,
+      "y": 30,
+      "w": 1550,
+      "h": 570
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Case Opened",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 75,
+      "y": 260,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Start Parallel Work",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 290,
+      "y": 255,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Normal Investigation",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 120,
+      "roles": ["Investigator"],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Raise Emergency",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 385,
+      "roles": ["Supervisor"],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Interrupt Parallel Scope",
+      "type": "scopedInterruptEvent",
+      "gatewayRef": 2,
+      "laneId": 1,
+      "x": 850,
+      "y": 400,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Emergency Response",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1060,
+      "y": 385,
+      "roles": ["Supervisor"],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Emergency Resolved",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1390,
+      "y": 400,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Normal Branch Finished",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 920,
+      "y": 135,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create parallel scope",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Investigation branch",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Emergency branch",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Complete normally",
+      "sourceRef": 3,
+      "targetRef": 8,
+      "roles": ["Investigator"],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Trigger scoped interrupt",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": ["Supervisor"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Continue outside interrupted scope",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Resolve emergency",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": ["Supervisor"],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["Supervisor"],
+  "unclaimRoles": ["Supervisor"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

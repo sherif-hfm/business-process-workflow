@@ -1,0 +1,179 @@
+{
+  "id": "example-complex-two-of-three-merge",
+  "name": "Gateway Example 04 - Complex Two-of-Three Merge",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Quorum Approval",
+      "externalId": "LANE_QUORUM_APPROVAL",
+      "x": 30,
+      "y": 30,
+      "w": 1620,
+      "h": 620
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Quorum Requested",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 75,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Invite All Reviewers",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 290,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Reviewer A",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 95,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Reviewer B",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 280,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Reviewer C",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 500,
+      "y": 465,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Continue After Any Two",
+      "type": "complexGateway",
+      "activationCondition": "TotalIncomingCount() >= 2",
+      "laneId": 1,
+      "x": 920,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Finalize Quorum Decision",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1100,
+      "y": 270,
+      "roles": ["Coordinator"],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Close and Cancel Remaining Work",
+      "type": "terminateEndEvent",
+      "laneId": 1,
+      "x": 1435,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create three branches",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Reviewer A branch",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Reviewer B branch",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 203,
+      "name": "Reviewer C branch",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Reviewer A completed",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Reviewer B completed",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Reviewer C completed",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": ["Reviewer"],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Quorum reached",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [],
+      "condition": "true"
+    },
+    {
+      "id": 701,
+      "name": "Finalize and terminate",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": ["Coordinator"],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["Coordinator"],
+  "unclaimRoles": ["Coordinator"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

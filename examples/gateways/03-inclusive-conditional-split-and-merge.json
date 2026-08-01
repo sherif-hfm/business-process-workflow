@@ -1,0 +1,199 @@
+{
+  "id": "example-inclusive-split-merge",
+  "name": "Gateway Example 03 - Inclusive Conditional Split and Merge",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Risk Review",
+      "externalId": "LANE_RISK_REVIEW",
+      "x": 30,
+      "y": 30,
+      "w": 1550,
+      "h": 620
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Assessment Submitted",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 75,
+      "y": 285,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "needsLegal",
+          "dataType": "boolean",
+          "isArray": false,
+          "required": false,
+          "defaultValue": true
+        },
+        {
+          "id": 2,
+          "name": "needsSecurity",
+          "dataType": "boolean",
+          "isArray": false,
+          "required": false,
+          "defaultValue": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Select Every Required Review",
+      "type": "inclusiveGateway",
+      "laneId": 1,
+      "x": 300,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Legal Assessment",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 95,
+      "roles": ["Legal"],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Security Assessment",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 280,
+      "roles": ["Security"],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Lightweight Review",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 520,
+      "y": 465,
+      "roles": ["Operations"],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Wait for Selected Reviews",
+      "type": "inclusiveGateway",
+      "laneId": 1,
+      "x": 920,
+      "y": 280,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Record Assessment",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1090,
+      "y": 270,
+      "roles": ["RiskManager"],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Assessment Completed",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1390,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Evaluate review needs",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Legal is required",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": "needsLegal == true",
+      "isDefault": false
+    },
+    {
+      "id": 202,
+      "name": "Security is required",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": "needsSecurity == true",
+      "isDefault": false
+    },
+    {
+      "id": 203,
+      "name": "Default when neither is required",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "isDefault": true
+    },
+    {
+      "id": 301,
+      "name": "Legal assessment completed",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": ["Legal"],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Security assessment completed",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": ["Security"],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Lightweight review completed",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": ["Operations"],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Every selected branch arrived",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 701,
+      "name": "Finish",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": ["RiskManager"],
+      "variables": []
+    }
+  ],
+  "cancelRoles": ["RiskManager"],
+  "unclaimRoles": ["RiskManager"],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}
