@@ -65,7 +65,9 @@ public sealed partial class WorkflowEngineService
                 WorkflowJobKinds.AsyncBefore,
                 actor,
                 dueAt: timeProvider.GetUtcNow()),
-            cancellationToken);
+            cancellationToken,
+            token,
+            countAutomaticActivation: IsGuardedAutomaticActivity(node));
         if (!await runtime.SetExecutionTokenWaitAsync(
                 token.Id,
                 token.ActivationId,
@@ -126,7 +128,13 @@ public sealed partial class WorkflowEngineService
                 selectedFlowId: selectedFlowId,
                 multiInstanceExecutionId: multiInstanceExecutionId,
                 userTaskId: userTaskId),
-            cancellationToken);
+            cancellationToken,
+            token,
+            // A plain task can author asyncAfter without a durable entry job.
+            // Service/script asyncAfter always stages through asyncBefore, and
+            // user-task phases are deliberately outside the automatic guard.
+            countAutomaticActivation:
+                BpmnFlowNodeTypes.IsAutomatic(node.Type) && !node.AsyncBefore);
         if (!await runtime.SetExecutionTokenWaitAsync(
                 token.Id,
                 token.ActivationId,
@@ -312,6 +320,7 @@ public sealed partial class WorkflowEngineService
             MultiInstanceExecutionId = multiInstanceExecutionId,
             UserTaskId = userTaskId,
             ActivationId = token.ActivationId,
+            AutomaticActivationCount = token.AutomaticActivationCount,
             NodeId = node.Id,
             NodeName = node.Name,
             NodeType = node.Type,
@@ -342,7 +351,9 @@ public sealed partial class WorkflowEngineService
 
     private async Task<WorkflowJobRecord> EnqueueInstanceJobAsync(
         WorkflowJobCreateRecord create,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExecutionTokenRecord? activationToken = null,
+        bool countAutomaticActivation = false)
     {
         if (create.InstanceId is not long instanceId)
         {
@@ -370,8 +381,92 @@ public sealed partial class WorkflowEngineService
                 $"Workflow instance #{instanceId} has reached its open-job limit of {limit}.");
         }
 
+        if (countAutomaticActivation)
+        {
+            if (activationToken is null
+                || create.TokenId != activationToken.Id
+                || create.InstanceId != activationToken.InstanceId
+                || create.ActivationId != activationToken.ActivationId
+                || !IsGuardedAutomaticActivity(create.NodeType))
+            {
+                throw new WorkflowJobInvariantException(
+                    "An automatic-activation job does not match its execution-token fence.");
+            }
+
+            var configuredGuard = await engineSettings.GetByKeyAsync(
+                WorkflowAutomaticActivationGuard.SettingKey,
+                cancellationToken);
+            var decision = WorkflowAutomaticActivationGuard.EvaluateNext(
+                activationToken.AutomaticActivationCount,
+                configuredGuard?.Value);
+            if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                    activationToken.Id,
+                    activationToken.ActivationId,
+                    decision.PersistedCount,
+                    cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The execution token changed while its automatic-activation count was being updated.");
+            }
+
+            create = create with
+            {
+                AutomaticActivationCount = decision.ShouldOpenIncident
+                    ? decision.AttemptedCount
+                    : decision.PersistedCount
+            };
+            if (decision.ShouldOpenIncident)
+            {
+                var details = JsonSerializer.Serialize(new
+                {
+                    observedCount = decision.AttemptedCount,
+                    configuredLimit = decision.Limit,
+                    previousCount = decision.PreviousCount,
+                    instanceId,
+                    tokenId = activationToken.Id,
+                    nodeId = create.NodeId,
+                    nodeName = create.NodeName,
+                    nodeType = create.NodeType,
+                    activationId = create.ActivationId,
+                    phase = create.Phase,
+                    jobKind = create.Kind
+                });
+                var blocked = await jobs.EnqueueIncidentAsync(
+                    create,
+                    WorkflowIncidentTypes.AutomaticLoopLimit,
+                    $"Automatic activation limit reached at node #{create.NodeId}.",
+                    details,
+                    cancellationToken);
+                WorkflowJobRuntimeTelemetry.RecordIncident();
+                WorkflowJobRuntimeTelemetry.RecordAutomaticLoopLimit(
+                    decision.AttemptedCount,
+                    decision.Limit,
+                    activationToken.Id,
+                    create.NodeId,
+                    create.ActivationId);
+                logger.LogWarning(
+                    "Paused workflow instance {InstanceId}, token {TokenId}, activation {ActivationId} "
+                    + "at node {NodeId} before automatic activation {ObservedCount}; configured limit is {Limit}.",
+                    instanceId,
+                    activationToken.Id,
+                    create.ActivationId,
+                    create.NodeId,
+                    decision.AttemptedCount,
+                    decision.Limit);
+                return blocked;
+            }
+        }
+
         return await jobs.EnqueueAsync(create, cancellationToken);
     }
+
+    private static bool IsGuardedAutomaticActivity(FlowNodeModel node) =>
+        IsGuardedAutomaticActivity(node.Type);
+
+    private static bool IsGuardedAutomaticActivity(string nodeType) =>
+        BpmnFlowNodeTypes.IsAutomatic(nodeType)
+        || BpmnFlowNodeTypes.IsServiceTask(nodeType)
+        || BpmnFlowNodeTypes.IsScriptTask(nodeType);
 
     private WorkflowJobCreateRecord BuildTimerJob(
         WorkflowInstanceRecord instance,
@@ -1785,7 +1880,10 @@ public sealed partial class WorkflowEngineService
             || token.InstanceId != instance.Id
             || token.Status != ExecutionTokenRecordStatuses.Active
             || token.ActivationId != job.ActivationId
-            || token.NodeId != job.NodeId && job.Kind != WorkflowJobKinds.TimerBoundary)
+            || token.NodeId != job.NodeId && job.Kind != WorkflowJobKinds.TimerBoundary
+            || IsGuardedAutomaticActivity(job.NodeType)
+               && job.Kind is WorkflowJobKinds.AsyncBefore or WorkflowJobKinds.AsyncAfter
+               && token.AutomaticActivationCount != job.AutomaticActivationCount)
         {
             throw new WorkflowConflictException(
                 "The workflow job no longer owns the token activation.");
@@ -2312,7 +2410,9 @@ public sealed partial class WorkflowEngineService
                     null,
                     hostToken.GatewayBranchId,
                     completionActor),
-                cancellationToken);
+                cancellationToken,
+                automaticActivationCount:
+                    WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
             continuationTokenId = hostToken.Id;
         }
         else
@@ -2323,7 +2423,10 @@ public sealed partial class WorkflowEngineService
                 hostToken.GatewayBranchId,
                 null,
                 ToNodeExecutionActor(timerActor),
-                cancellationToken);
+                cancellationToken,
+                automaticActivationCount:
+                    WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                automaticActivationStateIds: hostToken.AutomaticActivationStateIds);
             await runtime.AddTokenHistoryAsync(
                 instance.Id,
                 sibling.Id,

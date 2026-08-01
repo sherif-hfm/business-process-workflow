@@ -52,6 +52,7 @@ public sealed class WorkerTelemetry : IDisposable
     private long _runtimeRetriesTotal;
     private long _runtimeConflictsTotal;
     private long _runtimeIncidentsTotal;
+    private long _runtimeAutomaticLoopLimitsTotal;
     private long _instanceLockWaitSamples;
     private long _instanceLockWaitMicroseconds;
 
@@ -303,6 +304,10 @@ public sealed class WorkerTelemetry : IDisposable
         WriteCounter(output, "flowbit_jobs_retries_total", _runtimeRetriesTotal);
         WriteCounter(output, "flowbit_jobs_output_conflicts_total", _runtimeConflictsTotal);
         WriteCounter(output, "flowbit_jobs_incidents_opened_total", _runtimeIncidentsTotal);
+        WriteCounter(
+            output,
+            "flowbit_jobs_automatic_loop_limit_total",
+            _runtimeAutomaticLoopLimitsTotal);
 
         WriteSummary(
             output,
@@ -348,6 +353,9 @@ public sealed class WorkerTelemetry : IDisposable
                 break;
             case "flowbit.jobs.incidents.opened":
                 Interlocked.Add(ref _runtimeIncidentsTotal, measurement);
+                break;
+            case "flowbit.jobs.automatic_loop_limit":
+                Interlocked.Add(ref _runtimeAutomaticLoopLimitsTotal, measurement);
                 break;
         }
     }

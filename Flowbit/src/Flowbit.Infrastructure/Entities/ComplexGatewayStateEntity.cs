@@ -6,6 +6,7 @@ public sealed class ComplexGatewayStateEntity
     public long InstanceId { get; set; }
     public WorkflowInstanceEntity? Instance { get; set; }
     public int GatewayNodeId { get; set; }
+    public int AutomaticActivationCount { get; set; }
     public string Phase { get; set; } = ComplexGatewayStatePhases.WaitingForStart;
     public int Cycle { get; set; }
     public int[] ContributingFlowIds { get; set; } = [];

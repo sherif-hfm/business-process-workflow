@@ -2121,6 +2121,18 @@ public sealed partial class WorkflowEngineService(
             ?? throw new WorkflowConflictException("The multi-instance parent token no longer exists.");
         if (token.Status != ExecutionTokenRecordStatuses.Active)
             throw new WorkflowConflictException("The multi-instance parent token is no longer active.");
+        var resetAutomaticActivationCount =
+            WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger();
+        if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                token.Id,
+                token.ActivationId,
+                resetAutomaticActivationCount,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The multi-instance parent token changed while resetting its automatic-activation count.");
+        }
+        token = token with { AutomaticActivationCount = resetAutomaticActivationCount };
         if (node.AsyncAfter)
         {
             var waitingInstance = instance with
@@ -2189,7 +2201,9 @@ public sealed partial class WorkflowEngineService(
             null,
             ToNodeExecutionActor(actor),
             null,
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
@@ -2425,6 +2439,16 @@ public sealed partial class WorkflowEngineService(
             executionActor.ActingFor,
             executionActor.DelegationId);
 
+        if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                token.Id,
+                token.ActivationId,
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The user-task execution token changed while resetting its automatic-activation count.");
+        }
+
         if (node.AsyncAfter)
         {
             var waitingToken = await runtime.GetExecutionTokenAsync(
@@ -2492,7 +2516,9 @@ public sealed partial class WorkflowEngineService(
             null,
             ToNodeExecutionActor(executionActor),
             null,
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
@@ -2777,7 +2803,9 @@ public sealed partial class WorkflowEngineService(
                 flow.Id,
                 token.GatewayBranchId,
                 ToNodeExecutionActor(actor)),
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
@@ -4239,7 +4267,11 @@ public sealed partial class WorkflowEngineService(
             branches.Skip(1).Select(branch => branch.Id).ToList(),
             token.ComplexDrainStateIds,
             ToNodeExecutionActor(actor),
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.InheritForFork(
+                    token.AutomaticActivationCount),
+            automaticActivationStateIds: token.AutomaticActivationStateIds);
         var work = new List<(ExecutionTokenRecord Token, GatewayBranchRecord Branch, SequenceFlowModel Flow)>();
         for (var index = 0; index < selectedOutgoing.Count; index++)
         {
@@ -4712,7 +4744,24 @@ public sealed partial class WorkflowEngineService(
             activationDrainStateIds,
             [],
             null,
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount: survivor.AutomaticActivationCount);
+
+        var activationStateIds = survivor.AutomaticActivationStateIds
+            .Append(state.Id)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        if (!await runtime.SetExecutionTokenAutomaticActivationStateIdsAsync(
+                survivor.Id,
+                survivor.ActivationId,
+                activationStateIds,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The Complex activation token changed while recording its automatic lineage.");
+        }
+        survivor = survivor with { AutomaticActivationStateIds = activationStateIds };
 
         var selectedFlows = SelectComplexOutgoingFlows(
             OutgoingFlows(instance.WorkflowDefinitionId, definition, gateway.Id),
@@ -4855,6 +4904,23 @@ public sealed partial class WorkflowEngineService(
         {
             resetParentBranchId = activationExecution.ParentBranchId;
         }
+        var consumedAutomaticLineage =
+            await runtime.ConsumeExecutionTokenAutomaticActivationStateAsync(
+                instance.Id,
+                state.Id,
+                state.AutomaticActivationCount,
+                cancellationToken);
+        var resetAutomaticActivationCount = consumedAutomaticLineage.MaximumCount;
+        // Clearing the old marker set and attaching this state to the reset
+        // output is an atomic epoch handoff. Work between reset and the next
+        // activation therefore remains part of the unattended chain, while no
+        // terminal token from the prior cycle can pollute a later reset.
+        var resetAutomaticActivationStateIds = consumedAutomaticLineage
+            .InheritedStateIds
+            .Append(state.Id)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
         // Reset output starts the next Complex cycle outside the completed
         // activation scope. Reconciliation also preserves any outer scope
         // shared with a late arrival from a sibling branch.
@@ -4899,7 +4965,9 @@ public sealed partial class WorkflowEngineService(
             [],
             [],
             null,
-            cancellationToken);
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
 
         if (selectedFlows.Count > 0)
         {
@@ -4909,7 +4977,28 @@ public sealed partial class WorkflowEngineService(
                 resetParentBranchId,
                 null,
                 ToNodeExecutionActor(actor),
-                cancellationToken);
+                cancellationToken,
+                automaticActivationCount: resetAutomaticActivationCount,
+                automaticActivationStateIds: resetAutomaticActivationStateIds);
+            if (survivor.AutomaticActivationCount != resetAutomaticActivationCount
+                && !await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                    survivor.Id,
+                    survivor.ActivationId,
+                    resetAutomaticActivationCount,
+                    cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The Complex reset token changed while restoring its automatic-activation count.");
+            }
+            if (!await runtime.SetExecutionTokenAutomaticActivationStateIdsAsync(
+                    survivor.Id,
+                    survivor.ActivationId,
+                    resetAutomaticActivationStateIds,
+                    cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The Complex reset token changed while restoring its outer automatic lineage.");
+            }
             await runtime.SetComplexDrainMarkersAsync(
                 survivor.Id,
                 resetDrainStateIds,
@@ -5129,6 +5218,32 @@ public sealed partial class WorkflowEngineService(
             : FindDeepestCommonGatewayBranch(
                 branchIds,
                 scopeSnapshot);
+        var mergedAutomaticActivationCount =
+            WorkflowAutomaticActivationGuard.MergeAtJoin(
+                selected.Select(token => token.AutomaticActivationCount));
+        if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                survivor.Id,
+                survivor.ActivationId,
+                mergedAutomaticActivationCount,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The surviving gateway token changed while merging automatic-activation counts.");
+        }
+        var mergedAutomaticActivationStateIds = selected
+            .SelectMany(token => token.AutomaticActivationStateIds)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        if (!await runtime.SetExecutionTokenAutomaticActivationStateIdsAsync(
+                survivor.Id,
+                survivor.ActivationId,
+                mergedAutomaticActivationStateIds,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The surviving gateway token changed while merging automatic-activation lineage.");
+        }
         await runtime.MergeExecutionTokensAsync(
             selected
                 .Where(token => token.Id != survivor.Id)
@@ -5707,7 +5822,11 @@ public sealed partial class WorkflowEngineService(
                 ToNodeExecutionActor(actor),
                 HasExitGatewayBranchSnapshot: true),
             cancellationToken,
-            deferSave);
+            deferSave,
+            automaticActivationCount:
+                BpmnFlowNodeTypes.IsTimer(currentNode.Type)
+                    ? WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger()
+                    : null);
 
         // Entering a scoped interrupt takes effect immediately. Deferring it to
         // the queue would let a later fork branch execute a service/script or

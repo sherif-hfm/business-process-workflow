@@ -150,7 +150,9 @@ public interface IWorkflowRuntimeRepository
         long? gatewayBranchId,
         int? arrivedViaFlowId,
         NodeExecutionActorRecord triggeredBy,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        int automaticActivationCount = 0,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null);
 
     Task<IReadOnlyList<ExecutionTokenRecord>> AddGatewayBranchTokensAsync(
         long instanceId,
@@ -159,7 +161,9 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyList<long> gatewayBranchIds,
         IReadOnlyCollection<long> complexDrainStateIds,
         NodeExecutionActorRecord triggeredBy,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        int automaticActivationCount = 0,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null);
 
     Task UpdateExecutionTokenAsync(
         long tokenId,
@@ -172,7 +176,9 @@ public interface IWorkflowRuntimeRepository
         NodeExecutionActorRecord triggeredBy,
         NodeExecutionCompletionRecord? currentCompletion,
         CancellationToken cancellationToken,
-        bool deferSave = false);
+        bool deferSave = false,
+        int? automaticActivationCount = null,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null);
 
     /// <summary>
     /// Fences an active token at a durable async/timer wait. The update succeeds
@@ -197,6 +203,26 @@ public interface IWorkflowRuntimeRepository
         string waitState,
         long? waitingJobId,
         long? waitingTimerSubscriptionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Updates the consecutive automatic-activation count only when the token
+    /// still owns the supplied activation fence. A stale worker receives false.
+    /// </summary>
+    Task<bool> SetExecutionTokenAutomaticActivationCountAsync(
+        long tokenId,
+        Guid activationId,
+        int automaticActivationCount,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Replaces the Complex Gateway activation lineage only when the token
+    /// still owns the supplied activation fence. A stale worker receives false.
+    /// </summary>
+    Task<bool> SetExecutionTokenAutomaticActivationStateIdsAsync(
+        long tokenId,
+        Guid activationId,
+        IReadOnlyCollection<long> automaticActivationStateIds,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -329,6 +355,19 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyCollection<long> activationDrainStateIds,
         IReadOnlyCollection<long> drainingTokenIds,
         long? activeExecutionId,
+        CancellationToken cancellationToken,
+        int? automaticActivationCount = null);
+
+    /// <summary>
+    /// Atomically reads the maximum automatic-activation count and inherited
+    /// Complex Gateway lineage for all instance tokens carrying a state marker,
+    /// then removes that marker from every matching token regardless of status.
+    /// </summary>
+    Task<AutomaticActivationStateConsumptionRecord>
+        ConsumeExecutionTokenAutomaticActivationStateAsync(
+        long instanceId,
+        long complexGatewayStateId,
+        int fallbackAutomaticActivationCount,
         CancellationToken cancellationToken);
 
     Task RegisterTokenAtComplexGatewayAsync(

@@ -47,6 +47,7 @@ public sealed class WorkerOperationalSurfaceTests
             DateTimeOffset.UtcNow);
         using var runtimeMeter = new Meter("Flowbit.Runtime.Jobs");
         runtimeMeter.CreateCounter<long>("flowbit.jobs.output_conflicts").Add(2);
+        runtimeMeter.CreateCounter<long>("flowbit.jobs.automatic_loop_limit").Add(1);
         runtimeMeter.CreateHistogram<double>("flowbit.jobs.instance_lock.wait").Record(25);
 
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/ready")).StatusCode);
@@ -65,6 +66,10 @@ public sealed class WorkerOperationalSurfaceTests
             StringComparison.Ordinal);
         Assert.Contains(
             "flowbit_jobs_output_conflicts_total 2",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_jobs_automatic_loop_limit_total 1",
             metrics,
             StringComparison.Ordinal);
         Assert.Contains(

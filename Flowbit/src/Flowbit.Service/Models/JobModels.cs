@@ -59,6 +59,11 @@ public static class WorkflowIncidentStatuses
     public const string Resolved = "resolved";
 }
 
+public static class WorkflowIncidentTypes
+{
+    public const string AutomaticLoopLimit = "automatic_loop_limit";
+}
+
 public static class TimerSubscriptionStatuses
 {
     public const string Active = "active";
@@ -84,6 +89,7 @@ public sealed record WorkflowJobCreateRecord
     public long? UserTaskId { get; init; }
     public long? TimerSubscriptionId { get; init; }
     public required Guid ActivationId { get; init; }
+    public int AutomaticActivationCount { get; init; }
     public required int NodeId { get; init; }
     public required string NodeName { get; init; }
     public required string NodeType { get; init; }
@@ -141,7 +147,8 @@ public sealed record WorkflowJobRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? StartedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    int AutomaticActivationCount = 0);
 
 public sealed record WorkflowJobLeaseRequest(
     string WorkerId,

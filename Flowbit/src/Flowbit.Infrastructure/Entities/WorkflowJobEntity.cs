@@ -19,6 +19,7 @@ public sealed class WorkflowJobEntity
     public long? TimerSubscriptionId { get; set; }
     public TimerSubscriptionEntity? TimerSubscription { get; set; }
     public Guid ActivationId { get; set; }
+    public int AutomaticActivationCount { get; set; }
     public int NodeId { get; set; }
     public string NodeName { get; set; } = string.Empty;
     public string NodeType { get; set; } = string.Empty;

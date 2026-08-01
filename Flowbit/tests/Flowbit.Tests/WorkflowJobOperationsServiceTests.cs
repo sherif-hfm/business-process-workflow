@@ -272,6 +272,12 @@ public sealed class WorkflowJobOperationsServiceTests
         public Task<WorkflowJobRecord> EnqueueAsync(
             WorkflowJobCreateRecord create,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<WorkflowJobRecord> EnqueueIncidentAsync(
+            WorkflowJobCreateRecord create,
+            string type,
+            string summary,
+            string? details,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<WorkflowJobRecord?> GetAsync(long jobId, CancellationToken cancellationToken) =>
             Task.FromResult<WorkflowJobRecord?>(jobId == Job.Id ? Job : null);
         public Task<WorkflowJobRecord?> GetForUpdateAsync(long jobId, CancellationToken cancellationToken) =>

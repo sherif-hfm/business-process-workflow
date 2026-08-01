@@ -69,7 +69,11 @@ public sealed record ExecutionTokenRecord(
     Guid ActivationId = default,
     string? WaitState = null,
     long? WaitingJobId = null,
-    long? WaitingTimerSubscriptionId = null);
+    long? WaitingTimerSubscriptionId = null,
+    int AutomaticActivationCount = 0)
+{
+    public IReadOnlyList<long> AutomaticActivationStateIds { get; init; } = [];
+}
 
 public sealed record InstanceVariableVersionRecord(
     string Name,
@@ -173,7 +177,12 @@ public sealed record ComplexGatewayStateRecord(
     IReadOnlyList<long> DrainingTokenIds,
     long? ActiveExecutionId,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    int AutomaticActivationCount = 0);
+
+public sealed record AutomaticActivationStateConsumptionRecord(
+    int MaximumCount,
+    IReadOnlyList<long> InheritedStateIds);
 
 public sealed record MultiInstanceExecutionRecord(
     long Id,

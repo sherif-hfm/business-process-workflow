@@ -405,6 +405,30 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal(10, root.GetProperty("limitCount").GetInt32());
     }
 
+    [Theory]
+    [InlineData("01-async-before-after.json")]
+    [InlineData("02-intermediate-timer-delay.json")]
+    [InlineData("03-recurring-timer-start.json")]
+    [InlineData("04-absolute-timer-start.json")]
+    [InlineData("05-user-task-reminder-and-deadline.json")]
+    [InlineData("06-multi-instance-reminder.json")]
+    public void DurableAsyncAndTimerExampleLoadsAndRendersInEditor(string fileName)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "examples", fileName);
+        var json = File.ReadAllText(path);
+        var engine = CreateEditorEngine();
+        engine.SetValue("durableExampleJson", json);
+
+        var exception = Record.Exception(() => engine.Execute(
+            """
+            loadFromObject(JSON.parse(durableExampleJson));
+            render();
+            """));
+
+        Assert.Null(exception);
+        Assert.StartsWith("example-", engine.Evaluate("model.id").AsString(), StringComparison.Ordinal);
+    }
+
     private static Engine CreateEditorEngine()
     {
         var html = ReadEditorSource();
@@ -448,6 +472,7 @@ public sealed class EditorRuntimeSmokeTests
             remove() {},
             addEventListener() {},
             setAttribute(key, value) { this.attributes[key] = String(value); },
+            setAttributeNS(_namespace, key, value) { this.attributes[key] = String(value); },
             getAttribute(key) { return this.attributes[key] ?? null; },
             removeAttribute(key) { delete this.attributes[key]; },
             querySelectorAll() { return []; },

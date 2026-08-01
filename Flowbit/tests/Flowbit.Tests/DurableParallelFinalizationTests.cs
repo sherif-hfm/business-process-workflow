@@ -75,6 +75,29 @@ public sealed class DurableParallelFinalizationTests(PostgresApiFixture fixture)
                         && task.Status == UserTaskStatuses.Active)
                     .Select(task => task.Id)
                     .SingleAsync(timeout.Token);
+                var branchCounts = await inspect.ExecutionTokens
+                    .Where(token => token.InstanceId == instanceId
+                                    && token.Status == ExecutionTokenStatuses.Active)
+                    .ToDictionaryAsync(
+                        token => token.NodeId,
+                        token => token.AutomaticActivationCount,
+                        timeout.Token);
+                Assert.Equal(1, branchCounts[3]);
+                Assert.Equal(0, branchCounts[4]);
+                // Seed a prior automatic chain on the human branch. The user
+                // action below must reset it before the parallel join takes
+                // the maximum contributing lineage.
+                Assert.Equal(
+                    1,
+                    await inspect.ExecutionTokens
+                        .Where(token => token.InstanceId == instanceId
+                                        && token.NodeId == 4
+                                        && token.Status == ExecutionTokenStatuses.Active)
+                        .ExecuteUpdateAsync(
+                            setters => setters.SetProperty(
+                                token => token.AutomaticActivationCount,
+                                9),
+                            timeout.Token));
                 await inspect.WorkflowJobs
                     .Where(job => job.Id == jobId)
                     .ExecuteUpdateAsync(
@@ -135,6 +158,12 @@ public sealed class DurableParallelFinalizationTests(PostgresApiFixture fixture)
                     token.InstanceId == instanceId
                     && token.Status == ExecutionTokenStatuses.Active)
                 .ToListAsync(timeout.Token));
+            Assert.Equal(
+                1,
+                await verification.ExecutionTokens
+                    .Where(token => token.InstanceId == instanceId
+                                    && token.Status == ExecutionTokenStatuses.Completed)
+                    .MaxAsync(token => token.AutomaticActivationCount, timeout.Token));
         }
         finally
         {

@@ -20,6 +20,8 @@ public sealed class ExecutionTokenEntity
     public int? ArrivedViaFlowId { get; set; }
     public string? TerminationReason { get; set; }
     public Guid ActivationId { get; set; } = Guid.NewGuid();
+    public int AutomaticActivationCount { get; set; }
+    public long[] AutomaticActivationStateIds { get; set; } = [];
     public string? WaitState { get; set; }
     public long? WaitingJobId { get; set; }
     public long? WaitingTimerSubscriptionId { get; set; }

@@ -170,6 +170,15 @@ the next persisted due or lease-expiry deadline. Calls have at-least-once
 external semantics and receive stable `sys.jobId` and `sys.jobAttempt` values,
 so downstream services should use `sys.jobId` as an idempotency key.
 
+Durable automatic activity lineages are bounded by the shared engine setting
+`Workflow.Async.MaxConsecutiveAutomaticActivations` (default `1000`; missing,
+invalid, or nonpositive values use that default). The 1,001st consecutive
+automatic `task`, `serviceTask`, or `scriptTask` activation is persisted as an
+`automatic_loop_limit` incident before its body can run. User-task actions,
+multi-instance completion, message delivery, and timer triggers start a fresh
+allowance. An administrator can retry the incident to queue the same stable job
+as activation one of a new allowance.
+
 The Blazor **Operations** page and `/api/jobs` / `/api/incidents` resources
 default to the `admin` role. Override the comma-separated global role list with
 the `WorkflowJobs.RequiredRole` engine setting. Job, incident, and attempt

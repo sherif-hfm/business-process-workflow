@@ -1399,12 +1399,20 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long? gatewayBranchId,
         int? arrivedViaFlowId,
         NodeExecutionActorRecord triggeredBy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int automaticActivationCount = 0,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(automaticActivationCount);
         var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == instanceId)
             ?? await dbContext.WorkflowInstances.SingleAsync(entity => entity.Id == instanceId, cancellationToken);
         var now = DateTimeOffset.UtcNow;
-        var token = NewToken(instance, node, now);
+        var token = NewToken(
+            instance,
+            node,
+            now,
+            automaticActivationCount,
+            automaticActivationStateIds);
         token.GatewayBranchId = gatewayBranchId;
         token.ArrivedViaFlowId = arrivedViaFlowId;
         dbContext.ExecutionTokens.Add(token);
@@ -1447,8 +1455,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyList<long> gatewayBranchIds,
         IReadOnlyCollection<long> complexDrainStateIds,
         NodeExecutionActorRecord triggeredBy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int automaticActivationCount = 0,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(automaticActivationCount);
         if (gatewayBranchIds.Count == 0)
         {
             return [];
@@ -1462,7 +1473,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var tokens = gatewayBranchIds
             .Select(branchId =>
             {
-                var token = NewToken(instance, gateway, now);
+                var token = NewToken(
+                    instance,
+                    gateway,
+                    now,
+                    automaticActivationCount,
+                    automaticActivationStateIds);
                 // The spawned token already belongs to its child branch so an
                 // immediate scoped interrupt can see/cancel it. Its gateway
                 // node-execution entry snapshot still records parentBranchId;
@@ -1509,8 +1525,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         NodeExecutionActorRecord triggeredBy,
         NodeExecutionCompletionRecord? currentCompletion,
         CancellationToken cancellationToken,
-        bool deferSave = false)
+        bool deferSave = false,
+        int? automaticActivationCount = null,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null)
     {
+        if (automaticActivationCount is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(automaticActivationCount));
+        }
         var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
             ?? await dbContext.ExecutionTokens.SingleAsync(entity => entity.Id == tokenId, cancellationToken);
         var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == token.InstanceId)
@@ -1541,6 +1563,15 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.ComplexGatewayCycle = null;
         token.TerminationReason = terminationReason;
         token.ActivationId = Guid.NewGuid();
+        if (automaticActivationCount is int nextAutomaticActivationCount)
+        {
+            token.AutomaticActivationCount = nextAutomaticActivationCount;
+        }
+        if (automaticActivationStateIds is not null)
+        {
+            token.AutomaticActivationStateIds = NormalizeAutomaticActivationStateIds(
+                automaticActivationStateIds);
+        }
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
@@ -1682,6 +1713,54 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
+        token.UpdatedAt = DateTimeOffset.UtcNow;
+        return true;
+    }
+
+    public async Task<bool> SetExecutionTokenAutomaticActivationCountAsync(
+        long tokenId,
+        Guid activationId,
+        int automaticActivationCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(automaticActivationCount);
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId)
+        {
+            return false;
+        }
+
+        token.AutomaticActivationCount = automaticActivationCount;
+        token.UpdatedAt = DateTimeOffset.UtcNow;
+        return true;
+    }
+
+    public async Task<bool> SetExecutionTokenAutomaticActivationStateIdsAsync(
+        long tokenId,
+        Guid activationId,
+        IReadOnlyCollection<long> automaticActivationStateIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(automaticActivationStateIds);
+        var normalizedStateIds = NormalizeAutomaticActivationStateIds(
+            automaticActivationStateIds);
+        var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == tokenId)
+            ?? await dbContext.ExecutionTokens.SingleOrDefaultAsync(
+                entity => entity.Id == tokenId,
+                cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenStatuses.Active
+            || token.ActivationId != activationId)
+        {
+            return false;
+        }
+
+        token.AutomaticActivationStateIds = normalizedStateIds;
         token.UpdatedAt = DateTimeOffset.UtcNow;
         return true;
     }
@@ -2429,8 +2508,13 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<long> activationDrainStateIds,
         IReadOnlyCollection<long> drainingTokenIds,
         long? activeExecutionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? automaticActivationCount = null)
     {
+        if (automaticActivationCount is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(automaticActivationCount));
+        }
         var state = dbContext.ComplexGatewayStates.Local.SingleOrDefault(candidate =>
                         candidate.InstanceId == instanceId && candidate.GatewayNodeId == gatewayNodeId)
                     ?? await dbContext.ComplexGatewayStates.SingleOrDefaultAsync(candidate =>
@@ -2454,9 +2538,132 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         state.ActivationDrainStateIds = activationDrainStateIds.OrderBy(id => id).ToArray();
         state.DrainingTokenIds = drainingTokenIds.OrderBy(id => id).ToArray();
         state.ActiveExecutionId = activeExecutionId;
+        if (automaticActivationCount is int nextAutomaticActivationCount)
+        {
+            state.AutomaticActivationCount = nextAutomaticActivationCount;
+        }
         state.UpdatedAt = now;
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToRecord(state);
+    }
+
+    public async Task<AutomaticActivationStateConsumptionRecord>
+        ConsumeExecutionTokenAutomaticActivationStateAsync(
+            long instanceId,
+            long complexGatewayStateId,
+            int fallbackAutomaticActivationCount,
+            CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(complexGatewayStateId);
+        ArgumentOutOfRangeException.ThrowIfNegative(fallbackAutomaticActivationCount);
+
+        var transaction = (NpgsqlTransaction)(dbContext.Database.CurrentTransaction
+            ?? throw new InvalidOperationException(
+                "Automatic-activation state consumption requires an instance transaction."))
+            .GetDbTransaction();
+        var connection = transaction.Connection
+            ?? throw new InvalidOperationException(
+                "The automatic-activation state transaction has no PostgreSQL connection.");
+        // A human/message/timer reset may have lowered a tracked token's count
+        // or cleared its lineage earlier in this transaction. Flush that state
+        // before the set-based aggregate so an older persisted count or marker
+        // can never override the authoritative reset. This does not commit the
+        // surrounding instance transaction.
+        await dbContext.SaveChangesAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var trackedMatches = dbContext.ExecutionTokens.Local
+            .Where(token => token.InstanceId == instanceId
+                            && token.AutomaticActivationStateIds.Contains(complexGatewayStateId))
+            .ToList();
+        var hasTrackedMatches = trackedMatches.Count > 0;
+        var maximumCount = hasTrackedMatches
+            ? trackedMatches.Max(token => token.AutomaticActivationCount)
+            : fallbackAutomaticActivationCount;
+        var inheritedStateIds = trackedMatches
+            .SelectMany(token => token.AutomaticActivationStateIds)
+            .Where(id => id != complexGatewayStateId)
+            .ToHashSet();
+
+        await using var command = new NpgsqlCommand(
+            """
+            WITH matching AS MATERIALIZED
+            (
+                SELECT token."Id"
+                FROM flowbit.execution_tokens AS token
+                WHERE token."InstanceId" = @instance_id
+                  AND cardinality(token."AutomaticActivationStateIds") > 0
+                  AND token."AutomaticActivationStateIds"
+                      @> ARRAY[@state_id]::bigint[]
+                ORDER BY token."Id"
+                FOR UPDATE
+            ),
+            consumed AS
+            (
+                UPDATE flowbit.execution_tokens AS token
+                SET "AutomaticActivationStateIds" =
+                        array_remove(token."AutomaticActivationStateIds", @state_id),
+                    "UpdatedAt" = @now
+                FROM matching
+                WHERE token."Id" = matching."Id"
+                RETURNING
+                    token."AutomaticActivationCount",
+                    token."AutomaticActivationStateIds"
+            ),
+            inherited AS
+            (
+                SELECT DISTINCT marker.state_id
+                FROM consumed
+                CROSS JOIN LATERAL
+                    unnest(consumed."AutomaticActivationStateIds") AS marker(state_id)
+                WHERE marker.state_id <> @state_id
+            )
+            SELECT
+                COUNT(*)::integer,
+                CASE
+                    WHEN COUNT(*) = 0 THEN @fallback_count
+                    ELSE MAX(consumed."AutomaticActivationCount")
+                END::integer,
+                COALESCE(
+                    (SELECT array_agg(inherited.state_id ORDER BY inherited.state_id)
+                     FROM inherited),
+                    '{}'::bigint[])
+            FROM consumed
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("instance_id", instanceId);
+        command.Parameters.AddWithValue("state_id", complexGatewayStateId);
+        command.Parameters.AddWithValue("fallback_count", fallbackAutomaticActivationCount);
+        command.Parameters.AddWithValue("now", now);
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    "Automatic-activation state consumption returned no aggregate row.");
+            }
+            var hasPersistedMatches = reader.GetInt32(0) > 0;
+            var persistedMaximumCount = reader.GetInt32(1);
+            if (hasPersistedMatches)
+            {
+                maximumCount = hasTrackedMatches
+                    ? Math.Max(maximumCount, persistedMaximumCount)
+                    : persistedMaximumCount;
+            }
+            inheritedStateIds.UnionWith(reader.GetFieldValue<long[]>(2));
+        }
+
+        foreach (var token in trackedMatches)
+        {
+            token.AutomaticActivationStateIds = token.AutomaticActivationStateIds
+                .Where(id => id != complexGatewayStateId)
+                .ToArray();
+            token.UpdatedAt = now;
+        }
+
+        return new AutomaticActivationStateConsumptionRecord(
+            maximumCount,
+            inheritedStateIds.OrderBy(id => id).ToArray());
     }
 
     public async Task RegisterTokenAtComplexGatewayAsync(
@@ -4842,7 +5049,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.ActivationId,
             entity.WaitState,
             entity.WaitingJobId,
-            entity.WaitingTimerSubscriptionId);
+            entity.WaitingTimerSubscriptionId,
+            entity.AutomaticActivationCount)
+        {
+            AutomaticActivationStateIds = entity.AutomaticActivationStateIds
+        };
 
     private static GatewayExecutionRecord ToRecord(GatewayExecutionEntity entity) =>
         new(
@@ -4876,7 +5087,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.DrainingTokenIds,
             entity.ActiveExecutionId,
             entity.CreatedAt,
-            entity.UpdatedAt);
+            entity.UpdatedAt,
+            entity.AutomaticActivationCount);
 
     private static GatewayBranchRecord ToRecord(GatewayBranchEntity entity) =>
         new(
@@ -5110,7 +5322,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     private static ExecutionTokenEntity NewToken(
         WorkflowInstanceEntity instance,
         CurrentNodeSnapshot node,
-        DateTimeOffset now) =>
+        DateTimeOffset now,
+        int automaticActivationCount = 0,
+        IReadOnlyCollection<long>? automaticActivationStateIds = null) =>
         new()
         {
             Instance = instance,
@@ -5120,10 +5334,32 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             NodeType = node.Type,
             FaultCode = node.FaultCode,
             FaultDescription = node.FaultDescription,
+            AutomaticActivationCount = automaticActivationCount,
+            AutomaticActivationStateIds = NormalizeAutomaticActivationStateIds(
+                automaticActivationStateIds),
             Status = ExecutionTokenStatuses.Active,
             CreatedAt = now,
             UpdatedAt = now
         };
+
+    private static long[] NormalizeAutomaticActivationStateIds(
+        IReadOnlyCollection<long>? automaticActivationStateIds)
+    {
+        if (automaticActivationStateIds is null || automaticActivationStateIds.Count == 0)
+        {
+            return [];
+        }
+        if (automaticActivationStateIds.Any(id => id <= 0))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(automaticActivationStateIds),
+                "Automatic-activation state ids must be positive.");
+        }
+        return automaticActivationStateIds
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+    }
 
     private static UserTaskEntity NewUserTask(
         WorkflowInstanceEntity instance,

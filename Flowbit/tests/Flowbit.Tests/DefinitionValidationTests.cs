@@ -21,6 +21,20 @@ public sealed class DefinitionValidationTests
         await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData("examples/01-async-before-after.json")]
+    [InlineData("examples/02-intermediate-timer-delay.json")]
+    [InlineData("examples/03-recurring-timer-start.json")]
+    [InlineData("examples/04-absolute-timer-start.json")]
+    [InlineData("examples/05-user-task-reminder-and-deadline.json")]
+    [InlineData("examples/06-multi-instance-reminder.json")]
+    public async Task CreateAsync_AcceptsDurableAsyncAndTimerExample(string fileName)
+    {
+        var model = LoadModel(fileName);
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
     public static IEnumerable<object[]> ValidTypedOutputDefaults()
     {
         var values = new (string Type, string Scalar, string Array)[]

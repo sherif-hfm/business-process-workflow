@@ -24,6 +24,7 @@ public sealed class WorkflowJobRepository(
         WorkflowJobCreateRecord create,
         CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(create.AutomaticActivationCount);
         var now = DateTimeOffset.UtcNow;
         var entity = new WorkflowJobEntity
         {
@@ -35,6 +36,7 @@ public sealed class WorkflowJobRepository(
             UserTaskId = create.UserTaskId,
             TimerSubscriptionId = create.TimerSubscriptionId,
             ActivationId = create.ActivationId,
+            AutomaticActivationCount = create.AutomaticActivationCount,
             NodeId = create.NodeId,
             NodeName = create.NodeName,
             NodeType = create.NodeType,
@@ -80,6 +82,84 @@ public sealed class WorkflowJobRepository(
             "SELECT pg_notify('flowbit_jobs', '')",
             cancellationToken);
         return MapJob(entity);
+    }
+
+    public async Task<WorkflowJobRecord> EnqueueIncidentAsync(
+        WorkflowJobCreateRecord create,
+        string type,
+        string summary,
+        string? details,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(create.AutomaticActivationCount);
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var transaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var now = DateTimeOffset.UtcNow;
+        var job = new WorkflowJobEntity
+        {
+            InstanceId = create.InstanceId,
+            WorkflowDefinitionId = create.WorkflowDefinitionId,
+            WorkflowKey = create.WorkflowKey,
+            TokenId = create.TokenId,
+            MultiInstanceExecutionId = create.MultiInstanceExecutionId,
+            UserTaskId = create.UserTaskId,
+            TimerSubscriptionId = create.TimerSubscriptionId,
+            ActivationId = create.ActivationId,
+            AutomaticActivationCount = create.AutomaticActivationCount,
+            NodeId = create.NodeId,
+            NodeName = create.NodeName,
+            NodeType = create.NodeType,
+            Kind = create.Kind,
+            QueueClass = create.QueueClass,
+            Phase = create.Phase,
+            Status = WorkflowJobStatuses.Incident,
+            Priority = create.Priority,
+            MaxAttempts = create.MaxAttempts,
+            FailureHandling = create.FailureHandling,
+            RetryDelays = create.RetryDelays.ToArray(),
+            DueAt = create.DueAt,
+            ScheduledOccurrenceAt = create.ScheduledOccurrenceAt,
+            PayloadJson = CloneDocument(create.Payload),
+            SnapshotId = create.SnapshotId,
+            LastFailureCode = Truncate(type, 100),
+            LastFailureDescription = Truncate(details ?? summary, FailureDescriptionLimit),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        dbContext.WorkflowJobs.Add(job);
+        // The generated job id is also the incident's immutable OriginalJobId.
+        // Both saves remain in the caller's instance transaction (or the short
+        // transaction owned by this method), so no observable job-only state is
+        // possible.
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var incident = new WorkflowIncidentEntity
+        {
+            JobId = job.Id,
+            OriginalJobId = job.Id,
+            Job = job,
+            InstanceId = job.InstanceId,
+            WorkflowDefinitionId = job.WorkflowDefinitionId,
+            WorkflowKey = job.WorkflowKey,
+            NodeId = job.NodeId,
+            NodeName = job.NodeName,
+            Type = Truncate(type, 100) ?? "jobFailure",
+            Status = WorkflowIncidentStatuses.Open,
+            Summary = Truncate(summary, 500) ?? "Workflow job paused.",
+            Details = Truncate(details, 4000),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        job.Incidents.Add(incident);
+        dbContext.WorkflowIncidents.Add(incident);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        return MapJob(job);
     }
 
     public async Task<WorkflowJobRecord?> GetAsync(
@@ -980,6 +1060,7 @@ public sealed class WorkflowJobRepository(
                 job.UserTaskId,
                 job.TimerSubscriptionId,
                 job.ActivationId,
+                job.AutomaticActivationCount,
                 job.NodeId,
                 job.NodeName,
                 job.NodeType,
@@ -1062,7 +1143,8 @@ public sealed class WorkflowJobRepository(
                 row.CreatedAt,
                 row.UpdatedAt,
                 row.StartedAt,
-                row.CompletedAt)).ToArray(),
+                row.CompletedAt,
+                row.AutomaticActivationCount)).ToArray(),
             page,
             pageSize,
             total)
@@ -1327,6 +1409,19 @@ public sealed class WorkflowJobRepository(
                 "The incident was already resolved or its job is no longer awaiting retry.");
         }
 
+        var restartsAutomaticAllowance = string.Equals(
+            incident.Type,
+            WorkflowIncidentTypes.AutomaticLoopLimit,
+            StringComparison.Ordinal);
+        if (restartsAutomaticAllowance
+            && (lockedToken is null
+                || lockedToken.WaitingJobId != job.Id
+                || !string.Equals(lockedToken.WaitState, job.Phase, StringComparison.Ordinal)))
+        {
+            throw new WorkflowConflictException(
+                "The automatic-loop incident no longer owns the token's exact durable wait.");
+        }
+
         TimerSubscriptionEntity? pausedSubscription = null;
         if (job.TimerSubscriptionId is long subscriptionId)
         {
@@ -1357,6 +1452,13 @@ public sealed class WorkflowJobRepository(
         }
 
         var now = DateTimeOffset.UtcNow;
+        if (restartsAutomaticAllowance)
+        {
+            var restartedCount = WorkflowAutomaticActivationGuard.RestartBlockedActivation();
+            lockedToken!.AutomaticActivationCount = restartedCount;
+            lockedToken.UpdatedAt = now;
+            job.AutomaticActivationCount = restartedCount;
+        }
         incident.Status = WorkflowIncidentStatuses.Resolved;
         incident.ResolvedBy = Truncate(resolvedBy, 300) ?? "system";
         incident.ResolvedAt = now;
@@ -2064,7 +2166,8 @@ public sealed class WorkflowJobRepository(
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.StartedAt,
-            entity.CompletedAt);
+            entity.CompletedAt,
+            entity.AutomaticActivationCount);
 
     private static WorkflowJobSnapshotRecord MapSnapshot(WorkflowJobSnapshotEntity entity) =>
         new(

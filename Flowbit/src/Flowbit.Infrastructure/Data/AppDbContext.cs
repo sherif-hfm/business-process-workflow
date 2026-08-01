@@ -142,6 +142,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "AND \"WaitingTimerSubscriptionId\" IS NULL) OR "
                     + "(\"WaitState\" IS NOT NULL AND "
                     + "(\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL))");
+                table.HasCheckConstraint(
+                    "CK_execution_tokens_automatic_activation_count",
+                    "\"AutomaticActivationCount\" >= 0");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
@@ -151,6 +154,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.TerminationReason).HasMaxLength(64);
             entity.Property(e => e.ActivationId).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.AutomaticActivationCount).HasDefaultValue(0);
+            entity.Property(e => e.AutomaticActivationStateIds)
+                .HasColumnType("bigint[]")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::bigint[]");
             entity.Property(e => e.WaitState).HasMaxLength(32);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ComplexDrainStateIds)
@@ -178,6 +186,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.ComplexDrainStateIds)
                 .HasMethod("gin")
                 .HasFilter("\"Status\" = 'active' AND cardinality(\"ComplexDrainStateIds\") > 0");
+            entity.HasIndex(e => e.AutomaticActivationStateIds)
+                .HasMethod("gin")
+                .HasFilter("cardinality(\"AutomaticActivationStateIds\") > 0");
             entity.HasIndex(e => e.CurrentNodeExecutionId).IsUnique();
             entity.HasIndex(e => e.WaitingJobId)
                 .HasFilter("\"WaitingJobId\" IS NOT NULL");
@@ -546,8 +557,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_complex_gateway_states_activation_drain_states",
                     "\"Phase\" <> 'waitingForStart' OR cardinality(\"ActivationDrainStateIds\") = 0");
+                table.HasCheckConstraint(
+                    "CK_complex_gateway_states_automatic_activation_count",
+                    "\"AutomaticActivationCount\" >= 0");
             });
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.AutomaticActivationCount).HasDefaultValue(0);
             entity.Property(e => e.Phase).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ContributingFlowIds)
                 .HasColumnType("integer[]")
@@ -905,6 +920,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_workflow_jobs_terminal_time",
                     "(\"Status\" IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NOT NULL) "
                     + "OR (\"Status\" NOT IN ('completed', 'cancelled', 'skipped') AND \"CompletedAt\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_automatic_activation_count",
+                    "\"AutomaticActivationCount\" >= 0");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
@@ -914,6 +932,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.QueueClass).HasMaxLength(32).IsRequired();
             entity.Property(e => e.Phase).HasMaxLength(64).IsRequired();
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.AutomaticActivationCount).HasDefaultValue(0);
             entity.Property(e => e.FailureHandling).HasMaxLength(32).IsRequired();
             entity.Property(e => e.RetryDelays).HasColumnType("interval[]").IsRequired();
             entity.Property(e => e.PayloadJson).HasColumnType("jsonb");

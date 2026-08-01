@@ -9,6 +9,18 @@ public interface IWorkflowJobRepository
         WorkflowJobCreateRecord create,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Creates a non-runnable job and its open incident atomically. Instance-
+    /// owned callers must already hold the owning instance and token locks.
+    /// This is used when work must be paused before it is ever leased.
+    /// </summary>
+    Task<WorkflowJobRecord> EnqueueIncidentAsync(
+        WorkflowJobCreateRecord create,
+        string type,
+        string summary,
+        string? details,
+        CancellationToken cancellationToken);
+
     Task<WorkflowJobRecord?> GetAsync(long jobId, CancellationToken cancellationToken);
 
     /// <summary>

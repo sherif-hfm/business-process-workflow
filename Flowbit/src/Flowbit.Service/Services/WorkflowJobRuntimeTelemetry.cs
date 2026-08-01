@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace Flowbit.Service.Services;
@@ -20,6 +21,9 @@ internal static class WorkflowJobRuntimeTelemetry
     private static readonly Counter<long> Incidents = Meter.CreateCounter<long>(
         "flowbit.jobs.incidents.opened",
         description: "Durable workflow incidents opened.");
+    private static readonly Counter<long> AutomaticLoopLimits = Meter.CreateCounter<long>(
+        "flowbit.jobs.automatic_loop_limit",
+        description: "Automatic workflow activations blocked by the durable loop guard.");
     private static readonly Histogram<double> InstanceLockWait = Meter.CreateHistogram<double>(
         "flowbit.jobs.instance_lock.wait",
         "ms",
@@ -30,6 +34,24 @@ internal static class WorkflowJobRuntimeTelemetry
     public static void RecordConflict() => Conflicts.Add(1);
 
     public static void RecordIncident() => Incidents.Add(1);
+
+    public static void RecordAutomaticLoopLimit(
+        int observedCount,
+        int configuredLimit,
+        long tokenId,
+        int nodeId,
+        Guid activationId)
+    {
+        var tags = new TagList
+        {
+            { "observed_count", observedCount },
+            { "configured_limit", configuredLimit },
+            { "token_id", tokenId },
+            { "node_id", nodeId },
+            { "activation_id", activationId.ToString("D") }
+        };
+        AutomaticLoopLimits.Add(1, tags);
+    }
 
     public static void RecordInstanceLockWait(TimeSpan elapsed) =>
         InstanceLockWait.Record(elapsed.TotalMilliseconds);
