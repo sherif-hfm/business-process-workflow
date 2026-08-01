@@ -154,6 +154,257 @@ public sealed class EditorRuntimeSmokeTests
             timer.GetProperty("timer").GetProperty("timeDuration").GetString());
     }
 
+    [Fact]
+    public void FriendlyDurationCycleAndLocalDateHelpersProduceCanonicalIsoValues()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const local = '2027-01-15T12:34:56';
+              const utc = browserLocalDateTimeToUtcIso(local);
+              return JSON.stringify({
+                seconds: formatSimpleIsoDuration('10', 'seconds'),
+                minutes: formatSimpleIsoDuration('5', 'minutes'),
+                hours: formatSimpleIsoDuration('3', 'hours'),
+                days: formatSimpleIsoDuration('2', 'days'),
+                weeks: formatSimpleIsoDuration('1', 'weeks'),
+                decimal: formatSimpleIsoDuration('0.5', 'seconds'),
+                forever: formatSimpleIsoCycle('forever', null, 'P2D'),
+                limited: formatSimpleIsoCycle('limited', 5, 'PT1H'),
+                compoundIsAdvanced: parseSimpleIsoDuration('P1DT2H') === null,
+                utc,
+                localRoundTrip: isoToBrowserLocalDateTime(utc)
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("PT10S", root.GetProperty("seconds").GetString());
+        Assert.Equal("PT5M", root.GetProperty("minutes").GetString());
+        Assert.Equal("PT3H", root.GetProperty("hours").GetString());
+        Assert.Equal("P2D", root.GetProperty("days").GetString());
+        Assert.Equal("P1W", root.GetProperty("weeks").GetString());
+        Assert.Equal("PT0.5S", root.GetProperty("decimal").GetString());
+        Assert.Equal("R/P2D", root.GetProperty("forever").GetString());
+        Assert.Equal("R5/PT1H", root.GetProperty("limited").GetString());
+        Assert.True(root.GetProperty("compoundIsAdvanced").GetBoolean());
+        Assert.EndsWith("Z", root.GetProperty("utc").GetString(), StringComparison.Ordinal);
+        Assert.Equal("2027-01-15T12:34:56", root.GetProperty("localRoundTrip").GetString());
+    }
+
+    [Fact]
+    public void FriendlyEditorsPreserveImportedValuesUntilTheUserEditsThem()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              function descendants(root) {
+                const result = [root];
+                root.children.forEach(child => result.push(...descendants(child)));
+                return result;
+              }
+              function byData(root, key) {
+                return descendants(root).find(element => element.dataset[key] === 'true');
+              }
+
+              let durationValue = 'P1DT2H';
+              let durationChanges = 0;
+              const durationParent = fakeElement();
+              const duration = renderDurationEditor(
+                durationParent,
+                'Delay',
+                durationValue,
+                value => { durationValue = value; durationChanges++; });
+              const durationAdvancedInitiallyOpen = byData(duration, 'advancedIso').open === true;
+              const amount = byData(duration, 'durationAmount');
+              const unit = byData(duration, 'durationUnit');
+              amount.value = '2';
+              unit.value = 'days';
+              amount.oninput();
+
+              let cycleValue = 'R/P1DT2H';
+              let cycleChanges = 0;
+              const cycle = renderCycleEditor(
+                fakeElement(),
+                cycleValue,
+                value => { cycleValue = value; cycleChanges++; });
+
+              let dateValue = '2027-01-15T12:34:56+03:00';
+              let dateChanges = 0;
+              const absolute = renderAbsoluteTimerEditor(
+                fakeElement(),
+                dateValue,
+                value => { dateValue = value; dateChanges++; });
+
+              return JSON.stringify({
+                durationAdvancedInitiallyOpen,
+                durationValue,
+                durationChanges,
+                cycleAdvancedOpen: byData(cycle, 'advancedIso').open === true,
+                cycleValue,
+                cycleChanges,
+                dateAdvancedOpen: byData(absolute, 'advancedIso').open === true,
+                dateValue,
+                dateChanges
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("durationAdvancedInitiallyOpen").GetBoolean());
+        Assert.Equal("P2D", root.GetProperty("durationValue").GetString());
+        Assert.Equal(1, root.GetProperty("durationChanges").GetInt32());
+        Assert.True(root.GetProperty("cycleAdvancedOpen").GetBoolean());
+        Assert.Equal("R/P1DT2H", root.GetProperty("cycleValue").GetString());
+        Assert.Equal(0, root.GetProperty("cycleChanges").GetInt32());
+        Assert.False(root.GetProperty("dateAdvancedOpen").GetBoolean());
+        Assert.Equal("2027-01-15T12:34:56+03:00", root.GetProperty("dateValue").GetString());
+        Assert.Equal(0, root.GetProperty("dateChanges").GetInt32());
+    }
+
+    [Fact]
+    public void TimerInspectorFriendlyControlsUpdateTheExistingIsoProperties()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              function descendants(root) {
+                const result = [root];
+                root.children.forEach(child => result.push(...descendants(child)));
+                return result;
+              }
+              function byData(root, key) {
+                return descendants(root).find(element => element.dataset[key] === 'true');
+              }
+              function renderTimer(node) {
+                inspector.replaceChildren();
+                renderTimerSection(node);
+              }
+
+              const durationNode = { timer: { timeDate: null, timeDuration: 'PT1H', timeCycle: null } };
+              renderTimer(durationNode);
+              let amount = byData(inspector, 'durationAmount');
+              let unit = byData(inspector, 'durationUnit');
+              amount.value = '2';
+              unit.value = 'days';
+              amount.oninput();
+
+              const cycleNode = { timer: { timeDate: null, timeDuration: null, timeCycle: 'R/P2D' } };
+              renderTimer(cycleNode);
+              const mode = byData(inspector, 'cycleMode');
+              const count = byData(inspector, 'cycleCount');
+              count.value = '3';
+              mode.value = 'limited';
+              mode.onchange();
+
+              const dateNode = {
+                timer: { timeDate: '2027-01-15T12:34:56+03:00', timeDuration: null, timeCycle: null }
+              };
+              const dateBeforeRender = dateNode.timer.timeDate;
+              renderTimer(dateNode);
+              const dateAfterRender = dateNode.timer.timeDate;
+              const local = byData(inspector, 'localDateTime');
+              local.value = '2027-02-16T08:15:30';
+              local.oninput();
+
+              const compoundNode = {
+                timer: { timeDate: null, timeDuration: 'P1DT2H', timeCycle: null }
+              };
+              const compoundBefore = JSON.stringify(compoundNode.timer);
+              renderTimer(compoundNode);
+
+              return JSON.stringify({
+                duration: durationNode.timer.timeDuration,
+                cycle: cycleNode.timer.timeCycle,
+                dateBeforeRender,
+                dateAfterRender,
+                editedDate: dateNode.timer.timeDate,
+                compoundPreserved: JSON.stringify(compoundNode.timer) === compoundBefore,
+                compoundAdvancedOpen: byData(inspector, 'advancedIso').open === true
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("P2D", root.GetProperty("duration").GetString());
+        Assert.Equal("R3/P2D", root.GetProperty("cycle").GetString());
+        Assert.Equal("2027-01-15T12:34:56+03:00", root.GetProperty("dateBeforeRender").GetString());
+        Assert.Equal(root.GetProperty("dateBeforeRender").GetString(), root.GetProperty("dateAfterRender").GetString());
+        Assert.EndsWith("Z", root.GetProperty("editedDate").GetString(), StringComparison.Ordinal);
+        Assert.True(root.GetProperty("compoundPreserved").GetBoolean());
+        Assert.True(root.GetProperty("compoundAdvancedOpen").GetBoolean());
+    }
+
+    [Fact]
+    public void RetryDelayCardsAddRemoveReorderAndEnforceTheLimit()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              function descendants(root) {
+                const result = [root];
+                root.children.forEach(child => result.push(...descendants(child)));
+                return result;
+              }
+              function renderPolicy(node) {
+                inspector.replaceChildren();
+                renderAsyncJobSection(node);
+                return descendants(inspector);
+              }
+              function button(elements, text) {
+                return elements.find(element => element.tagName === 'BUTTON' && element.textContent === text);
+              }
+
+              const node = {
+                id: 901,
+                type: NODE_TYPE.TASK,
+                asyncBefore: true,
+                asyncAfter: false,
+                job: { failureHandling: 'boundaryFirst', retryDelays: ['PT10S', 'PT1M', 'PT5M'] }
+              };
+              let elements = renderPolicy(node);
+              const firstCard = elements.find(element => element.dataset.retryDelayIndex === '0');
+              button(descendants(firstCard), 'Move down').onclick();
+              const reordered = [...node.job.retryDelays];
+
+              elements = renderPolicy(node);
+              button(elements, 'Remove').onclick();
+              const afterRemove = [...node.job.retryDelays];
+
+              node.job.retryDelays = [];
+              elements = renderPolicy(node);
+              button(elements, '+ Add retry delay').onclick();
+              const afterAdd = [...node.job.retryDelays];
+
+              node.job.retryDelays = Array.from({ length: 10 }, () => 'PT1S');
+              elements = renderPolicy(node);
+              const limitButton = button(elements, 'Retry limit reached');
+
+              return JSON.stringify({
+                reordered,
+                afterRemove,
+                afterAdd,
+                limitDisabled: limitButton.disabled,
+                limitCount: node.job.retryDelays.length
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal(new[] { "PT1M", "PT10S", "PT5M" },
+            root.GetProperty("reordered").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(new[] { "PT10S", "PT5M" },
+            root.GetProperty("afterRemove").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(new[] { "PT10S" },
+            root.GetProperty("afterAdd").EnumerateArray().Select(value => value.GetString()));
+        Assert.True(root.GetProperty("limitDisabled").GetBoolean());
+        Assert.Equal(10, root.GetProperty("limitCount").GetInt32());
+    }
+
     private static Engine CreateEditorEngine()
     {
         var html = ReadEditorSource();

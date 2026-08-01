@@ -2044,6 +2044,11 @@ public sealed class EditorValidatorTests
         Assert.Contains("Async before", html, StringComparison.Ordinal);
         Assert.Contains("id=\"icon-timer\"", html, StringComparison.Ordinal);
         Assert.Contains("R/P2D", html, StringComparison.Ordinal);
+        Assert.Contains("Duration after activation", html, StringComparison.Ordinal);
+        Assert.Contains("Limited occurrences", html, StringComparison.Ordinal);
+        Assert.Contains("Local date and time", html, StringComparison.Ordinal);
+        Assert.Contains("+ Add retry delay", html, StringComparison.Ordinal);
+        Assert.Contains("Advanced ISO value", html, StringComparison.Ordinal);
     }
 
     private static WorkflowModel CreateTimerStartModel(TimerDefinitionModel timer) => new()

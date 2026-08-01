@@ -870,6 +870,24 @@
   }
   .inspector-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
   .inspector-card.clickable:hover { background: var(--panel-2); border-color: var(--accent); }
+  .duration-builder { padding: 10px; background: color-mix(in srgb, var(--panel-2) 72%, transparent); border: 1px solid var(--border); border-radius: 9px; }
+  .duration-builder > label { font-weight: 650; color: var(--text); }
+  .duration-input-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .duration-input-row .field { margin-bottom: 6px; }
+  .duration-preview { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+  .duration-preview strong { color: var(--text); font-weight: 650; }
+  .duration-preview.is-error { color: var(--warning-text); }
+  .duration-advanced { margin-top: 9px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .duration-advanced summary { color: var(--muted); cursor: pointer; font-size: 12px; user-select: none; }
+  .duration-advanced .field { margin: 9px 0 5px; }
+  .retry-delay-list { display: grid; gap: 9px; margin: 8px 0 10px; }
+  .retry-delay-card { margin: 0; }
+  .retry-delay-card .duration-builder { margin-top: 8px; }
+  .retry-delay-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+  .retry-delay-actions button { padding: 7px 6px; font-size: 12px; }
+  .timer-cycle-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .timer-cycle-controls .field { margin-bottom: 8px; }
+  .timer-local-zone { margin-top: -5px; }
   .empty-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
   .row { display: flex; gap: 8px; }
   .row > * { flex: 1; }
@@ -1217,6 +1235,7 @@
     .toolbar-group { flex: 1 1 auto; }
     main { --sidebar-width: 310px; }
     .diagram-tools { width: min(520px, calc(100% - 24px)); }
+    .duration-input-row, .timer-cycle-controls { grid-template-columns: 1fr; }
   }
   @media (max-width: 820px) {
     .js-editor-layout { flex-direction: column; overflow-y: auto; }
@@ -5191,6 +5210,443 @@ function renderErrorBoundarySection(hostNode) {
   }
 }
 
+const FRIENDLY_DURATION_UNITS = [
+  { value: "seconds", label: "Seconds", singular: "second", isoPrefix: "PT", isoSuffix: "S", seconds: 1 },
+  { value: "minutes", label: "Minutes", singular: "minute", isoPrefix: "PT", isoSuffix: "M", seconds: 60 },
+  { value: "hours", label: "Hours", singular: "hour", isoPrefix: "PT", isoSuffix: "H", seconds: 3600 },
+  { value: "days", label: "Days", singular: "day", isoPrefix: "P", isoSuffix: "D", seconds: 86400 },
+  { value: "weeks", label: "Weeks", singular: "week", isoPrefix: "P", isoSuffix: "W", seconds: 604800 }
+];
+
+function normalizeFriendlyDurationAmount(value) {
+  const candidate = String(value ?? "").trim().replace(",", ".");
+  if (!/^\d+(?:\.\d+)?$/.test(candidate)) return null;
+  const pieces = candidate.split(".");
+  const whole = pieces[0].replace(/^0+(?=\d)/, "") || "0";
+  const fraction = (pieces[1] || "").replace(/0+$/, "");
+  const normalized = fraction ? `${whole}.${fraction}` : whole;
+  return Number(normalized) > 0 ? normalized : null;
+}
+
+function friendlyDurationUnit(value) {
+  return FRIENDLY_DURATION_UNITS.find(unit => unit.value === value) || null;
+}
+
+function formatSimpleIsoDuration(amount, unitName) {
+  const normalized = normalizeFriendlyDurationAmount(amount);
+  const unit = friendlyDurationUnit(unitName);
+  return normalized && unit
+    ? `${unit.isoPrefix}${normalized}${unit.isoSuffix}`
+    : null;
+}
+
+function parseSimpleIsoDuration(value) {
+  if (typeof value !== "string") return null;
+  const match = /^P(?:(\d+(?:[\.,]\d+)?)W|(\d+(?:[\.,]\d+)?)D|T(\d+(?:[\.,]\d+)?)([HMS]))$/.exec(value.trim());
+  if (!match) return null;
+  const amount = normalizeFriendlyDurationAmount(match[1] ?? match[2] ?? match[3]);
+  const unit = match[1] != null
+    ? "weeks"
+    : match[2] != null
+      ? "days"
+      : match[4] === "H" ? "hours" : match[4] === "M" ? "minutes" : "seconds";
+  return amount ? { amount, unit } : null;
+}
+
+function friendlyDurationSeconds(amount, unitName) {
+  const normalized = normalizeFriendlyDurationAmount(amount);
+  const unit = friendlyDurationUnit(unitName);
+  if (!normalized || !unit) return null;
+  const seconds = Number(normalized) * unit.seconds;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+function friendlyDurationDescription(amount, unitName) {
+  const normalized = normalizeFriendlyDurationAmount(amount);
+  const unit = friendlyDurationUnit(unitName);
+  if (!normalized || !unit) return "";
+  return `${normalized} ${Number(normalized) === 1 ? unit.singular : unit.label.toLowerCase()}`;
+}
+
+function parseIsoCycleParts(value) {
+  if (typeof value !== "string") return null;
+  const match = /^R(\d*)\/(.+)$/.exec(value.trim());
+  if (!match) return null;
+  const count = match[1] === "" ? null : Number(match[1]);
+  if (count != null && (!Number.isInteger(count) || count <= 0 || count > 2147483647)) return null;
+  return { mode: count == null ? "forever" : "limited", count, interval: match[2] };
+}
+
+function parseSimpleIsoCycle(value) {
+  const parts = parseIsoCycleParts(value);
+  if (!parts) return null;
+  const interval = parseSimpleIsoDuration(parts.interval);
+  return interval ? { ...parts, ...interval } : null;
+}
+
+function formatSimpleIsoCycle(mode, count, interval) {
+  if (validatorFixedDurationSeconds(interval) == null) return null;
+  if (mode === "forever") return `R/${interval}`;
+  const parsedCount = Number(count);
+  return Number.isInteger(parsedCount) && parsedCount > 0 && parsedCount <= 2147483647
+    ? `R${parsedCount}/${interval}`
+    : null;
+}
+
+function padDatePart(value, length = 2) {
+  return String(value).padStart(length, "0");
+}
+
+function isoToBrowserLocalDateTime(value) {
+  if (typeof value !== "string" || !validatorTimeDate(value)) return null;
+  const date = new Date(value.trim().replace(",", "."));
+  if (!Number.isFinite(date.getTime())) return null;
+  const year = date.getFullYear();
+  if (year < 1 || year > 9999) return null;
+  return `${padDatePart(year, 4)}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`
+    + `T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`;
+}
+
+function browserLocalDateTimeToUtcIso(value) {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  const date = new Date(0);
+  date.setHours(0, 0, 0, 0);
+  date.setFullYear(parts[0], parts[1] - 1, parts[2]);
+  date.setHours(parts[3], parts[4], parts[5] || 0, 0);
+  if (date.getFullYear() !== parts[0] || date.getMonth() !== parts[1] - 1 ||
+      date.getDate() !== parts[2] || date.getHours() !== parts[3] ||
+      date.getMinutes() !== parts[4] || date.getSeconds() !== (parts[5] || 0)) {
+    return null;
+  }
+  const iso = date.toISOString();
+  return validatorTimeDate(iso) ? iso : null;
+}
+
+function browserTimeZoneName() {
+  try {
+    return typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || "browser local time"
+      : "browser local time";
+  } catch {
+    return "browser local time";
+  }
+}
+
+function renderDurationEditor(parent, label, value, onChange, options = {}) {
+  const original = typeof value === "string" ? value : value == null ? "" : String(value);
+  const parsed = parseSimpleIsoDuration(value);
+  const wrapper = document.createElement("div");
+  wrapper.className = "field duration-builder";
+  wrapper.dataset.durationEditor = "true";
+  const heading = document.createElement("label");
+  heading.textContent = label;
+  wrapper.appendChild(heading);
+
+  const row = document.createElement("div");
+  row.className = "duration-input-row";
+  const amountField = document.createElement("div");
+  amountField.className = "field";
+  amountField.innerHTML = "<label>Amount</label>";
+  const amountInput = document.createElement("input");
+  amountInput.type = "number";
+  amountInput.min = "0";
+  amountInput.step = "any";
+  amountInput.inputMode = "decimal";
+  amountInput.value = parsed?.amount ?? "";
+  amountInput.dataset.durationAmount = "true";
+  amountField.appendChild(amountInput);
+  row.appendChild(amountField);
+
+  const unitField = document.createElement("div");
+  unitField.className = "field";
+  unitField.innerHTML = "<label>Unit</label>";
+  const unitSelect = document.createElement("select");
+  unitSelect.dataset.durationUnit = "true";
+  const selectedUnit = parsed?.unit ?? options.defaultUnit ?? "minutes";
+  unitSelect.innerHTML = FRIENDLY_DURATION_UNITS
+    .map(unit => `<option value="${unit.value}" ${unit.value === selectedUnit ? "selected" : ""}>${unit.label}</option>`)
+    .join("");
+  unitSelect.value = selectedUnit;
+  unitField.appendChild(unitSelect);
+  row.appendChild(unitField);
+  wrapper.appendChild(row);
+
+  const preview = document.createElement("p");
+  preview.className = "duration-preview";
+  preview.dataset.durationPreview = "true";
+  wrapper.appendChild(preview);
+
+  const advanced = document.createElement("details");
+  advanced.className = "duration-advanced";
+  advanced.open = original.length > 0 && parsed == null;
+  advanced.dataset.advancedIso = "true";
+  const summary = document.createElement("summary");
+  summary.textContent = "Advanced ISO value";
+  advanced.appendChild(summary);
+  const rawField = document.createElement("div");
+  rawField.className = "field";
+  rawField.innerHTML = "<label>ISO-8601 duration</label>";
+  const rawInput = document.createElement("input");
+  rawInput.type = "text";
+  rawInput.value = original;
+  rawInput.dataset.advancedIsoInput = "true";
+  rawField.appendChild(rawInput);
+  advanced.appendChild(rawField);
+  const advancedStatus = document.createElement("p");
+  advancedStatus.className = "duration-preview";
+  advanced.appendChild(advancedStatus);
+  if (options.showAdvanced !== false) wrapper.appendChild(advanced);
+
+  const refreshAdvanced = () => {
+    const seconds = validatorFixedDurationSeconds(rawInput.value);
+    const belowMinimum = seconds != null && options.minimumSeconds != null && seconds < options.minimumSeconds;
+    advancedStatus.classList.toggle("is-error", seconds == null || belowMinimum);
+    advancedStatus.textContent = seconds == null
+      ? "Enter a positive fixed-unit ISO duration."
+      : belowMinimum
+        ? `The interval must be at least ${options.minimumSeconds} second${options.minimumSeconds === 1 ? "" : "s"}.`
+        : "Valid ISO duration.";
+  };
+
+  const refreshFriendly = commit => {
+    const iso = formatSimpleIsoDuration(amountInput.value, unitSelect.value);
+    const seconds = iso == null ? null : validatorFixedDurationSeconds(iso);
+    const belowMinimum = seconds != null && options.minimumSeconds != null && seconds < options.minimumSeconds;
+    preview.classList.toggle("is-error", seconds == null || belowMinimum);
+    preview.innerHTML = seconds == null
+      ? "Enter an amount greater than zero."
+      : belowMinimum
+        ? `The interval must be at least ${options.minimumSeconds} second${options.minimumSeconds === 1 ? "" : "s"}.`
+        : `<strong>${friendlyDurationDescription(amountInput.value, unitSelect.value)}</strong> &middot; saved as ${iso}`;
+    if (commit && seconds != null && !belowMinimum) {
+      rawInput.value = iso;
+      onChange(iso);
+      refreshAdvanced();
+    }
+  };
+
+  amountInput.oninput = () => refreshFriendly(true);
+  unitSelect.onchange = () => refreshFriendly(true);
+  rawInput.oninput = () => {
+    onChange(rawInput.value);
+    const friendly = parseSimpleIsoDuration(rawInput.value);
+    if (friendly) {
+      amountInput.value = friendly.amount;
+      unitSelect.value = friendly.unit;
+    } else {
+      amountInput.value = "";
+    }
+    refreshFriendly(false);
+    refreshAdvanced();
+  };
+  refreshFriendly(false);
+  refreshAdvanced();
+  parent.appendChild(wrapper);
+  return wrapper;
+}
+
+function renderCycleEditor(parent, value, onChange) {
+  const original = typeof value === "string" ? value : value == null ? "" : String(value);
+  const cycleParts = parseIsoCycleParts(value);
+  const simple = parseSimpleIsoCycle(value);
+  const wrapper = document.createElement("div");
+  wrapper.className = "field inspector-card";
+  wrapper.dataset.cycleEditor = "true";
+
+  const controls = document.createElement("div");
+  controls.className = "timer-cycle-controls";
+  const modeField = document.createElement("div");
+  modeField.className = "field";
+  modeField.innerHTML = "<label>Repeat</label>";
+  const modeSelect = document.createElement("select");
+  modeSelect.innerHTML = '<option value="forever">Forever</option><option value="limited">Limited occurrences</option>';
+  modeSelect.value = cycleParts?.mode ?? "forever";
+  modeSelect.dataset.cycleMode = "true";
+  modeField.appendChild(modeSelect);
+  controls.appendChild(modeField);
+
+  const countField = document.createElement("div");
+  countField.className = "field";
+  countField.innerHTML = "<label>Occurrences</label>";
+  const countInput = document.createElement("input");
+  countInput.type = "number";
+  countInput.min = "1";
+  countInput.max = "2147483647";
+  countInput.step = "1";
+  countInput.value = cycleParts?.count ?? 5;
+  countInput.dataset.cycleCount = "true";
+  countField.appendChild(countInput);
+  controls.appendChild(countField);
+  wrapper.appendChild(controls);
+
+  let interval = cycleParts?.interval ?? "PT1H";
+  let rawInput;
+  let advancedStatus;
+  const preview = document.createElement("p");
+  preview.className = "duration-preview";
+  preview.dataset.cyclePreview = "true";
+  const refreshAdvanced = () => {
+    if (!rawInput) return;
+    const seconds = validatorTimeCycle(rawInput.value);
+    advancedStatus.classList.toggle("is-error", seconds == null || seconds < 1);
+    advancedStatus.textContent = seconds == null
+      ? "Use R/Duration or R<number>/Duration."
+      : seconds < 1 ? "The repeating interval must be at least one second." : "Valid ISO repeating interval.";
+  };
+  const commitCycle = () => {
+    countField.hidden = modeSelect.value !== "limited";
+    const cycle = formatSimpleIsoCycle(modeSelect.value, countInput.value, interval);
+    const seconds = validatorFixedDurationSeconds(interval);
+    const invalidInterval = seconds == null || seconds < 1;
+    preview.classList.toggle("is-error", cycle == null || invalidInterval);
+    preview.textContent = invalidInterval
+      ? "The repeating interval must be at least one second."
+      : cycle == null
+        ? "Enter a positive whole number of occurrences."
+        : `${modeSelect.value === "forever" ? "Repeats forever" : `Repeats ${Number(countInput.value)} times`} · saved as ${cycle}`;
+    if (cycle != null && !invalidInterval) {
+      if (rawInput) rawInput.value = cycle;
+      onChange(cycle);
+      refreshAdvanced();
+    }
+  };
+
+  renderDurationEditor(wrapper, "Interval", simple ? cycleParts.interval : "", next => {
+    interval = next;
+    commitCycle();
+  }, { defaultUnit: "hours", minimumSeconds: 1, showAdvanced: false });
+  wrapper.appendChild(preview);
+
+  const advanced = document.createElement("details");
+  advanced.className = "duration-advanced";
+  advanced.open = original.length > 0 && simple == null;
+  advanced.dataset.advancedIso = "true";
+  const summary = document.createElement("summary");
+  summary.textContent = "Advanced ISO repeating interval";
+  advanced.appendChild(summary);
+  const rawField = document.createElement("div");
+  rawField.className = "field";
+  rawField.innerHTML = "<label>ISO-8601 cycle</label>";
+  rawInput = document.createElement("input");
+  rawInput.type = "text";
+  rawInput.value = original;
+  rawInput.dataset.advancedIsoInput = "true";
+  rawField.appendChild(rawInput);
+  advanced.appendChild(rawField);
+  advancedStatus = document.createElement("p");
+  advancedStatus.className = "duration-preview";
+  advanced.appendChild(advancedStatus);
+  wrapper.appendChild(advanced);
+
+  modeSelect.onchange = commitCycle;
+  countInput.oninput = commitCycle;
+  rawInput.oninput = () => {
+    onChange(rawInput.value);
+    const nextParts = parseIsoCycleParts(rawInput.value);
+    if (nextParts) {
+      modeSelect.value = nextParts.mode;
+      if (nextParts.count != null) countInput.value = nextParts.count;
+      countField.hidden = nextParts.mode !== "limited";
+      interval = nextParts.interval;
+    }
+    refreshAdvanced();
+  };
+  countField.hidden = modeSelect.value !== "limited";
+  const initialSeconds = validatorTimeCycle(original);
+  preview.classList.toggle("is-error", initialSeconds == null || initialSeconds < 1);
+  preview.textContent = initialSeconds == null
+    ? "Enter a valid repeating schedule."
+    : initialSeconds < 1
+      ? "The repeating interval must be at least one second."
+      : `${cycleParts?.mode === "limited" ? `Repeats ${cycleParts.count} times` : "Repeats forever"} · saved as ${original}`;
+  refreshAdvanced();
+  parent.appendChild(wrapper);
+  return wrapper;
+}
+
+function renderAbsoluteTimerEditor(parent, value, onChange) {
+  const original = typeof value === "string" ? value : value == null ? "" : String(value);
+  const localValue = isoToBrowserLocalDateTime(value);
+  const wrapper = document.createElement("div");
+  wrapper.className = "field inspector-card";
+  wrapper.dataset.absoluteTimerEditor = "true";
+  const localField = document.createElement("div");
+  localField.className = "field";
+  localField.innerHTML = "<label>Local date and time</label>";
+  const input = document.createElement("input");
+  input.type = "datetime-local";
+  input.step = "1";
+  input.value = localValue ?? "";
+  input.dataset.localDateTime = "true";
+  localField.appendChild(input);
+  wrapper.appendChild(localField);
+  const zone = document.createElement("p");
+  zone.className = "duration-preview timer-local-zone";
+  zone.textContent = `Interpreted in ${browserTimeZoneName()}.`;
+  wrapper.appendChild(zone);
+  const preview = document.createElement("p");
+  preview.className = "duration-preview";
+  preview.dataset.utcPreview = "true";
+  wrapper.appendChild(preview);
+
+  const advanced = document.createElement("details");
+  advanced.className = "duration-advanced";
+  advanced.open = original.length > 0 && localValue == null;
+  advanced.dataset.advancedIso = "true";
+  const summary = document.createElement("summary");
+  summary.textContent = "Advanced ISO date/time";
+  advanced.appendChild(summary);
+  const rawField = document.createElement("div");
+  rawField.className = "field";
+  rawField.innerHTML = "<label>ISO date/time with offset</label>";
+  const rawInput = document.createElement("input");
+  rawInput.type = "text";
+  rawInput.value = original;
+  rawInput.dataset.advancedIsoInput = "true";
+  rawField.appendChild(rawInput);
+  advanced.appendChild(rawField);
+  const advancedStatus = document.createElement("p");
+  advancedStatus.className = "duration-preview";
+  advanced.appendChild(advancedStatus);
+  wrapper.appendChild(advanced);
+
+  const refreshAdvanced = () => {
+    const parsed = parseTimerTimeDate(rawInput.value);
+    advancedStatus.classList.toggle("is-error", parsed == null);
+    advancedStatus.textContent = parsed == null
+      ? "Enter a valid date/time with Z or an explicit UTC offset."
+      : `Valid instant · UTC ${parsed.canonical}`;
+  };
+  const refreshPreview = iso => {
+    preview.classList.toggle("is-error", iso == null);
+    preview.textContent = iso == null
+      ? "Choose a valid local date and time. Times skipped by daylight-saving changes are rejected."
+      : `Saved in UTC as ${iso}`;
+  };
+  input.oninput = () => {
+    const iso = browserLocalDateTimeToUtcIso(input.value);
+    refreshPreview(iso);
+    if (iso != null) {
+      rawInput.value = iso;
+      onChange(iso);
+      refreshAdvanced();
+    }
+  };
+  rawInput.oninput = () => {
+    onChange(rawInput.value);
+    input.value = isoToBrowserLocalDateTime(rawInput.value) ?? "";
+    refreshPreview(parseTimerTimeDate(rawInput.value)?.canonical ?? null);
+    refreshAdvanced();
+  };
+  refreshPreview(parseTimerTimeDate(value)?.canonical ?? null);
+  refreshAdvanced();
+  parent.appendChild(wrapper);
+  return wrapper;
+}
+
 function renderAsyncJobSection(node) {
   const title = document.createElement("h2");
   title.textContent = "Durable async";
@@ -5265,19 +5721,89 @@ function renderAsyncJobSection(node) {
     { value: "boundaryFirst", label: "Boundary first" },
     { value: "retryFirst", label: "Retries first" }
   ], node.job.failureHandling, value => { node.job.failureHandling = value; });
-  textareaField(
-    "Retry delays (one ISO duration per line)",
-    Array.isArray(node.job.retryDelays) ? node.job.retryDelays.join("\n") : "",
-    value => {
-      node.job.retryDelays = value.split(/\r?\n|,/)
-        .map(item => item.trim())
-        .filter(Boolean);
-    },
-    4);
+  if (!Array.isArray(node.job.retryDelays)) {
+    const malformed = document.createElement("p");
+    malformed.className = "empty-note";
+    malformed.style.color = "var(--warning-text)";
+    malformed.textContent = "The imported retry-delay list is malformed. Reset it explicitly to preserve imported data until you choose to replace it.";
+    inspector.appendChild(malformed);
+    const reset = document.createElement("button");
+    reset.textContent = "Reset to deployment defaults";
+    reset.style.width = "100%";
+    reset.onclick = () => {
+      node.job.retryDelays = ["PT10S", "PT1M", "PT5M"];
+      renderInspector();
+    };
+    inspector.appendChild(reset);
+    return;
+  }
+
+  if (node.job.retryDelays.length === 0) {
+    const none = document.createElement("p");
+    none.className = "empty-note";
+    none.textContent = "No automatic retries. The first failure follows the configured boundary/incident behavior.";
+    inspector.appendChild(none);
+  }
+  const list = document.createElement("div");
+  list.className = "retry-delay-list";
+  node.job.retryDelays.forEach((delay, index) => {
+    const card = document.createElement("div");
+    card.className = "inspector-card retry-delay-card";
+    card.dataset.retryDelayIndex = String(index);
+    const badge = document.createElement("div");
+    badge.className = "badge";
+    badge.textContent = `Retry ${index + 1}`;
+    card.appendChild(badge);
+    renderDurationEditor(card, "Delay", delay, value => {
+      node.job.retryDelays[index] = value;
+    }, { defaultUnit: index === 0 ? "seconds" : "minutes" });
+    const actions = document.createElement("div");
+    actions.className = "retry-delay-actions";
+    const up = document.createElement("button");
+    up.textContent = "Move up";
+    up.disabled = index === 0;
+    up.onclick = () => {
+      if (index === 0) return;
+      [node.job.retryDelays[index - 1], node.job.retryDelays[index]] =
+        [node.job.retryDelays[index], node.job.retryDelays[index - 1]];
+      renderInspector();
+    };
+    actions.appendChild(up);
+    const down = document.createElement("button");
+    down.textContent = "Move down";
+    down.disabled = index === node.job.retryDelays.length - 1;
+    down.onclick = () => {
+      if (index >= node.job.retryDelays.length - 1) return;
+      [node.job.retryDelays[index + 1], node.job.retryDelays[index]] =
+        [node.job.retryDelays[index], node.job.retryDelays[index + 1]];
+      renderInspector();
+    };
+    actions.appendChild(down);
+    const remove = document.createElement("button");
+    remove.textContent = "Remove";
+    remove.className = "danger";
+    remove.onclick = () => {
+      node.job.retryDelays.splice(index, 1);
+      renderInspector();
+    };
+    actions.appendChild(remove);
+    card.appendChild(actions);
+    list.appendChild(card);
+  });
+  inspector.appendChild(list);
+  const add = document.createElement("button");
+  add.textContent = node.job.retryDelays.length >= 10 ? "Retry limit reached" : "+ Add retry delay";
+  add.style.width = "100%";
+  add.disabled = node.job.retryDelays.length >= 10;
+  add.onclick = () => {
+    if (node.job.retryDelays.length >= 10) return;
+    node.job.retryDelays.push("PT10S");
+    renderInspector();
+  };
+  inspector.appendChild(add);
 }
 
 function renderTimerSection(node) {
-  node.timer = normalizeTimerDefinition(node.timer);
   const title = document.createElement("h2");
   title.textContent = "Timer";
   title.style.marginTop = "16px";
@@ -5316,19 +5842,26 @@ function renderTimerSection(node) {
     renderInspector();
   });
 
-  const label = selectedKind === "timeDate"
-    ? "ISO date/time with offset"
-    : selectedKind === "timeCycle" ? "ISO repeating interval" : "ISO duration";
-  field(label, "text", node.timer[selectedKind] ?? "", value => {
-    node.timer[selectedKind] = value;
-  });
+  if (selectedKind === "timeDate") {
+    renderAbsoluteTimerEditor(inspector, node.timer.timeDate ?? "", value => {
+      node.timer.timeDate = value;
+    });
+  } else if (selectedKind === "timeCycle") {
+    renderCycleEditor(inspector, node.timer.timeCycle ?? "", value => {
+      node.timer.timeCycle = value;
+    });
+  } else {
+    renderDurationEditor(inspector, "Duration after activation", node.timer.timeDuration ?? "", value => {
+      node.timer.timeDuration = value;
+    }, { defaultUnit: "hours" });
+  }
   const hint = document.createElement("p");
   hint.className = "empty-note";
   hint.textContent = selectedKind === "timeDate"
-    ? "Example: 2026-12-31T23:00:00Z. An explicit Z or ±HH:mm offset is required."
+    ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
     : selectedKind === "timeCycle"
-      ? "Examples: R/P2D (forever) or R5/PT1H (five occurrences). The interval must be at least one second."
-      : "Examples: P2D, PT30M, PT0.5S. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years/months and cron are not.";
+      ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
+      : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not.";
   inspector.appendChild(hint);
 }
 
