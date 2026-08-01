@@ -27,6 +27,7 @@
     {
       "id": 1,
       "name": "Start",
+      "externalId": "START_MULTI_INSTANCE_REMINDER",
       "type": "startEvent",
       "laneId": null,
       "x": 60,
@@ -37,6 +38,7 @@
     {
       "id": 2,
       "name": "Three Parallel Approvals",
+      "externalId": "TASK_THREE_PARALLEL_APPROVALS",
       "type": "userTask",
       "laneId": null,
       "x": 330,
@@ -68,6 +70,7 @@
     {
       "id": 3,
       "name": "Reminder Every 15 Seconds",
+      "externalId": "TIMER_BOUNDARY_APPROVAL_REMINDER",
       "type": "timerBoundaryEvent",
       "laneId": null,
       "x": 425,
@@ -85,6 +88,7 @@
     {
       "id": 4,
       "name": "Record Parent Reminder",
+      "externalId": "SCRIPT_RECORD_PARENT_REMINDER",
       "type": "scriptTask",
       "laneId": null,
       "x": 650,
@@ -106,6 +110,7 @@
     {
       "id": 5,
       "name": "Reminder Branch End",
+      "externalId": "END_REMINDER_BRANCH",
       "type": "endEvent",
       "laneId": null,
       "x": 970,
@@ -116,6 +121,7 @@
     {
       "id": 6,
       "name": "All Approvals Completed",
+      "externalId": "END_ALL_APPROVALS_COMPLETED",
       "type": "endEvent",
       "laneId": null,
       "x": 970,
@@ -128,6 +134,7 @@
     {
       "id": 101,
       "name": "Create parent async job",
+      "externalId": "FLOW_CREATE_PARENT_ASYNC_JOB",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -136,6 +143,7 @@
     {
       "id": 201,
       "name": "Approve",
+      "externalId": "FLOW_APPROVE_MULTI_INSTANCE_ITEM",
       "sourceRef": 2,
       "targetRef": 6,
       "roles": [],
@@ -149,6 +157,7 @@
     {
       "id": 202,
       "name": "Engine fallback",
+      "externalId": "FLOW_APPROVAL_ENGINE_FALLBACK",
       "sourceRef": 2,
       "targetRef": 6,
       "roles": [],
@@ -163,6 +172,7 @@
     {
       "id": 301,
       "name": "Run reminder without completing parent",
+      "externalId": "FLOW_RUN_NON_INTERRUPTING_REMINDER",
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -171,6 +181,7 @@
     {
       "id": 401,
       "name": "Reminder recorded",
+      "externalId": "FLOW_COMPLETE_REMINDER_BRANCH",
       "sourceRef": 4,
       "targetRef": 5,
       "roles": [],

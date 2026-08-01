@@ -1,0 +1,204 @@
+{
+  "id": "example-multi-instance-cardinality-one-per-actor",
+  "name": "Multi-Instance Example 03 - Cardinality One Per Actor",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "panelSize",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 3,
+      "validation": "panelSize >= 1 and panelSize <= 10"
+    },
+    {
+      "id": 2,
+      "name": "panelReviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Review Panel",
+      "externalId": "LANE_REVIEW_PANEL",
+      "x": 30,
+      "y": 30,
+      "w": 1260,
+      "h": 390
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Panel Review Requested",
+      "externalId": "START_PANEL_REVIEW",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 180,
+      "roles": [
+        "ReviewCoordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Submit Independent Panel Review",
+      "externalId": "TASK_ONE_REVIEW_PER_ACTOR",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 350,
+      "y": 165,
+      "roles": [
+        "Panelist"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "cardinality",
+        "collectionVariable": null,
+        "cardinalityExpression": "panelSize",
+        "onePerActor": true,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "panelReviewResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "Panel Review Completed",
+      "externalId": "END_PANEL_REVIEW_COMPLETED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 950,
+      "y": 180,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create three pooled items",
+      "externalId": "FLOW_CREATE_PANEL_ITEMS",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Submit panel review",
+      "externalId": "FLOW_SUBMIT_PANEL_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Panelist"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "score",
+          "dataType": "number",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "score >= 1 and score <= 5"
+        },
+        {
+          "id": 2,
+          "name": "comment",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "No comment",
+          "validation": "Length(comment) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "externalId": "FLOW_PANEL_ENGINE_FALLBACK",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "ReviewCoordinator"
+  ],
+  "unclaimRoles": [
+    "ReviewCoordinator"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

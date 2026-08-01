@@ -1,0 +1,194 @@
+{
+  "id": "example-javascript-execution-api",
+  "name": "Script Example 02 - JavaScript Execution API",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "sourceName",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "  Ada Lovelace  "
+    },
+    {
+      "id": 2,
+      "name": "normalizedName",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    },
+    {
+      "id": 3,
+      "name": "retryCount",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 2,
+      "validation": "retryCount >= 0"
+    },
+    {
+      "id": 4,
+      "name": "enabled",
+      "dataType": "boolean",
+      "isArray": false,
+      "required": false,
+      "defaultValue": true
+    },
+    {
+      "id": 5,
+      "name": "tags",
+      "dataType": "string",
+      "isArray": true,
+      "required": false,
+      "defaultValue": [
+        "seed",
+        "javascript"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "payload",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": {
+        "source": "initial",
+        "items": []
+      }
+    },
+    {
+      "id": 7,
+      "name": "variablesSnapshot",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": {}
+    },
+    {
+      "id": 8,
+      "name": "hasRetryCount",
+      "dataType": "boolean",
+      "isArray": false,
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "id": 9,
+      "name": "processedDate",
+      "dataType": "date",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "2026-08-01"
+    },
+    {
+      "id": 10,
+      "name": "processedAt",
+      "dataType": "datetime",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "2026-08-01T00:00:00Z"
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "JavaScript Sandbox",
+      "externalId": "LANE_JAVASCRIPT_SANDBOX",
+      "x": 30,
+      "y": 30,
+      "w": 1400,
+      "h": 420
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start JavaScript Example",
+      "externalId": "START_JAVASCRIPT_API",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 185,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Use Execution Bridge",
+      "externalId": "SCRIPT_USE_EXECUTION_API",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 320,
+      "y": 170,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "const source = execution.getVariable('sourceName');\nconst all = execution.getVariables();\nconst exists = execution.hasVariable('retryCount');\nexecution.setVariable('normalizedName', String(source).trim().toLowerCase());\nexecution.setVariable('retryCount', Number(all.retryCount) + 1);\nexecution.setVariable('enabled', !Boolean(all.enabled));\nexecution.setVariable('tags', ['seed', 'javascript', 'bridge']);\nexecution.setVariable('payload', { source: 'javascript', ok: true, values: [1, 2, 3], prior: all.payload });\nexecution.setVariable('variablesSnapshot', { sourceName: all.sourceName, retryBefore: all.retryCount, tagCount: all.tags.length });\nexecution.setVariable('hasRetryCount', exists);\nexecution.setVariable('processedDate', '2026-08-01');\nexecution.setVariable('processedAt', '2026-08-01T12:30:00Z');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Inspect Typed Bridge Values",
+      "externalId": "TASK_INSPECT_JAVASCRIPT_VALUES",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 720,
+      "y": 170,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "JavaScript Example Completed",
+      "externalId": "END_JAVASCRIPT_API",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1130,
+      "y": 185,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Execute JavaScript",
+      "externalId": "FLOW_START_TO_JAVASCRIPT",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Review bridge outputs",
+      "externalId": "FLOW_JAVASCRIPT_TO_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Finish inspection",
+      "externalId": "FLOW_JAVASCRIPT_REVIEW_TO_END",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

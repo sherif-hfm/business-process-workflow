@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Start",
+      "externalId": "START_ASYNC_WORKER_EXAMPLE",
       "type": "startEvent",
       "laneId": null,
       "x": 60,
@@ -28,6 +29,7 @@
     {
       "id": 2,
       "name": "Run Script Through Worker",
+      "externalId": "SCRIPT_INCREMENT_THROUGH_WORKER",
       "type": "scriptTask",
       "laneId": null,
       "x": 230,
@@ -57,6 +59,7 @@
     {
       "id": 3,
       "name": "Commit Then Route Through Worker",
+      "externalId": "TASK_COMMIT_THEN_ROUTE",
       "type": "task",
       "laneId": null,
       "x": 520,
@@ -73,6 +76,7 @@
     {
       "id": 4,
       "name": "Inspect Result",
+      "externalId": "TASK_INSPECT_ASYNC_RESULT",
       "type": "userTask",
       "laneId": null,
       "x": 830,
@@ -85,6 +89,7 @@
     {
       "id": 5,
       "name": "Completed",
+      "externalId": "END_ASYNC_WORKER_COMPLETED",
       "type": "endEvent",
       "laneId": null,
       "x": 1110,
@@ -97,6 +102,7 @@
     {
       "id": 101,
       "name": "Queue async-before job",
+      "externalId": "FLOW_QUEUE_ASYNC_BEFORE_JOB",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -105,6 +111,7 @@
     {
       "id": 201,
       "name": "Script finished",
+      "externalId": "FLOW_SCRIPT_FINISHED",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -113,6 +120,7 @@
     {
       "id": 301,
       "name": "Async-after routing",
+      "externalId": "FLOW_QUEUE_ASYNC_AFTER_ROUTING",
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -121,6 +129,7 @@
     {
       "id": 401,
       "name": "Finish",
+      "externalId": "FLOW_FINISH_ASYNC_EXAMPLE",
       "sourceRef": 4,
       "targetRef": 5,
       "roles": [],

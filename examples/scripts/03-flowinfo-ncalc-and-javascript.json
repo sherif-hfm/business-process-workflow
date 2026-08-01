@@ -1,0 +1,268 @@
+{
+  "id": "example-flowinfo-ncalc-javascript",
+  "name": "Script Example 03 - FlowInfo in NCalc and JavaScript",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "actionCount",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "actionCount >= 0"
+    },
+    {
+      "id": 2,
+      "name": "traversalCount",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "traversalCount >= 0"
+    },
+    {
+      "id": 3,
+      "name": "selectedActor",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "none"
+    },
+    {
+      "id": 4,
+      "name": "ncalcEvidence",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": {}
+    },
+    {
+      "id": 5,
+      "name": "javascriptEvidence",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": {}
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Evidence Capture and Routing",
+      "externalId": "LANE_FLOW_EVIDENCE",
+      "x": 30,
+      "y": 30,
+      "w": 1770,
+      "h": 620
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Evidence Example",
+      "externalId": "START_FLOWINFO",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Choose an Outcome",
+      "externalId": "TASK_CHOOSE_EVIDENCE_OUTCOME",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 280,
+      "y": 270,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Read Evidence with NCalc",
+      "externalId": "SCRIPT_READ_FLOWINFO_NCALC",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 610,
+      "y": 270,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "actionCount",
+          "expression": "FlowInfo(201, 'actions.count') + FlowInfo(202, 'actions.count')"
+        },
+        {
+          "variable": "traversalCount",
+          "expression": "FlowInfo(201, 'traversals.count') + FlowInfo(202, 'traversals.count')"
+        },
+        {
+          "variable": "selectedActor",
+          "expression": "if(FlowInfo(201, 'actions.count') > 0, FlowInfo(201, 'actions.last.user'), FlowInfo(202, 'actions.last.user'))"
+        },
+        {
+          "variable": "ncalcEvidence",
+          "expression": "if(FlowInfo(201, 'actions.count') > 0, FlowInfo(201, 'all'), FlowInfo(202, 'all'))"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 4,
+      "name": "Read Evidence with JavaScript",
+      "externalId": "SCRIPT_READ_FLOWINFO_JAVASCRIPT",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 940,
+      "y": 270,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "const accepted = execution.getFlowInfo(201);\nconst returned = execution.getFlowInfo(202);\nexecution.setVariable('javascriptEvidence', { accepted: accepted, returned: returned });",
+      "usesFlowInfo": true
+    },
+    {
+      "id": 5,
+      "name": "Route from Lifetime Evidence",
+      "externalId": "GATEWAY_ROUTE_FLOWINFO",
+      "type": "exclusiveGateway",
+      "laneId": 1,
+      "x": 1260,
+      "y": 275,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Accepted Path Completed",
+      "externalId": "END_FLOWINFO_ACCEPTED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1570,
+      "y": 115,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Returned Path Completed",
+      "externalId": "END_FLOWINFO_RETURNED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1570,
+      "y": 285,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "No Evidence Fallback",
+      "externalId": "END_FLOWINFO_FALLBACK",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1570,
+      "y": 455,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Request a decision",
+      "externalId": "FLOW_START_TO_DECISION",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Accept",
+      "externalId": "FLOW_DECISION_ACCEPT",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Return",
+      "externalId": "FLOW_DECISION_RETURN",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Continue after NCalc evidence",
+      "externalId": "FLOW_NCALC_TO_JAVASCRIPT",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Evaluate evidence route",
+      "externalId": "FLOW_JAVASCRIPT_TO_GATEWAY",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Accepted evidence",
+      "externalId": "FLOW_GATEWAY_ACCEPTED",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": "FlowInfo(201, 'actions.count') > 0 and FlowInfo(201, 'traversals.count') > 0",
+      "conditionPriority": 1,
+      "isDefault": false
+    },
+    {
+      "id": 502,
+      "name": "Returned evidence",
+      "externalId": "FLOW_GATEWAY_RETURNED",
+      "sourceRef": 5,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [],
+      "condition": "FlowInfo(202, 'actions.count') > 0 and FlowInfo(202, 'traversals.count') > 0",
+      "conditionPriority": 2,
+      "isDefault": false
+    },
+    {
+      "id": 503,
+      "name": "Default when evidence is absent",
+      "externalId": "FLOW_GATEWAY_FALLBACK",
+      "sourceRef": 5,
+      "targetRef": 8,
+      "roles": [],
+      "variables": [],
+      "isDefault": true
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

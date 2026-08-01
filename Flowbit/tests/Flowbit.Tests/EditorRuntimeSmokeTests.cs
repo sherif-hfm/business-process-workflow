@@ -406,26 +406,28 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Theory]
-    [InlineData("01-async-before-after.json")]
-    [InlineData("02-intermediate-timer-delay.json")]
-    [InlineData("03-recurring-timer-start.json")]
-    [InlineData("04-absolute-timer-start.json")]
-    [InlineData("05-user-task-reminder-and-deadline.json")]
-    [InlineData("06-multi-instance-reminder.json")]
-    public void DurableAsyncAndTimerExampleLoadsAndRendersInEditor(string fileName)
+    [MemberData(nameof(ExampleWorkflowData.All), MemberType = typeof(ExampleWorkflowData))]
+    public void ExampleWorkflowLoadsValidatesAndRendersInEditor(string fileName)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "examples", fileName);
-        var json = File.ReadAllText(path);
+        var json = ExampleWorkflowData.Read(fileName);
         var engine = CreateEditorEngine();
-        engine.SetValue("durableExampleJson", json);
+        engine.SetValue("exampleWorkflowJson", json);
+        string? validationJson = null;
 
-        var exception = Record.Exception(() => engine.Execute(
-            """
-            loadFromObject(JSON.parse(durableExampleJson));
-            render();
-            """));
+        var exception = Record.Exception(() =>
+        {
+            engine.Execute(
+                """
+                loadFromObject(JSON.parse(exampleWorkflowJson));
+                render();
+                """);
+            validationJson = engine.Evaluate(
+                "JSON.stringify(validateModelForSave(model));").AsString();
+        });
 
         Assert.Null(exception);
+        using var validation = JsonDocument.Parse(validationJson!);
+        Assert.Empty(validation.RootElement.EnumerateArray());
         Assert.StartsWith("example-", engine.Evaluate("model.id").AsString(), StringComparison.Ordinal);
     }
 

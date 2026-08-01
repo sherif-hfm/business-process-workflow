@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Start",
+      "externalId": "START_REMINDER_DEADLINE_EXAMPLE",
       "type": "startEvent",
       "laneId": null,
       "x": 60,
@@ -28,6 +29,7 @@
     {
       "id": 2,
       "name": "Approve Request",
+      "externalId": "TASK_APPROVE_BEFORE_DEADLINE",
       "type": "userTask",
       "laneId": null,
       "x": 310,
@@ -40,6 +42,7 @@
     {
       "id": 3,
       "name": "Reminder Every 15 Seconds",
+      "externalId": "TIMER_REMINDER_EVERY_FIFTEEN_SECONDS",
       "type": "timerBoundaryEvent",
       "laneId": null,
       "x": 390,
@@ -57,6 +60,7 @@
     {
       "id": 4,
       "name": "Record Reminder",
+      "externalId": "SCRIPT_RECORD_REMINDER",
       "type": "scriptTask",
       "laneId": null,
       "x": 610,
@@ -78,6 +82,7 @@
     {
       "id": 5,
       "name": "Reminder Branch End",
+      "externalId": "END_REMINDER_BRANCH",
       "type": "endEvent",
       "laneId": null,
       "x": 930,
@@ -88,6 +93,7 @@
     {
       "id": 6,
       "name": "One Minute Deadline",
+      "externalId": "TIMER_ONE_MINUTE_APPROVAL_DEADLINE",
       "type": "timerBoundaryEvent",
       "laneId": null,
       "x": 470,
@@ -105,6 +111,7 @@
     {
       "id": 7,
       "name": "Escalated Approval",
+      "externalId": "TASK_ESCALATED_APPROVAL",
       "type": "userTask",
       "laneId": null,
       "x": 650,
@@ -117,6 +124,7 @@
     {
       "id": 8,
       "name": "Completed",
+      "externalId": "END_REMINDER_DEADLINE_COMPLETED",
       "type": "endEvent",
       "laneId": null,
       "x": 1030,
@@ -129,6 +137,7 @@
     {
       "id": 101,
       "name": "Begin approval",
+      "externalId": "FLOW_BEGIN_DEADLINE_APPROVAL",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -137,6 +146,7 @@
     {
       "id": 201,
       "name": "Approve normally",
+      "externalId": "FLOW_APPROVE_BEFORE_DEADLINE",
       "sourceRef": 2,
       "targetRef": 8,
       "roles": [],
@@ -145,6 +155,7 @@
     {
       "id": 301,
       "name": "Send reminder without cancelling approval",
+      "externalId": "FLOW_TRIGGER_NON_INTERRUPTING_REMINDER",
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -153,6 +164,7 @@
     {
       "id": 401,
       "name": "Reminder recorded",
+      "externalId": "FLOW_REMINDER_RECORDED",
       "sourceRef": 4,
       "targetRef": 5,
       "roles": [],
@@ -161,6 +173,7 @@
     {
       "id": 601,
       "name": "Cancel original task and escalate",
+      "externalId": "FLOW_DEADLINE_ESCALATION",
       "sourceRef": 6,
       "targetRef": 7,
       "roles": [],
@@ -169,6 +182,7 @@
     {
       "id": 701,
       "name": "Complete escalation",
+      "externalId": "FLOW_COMPLETE_ESCALATED_APPROVAL",
       "sourceRef": 7,
       "targetRef": 8,
       "roles": [],

@@ -1,0 +1,357 @@
+{
+  "id": "example-message-catch-delivery-idempotency",
+  "name": "Message Example 02 - Catch Delivery Idempotency",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "acknowledged",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": false,
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "receiptCode",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "PENDING",
+      "validation": "Length(receiptCode) > 0"
+    },
+    {
+      "id": 3,
+      "name": "receivedAmount",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "receivedAmount >= 0"
+    },
+    {
+      "id": 4,
+      "name": "receivedAt",
+      "dataType": "datetime",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "2026-01-01T00:00:00Z",
+      "validation": null
+    },
+    {
+      "id": 5,
+      "name": "warnings",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 6,
+      "name": "providerPayload",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": {},
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Purchase Order Delivery",
+      "externalId": "LANE_PURCHASE_ORDER_DELIVERY",
+      "x": 30,
+      "y": 30,
+      "w": 1580,
+      "h": 400
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Purchase Order Created",
+      "externalId": "START_PURCHASE_ORDER_CREATED",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 185,
+      "roles": [
+        "Purchasing"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "purchaseOrderId",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "StartsWith(purchaseOrderId, 'PO-')"
+        }
+      ],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Send Purchase Order",
+      "externalId": "TASK_SEND_PURCHASE_ORDER",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 300,
+      "y": 170,
+      "roles": [
+        "Purchasing"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "Wait for Provider Receipt",
+      "externalId": "MESSAGE_CATCH_PROVIDER_RECEIPT",
+      "type": "intermediateMessageCatchEvent",
+      "laneId": 1,
+      "x": 650,
+      "y": 185,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null,
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Purchase-Order",
+        "headerValue": "${purchaseOrderId}",
+        "headerValidation": "header == purchaseOrderId and StartsWith(header, 'PO-')",
+        "outputMappings": [
+          {
+            "variable": "acknowledged",
+            "path": "receipt.accepted",
+            "dataType": "boolean",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "acknowledged == true"
+          },
+          {
+            "variable": "receiptCode",
+            "path": "receipt.code",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "StartsWith(receiptCode, 'RCPT-')"
+          },
+          {
+            "variable": "receivedAmount",
+            "path": "receipt.amount",
+            "dataType": "number",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "receivedAmount >= 0"
+          },
+          {
+            "variable": "receivedAt",
+            "path": "receipt.receivedAt",
+            "dataType": "datetime",
+            "isArray": false,
+            "required": false,
+            "defaultValue": "2026-01-01T00:00:00Z",
+            "validation": null
+          },
+          {
+            "variable": "warnings",
+            "path": "receipt.warnings",
+            "dataType": "string",
+            "isArray": true,
+            "required": false,
+            "defaultValue": [],
+            "validation": null
+          },
+          {
+            "variable": "providerPayload",
+            "path": "receipt",
+            "dataType": "json",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          }
+        ],
+        "deliveryIdempotency": true,
+        "deliveryIdempotencyHeaderName": "X-Flowbit-Delivery-Key"
+      }
+    },
+    {
+      "id": 4,
+      "name": "Verify Provider Receipt",
+      "externalId": "TASK_VERIFY_PROVIDER_RECEIPT",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 920,
+      "y": 170,
+      "roles": [
+        "Purchasing"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 5,
+      "name": "Receipt Verified",
+      "externalId": "END_RECEIPT_VERIFIED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1350,
+      "y": 185,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Prepare external delivery",
+      "externalId": "FLOW_PREPARE_EXTERNAL_DELIVERY",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Order sent",
+      "externalId": "FLOW_ORDER_SENT",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Receipt mapped atomically",
+      "externalId": "FLOW_RECEIPT_MAPPED",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 401,
+      "name": "Confirm receipt",
+      "externalId": "FLOW_CONFIRM_RECEIPT",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "Purchasing"
+  ],
+  "unclaimRoles": [
+    "Purchasing"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -1,0 +1,224 @@
+{
+  "id": "example-rest-error-boundary-error-end",
+  "name": "Service Task Example 02 - REST Error Boundary and Error End",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "serviceStatus",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "serviceStatus >= 0"
+    },
+    {
+      "id": 2,
+      "name": "serviceError",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "REST Failure Recovery",
+      "externalId": "LANE_REST_FAILURE_RECOVERY",
+      "x": 30,
+      "y": 30,
+      "w": 1650,
+      "h": 680
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Failure Contract",
+      "externalId": "START_REST_FAILURE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 205,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(requestId) > 0"
+        },
+        {
+          "id": 2,
+          "name": "resourceId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(resourceId) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Call Failing Mock Endpoint",
+      "externalId": "SERVICE_CALL_FAILING_MOCK",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 350,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "service": {
+        "type": "rest",
+        "method": "GET",
+        "url": "${config.exampleApiBaseUrl}/failures/${resourceId}",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "X-Request-Id",
+            "value": "${requestId}"
+          }
+        ],
+        "body": null,
+        "timeoutSeconds": 5,
+        "statusVariable": "serviceStatus",
+        "outputMappings": []
+      }
+    },
+    {
+      "id": 3,
+      "name": "Catch REST Failure",
+      "externalId": "BOUNDARY_CATCH_REST_FAILURE",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 455,
+      "y": 255,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "serviceError"
+    },
+    {
+      "id": 4,
+      "name": "Choose Retry or Fault",
+      "externalId": "TASK_REST_FAILURE_DECISION",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 790,
+      "y": 390,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 5,
+      "name": "REST Failure Terminal Fault",
+      "externalId": "END_REST_FAILURE_FAULT",
+      "type": "errorEndEvent",
+      "laneId": 1,
+      "x": 1280,
+      "y": 510,
+      "roles": [],
+      "variables": [],
+      "errorCode": "EXAMPLE.REST_FAILURE",
+      "errorDescription": "The configured REST dependency remained unavailable after operator review."
+    },
+    {
+      "id": 6,
+      "name": "Unexpected REST Success",
+      "externalId": "END_UNEXPECTED_REST_SUCCESS",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 790,
+      "y": 205,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Invoke failure contract",
+      "externalId": "FLOW_START_TO_FAILING_REST",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Continue only on HTTP success",
+      "externalId": "FLOW_SERVICE_TO_UNEXPECTED_SUCCESS",
+      "sourceRef": 2,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Send captured failure to operator",
+      "externalId": "FLOW_BOUNDARY_TO_FAILURE_DECISION",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Retry REST call",
+      "externalId": "FLOW_OPERATOR_RETRY_REST",
+      "sourceRef": 4,
+      "targetRef": 2,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "retryReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(retryReason) > 0"
+        }
+      ]
+    },
+    {
+      "id": 402,
+      "name": "End with domain fault",
+      "externalId": "FLOW_OPERATOR_TO_ERROR_END",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "faultNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "Escalated after operator review"
+        }
+      ]
+    }
+  ],
+  "cancelRoles": [
+    "ExampleOperator"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

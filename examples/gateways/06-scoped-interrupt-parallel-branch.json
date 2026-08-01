@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Case Opened",
+      "externalId": "START_CASE_OPENED",
       "type": "startEvent",
       "laneId": 1,
       "x": 75,
@@ -28,6 +29,7 @@
     {
       "id": 2,
       "name": "Start Parallel Work",
+      "externalId": "GATEWAY_FORK_PARALLEL_CASE_WORK",
       "type": "parallelGateway",
       "laneId": 1,
       "x": 290,
@@ -38,6 +40,7 @@
     {
       "id": 3,
       "name": "Normal Investigation",
+      "externalId": "TASK_NORMAL_INVESTIGATION",
       "type": "userTask",
       "laneId": 1,
       "x": 520,
@@ -48,6 +51,7 @@
     {
       "id": 4,
       "name": "Raise Emergency",
+      "externalId": "TASK_RAISE_EMERGENCY",
       "type": "userTask",
       "laneId": 1,
       "x": 520,
@@ -58,6 +62,7 @@
     {
       "id": 5,
       "name": "Interrupt Parallel Scope",
+      "externalId": "EVENT_INTERRUPT_PARALLEL_SCOPE",
       "type": "scopedInterruptEvent",
       "gatewayRef": 2,
       "laneId": 1,
@@ -69,6 +74,7 @@
     {
       "id": 6,
       "name": "Emergency Response",
+      "externalId": "TASK_EMERGENCY_RESPONSE",
       "type": "userTask",
       "laneId": 1,
       "x": 1060,
@@ -79,6 +85,7 @@
     {
       "id": 7,
       "name": "Emergency Resolved",
+      "externalId": "END_EMERGENCY_RESOLVED",
       "type": "endEvent",
       "laneId": 1,
       "x": 1390,
@@ -89,6 +96,7 @@
     {
       "id": 8,
       "name": "Normal Branch Finished",
+      "externalId": "END_NORMAL_BRANCH_FINISHED",
       "type": "endEvent",
       "laneId": 1,
       "x": 920,
@@ -101,6 +109,7 @@
     {
       "id": 101,
       "name": "Create parallel scope",
+      "externalId": "FLOW_CREATE_PARALLEL_CASE_SCOPE",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -109,6 +118,7 @@
     {
       "id": 201,
       "name": "Investigation branch",
+      "externalId": "FLOW_START_INVESTIGATION_BRANCH",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -117,6 +127,7 @@
     {
       "id": 202,
       "name": "Emergency branch",
+      "externalId": "FLOW_START_EMERGENCY_BRANCH",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
@@ -125,6 +136,7 @@
     {
       "id": 301,
       "name": "Complete normally",
+      "externalId": "FLOW_COMPLETE_NORMAL_INVESTIGATION",
       "sourceRef": 3,
       "targetRef": 8,
       "roles": ["Investigator"],
@@ -133,6 +145,7 @@
     {
       "id": 401,
       "name": "Trigger scoped interrupt",
+      "externalId": "FLOW_TRIGGER_SCOPED_INTERRUPT",
       "sourceRef": 4,
       "targetRef": 5,
       "roles": ["Supervisor"],
@@ -141,6 +154,7 @@
     {
       "id": 501,
       "name": "Continue outside interrupted scope",
+      "externalId": "FLOW_CONTINUE_AFTER_SCOPED_INTERRUPT",
       "sourceRef": 5,
       "targetRef": 6,
       "roles": [],
@@ -149,6 +163,7 @@
     {
       "id": 601,
       "name": "Resolve emergency",
+      "externalId": "FLOW_RESOLVE_EMERGENCY",
       "sourceRef": 6,
       "targetRef": 7,
       "roles": ["Supervisor"],

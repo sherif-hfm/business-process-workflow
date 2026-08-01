@@ -1,0 +1,224 @@
+{
+  "id": "example-message-start-typed-mapping",
+  "name": "Message Example 01 - Typed Message Start",
+  "initialEventId": null,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Inbound Orders",
+      "externalId": "LANE_INBOUND_ORDERS",
+      "x": 30,
+      "y": 30,
+      "w": 1220,
+      "h": 380
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order Message Received",
+      "externalId": "MESSAGE_START_ORDER_RECEIVED",
+      "type": "messageStartEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 175,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null,
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Flowbit-Correlation",
+        "headerValue": "${setting.examples.messageCorrelation}",
+        "headerValidation": "StartsWith(header, 'orders:') and Length(header) >= 8",
+        "outputMappings": [
+          {
+            "variable": "orderId",
+            "path": "order.id",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "StartsWith(orderId, 'ORD-')"
+          },
+          {
+            "variable": "customerEmail",
+            "path": "customer.email",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "Contains(customerEmail, '@')"
+          },
+          {
+            "variable": "totalAmount",
+            "path": "order.total",
+            "dataType": "number",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "totalAmount >= 0"
+          },
+          {
+            "variable": "expedited",
+            "path": "order.expedited",
+            "dataType": "boolean",
+            "isArray": false,
+            "required": false,
+            "defaultValue": false,
+            "validation": null
+          },
+          {
+            "variable": "requestedDate",
+            "path": "order.requestedDate",
+            "dataType": "date",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "Length(requestedDate) == 10"
+          },
+          {
+            "variable": "tags",
+            "path": "order.tags",
+            "dataType": "string",
+            "isArray": true,
+            "required": false,
+            "defaultValue": [],
+            "validation": null
+          },
+          {
+            "variable": "metadata",
+            "path": "metadata",
+            "dataType": "json",
+            "isArray": false,
+            "required": false,
+            "defaultValue": {},
+            "validation": null
+          }
+        ]
+      },
+      "businessKey": {
+        "variable": "orderId",
+        "uniqueness": "active"
+      },
+      "idempotency": {
+        "headerName": "Idempotency-Key",
+        "variable": "messageRequestId"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Review Imported Order",
+      "externalId": "TASK_REVIEW_IMPORTED_ORDER",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 390,
+      "y": 160,
+      "roles": [
+        "OrderReviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "Order Accepted",
+      "externalId": "END_ORDER_ACCEPTED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 900,
+      "y": 175,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create order review",
+      "externalId": "FLOW_CREATE_ORDER_REVIEW",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Accept imported order",
+      "externalId": "FLOW_ACCEPT_IMPORTED_ORDER",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "OrderReviewer"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "reviewNote",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "Typed message payload reviewed",
+          "validation": "Length(reviewNote) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "OrderReviewer"
+  ],
+  "unclaimRoles": [
+    "OrderReviewer"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

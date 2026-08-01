@@ -1,0 +1,266 @@
+{
+  "id": "example-user-task-claim-inheritance",
+  "name": "User Task Example 02 - Claim Inheritance",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Case Agents",
+      "externalId": "LANE_CASE_AGENTS",
+      "x": 30,
+      "y": 30,
+      "w": 1500,
+      "h": 240
+    },
+    {
+      "id": 2,
+      "name": "Specialists",
+      "externalId": "LANE_SPECIALISTS",
+      "x": 30,
+      "y": 300,
+      "w": 1500,
+      "h": 240
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Open Case",
+      "externalId": "START_CLAIM_INHERITANCE_CASE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 115,
+      "roles": [
+        "Coordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "Fresh Agent Claim",
+      "externalId": "TASK_FRESH_AGENT_CLAIM",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 270,
+      "y": 100,
+      "roles": [
+        "CaseAgent"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 3,
+      "name": "Previous Actor Follow-up",
+      "externalId": "TASK_PREVIOUS_ACTOR_FOLLOW_UP",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 560,
+      "y": 100,
+      "roles": [
+        "CaseAgent"
+      ],
+      "requiresClaim": true,
+      "claimMode": "previous",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 4,
+      "name": "Independent Specialist Claim",
+      "externalId": "TASK_INDEPENDENT_SPECIALIST_CLAIM",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 2,
+      "x": 850,
+      "y": 370,
+      "roles": [
+        "Specialist"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 5,
+      "name": "Return to Original Agent",
+      "externalId": "TASK_CLAIM_FROM_ORIGINAL_AGENT",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 1120,
+      "y": 100,
+      "roles": [
+        "CaseAgent"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fromNode",
+      "inheritClaimFromNodeId": 2,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 6,
+      "name": "Case Completed",
+      "externalId": "END_CLAIM_INHERITANCE_CASE",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1400,
+      "y": 115,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create first claim",
+      "externalId": "FLOW_CREATE_FIRST_CLAIM",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Continue as first agent",
+      "externalId": "FLOW_CONTINUE_AS_FIRST_AGENT",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "CaseAgent"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Send to specialist",
+      "externalId": "FLOW_SEND_TO_SPECIALIST",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "CaseAgent"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 401,
+      "name": "Return using source claim",
+      "externalId": "FLOW_RETURN_USING_SOURCE_CLAIM",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [
+        "Specialist"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 501,
+      "name": "Complete case",
+      "externalId": "FLOW_COMPLETE_CLAIM_CASE",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "CaseAgent"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "Supervisor"
+  ],
+  "unclaimRoles": [
+    "Supervisor"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

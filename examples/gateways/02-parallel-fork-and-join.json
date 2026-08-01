@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Review Requested",
+      "externalId": "START_REVIEW_REQUESTED",
       "type": "startEvent",
       "laneId": 1,
       "x": 80,
@@ -28,6 +29,7 @@
     {
       "id": 2,
       "name": "Start All Reviews",
+      "externalId": "GATEWAY_FORK_ALL_REVIEWS",
       "type": "parallelGateway",
       "laneId": 1,
       "x": 285,
@@ -38,6 +40,7 @@
     {
       "id": 3,
       "name": "Finance Review",
+      "externalId": "TASK_FINANCE_REVIEW",
       "type": "userTask",
       "laneId": 1,
       "x": 500,
@@ -48,6 +51,7 @@
     {
       "id": 4,
       "name": "Legal Review",
+      "externalId": "TASK_LEGAL_REVIEW",
       "type": "userTask",
       "laneId": 1,
       "x": 500,
@@ -58,6 +62,7 @@
     {
       "id": 5,
       "name": "Security Review",
+      "externalId": "TASK_SECURITY_REVIEW",
       "type": "userTask",
       "laneId": 1,
       "x": 500,
@@ -68,6 +73,7 @@
     {
       "id": 6,
       "name": "Wait for Every Review",
+      "externalId": "GATEWAY_JOIN_ALL_REVIEWS",
       "type": "parallelGateway",
       "laneId": 1,
       "x": 900,
@@ -78,6 +84,7 @@
     {
       "id": 7,
       "name": "Consolidate Reviews",
+      "externalId": "TASK_CONSOLIDATE_REVIEWS",
       "type": "userTask",
       "laneId": 1,
       "x": 1080,
@@ -88,6 +95,7 @@
     {
       "id": 8,
       "name": "Review Completed",
+      "externalId": "END_REVIEW_COMPLETED",
       "type": "endEvent",
       "laneId": 1,
       "x": 1390,
@@ -100,6 +108,7 @@
     {
       "id": 101,
       "name": "Fork reviews",
+      "externalId": "FLOW_BEGIN_PARALLEL_REVIEWS",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -108,6 +117,7 @@
     {
       "id": 201,
       "name": "Finance branch",
+      "externalId": "FLOW_START_FINANCE_REVIEW",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -116,6 +126,7 @@
     {
       "id": 202,
       "name": "Legal branch",
+      "externalId": "FLOW_START_LEGAL_REVIEW",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
@@ -124,6 +135,7 @@
     {
       "id": 203,
       "name": "Security branch",
+      "externalId": "FLOW_START_SECURITY_REVIEW",
       "sourceRef": 2,
       "targetRef": 5,
       "roles": [],
@@ -132,6 +144,7 @@
     {
       "id": 301,
       "name": "Finance finished",
+      "externalId": "FLOW_FINANCE_REVIEW_FINISHED",
       "sourceRef": 3,
       "targetRef": 6,
       "roles": ["Finance"],
@@ -140,6 +153,7 @@
     {
       "id": 401,
       "name": "Legal finished",
+      "externalId": "FLOW_LEGAL_REVIEW_FINISHED",
       "sourceRef": 4,
       "targetRef": 6,
       "roles": ["Legal"],
@@ -148,6 +162,7 @@
     {
       "id": 501,
       "name": "Security finished",
+      "externalId": "FLOW_SECURITY_REVIEW_FINISHED",
       "sourceRef": 5,
       "targetRef": 6,
       "roles": ["Security"],
@@ -156,6 +171,7 @@
     {
       "id": 601,
       "name": "All three are complete",
+      "externalId": "FLOW_CONSOLIDATE_COMPLETED_REVIEWS",
       "sourceRef": 6,
       "targetRef": 7,
       "roles": [],
@@ -164,6 +180,7 @@
     {
       "id": 701,
       "name": "Finish",
+      "externalId": "FLOW_FINISH_REVIEW_PROCESS",
       "sourceRef": 7,
       "targetRef": 8,
       "roles": ["Coordinator"],

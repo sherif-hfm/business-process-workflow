@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Start First Cycle",
+      "externalId": "START_FIRST_COMPLEX_CYCLE",
       "type": "startEvent",
       "laneId": 1,
       "x": 70,
@@ -28,6 +29,7 @@
     {
       "id": 2,
       "name": "Collect Start or Loop Token",
+      "externalId": "GATEWAY_COLLECT_CYCLE_TOKEN",
       "type": "exclusiveGateway",
       "laneId": 1,
       "x": 285,
@@ -38,6 +40,7 @@
     {
       "id": 3,
       "name": "Route by Complex Phase",
+      "externalId": "GATEWAY_ROUTE_COMPLEX_PHASE",
       "type": "complexGateway",
       "activationCondition": "IncomingCount(201) >= 1",
       "laneId": 1,
@@ -49,6 +52,7 @@
     {
       "id": 4,
       "name": "Start-Phase Work",
+      "externalId": "TASK_START_PHASE_WORK",
       "type": "userTask",
       "laneId": 1,
       "x": 730,
@@ -59,6 +63,7 @@
     {
       "id": 5,
       "name": "Reset-Phase Work",
+      "externalId": "TASK_RESET_PHASE_WORK",
       "type": "userTask",
       "laneId": 1,
       "x": 730,
@@ -69,6 +74,7 @@
     {
       "id": 6,
       "name": "Cycle Demonstration Completed",
+      "externalId": "END_COMPLEX_CYCLE_DEMONSTRATION",
       "type": "endEvent",
       "laneId": 1,
       "x": 1190,
@@ -81,6 +87,7 @@
     {
       "id": 101,
       "name": "Initial token",
+      "externalId": "FLOW_CREATE_INITIAL_CYCLE_TOKEN",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -89,6 +96,7 @@
     {
       "id": 201,
       "name": "Activate complex gateway",
+      "externalId": "FLOW_ACTIVATE_COMPLEX_GATEWAY",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -97,6 +105,7 @@
     {
       "id": 301,
       "name": "Waiting for start",
+      "externalId": "FLOW_ENTER_START_PHASE",
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -106,6 +115,7 @@
     {
       "id": 302,
       "name": "Waiting for reset",
+      "externalId": "FLOW_ENTER_RESET_PHASE",
       "sourceRef": 3,
       "targetRef": 5,
       "roles": [],
@@ -115,6 +125,7 @@
     {
       "id": 401,
       "name": "Demonstrate reset phase",
+      "externalId": "FLOW_LOOP_TO_RESET_PHASE",
       "sourceRef": 4,
       "targetRef": 2,
       "roles": ["Operator"],
@@ -123,6 +134,7 @@
     {
       "id": 402,
       "name": "Finish from start phase",
+      "externalId": "FLOW_FINISH_FROM_START_PHASE",
       "sourceRef": 4,
       "targetRef": 6,
       "roles": ["Operator"],
@@ -131,6 +143,7 @@
     {
       "id": 501,
       "name": "Begin the next cycle",
+      "externalId": "FLOW_BEGIN_NEXT_COMPLEX_CYCLE",
       "sourceRef": 5,
       "targetRef": 2,
       "roles": ["Operator"],
@@ -139,6 +152,7 @@
     {
       "id": 502,
       "name": "Finish from reset phase",
+      "externalId": "FLOW_FINISH_FROM_RESET_PHASE",
       "sourceRef": 5,
       "targetRef": 6,
       "roles": ["Operator"],

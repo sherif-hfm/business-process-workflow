@@ -1,0 +1,156 @@
+{
+  "id": "example-javascript-error-boundary",
+  "name": "Script Example 04 - JavaScript Error Boundary",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "stagedValue",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "unchanged"
+    },
+    {
+      "id": 2,
+      "name": "scriptError",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Script Failure Handling",
+      "externalId": "LANE_SCRIPT_FAILURE_HANDLING",
+      "x": 30,
+      "y": 30,
+      "w": 1540,
+      "h": 620
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Failure Example",
+      "externalId": "START_SCRIPT_FAILURE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 205,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Run Deliberately Failing Script",
+      "externalId": "SCRIPT_INTENTIONAL_FAILURE",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 350,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "execution.setVariable('stagedValue', 'this write is rolled back');\nthrow new Error('Intentional example failure');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Unexpected Success",
+      "externalId": "END_UNEXPECTED_SCRIPT_SUCCESS",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 760,
+      "y": 205,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Catch Script Failure",
+      "externalId": "BOUNDARY_CATCH_SCRIPT_FAILURE",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 455,
+      "y": 255,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "scriptError"
+    },
+    {
+      "id": 5,
+      "name": "Inspect Caught Error",
+      "externalId": "TASK_INSPECT_SCRIPT_ERROR",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 760,
+      "y": 390,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Handled Failure Completed",
+      "externalId": "END_SCRIPT_FAILURE_HANDLED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1190,
+      "y": 405,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Execute failing script",
+      "externalId": "FLOW_START_TO_FAILING_SCRIPT",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Continue only if script succeeds",
+      "externalId": "FLOW_SCRIPT_TO_UNEXPECTED_SUCCESS",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Route caught error to operator",
+      "externalId": "FLOW_BOUNDARY_TO_OPERATOR",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Acknowledge handled failure",
+      "externalId": "FLOW_OPERATOR_TO_HANDLED_END",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

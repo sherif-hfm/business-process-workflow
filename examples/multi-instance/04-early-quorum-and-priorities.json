@@ -1,0 +1,324 @@
+{
+  "id": "example-multi-instance-early-quorum-priorities",
+  "name": "Multi-Instance Example 04 - Early Quorum and Priorities",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "quorumSize",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 5,
+      "validation": "quorumSize >= 3 and quorumSize <= 9"
+    },
+    {
+      "id": 2,
+      "name": "quorumResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Quorum Approval",
+      "externalId": "LANE_QUORUM_APPROVAL",
+      "x": 30,
+      "y": 30,
+      "w": 1580,
+      "h": 600
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Quorum Vote Requested",
+      "externalId": "START_QUORUM_VOTE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 280,
+      "roles": [
+        "ApprovalCoordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Cast Quorum Vote",
+      "externalId": "TASK_CAST_QUORUM_VOTE",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 340,
+      "y": 265,
+      "roles": [
+        "Approver"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "cardinality",
+        "collectionVariable": null,
+        "cardinalityExpression": "quorumSize",
+        "onePerActor": true,
+        "completionEvaluation": "afterEach",
+        "resultVariable": "quorumResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "Quorum Approved",
+      "externalId": "END_QUORUM_APPROVED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1070,
+      "y": 100,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 4,
+      "name": "Resolve Mixed Quorum",
+      "externalId": "TASK_RESOLVE_MIXED_QUORUM",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 990,
+      "y": 260,
+      "roles": [
+        "ApprovalManager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 5,
+      "name": "Quorum Not Reached",
+      "externalId": "END_QUORUM_NOT_REACHED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1070,
+      "y": 455,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 6,
+      "name": "Mixed Quorum Resolved",
+      "externalId": "END_MIXED_QUORUM_RESOLVED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1370,
+      "y": 280,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create quorum items",
+      "externalId": "FLOW_CREATE_QUORUM_ITEMS",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "externalId": "FLOW_QUORUM_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Approver"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "approvalNote",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "Approved",
+          "validation": "Length(approvalNote) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": "CountFlow(201) >= 3 and PercentFlow(201) >= 60 and [mi.completed] <= [mi.total] and [mi.remaining] == [mi.total] - [mi.completed] and FlowInfo(201, 'actions.count') >= CountFlow(201)",
+      "completionPriority": 2,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Object",
+      "externalId": "FLOW_QUORUM_OBJECT",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "Approver"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "objectionReason",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(objectionReason)) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": "CountFlow(201) >= 3 and CountFlow(202) >= 1 and PercentFlow(202) > 0 and FlowInfo(202, 'actions.count') >= CountFlow(202)",
+      "completionPriority": 1,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 203,
+      "name": "Engine fallback",
+      "externalId": "FLOW_QUORUM_ENGINE_FALLBACK",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 401,
+      "name": "Resolve mixed quorum",
+      "externalId": "FLOW_RESOLVE_MIXED_QUORUM",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": [
+        "ApprovalManager"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "resolution",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(resolution)) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "ApprovalCoordinator",
+    "ApprovalManager"
+  ],
+  "unclaimRoles": [
+    "ApprovalManager"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

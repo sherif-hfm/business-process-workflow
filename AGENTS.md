@@ -28,6 +28,7 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 | --- | --- |
 | `flowbit-editor.html` | The entire application: markup, CSS, and JS in one file. |
 | `workflow.json` | A sample/exported workflow ("Purchase Request Approval") used as example data. It matches the JSON format the editor saves and loads. |
+| [`examples/`](examples/README.md) | Curated, categorized workflow JSON definitions with inputs, expected behavior, and runtime prerequisites in the canonical catalog. |
 | `Flowbit/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
 | `AGENTS.md` | This document. |
 

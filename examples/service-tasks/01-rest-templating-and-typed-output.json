@@ -1,0 +1,328 @@
+{
+  "id": "example-rest-templating-typed-output",
+  "name": "Service Task Example 01 - REST Templating and Typed Output",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "httpStatus",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "httpStatus >= 0"
+    },
+    {
+      "id": 2,
+      "name": "orderId",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    },
+    {
+      "id": 3,
+      "name": "accepted",
+      "dataType": "boolean",
+      "isArray": false,
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "id": 4,
+      "name": "total",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "total >= 0"
+    },
+    {
+      "id": 5,
+      "name": "labels",
+      "dataType": "string",
+      "isArray": true,
+      "required": false,
+      "defaultValue": []
+    },
+    {
+      "id": 6,
+      "name": "shipDate",
+      "dataType": "date",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "2026-08-01"
+    },
+    {
+      "id": 7,
+      "name": "receivedAt",
+      "dataType": "datetime",
+      "isArray": false,
+      "required": false,
+      "defaultValue": "2026-08-01T00:00:00Z"
+    },
+    {
+      "id": 8,
+      "name": "responsePayload",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": {}
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Mock Order API",
+      "externalId": "LANE_MOCK_ORDER_API",
+      "x": 30,
+      "y": 30,
+      "w": 1530,
+      "h": 460
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Submit Mock Order",
+      "externalId": "START_MOCK_ORDER",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 205,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(requestId) > 0"
+        },
+        {
+          "id": 2,
+          "name": "customerId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(customerId) > 0"
+        },
+        {
+          "id": 3,
+          "name": "locale",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "en-SA"
+        },
+        {
+          "id": 4,
+          "name": "quantity",
+          "dataType": "number",
+          "isArray": false,
+          "required": false,
+          "defaultValue": 2,
+          "validation": "quantity > 0"
+        },
+        {
+          "id": 5,
+          "name": "urgent",
+          "dataType": "boolean",
+          "isArray": false,
+          "required": false,
+          "defaultValue": false
+        },
+        {
+          "id": 6,
+          "name": "requestTags",
+          "dataType": "string",
+          "isArray": true,
+          "required": false,
+          "defaultValue": [
+            "catalog-example"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Create Order Through REST",
+      "externalId": "SERVICE_CREATE_MOCK_ORDER",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 370,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/orders/${customerId}",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "X-Request-Id",
+            "value": "${requestId}"
+          },
+          {
+            "name": "X-Locale",
+            "value": "${locale}"
+          }
+        ],
+        "body": "{\"customerId\":\"${customerId}\",\"quantity\":${quantity},\"urgent\":${urgent},\"tags\":${requestTags},\"note\":\"request ${requestId}\"}",
+        "timeoutSeconds": 10,
+        "statusVariable": "httpStatus",
+        "outputMappings": [
+          {
+            "variable": "orderId",
+            "path": "data.order.id",
+            "required": true,
+            "dataType": "string",
+            "isArray": false,
+            "validation": "Length(orderId) > 0"
+          },
+          {
+            "variable": "accepted",
+            "path": "data.accepted",
+            "required": true,
+            "dataType": "boolean",
+            "isArray": false
+          },
+          {
+            "variable": "total",
+            "path": "data.total",
+            "required": true,
+            "dataType": "number",
+            "isArray": false,
+            "validation": "total >= 0"
+          },
+          {
+            "variable": "labels",
+            "path": "data.labels",
+            "required": false,
+            "dataType": "string",
+            "isArray": true,
+            "defaultValue": []
+          },
+          {
+            "variable": "shipDate",
+            "path": "data.shipDate",
+            "required": true,
+            "dataType": "date",
+            "isArray": false
+          },
+          {
+            "variable": "receivedAt",
+            "path": "data.receivedAt",
+            "required": true,
+            "dataType": "datetime",
+            "isArray": false
+          },
+          {
+            "variable": "responsePayload",
+            "path": "data",
+            "required": true,
+            "dataType": "json",
+            "isArray": false
+          },
+          {
+            "variable": "responseTrace",
+            "path": "meta.traceId",
+            "required": true,
+            "dataType": "string",
+            "isArray": false,
+            "validation": "StartsWith(responseTrace, 'trace-')"
+          },
+          {
+            "variable": "warnings",
+            "path": "meta.warnings",
+            "required": false,
+            "dataType": "string",
+            "isArray": true,
+            "defaultValue": []
+          },
+          {
+            "variable": "reviewRequired",
+            "path": "",
+            "required": false,
+            "dataType": "boolean",
+            "isArray": false,
+            "defaultValue": false,
+            "validation": "reviewRequired == true or reviewRequired == false"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Inspect Typed Outputs",
+      "externalId": "TASK_INSPECT_SERVICE_OUTPUTS",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 870,
+      "y": 190,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "REST Example Completed",
+      "externalId": "END_REST_TYPED_OUTPUT",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1290,
+      "y": 205,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Invoke configured mock endpoint",
+      "externalId": "FLOW_START_TO_REST_SERVICE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Review atomic output batch",
+      "externalId": "FLOW_SERVICE_TO_OUTPUT_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Complete review",
+      "externalId": "FLOW_OUTPUT_REVIEW_TO_END",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -19,13 +19,8 @@ public sealed class EditorValidatorTests
     }
 
     [Theory]
-    [InlineData("examples/01-async-before-after.json")]
-    [InlineData("examples/02-intermediate-timer-delay.json")]
-    [InlineData("examples/03-recurring-timer-start.json")]
-    [InlineData("examples/04-absolute-timer-start.json")]
-    [InlineData("examples/05-user-task-reminder-and-deadline.json")]
-    [InlineData("examples/06-multi-instance-reminder.json")]
-    public void Validator_AcceptsDurableAsyncAndTimerExample(string fileName)
+    [MemberData(nameof(ExampleWorkflowData.All), MemberType = typeof(ExampleWorkflowData))]
+    public void Validator_AcceptsExampleWorkflow(string fileName)
     {
         var model = DefinitionValidationTests.LoadModel(fileName);
 

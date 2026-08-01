@@ -18,6 +18,7 @@
     {
       "id": 1,
       "name": "Assessment Submitted",
+      "externalId": "START_ASSESSMENT_SUBMITTED",
       "type": "startEvent",
       "laneId": 1,
       "x": 75,
@@ -45,6 +46,7 @@
     {
       "id": 2,
       "name": "Select Every Required Review",
+      "externalId": "GATEWAY_SELECT_REQUIRED_REVIEWS",
       "type": "inclusiveGateway",
       "laneId": 1,
       "x": 300,
@@ -55,6 +57,7 @@
     {
       "id": 3,
       "name": "Legal Assessment",
+      "externalId": "TASK_LEGAL_ASSESSMENT",
       "type": "userTask",
       "laneId": 1,
       "x": 520,
@@ -65,6 +68,7 @@
     {
       "id": 4,
       "name": "Security Assessment",
+      "externalId": "TASK_SECURITY_ASSESSMENT",
       "type": "userTask",
       "laneId": 1,
       "x": 520,
@@ -75,6 +79,7 @@
     {
       "id": 5,
       "name": "Lightweight Review",
+      "externalId": "TASK_LIGHTWEIGHT_REVIEW",
       "type": "userTask",
       "laneId": 1,
       "x": 520,
@@ -85,6 +90,7 @@
     {
       "id": 6,
       "name": "Wait for Selected Reviews",
+      "externalId": "GATEWAY_JOIN_SELECTED_REVIEWS",
       "type": "inclusiveGateway",
       "laneId": 1,
       "x": 920,
@@ -95,6 +101,7 @@
     {
       "id": 7,
       "name": "Record Assessment",
+      "externalId": "TASK_RECORD_ASSESSMENT",
       "type": "userTask",
       "laneId": 1,
       "x": 1090,
@@ -105,6 +112,7 @@
     {
       "id": 8,
       "name": "Assessment Completed",
+      "externalId": "END_ASSESSMENT_COMPLETED",
       "type": "endEvent",
       "laneId": 1,
       "x": 1390,
@@ -117,6 +125,7 @@
     {
       "id": 101,
       "name": "Evaluate review needs",
+      "externalId": "FLOW_EVALUATE_REVIEW_NEEDS",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -125,6 +134,7 @@
     {
       "id": 201,
       "name": "Legal is required",
+      "externalId": "FLOW_START_REQUIRED_LEGAL_REVIEW",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -135,6 +145,7 @@
     {
       "id": 202,
       "name": "Security is required",
+      "externalId": "FLOW_START_REQUIRED_SECURITY_REVIEW",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
@@ -145,6 +156,7 @@
     {
       "id": 203,
       "name": "Default when neither is required",
+      "externalId": "FLOW_START_LIGHTWEIGHT_REVIEW",
       "sourceRef": 2,
       "targetRef": 5,
       "roles": [],
@@ -154,6 +166,7 @@
     {
       "id": 301,
       "name": "Legal assessment completed",
+      "externalId": "FLOW_LEGAL_ASSESSMENT_COMPLETED",
       "sourceRef": 3,
       "targetRef": 6,
       "roles": ["Legal"],
@@ -162,6 +175,7 @@
     {
       "id": 401,
       "name": "Security assessment completed",
+      "externalId": "FLOW_SECURITY_ASSESSMENT_COMPLETED",
       "sourceRef": 4,
       "targetRef": 6,
       "roles": ["Security"],
@@ -170,6 +184,7 @@
     {
       "id": 501,
       "name": "Lightweight review completed",
+      "externalId": "FLOW_LIGHTWEIGHT_REVIEW_COMPLETED",
       "sourceRef": 5,
       "targetRef": 6,
       "roles": ["Operations"],
@@ -178,6 +193,7 @@
     {
       "id": 601,
       "name": "Every selected branch arrived",
+      "externalId": "FLOW_RECORD_SELECTED_REVIEWS",
       "sourceRef": 6,
       "targetRef": 7,
       "roles": [],
@@ -186,6 +202,7 @@
     {
       "id": 701,
       "name": "Finish",
+      "externalId": "FLOW_FINISH_RISK_ASSESSMENT",
       "sourceRef": 7,
       "targetRef": 8,
       "roles": ["RiskManager"],

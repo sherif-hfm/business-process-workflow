@@ -1,0 +1,298 @@
+{
+  "id": "example-multi-instance-parent-interrupt",
+  "name": "Multi-Instance Example 05 - Parent Interrupt",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "interruptReviewers",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "alice",
+        "bob",
+        "carol",
+        "dave"
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "interruptResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Interruptible Review",
+      "externalId": "LANE_INTERRUPTIBLE_REVIEW",
+      "x": 30,
+      "y": 30,
+      "w": 1500,
+      "h": 520
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Interruptible Review Requested",
+      "externalId": "START_INTERRUPTIBLE_REVIEW",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 235,
+      "roles": [
+        "ReviewCoordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Complete Assigned Review",
+      "externalId": "TASK_INTERRUPTIBLE_MULTI_REVIEW",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 350,
+      "y": 220,
+      "roles": [
+        "Reviewer",
+        "ReviewManager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "interruptReviewers",
+        "cardinalityExpression": null,
+        "onePerActor": false,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "interruptResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "All Reviews Completed",
+      "externalId": "END_ALL_INTERRUPTIBLE_REVIEWS_COMPLETED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1050,
+      "y": 95,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 4,
+      "name": "Inspect Interrupt Results",
+      "externalId": "TASK_INSPECT_INTERRUPT_RESULTS",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 980,
+      "y": 325,
+      "roles": [
+        "ReviewManager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 5,
+      "name": "Interrupt Audited",
+      "externalId": "END_INTERRUPT_AUDITED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1320,
+      "y": 340,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create interruptible items",
+      "externalId": "FLOW_CREATE_INTERRUPTIBLE_ITEMS",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Complete review",
+      "externalId": "FLOW_COMPLETE_INTERRUPTIBLE_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "reviewSummary",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(reviewSummary)) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Stop review round",
+      "externalId": "FLOW_PARENT_INTERRUPT_REVIEW_ROUND",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "ReviewManager"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "interruptReason",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(interruptReason)) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": true
+    },
+    {
+      "id": 203,
+      "name": "Engine fallback",
+      "externalId": "FLOW_INTERRUPT_ENGINE_FALLBACK",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 401,
+      "name": "Acknowledge interrupt evidence",
+      "externalId": "FLOW_ACKNOWLEDGE_INTERRUPT_EVIDENCE",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [
+        "ReviewManager"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "ReviewCoordinator",
+    "ReviewManager"
+  ],
+  "unclaimRoles": [
+    "ReviewManager"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

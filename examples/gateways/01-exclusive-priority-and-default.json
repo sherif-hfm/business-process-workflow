@@ -121,6 +121,7 @@
     {
       "id": 101,
       "name": "Evaluate request",
+      "externalId": "FLOW_EVALUATE_PURCHASE_REQUEST",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -129,6 +130,7 @@
     {
       "id": 201,
       "name": "Urgent takes precedence",
+      "externalId": "FLOW_ROUTE_URGENT_REQUEST",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -140,6 +142,7 @@
     {
       "id": 202,
       "name": "High value",
+      "externalId": "FLOW_ROUTE_HIGH_VALUE_REQUEST",
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
@@ -151,6 +154,7 @@
     {
       "id": 203,
       "name": "Default standard route",
+      "externalId": "FLOW_ROUTE_STANDARD_REQUEST",
       "sourceRef": 2,
       "targetRef": 5,
       "roles": [],
@@ -160,6 +164,7 @@
     {
       "id": 301,
       "name": "Expedited review completed",
+      "externalId": "FLOW_COMPLETE_EXPEDITED_REVIEW",
       "sourceRef": 3,
       "targetRef": 6,
       "roles": ["Operations"],
@@ -168,6 +173,7 @@
     {
       "id": 401,
       "name": "Manager approved",
+      "externalId": "FLOW_COMPLETE_MANAGER_APPROVAL",
       "sourceRef": 4,
       "targetRef": 6,
       "roles": ["Manager"],
@@ -176,6 +182,7 @@
     {
       "id": 501,
       "name": "Standard processing completed",
+      "externalId": "FLOW_COMPLETE_STANDARD_PROCESSING",
       "sourceRef": 5,
       "targetRef": 6,
       "roles": ["Operations"],
@@ -184,6 +191,7 @@
     {
       "id": 601,
       "name": "Continue after merge",
+      "externalId": "FLOW_COMPLETE_PURCHASE_ROUTING",
       "sourceRef": 6,
       "targetRef": 7,
       "roles": [],

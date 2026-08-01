@@ -16,6 +16,14 @@
 - `tools/*` - the existing definition verifier, live API regression runner, and
   instance load runner.
 
+## Workflow examples
+
+The categorized [workflow example catalog](../examples/README.md) contains
+editor-loadable definitions for the JSON authoring contract, including gateways,
+timers, scripts, service and message integrations, user-task ownership, start
+keys, and multi-instance execution. Each entry documents its inputs, actor roles,
+expected result, and any API, Worker, or trusted configuration prerequisites.
+
 ## Storage
 
 - All Flowbit tables, owned sequences, indexes, constraints, and EF migration

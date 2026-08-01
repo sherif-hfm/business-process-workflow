@@ -1,0 +1,281 @@
+{
+  "id": "example-user-task-required-assignment-distribution",
+  "name": "User Task Example 04 - Required Assignment and Distribution",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Assigned Workers",
+      "externalId": "LANE_ASSIGNED_WORKERS",
+      "x": 30,
+      "y": 30,
+      "w": 1500,
+      "h": 250
+    },
+    {
+      "id": 2,
+      "name": "Assignment Managers",
+      "externalId": "LANE_ASSIGNMENT_MANAGERS",
+      "x": 30,
+      "y": 310,
+      "w": 1500,
+      "h": 250
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Submit Work",
+      "externalId": "START_DISTRIBUTED_WORK",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 115,
+      "roles": [
+        "Requester"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "workReference",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(workReference)) >= 3"
+        }
+      ],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "Externally Distributed Work",
+      "externalId": "TASK_EXTERNALLY_DISTRIBUTED_WORK",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 290,
+      "y": 100,
+      "roles": [
+        "Worker"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": true,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 3,
+      "name": "Continue with Previous Owner",
+      "externalId": "TASK_ASSIGNMENT_FROM_PREVIOUS",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 600,
+      "y": 100,
+      "roles": [
+        "Worker"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": true,
+      "assignmentMode": "previous",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 4,
+      "name": "Independent Manager Check",
+      "externalId": "TASK_INDEPENDENT_MANAGER_CHECK",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 2,
+      "x": 890,
+      "y": 380,
+      "roles": [
+        "OperationsManager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 5,
+      "name": "Return to Distributed Owner",
+      "externalId": "TASK_ASSIGNMENT_FROM_DISTRIBUTED_WORK",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 1160,
+      "y": 100,
+      "roles": [
+        "Worker"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": true,
+      "assignmentMode": "fromNode",
+      "inheritAssignmentFromNodeId": 2,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 6,
+      "name": "Distributed Work Completed",
+      "externalId": "END_DISTRIBUTED_WORK",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1430,
+      "y": 115,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue for distribution",
+      "externalId": "FLOW_QUEUE_FOR_DISTRIBUTION",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Continue with owner",
+      "externalId": "FLOW_CONTINUE_WITH_DISTRIBUTED_OWNER",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Worker"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Send for manager check",
+      "externalId": "FLOW_SEND_FOR_MANAGER_CHECK",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "Worker"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 401,
+      "name": "Return to original owner",
+      "externalId": "FLOW_RETURN_TO_ORIGINAL_OWNER",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [
+        "OperationsManager"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 501,
+      "name": "Complete distributed work",
+      "externalId": "FLOW_COMPLETE_DISTRIBUTED_WORK",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "Worker"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "OperationsManager"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "AssignmentManager",
+    "OperationsManager"
+  ],
+  "taskDistribution": {
+    "clientId": "${config.exampleDistributorClientId}",
+    "clientSecret": "${config.exampleDistributorSecret}"
+  }
+}

@@ -1,0 +1,326 @@
+{
+  "id": "example-lanes-external-ids-variable-scopes",
+  "name": "Basics Example 01 - Lanes, External IDs, and Variable Scopes",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "statusLabel",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "pending",
+      "validation": "Len(Trim(statusLabel)) > 0"
+    },
+    {
+      "id": 2,
+      "name": "retryCount",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "retryCount >= 0"
+    },
+    {
+      "id": 3,
+      "name": "expedited",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": false,
+      "validation": null
+    },
+    {
+      "id": 4,
+      "name": "targetDate",
+      "dataType": "date",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "2026-12-31",
+      "validation": null
+    },
+    {
+      "id": 5,
+      "name": "receivedAt",
+      "dataType": "datetime",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "2026-08-01T09:00:00+03:00",
+      "validation": null
+    },
+    {
+      "id": 6,
+      "name": "auditPayload",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": {
+        "source": "flowbit-example-catalog",
+        "version": 1
+      },
+      "validation": null
+    },
+    {
+      "id": 7,
+      "name": "reviewers",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "alice",
+        "bob"
+      ],
+      "validation": null
+    },
+    {
+      "id": 8,
+      "name": "optionalScore",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Request Intake",
+      "externalId": "LANE_REQUEST_INTAKE",
+      "x": 30,
+      "y": 30,
+      "w": 540,
+      "h": 500
+    },
+    {
+      "id": 2,
+      "name": "Finance Review",
+      "externalId": "LANE_FINANCE_REVIEW",
+      "x": 600,
+      "y": 30,
+      "w": 920,
+      "h": 500
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Submitted",
+      "externalId": "START_REQUEST_SUBMITTED",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 220,
+      "roles": [
+        "Requester"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 101,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(requestId)) >= 3"
+        },
+        {
+          "id": 102,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": 2500,
+          "validation": "amount > 0"
+        },
+        {
+          "id": 103,
+          "name": "submittedDate",
+          "dataType": "date",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "2026-08-01",
+          "validation": null
+        },
+        {
+          "id": 104,
+          "name": "checks",
+          "dataType": "boolean",
+          "isArray": true,
+          "nullable": false,
+          "required": false,
+          "defaultValue": [
+            true,
+            false
+          ],
+          "validation": null
+        }
+      ],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "Review Stored Request",
+      "externalId": "TASK_REVIEW_STORED_REQUEST",
+      "type": "userTask",
+      "laneId": 2,
+      "x": 720,
+      "y": 215,
+      "roles": [
+        "FinanceReviewer",
+        "FinanceManager"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 3,
+      "name": "Approved",
+      "externalId": "END_REQUEST_APPROVED",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1270,
+      "y": 130,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 4,
+      "name": "Escalated",
+      "externalId": "END_REQUEST_ESCALATED",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1270,
+      "y": 330,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Send to finance",
+      "externalId": "FLOW_SEND_TO_FINANCE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Approve eligible request",
+      "externalId": "FLOW_APPROVE_ELIGIBLE_REQUEST",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "FinanceReviewer",
+        "FinanceManager"
+      ],
+      "variables": [
+        {
+          "id": 2011,
+          "name": "approvalNote",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(approvalNote)) >= 3"
+        }
+      ],
+      "condition": "amount <= 5000 and expedited == false",
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Escalate stored request",
+      "externalId": "FLOW_ESCALATE_STORED_REQUEST",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "FinanceManager"
+      ],
+      "variables": [
+        {
+          "id": 2021,
+          "name": "escalationReason",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(escalationReason)) >= 5"
+        }
+      ],
+      "condition": "amount > 5000 or expedited == true",
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "FinanceManager"
+  ],
+  "unclaimRoles": [
+    "FinanceManager"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -1,0 +1,231 @@
+{
+  "id": "example-start-business-key-scopes-idempotency",
+  "name": "Start Event Example 01 - Business Key Scopes and Idempotency",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Entry Routes",
+      "externalId": "LANE_ENTRY_ROUTES",
+      "x": 30,
+      "y": 30,
+      "w": 650,
+      "h": 520
+    },
+    {
+      "id": 2,
+      "name": "Case Handling",
+      "externalId": "LANE_CASE_HANDLING",
+      "x": 710,
+      "y": 30,
+      "w": 750,
+      "h": 520
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start with Active Uniqueness",
+      "externalId": "START_ACTIVE_BUSINESS_KEY",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 145,
+      "roles": [
+        "ActiveCaseStarter"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "caseId",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "StartsWith(caseId, 'ACTIVE-')"
+        },
+        {
+          "id": 2,
+          "name": "caseSummary",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "Active-scope case",
+          "validation": "Len(Trim(caseSummary)) >= 3"
+        }
+      ],
+      "assignee": null,
+      "businessKey": {
+        "variable": "caseId",
+        "uniqueness": "active"
+      },
+      "idempotency": {
+        "headerName": "Idempotency-Key",
+        "variable": "activeRequestKey"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Start with Permanent Uniqueness",
+      "externalId": "START_ALL_BUSINESS_KEY",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 355,
+      "roles": [
+        "PermanentCaseStarter"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "caseId",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "StartsWith(caseId, 'PERM-')"
+        },
+        {
+          "id": 2,
+          "name": "caseSummary",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "Permanent-scope case",
+          "validation": "Len(Trim(caseSummary)) >= 3"
+        }
+      ],
+      "assignee": null,
+      "businessKey": {
+        "variable": "caseId",
+        "uniqueness": "all"
+      },
+      "idempotency": {
+        "headerName": "X-Permanent-Request-Id",
+        "variable": "permanentRequestKey"
+      }
+    },
+    {
+      "id": 3,
+      "name": "Handle Selected Case",
+      "externalId": "TASK_HANDLE_SELECTED_CASE",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 2,
+      "x": 830,
+      "y": 240,
+      "roles": [
+        "CaseWorker"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 4,
+      "name": "Case Completed",
+      "externalId": "END_SELECTED_CASE",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1260,
+      "y": 255,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open active-scope case",
+      "externalId": "FLOW_OPEN_ACTIVE_SCOPE_CASE",
+      "sourceRef": 1,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Open permanent-scope case",
+      "externalId": "FLOW_OPEN_PERMANENT_SCOPE_CASE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Complete selected case",
+      "externalId": "FLOW_COMPLETE_SELECTED_CASE",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "CaseWorker"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "CaseManager"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

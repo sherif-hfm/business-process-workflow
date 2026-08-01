@@ -8,7 +8,7 @@
     {
       "id": 1,
       "name": "Start",
-      "externalId": null,
+      "externalId": "START_INTERMEDIATE_TIMER_DELAY",
       "type": "startEvent",
       "laneId": null,
       "x": 80,
@@ -27,7 +27,7 @@
     {
       "id": 2,
       "name": "Wait 30 Seconds",
-      "externalId": null,
+      "externalId": "TIMER_WAIT_THIRTY_SECONDS",
       "type": "intermediateTimerCatchEvent",
       "timer": {
         "timeDate": null,
@@ -51,7 +51,7 @@
     {
       "id": 3,
       "name": "Timer Fired",
-      "externalId": null,
+      "externalId": "TASK_ACKNOWLEDGE_TIMER_DELAY",
       "type": "userTask",
       "asyncBefore": false,
       "asyncAfter": false,
@@ -74,7 +74,7 @@
     {
       "id": 4,
       "name": "Completed",
-      "externalId": null,
+      "externalId": "END_INTERMEDIATE_TIMER_COMPLETED",
       "type": "endEvent",
       "laneId": null,
       "x": 950,
@@ -95,7 +95,7 @@
     {
       "id": 101,
       "name": "Begin waiting",
-      "externalId": null,
+      "externalId": "FLOW_BEGIN_TIMER_WAIT",
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -113,7 +113,7 @@
     {
       "id": 201,
       "name": "Continue after timer",
-      "externalId": null,
+      "externalId": "FLOW_TIMER_DELAY_ELAPSED",
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -131,7 +131,7 @@
     {
       "id": 301,
       "name": "Finish",
-      "externalId": null,
+      "externalId": "FLOW_FINISH_TIMER_DELAY",
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],

@@ -1,0 +1,158 @@
+{
+  "id": "example-user-task-direct-assignee-expression",
+  "name": "User Task Example 03 - Direct Assignee Expression",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Assignment Routing",
+      "externalId": "LANE_ASSIGNMENT_ROUTING",
+      "x": 30,
+      "y": 30,
+      "w": 1360,
+      "h": 440
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Named Reviewer",
+      "externalId": "START_REQUEST_NAMED_REVIEWER",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 190,
+      "roles": [
+        "Requester"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestedAssignee",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "  Alice.Example  ",
+          "validation": null
+        },
+        {
+          "id": 2,
+          "name": "requestSummary",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(requestSummary)) >= 5"
+        }
+      ],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "Review by Normalized Assignee",
+      "externalId": "TASK_NORMALIZED_DIRECT_ASSIGNEE",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 440,
+      "y": 175,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": "if(IsNullOrWhiteSpace(requestedAssignee), Lower(Trim([sys.user])), Lower(Trim(requestedAssignee)))",
+      "multiInstance": null
+    },
+    {
+      "id": 3,
+      "name": "Review Completed",
+      "externalId": "END_DIRECT_ASSIGNEE_REVIEW",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1080,
+      "y": 190,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Resolve assignee",
+      "externalId": "FLOW_RESOLVE_DIRECT_ASSIGNEE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Complete assigned review",
+      "externalId": "FLOW_COMPLETE_ASSIGNED_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [
+        {
+          "id": 2011,
+          "name": "reviewOutcome",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Contains('approved,rejected', Lower(Trim(reviewOutcome)))"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "Supervisor"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

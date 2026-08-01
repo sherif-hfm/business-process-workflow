@@ -1,0 +1,212 @@
+{
+  "id": "example-user-task-roles-claim-bypass",
+  "name": "User Task Example 01 - Roles, Claim, and Bypass",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Requesters",
+      "externalId": "LANE_REQUESTERS",
+      "x": 30,
+      "y": 30,
+      "w": 470,
+      "h": 500
+    },
+    {
+      "id": 2,
+      "name": "Review Team",
+      "externalId": "LANE_REVIEW_TEAM",
+      "x": 530,
+      "y": 30,
+      "w": 980,
+      "h": 500
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Submit Restricted Request",
+      "externalId": "START_RESTRICTED_REQUEST",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 220,
+      "roles": [
+        "Requester"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestReference",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(requestReference)) >= 3"
+        }
+      ],
+      "assignee": null
+    },
+    {
+      "id": 2,
+      "name": "Claimed Review",
+      "externalId": "TASK_CLAIMED_REVIEW",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 2,
+      "x": 650,
+      "y": 215,
+      "roles": [
+        "Reviewer",
+        "Supervisor"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null
+    },
+    {
+      "id": 3,
+      "name": "Approved",
+      "externalId": "END_CLAIMED_REVIEW_APPROVED",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1240,
+      "y": 125,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 4,
+      "name": "Escalated by Supervisor",
+      "externalId": "END_SUPERVISOR_ESCALATION",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1240,
+      "y": 325,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open restricted review",
+      "externalId": "FLOW_OPEN_RESTRICTED_REVIEW",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Approve after claim",
+      "externalId": "FLOW_APPROVE_AFTER_CLAIM",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Reviewer",
+        "Supervisor"
+      ],
+      "variables": [
+        {
+          "id": 2011,
+          "name": "reviewNote",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(reviewNote)) >= 3"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Escalate without claim",
+      "externalId": "FLOW_SUPERVISOR_BYPASS_CLAIM",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": [
+        {
+          "id": 2021,
+          "name": "escalationNote",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(escalationNote)) >= 5"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": true,
+      "canActWithoutClaimRoles": [
+        "Supervisor"
+      ],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "WorkflowAdministrator"
+  ],
+  "unclaimRoles": [
+    "Supervisor"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

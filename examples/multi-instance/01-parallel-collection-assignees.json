@@ -1,0 +1,198 @@
+{
+  "id": "example-multi-instance-parallel-collection",
+  "name": "Multi-Instance Example 01 - Parallel Collection Assignees",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "parallelReviewers",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "alice",
+        "bob",
+        "carol"
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "parallelReviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Parallel Review",
+      "externalId": "LANE_PARALLEL_REVIEW",
+      "x": 30,
+      "y": 30,
+      "w": 1260,
+      "h": 390
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Parallel Review Requested",
+      "externalId": "START_PARALLEL_REVIEW",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 180,
+      "roles": [
+        "ReviewCoordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 2,
+      "name": "Review in Parallel",
+      "externalId": "TASK_PARALLEL_COLLECTION_REVIEW",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 365,
+      "y": 165,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "parallelReviewers",
+        "cardinalityExpression": null,
+        "onePerActor": false,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "parallelReviewResults"
+      },
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "All Parallel Reviews Completed",
+      "externalId": "END_PARALLEL_REVIEWS_COMPLETED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 950,
+      "y": 180,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create assigned review items",
+      "externalId": "FLOW_CREATE_PARALLEL_ITEMS",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Complete assigned review",
+      "externalId": "FLOW_COMPLETE_PARALLEL_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "reviewComment",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(reviewComment)) > 0"
+        }
+      ],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "externalId": "FLOW_PARALLEL_ENGINE_FALLBACK",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "ReviewCoordinator"
+  ],
+  "unclaimRoles": [
+    "ReviewCoordinator"
+  ],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}
