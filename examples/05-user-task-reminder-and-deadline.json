@@ -1,0 +1,182 @@
+{
+  "id": "example-user-task-reminder-deadline",
+  "name": "Example 05 - User Task Reminder and Deadline",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "remindersSent",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "remindersSent >= 0"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Approve Request",
+      "type": "userTask",
+      "laneId": null,
+      "x": 310,
+      "y": 175,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Reminder Every 15 Seconds",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 390,
+      "y": 235,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": null,
+        "timeCycle": "R3/PT15S"
+      }
+    },
+    {
+      "id": 4,
+      "name": "Record Reminder",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 610,
+      "y": 320,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "remindersSent",
+          "expression": "remindersSent + 1"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 5,
+      "name": "Reminder Branch End",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 930,
+      "y": 335,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "One Minute Deadline",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 470,
+      "y": 235,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "PT1M",
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 7,
+      "name": "Escalated Approval",
+      "type": "userTask",
+      "laneId": null,
+      "x": 650,
+      "y": 90,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 8,
+      "name": "Completed",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1030,
+      "y": 175,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Begin approval",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Approve normally",
+      "sourceRef": 2,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Send reminder without cancelling approval",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Reminder recorded",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Cancel original task and escalate",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 701,
+      "name": "Complete escalation",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

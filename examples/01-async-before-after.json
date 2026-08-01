@@ -1,0 +1,134 @@
+{
+  "id": "example-async-before-after",
+  "name": "Example 01 - Async Before and Async After",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "executionCount",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "executionCount >= 0"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Run Script Through Worker",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 230,
+      "y": 125,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "job": {
+        "failureHandling": "boundaryFirst",
+        "retryDelays": [
+          "PT5S",
+          "PT15S",
+          "PT1M"
+        ]
+      },
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "executionCount",
+          "expression": "executionCount + 1"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Commit Then Route Through Worker",
+      "type": "task",
+      "laneId": null,
+      "x": 520,
+      "y": 125,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": false,
+      "asyncAfter": true,
+      "job": {
+        "failureHandling": "retryFirst",
+        "retryDelays": []
+      }
+    },
+    {
+      "id": 4,
+      "name": "Inspect Result",
+      "type": "userTask",
+      "laneId": null,
+      "x": 830,
+      "y": 125,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 5,
+      "name": "Completed",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1110,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue async-before job",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Script finished",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Async-after routing",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Finish",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

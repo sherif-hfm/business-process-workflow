@@ -1,0 +1,184 @@
+{
+  "id": "example-multi-instance-reminder",
+  "name": "Example 06 - Multi-Instance Approval with Reminder",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "approvalResults",
+      "dataType": "json",
+      "isArray": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "remindersSent",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "remindersSent >= 0"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 170,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Three Parallel Approvals",
+      "type": "userTask",
+      "laneId": null,
+      "x": 330,
+      "y": 155,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "asyncBefore": true,
+      "asyncAfter": true,
+      "job": {
+        "failureHandling": "boundaryFirst",
+        "retryDelays": [
+          "PT10S",
+          "PT1M",
+          "PT5M"
+        ]
+      },
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "cardinality",
+        "collectionVariable": null,
+        "cardinalityExpression": "3",
+        "onePerActor": false,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "approvalResults"
+      }
+    },
+    {
+      "id": 3,
+      "name": "Reminder Every 15 Seconds",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 425,
+      "y": 215,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": null,
+        "timeCycle": "R3/PT15S"
+      }
+    },
+    {
+      "id": 4,
+      "name": "Record Parent Reminder",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 650,
+      "y": 315,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "remindersSent",
+          "expression": "remindersSent + 1"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 5,
+      "name": "Reminder Branch End",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 970,
+      "y": 330,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "All Approvals Completed",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 970,
+      "y": 170,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Create parent async job",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "sourceRef": 2,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "isDefault": false,
+      "isSelectable": true,
+      "completionCondition": "CountFlow(201) >= 3",
+      "completionPriority": 1,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "sourceRef": 2,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true,
+      "isSelectable": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Run reminder without completing parent",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Reminder recorded",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

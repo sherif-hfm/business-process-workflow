@@ -1,0 +1,86 @@
+{
+  "id": "example-absolute-timer-start",
+  "name": "Example 04 - Absolute Timer Start",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Manual Test Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 290,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Start at Authored UTC Time",
+      "type": "timerStartEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 100,
+      "roles": [],
+      "variables": [],
+      "timer": {
+        "timeDate": "2030-01-01T09:00:00Z",
+        "timeDuration": null,
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 3,
+      "name": "Absolute Timer Fired",
+      "type": "userTask",
+      "laneId": null,
+      "x": 420,
+      "y": 85,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Completed",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 780,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Manual path",
+      "sourceRef": 1,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Scheduled path",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Acknowledge",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}
