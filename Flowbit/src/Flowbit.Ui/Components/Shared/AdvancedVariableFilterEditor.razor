@@ -1,0 +1,78 @@
+<div class="advanced-variable-filter">
+    <label class="form-label" for="@Id">@Label</label>
+    <textarea id="@Id"
+              class="form-control font-monospace"
+              rows="8"
+              value="@Value"
+              @oninput="OnInputAsync"
+              aria-invalid="@(!string.IsNullOrWhiteSpace(EffectiveError))"
+              aria-describedby="@($"{Id}-help {Id}-error")"
+              placeholder='{"request.medicalCenter.id":{"$eq":"MC-1042"}}'></textarea>
+    <div class="advanced-variable-filter-actions">
+        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="FormatAsync">Format JSON</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ClearAsync" disabled="@string.IsNullOrEmpty(Value)">Clear</button>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(EffectiveError))
+    {
+        <div id="@($"{Id}-error")" class="invalid-feedback d-block" role="alert">@EffectiveError</div>
+    }
+    <div id="@($"{Id}-help")" class="form-text">
+        Developer/admin diagnostic input. This predicate narrows authorized results; it does not grant access.
+    </div>
+</div>
+
+@code {
+    private string? validationError;
+    private string? previousValue;
+    private bool initialized;
+
+    [Parameter, EditorRequired]
+    public string Id { get; set; } = string.Empty;
+
+    [Parameter]
+    public string Label { get; set; } = "Advanced variable filter (JSON)";
+
+    [Parameter]
+    public string? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> ValueChanged { get; set; }
+
+    [Parameter]
+    public string? Error { get; set; }
+
+    private string? EffectiveError => validationError ?? Error;
+
+    protected override void OnParametersSet()
+    {
+        if (initialized && !string.Equals(previousValue, Value, StringComparison.Ordinal))
+        {
+            validationError = null;
+        }
+
+        initialized = true;
+        previousValue = Value;
+    }
+
+    private async Task OnInputAsync(ChangeEventArgs eventArgs)
+    {
+        validationError = null;
+        await ValueChanged.InvokeAsync(eventArgs.Value?.ToString());
+    }
+
+    private async Task FormatAsync()
+    {
+        if (!AdvancedVariableFilterInput.TryFormat(Value, out var formatted, out validationError))
+        {
+            return;
+        }
+
+        await ValueChanged.InvokeAsync(formatted);
+    }
+
+    private async Task ClearAsync()
+    {
+        validationError = null;
+        await ValueChanged.InvokeAsync(null);
+    }
+}

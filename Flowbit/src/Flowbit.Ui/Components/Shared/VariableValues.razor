@@ -1,0 +1,29 @@
+@using System.Text.Json
+
+@if (Values is null)
+{
+    <span class="text-muted">Not requested</span>
+}
+else if (Values.Count == 0)
+{
+    <span class="text-muted">No variables</span>
+}
+else
+{
+    <details class="variable-values">
+        <summary>@Values.Count variable@(Values.Count == 1 ? string.Empty : "s")</summary>
+        <pre>@FormattedValues</pre>
+    </details>
+}
+
+@code {
+    private static readonly JsonSerializerOptions IndentedJson = new()
+    {
+        WriteIndented = true
+    };
+
+    [Parameter]
+    public IReadOnlyDictionary<string, JsonElement>? Values { get; set; }
+
+    private string FormattedValues => JsonSerializer.Serialize(Values, IndentedJson);
+}

@@ -1,3 +1,5 @@
+@inject IWebHostEnvironment HostEnvironment
+
 <nav class="nav-groups">
     <div class="nav-group">
         <div class="nav-label">Workspace</div>
@@ -45,6 +47,13 @@
 
     <div class="nav-group developer-group">
         <div class="nav-label">Developer</div>
+        @if (HostEnvironment.IsDevelopment())
+        {
+            <NavLink class="nav-link" href="task-distribution" @onclick="OnNavigate">
+                <AppIcon Name="assignments" />
+                <span>Distribution search</span>
+            </NavLink>
+        }
         <NavLink class="nav-link" href="token" @onclick="OnNavigate">
             <AppIcon Name="token" />
             <span>Test identity</span>

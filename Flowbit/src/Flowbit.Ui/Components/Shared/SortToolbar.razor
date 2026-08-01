@@ -62,7 +62,7 @@
     public string DefaultDirection { get; set; } = "desc";
 
     [Parameter]
-    public EventCallback<IReadOnlyList<string>> Applied { get; set; }
+    public EventCallback<IReadOnlyList<SearchSortDto>> Applied { get; set; }
 
     protected override void OnParametersSet()
     {
@@ -142,6 +142,6 @@
         await Applied.InvokeAsync(BuildClauses());
     }
 
-    private IReadOnlyList<string> BuildClauses() =>
-        clauses.Select(clause => $"{clause.Field}:{clause.Direction}").ToArray();
+    private IReadOnlyList<SearchSortDto> BuildClauses() =>
+        clauses.Select(clause => new SearchSortDto(clause.Field, clause.Direction)).ToArray();
 }

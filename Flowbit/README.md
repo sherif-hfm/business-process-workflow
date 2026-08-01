@@ -307,7 +307,7 @@ and in-flight gateway executions are not migrated.
 
 `GET /api/node-executions` and `POST /api/node-executions/search` are the
 read-only, cross-workflow activity search resources. The Blazor **Activity**
-page continues to use the GET route. `GET /api/node-executions/{id}` returns one
+page uses the POST search route. `GET /api/node-executions/{id}` returns one
 authorized execution with its execution-local detail. These routes do not grant
 assignment, claim, cancellation, or workflow-mutation authority; the existing
 inbox and Task Assignments APIs remain the action surfaces for human work.
@@ -636,9 +636,26 @@ expression indexes can be added later for measured hot nested paths. Latest
 All legacy GET routes remain unchanged. Repeated `var=name:value` filters retain
 their exact case-insensitive latest-scalar-text behavior and are translated to
 the shared SQL filter internally; repeated values remain AND-combined (including
-the node-execution route's existing ten-filter limit). The current Blazor UI
-continues to use these GET routes. `includeVariables=true` still returns the
-latest JSON value for each name, omitting the property when false or absent.
+the node-execution route's existing ten-filter limit). The Blazor Instances,
+My Work, Task Assignments, Activity, and Task Distribution search surfaces use
+the POST routes on every load, including an empty advanced filter; dashboard
+summary reads retain their lightweight GET calls. `includeVariables=true` still
+returns the latest JSON value for each name, omitting the property when false or
+absent.
+
+All five search surfaces expose a developer/admin multiline JSON editor with
+syntax/root-object validation and formatting. API validation remains
+authoritative for operators and operand types. Instances, My Work, and Task
+Distribution can request and expand returned variable values; Task Assignments
+and Activity use variables only as search predicates because their POST
+contracts do not return them. The read-only `/task-distribution` diagnostic UI
+is shown only in the Development environment; direct navigation outside
+Development redirects to the UI home page. It remains
+credential-authenticated by workflow key and `X-Client-Id` /
+`X-Client-Secret`; credentials remain component state, the secret is sent only
+as a header, and neither credential is placed in a URL or persisted by the UI.
+These controls are diagnostics, not authorization: production clients must
+derive tenant or medical-center predicates from trusted identity data.
 
 ### Instance and inbox sorting
 

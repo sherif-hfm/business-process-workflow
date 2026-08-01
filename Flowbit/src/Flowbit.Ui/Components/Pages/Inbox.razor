@@ -1,5 +1,6 @@
 @page "/inbox"
 @implements IDisposable
+@using System.Text.Json
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
 @inject TokenState Token
@@ -10,7 +11,7 @@
             Description="Review the user tasks visible to your current identity and move work forward.">
     <Actions>
         <a class="btn btn-outline-secondary" href="token"><AppIcon Name="token" /> Change identity</a>
-        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken)"><AppIcon Name="refresh" /> Refresh inbox</button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)"><AppIcon Name="refresh" /> Refresh inbox</button>
     </Actions>
 </PageHeader>
 
@@ -60,17 +61,26 @@ else
         </div>
         @if (filtersOpen)
         {
-            <div id="inbox-filter-fields" class="filter-grid mt-3">
+            <div id="inbox-filter-fields" class="filter-grid mt-3" @onchange="MarkFiltersDirty">
                 <div><label class="form-label" for="inbox-instance-id">Instance ID</label><input id="inbox-instance-id" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
                 <div><label class="form-label" for="inbox-workflow-id">Workflow version ID</label><input id="inbox-workflow-id" type="number" class="form-control" @bind="workflowId" placeholder="1" /></div>
                 <div><label class="form-label" for="inbox-workflow-key">Workflow key</label><input id="inbox-workflow-key" class="form-control" @bind="workflowKey" placeholder="purchase-request" /></div>
                 <div><label class="form-label" for="inbox-business-key">Business key</label><input id="inbox-business-key" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
                 <div><label class="form-label" for="inbox-node-id">Node ID</label><input id="inbox-node-id" type="number" class="form-control" @bind="nodeId" placeholder="3" /></div>
                 <div><label class="form-label" for="inbox-node-external">Node external ID</label><input id="inbox-node-external" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
-                <div class="filter-span-2"><label class="form-label" for="inbox-variables">Variables</label><input id="inbox-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+                <div class="filter-span-2">
+                    <AdvancedVariableFilterEditor Id="inbox-variable-filter"
+                                                  Value="@variableFilterJson"
+                                                  ValueChanged="OnVariableFilterChanged"
+                                                  Error="@variableFilterError" />
+                </div>
+                <div class="form-check align-self-center">
+                    <input id="inbox-include-variables" class="form-check-input" type="checkbox" checked="@includeVariables" @onchange="ToggleIncludeVariablesAsync" @onchange:stopPropagation="true" />
+                    <label class="form-check-label" for="inbox-include-variables">Include variables in results</label>
+                </div>
                 <div class="filter-actions">
-                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
-                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@loading">Apply filters</button>
+                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(loading || (ActiveFilterCount == 0 && !includeVariables))">Clear</button>
                 </div>
             </div>
         }
@@ -84,12 +94,20 @@ else
 
     <section class="panel panel-flush" aria-labelledby="inbox-results-heading">
         <div class="section-heading">
-            <div><h2 id="inbox-results-heading">Work items</h2><p>@(result is null ? "Loading your inbox…" : $"{result.TotalCount:N0} visible tasks")</p></div>
+            <div><h2 id="inbox-results-heading">Work items</h2><p>@ResultSummary</p></div>
         </div>
 
-        @if (result is null)
+        @if (filtersDirty)
+        {
+            <EmptyState Icon="search" Title="Apply the changed filters" Description="Paging is paused until the updated filter values are applied." />
+        }
+        else if (loading)
         {
             <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || result is null)
+        {
+            <EmptyState Icon="alert" Title="Inbox unavailable" Description="Use Refresh inbox to retry. Authorization and validation errors are shown above." />
         }
         else if (result.Items.Count == 0)
         {
@@ -100,7 +118,7 @@ else
             <div class="table-responsive">
                 <table class="table align-middle">
                     <caption class="visually-hidden">Work items visible to the current test identity</caption>
-                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th><th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                     <tbody>
                         @foreach (var item in result.Items)
                         {
@@ -117,6 +135,10 @@ else
                                 <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>
                                 <td>@if (item.MultiInstance is not null) { <span>@item.MultiInstance.Completed / @item.MultiInstance.Total</span><span class="data-subtitle">Multi-instance</span> } else { <span>Single task</span> }</td>
                                 <td><StatusBadge Status="@Readiness(item)" Text="@Readiness(item)" /></td>
+                                @if (includeVariables)
+                                {
+                                    <td><VariableValues Values="@item.Variables" /></td>
+                                }
                                 <td>@item.TaskUpdatedAt.ToLocalTime().ToString("g")</td>
                                 <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a></td>
                             </tr>
@@ -128,8 +150,8 @@ else
             <div class="pagination-bar">
                 <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
                 <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || !HasNextPage)" @onclick="NextPageAsync">Next</button>
                 </div>
             </div>
         }
@@ -138,7 +160,8 @@ else
 
 @code {
     private PagedResult<InboxItemDto>? result;
-    private string? variableFilter;
+    private string? variableFilterJson;
+    private string? variableFilterError;
     private long? instanceId;
     private long? workflowId;
     private string? workflowKey;
@@ -147,9 +170,14 @@ else
     private string? nodeExternalId;
     private string? error;
     private bool filtersOpen;
+    private bool includeVariables;
+    private bool loading;
+    private bool loadFailed;
+    private bool filtersDirty;
+    private long requestVersion;
     private int page = 1;
     private const int PageSize = 50;
-    private IReadOnlyList<string> sortClauses = ["taskUpdatedAt:desc"];
+    private IReadOnlyList<SearchSortDto> sortClauses = [new("taskUpdatedAt", "desc")];
     private static readonly IReadOnlyList<SortFieldOption> InboxSortOptions =
     [
         new("userTaskId", "User task ID"),
@@ -161,11 +189,17 @@ else
     ];
 
     private string IdentityInitial => (Token.CurrentUser ?? "A")[..1].ToUpperInvariant();
-    private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
+    private int ActiveFilterCount => new object?[] { variableFilterJson, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
         .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-    private bool HasNextPage => result is not null && page < TotalPages;
-    private IReadOnlyList<string> ParseVariableFilter() => string.IsNullOrWhiteSpace(variableFilter) ? [] : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
+    private string ResultSummary => filtersDirty
+        ? "Filters changed. Apply them to run a new search."
+        : loading
+            ? "Loading your inbox…"
+            : loadFailed || result is null
+                ? "The inbox could not be loaded."
+                : $"{result.TotalCount:N0} visible tasks";
 
     protected override async Task OnInitializedAsync()
     {
@@ -173,32 +207,109 @@ else
         if (Token.HasToken) await LoadAsync();
     }
 
-    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task ApplyFiltersAsync() { MarkFiltersDirty(); await LoadAsync(); }
     private async Task ClearFiltersAsync()
     {
-        variableFilter = workflowKey = businessKey = nodeExternalId = null;
+        variableFilterJson = variableFilterError = workflowKey = businessKey = nodeExternalId = null;
         instanceId = workflowId = null;
         nodeId = null;
-        page = 1;
+        includeVariables = false;
+        MarkFiltersDirty();
         await LoadAsync();
     }
-    private async Task PreviousPageAsync() { if (page <= 1) return; page--; await LoadAsync(); }
+    private async Task PreviousPageAsync() { if (loading || filtersDirty || page <= 1) return; page--; await LoadAsync(); }
     private async Task NextPageAsync() { if (!HasNextPage) return; page++; await LoadAsync(); }
-    private async Task ApplySortAsync(IReadOnlyList<string> value) { sortClauses = value; page = 1; await LoadAsync(); }
+    private async Task ApplySortAsync(IReadOnlyList<SearchSortDto> value) { sortClauses = value; MarkFiltersDirty(); await LoadAsync(); }
+
+    private void OnVariableFilterChanged(string? value)
+    {
+        variableFilterJson = value;
+        variableFilterError = null;
+        MarkFiltersDirty();
+    }
+
+    private void MarkFiltersDirty()
+    {
+        requestVersion++;
+        filtersDirty = true;
+        loading = false;
+        loadFailed = false;
+        error = null;
+        page = 1;
+    }
+
+    private async Task ToggleIncludeVariablesAsync(ChangeEventArgs eventArgs)
+    {
+        includeVariables = eventArgs.Value is true;
+        MarkFiltersDirty();
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
-        if (!Token.HasToken) { result = null; return; }
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            result = null;
+            loading = false;
+            loadFailed = false;
+            filtersDirty = false;
+            error = null;
+            return;
+        }
+        if (filtersDirty) page = 1;
         try
         {
+            loading = true;
+            loadFailed = false;
+            filtersDirty = false;
             error = null;
             result = null;
-            result = await Api.GetInboxAsync(page, PageSize, ParseVariableFilter(), nodeExternalId, nodeId, instanceId, workflowId, workflowKey, businessKey, sort: sortClauses);
+            if (!AdvancedVariableFilterInput.TryParse(
+                    variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                return;
+            }
+
+            var loaded = await Api.SearchInboxAsync(new InboxSearchRequest
+            {
+                Page = page,
+                PageSize = PageSize,
+                VariableFilter = variableFilter,
+                NodeExternalId = nodeExternalId,
+                NodeId = nodeId,
+                InstanceId = instanceId,
+                WorkflowId = workflowId,
+                WorkflowKey = workflowKey,
+                BusinessKey = businessKey,
+                IncludeVariables = includeVariables,
+                Sort = sortClauses
+            });
+            if (currentRequest != requestVersion) return;
+            result = loaded;
         }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion) return;
+            error = ex.Message;
+            result = null;
+            loadFailed = true;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
     }
 
-    private void OnTokenChanged() => _ = InvokeAsync(LoadAsync);
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        MarkFiltersDirty();
+        await LoadAsync();
+    });
     private static string Assignment(InboxItemDto item) => !string.IsNullOrWhiteSpace(item.Assignee) ? $"Assigned to {item.Assignee}" : !string.IsNullOrWhiteSpace(item.ClaimedBy) ? $"Claimed by {item.ClaimedBy}" : "Shared pool";
     private static string Readiness(InboxItemDto item) => item.CanAct ? "Ready to act" : item.CanClaim ? "Can claim" : "View only";
 

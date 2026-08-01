@@ -1,4 +1,5 @@
 @page "/activity"
+@using System.Text.Json
 @inject WorkflowApiClient Api
 
 <PageTitle>Activity · Flowbit</PageTitle>
@@ -6,7 +7,7 @@
 <PageHeader Eyebrow="Workspace" Title="Node activity"
             Description="Search committed node visits across workflow versions and instances. Visibility is determined by the API for your current roles.">
     <Actions>
-        <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@loading"><AppIcon Name="refresh" /> Refresh</button>
     </Actions>
 </PageHeader>
 
@@ -44,7 +45,7 @@
 
     @if (advancedOpen)
     {
-        <div id="activity-filter-fields" class="filter-grid mt-3">
+        <div id="activity-filter-fields" class="filter-grid mt-3" @onchange="MarkFiltersDirty">
             <div><label class="form-label" for="activity-id">Execution ID</label><input id="activity-id" type="number" class="form-control" @bind="executionId" placeholder="9001" /></div>
             <div><label class="form-label" for="activity-instance-id">Instance ID</label><input id="activity-instance-id" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
             <div><label class="form-label" for="activity-workflow-id">Workflow version ID</label><input id="activity-workflow-id" type="number" class="form-control" @bind="workflowId" placeholder="17" /></div>
@@ -99,7 +100,13 @@
             <div><label class="form-label" for="activity-selected-flow">Selected flow ID</label><input id="activity-selected-flow" type="number" class="form-control" @bind="selectedFlowId" placeholder="202" /></div>
             <div><label class="form-label" for="activity-exited-flow">Exited-via flow ID</label><input id="activity-exited-flow" type="number" class="form-control" @bind="exitedViaFlowId" placeholder="202" /></div>
             <div><label class="form-label" for="activity-aggregate-flow">MI aggregate flow ID</label><input id="activity-aggregate-flow" type="number" class="form-control" @bind="aggregateFlowId" placeholder="203" /></div>
-            <div><label class="form-label" for="activity-variables">Current instance variables</label><input id="activity-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Latest scalar values; comma-separated name:value pairs.</div></div>
+            <div class="filter-span-2">
+                <AdvancedVariableFilterEditor Id="activity-variable-filter"
+                                              Label="Advanced current-variable filter (JSON)"
+                                              Value="@variableFilterJson"
+                                              ValueChanged="OnVariableFilterChanged"
+                                              Error="@variableFilterError" />
+            </div>
 
             <div><label class="form-label" for="activity-created-from">Created from (inclusive)</label><input id="activity-created-from" type="datetime-local" class="form-control" @bind="createdFrom" /></div>
             <div><label class="form-label" for="activity-created-to">Created to (exclusive)</label><input id="activity-created-to" type="datetime-local" class="form-control" @bind="createdTo" /></div>
@@ -114,8 +121,8 @@
             <div><label class="form-label" for="activity-duration-min">Minimum duration (ms)</label><input id="activity-duration-min" type="number" min="0" class="form-control" @bind="minimumDurationMilliseconds" placeholder="1000" /></div>
             <div><label class="form-label" for="activity-duration-max">Maximum duration (ms)</label><input id="activity-duration-max" type="number" min="0" class="form-control" @bind="maximumDurationMilliseconds" placeholder="60000" /></div>
             <div class="filter-actions filter-span-2">
-                <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
-                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@loading">Apply filters</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(loading || ActiveFilterCount == 0)">Clear</button>
             </div>
         </div>
     }
@@ -131,15 +138,19 @@
     <div class="section-heading">
         <div>
             <h2 id="activity-results-heading">Results</h2>
-            <p>@(result is null ? loadFailed ? "Activity could not be loaded." : "Loading activity…" : $"{result.TotalCount:N0} matching node executions")</p>
+            <p>@ResultSummary</p>
         </div>
     </div>
 
-    @if (result is null && !loadFailed)
+    @if (filtersDirty)
+    {
+        <EmptyState Icon="search" Title="Apply the changed filters" Description="Paging is paused until the updated filter values are applied." />
+    }
+    else if (loading)
     {
         <div class="p-3" role="status"><div class="skeleton"></div></div>
     }
-    else if (result is null)
+    else if (loadFailed || result is null)
     {
         <EmptyState Icon="alert" Title="Activity unavailable" Description="Use Refresh to try the request again. Authorization and validation errors are shown above." />
     }
@@ -247,8 +258,8 @@
         <div class="pagination-bar">
             <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
             <div class="d-flex gap-2">
-                <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-                <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || !HasNextPage)" @onclick="NextPageAsync">Next</button>
             </div>
         </div>
     }
@@ -259,10 +270,13 @@
     private string? status;
     private string? error;
     private bool advancedOpen;
+    private bool loading;
     private bool loadFailed;
+    private bool filtersDirty;
+    private long requestVersion;
     private int page = 1;
     private const int PageSize = 50;
-    private IReadOnlyList<string> sortClauses = ["updatedAt:desc"];
+    private IReadOnlyList<SearchSortDto> sortClauses = [new("updatedAt", "desc")];
 
     private long? executionId;
     private long? instanceId;
@@ -291,7 +305,8 @@
     private int? selectedFlowId;
     private int? exitedViaFlowId;
     private int? aggregateFlowId;
-    private string? variableFilter;
+    private string? variableFilterJson;
+    private string? variableFilterError;
     private DateTime? createdFrom;
     private DateTime? createdTo;
     private DateTime? startedFrom;
@@ -338,7 +353,7 @@
                 executionKind, nodeId, nodeName, nodeExternalId, nodeTypes, instanceStatuses,
                 completionReasons, multiInstanceFilter, cutoverSeedFilter, owner, startedBy,
                 completedBy, enteredViaFlowId, selectedFlowId, exitedViaFlowId, aggregateFlowId,
-                variableFilter, createdFrom, createdTo, startedFrom, startedTo, updatedFrom,
+                variableFilterJson, createdFrom, createdTo, startedFrom, startedTo, updatedFrom,
                 updatedTo, completedFrom, completedTo, minimumDurationMilliseconds,
                 maximumDurationMilliseconds
             };
@@ -349,33 +364,40 @@
     private int TotalPages => result is null || result.TotalCount == 0
         ? 1
         : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-    private bool HasNextPage => result is not null && page < TotalPages;
+    private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
+    private string ResultSummary => filtersDirty
+        ? "Filters changed. Apply them to run a new search."
+        : loading
+            ? "Loading activity…"
+            : loadFailed || result is null
+                ? "Activity could not be loaded."
+                : $"{result.TotalCount:N0} matching node executions";
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
     private async Task SetStatusAsync(string? value)
     {
         status = value;
-        page = 1;
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
     private async Task ApplyFiltersAsync()
     {
-        page = 1;
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
-    private async Task ApplySortAsync(IReadOnlyList<string> value)
+    private async Task ApplySortAsync(IReadOnlyList<SearchSortDto> value)
     {
         sortClauses = value;
-        page = 1;
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
     private async Task PreviousPageAsync()
     {
-        if (page <= 1) return;
+        if (loading || filtersDirty || page <= 1) return;
         page--;
         await LoadAsync();
     }
@@ -393,20 +415,32 @@
         workflowVersion = itemIndex = nodeId = enteredViaFlowId = selectedFlowId = exitedViaFlowId = aggregateFlowId = null;
         workflowKey = businessKey = executionKind = nodeName = nodeExternalId = nodeTypes = null;
         instanceStatuses = completionReasons = multiInstanceFilter = cutoverSeedFilter = null;
-        owner = startedBy = completedBy = variableFilter = null;
+        owner = startedBy = completedBy = variableFilterJson = variableFilterError = null;
         createdFrom = createdTo = startedFrom = startedTo = updatedFrom = updatedTo = completedFrom = completedTo = null;
         minimumDurationMilliseconds = maximumDurationMilliseconds = null;
-        page = 1;
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
     private async Task LoadAsync()
     {
+        var currentRequest = ++requestVersion;
+        if (filtersDirty) page = 1;
         try
         {
+            loading = true;
             error = null;
             loadFailed = false;
-            result = await Api.GetNodeExecutionsAsync(new NodeExecutionSearchQuery
+            filtersDirty = false;
+            result = null;
+            if (!AdvancedVariableFilterInput.TryParse(
+                    variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                return;
+            }
+
+            var loaded = await Api.SearchNodeExecutionsAsync(new NodeExecutionSearchBodyRequest
             {
                 Page = page,
                 PageSize = PageSize,
@@ -446,17 +480,45 @@
                 UpdatedTo = ToOffset(updatedTo),
                 CompletedFrom = ToOffset(completedFrom),
                 CompletedTo = ToOffset(completedTo),
-                MinimumDurationMilliseconds = minimumDurationMilliseconds,
-                MaximumDurationMilliseconds = maximumDurationMilliseconds,
-                Variables = ParseCsv(variableFilter),
+                MinDurationMilliseconds = minimumDurationMilliseconds,
+                MaxDurationMilliseconds = maximumDurationMilliseconds,
+                VariableFilter = variableFilter,
                 Sort = sortClauses
             });
+            if (currentRequest != requestVersion) return;
+            result = loaded;
         }
         catch (Exception ex)
         {
+            if (currentRequest != requestVersion) return;
             error = ex.Message;
+            result = null;
             loadFailed = true;
         }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private void OnVariableFilterChanged(string? value)
+    {
+        variableFilterJson = value;
+        variableFilterError = null;
+        MarkFiltersDirty();
+    }
+
+    private void MarkFiltersDirty()
+    {
+        requestVersion++;
+        filtersDirty = true;
+        loading = false;
+        loadFailed = false;
+        error = null;
+        page = 1;
     }
 
     private static bool IsSet(object? value) => value switch

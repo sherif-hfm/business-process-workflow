@@ -9065,9 +9065,8 @@ public sealed partial class WorkflowEngineService(
         if (!valid)
         {
             logger.LogWarning(
-                "Task distribution request for workflowKey {WorkflowKey} rejected for client '{ClientId}'.",
-                workflow.WorkflowKey,
-                credentials.ClientId);
+                "Task distribution request for workflowKey {WorkflowKey} rejected: invalid client credentials.",
+                workflow.WorkflowKey);
             throw new WorkflowUnauthorizedException("Invalid client credentials.");
         }
 

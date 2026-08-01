@@ -1,0 +1,16 @@
+.advanced-variable-filter {
+    min-width: 0;
+}
+
+.advanced-variable-filter textarea {
+    min-height: 12rem;
+    resize: vertical;
+    font-size: .82rem;
+}
+
+.advanced-variable-filter-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin-top: .6rem;
+}

@@ -1,4 +1,5 @@
 @page "/instances"
+@using System.Text.Json
 @inject WorkflowApiClient Api
 
 <PageTitle>Instances · Flowbit</PageTitle>
@@ -6,7 +7,7 @@
 <PageHeader Eyebrow="Operations" Title="Workflow instances"
             Description="Monitor every process run, inspect all execution positions, and filter by technical or business context.">
     <Actions>
-        <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@loading"><AppIcon Name="refresh" /> Refresh</button>
         <a class="btn btn-primary" href="workflows"><AppIcon Name="plus" /> Start workflow</a>
     </Actions>
 </PageHeader>
@@ -33,17 +34,26 @@
     </div>
     @if (advancedOpen)
     {
-        <div id="instance-filter-fields" class="filter-grid mt-3">
+        <div id="instance-filter-fields" class="filter-grid mt-3" @onchange="MarkFiltersDirty">
             <div><label class="form-label" for="instance-id-filter">Instance ID</label><input id="instance-id-filter" type="number" class="form-control" @bind="instanceId" placeholder="42" /></div>
             <div><label class="form-label" for="workflow-id-filter">Workflow version ID</label><input id="workflow-id-filter" type="number" class="form-control" @bind="workflowId" placeholder="1" /></div>
             <div><label class="form-label" for="workflow-key-filter">Workflow key</label><input id="workflow-key-filter" class="form-control" @bind="workflowKey" placeholder="purchase-request" /></div>
             <div><label class="form-label" for="business-key-filter">Business key</label><input id="business-key-filter" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
             <div><label class="form-label" for="node-id-filter">Node ID</label><input id="node-id-filter" type="number" class="form-control" @bind="nodeId" placeholder="3" /></div>
             <div><label class="form-label" for="external-node-filter">Node external ID</label><input id="external-node-filter" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
-            <div class="filter-span-2"><label class="form-label" for="variable-filter">Variables</label><input id="variable-filter" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+            <div class="filter-span-2">
+                <AdvancedVariableFilterEditor Id="instance-variable-filter"
+                                              Value="@variableFilterJson"
+                                              ValueChanged="OnVariableFilterChanged"
+                                              Error="@variableFilterError" />
+            </div>
+            <div class="form-check align-self-center">
+                <input id="instance-include-variables" class="form-check-input" type="checkbox" checked="@includeVariables" @onchange="ToggleIncludeVariablesAsync" @onchange:stopPropagation="true" />
+                <label class="form-check-label" for="instance-include-variables">Include variables in results</label>
+            </div>
             <div class="filter-actions">
-                <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
-                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@loading">Apply filters</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(loading || (ActiveFilterCount == 0 && !includeVariables))">Clear</button>
             </div>
         </div>
     }
@@ -57,12 +67,20 @@
 
 <section class="panel panel-flush" aria-labelledby="instance-results-heading">
     <div class="section-heading">
-        <div><h2 id="instance-results-heading">Results</h2><p>@(result is null ? "Loading instances…" : $"{result.TotalCount:N0} matching instances")</p></div>
+        <div><h2 id="instance-results-heading">Results</h2><p>@ResultSummary</p></div>
     </div>
 
-    @if (result is null)
+    @if (filtersDirty)
+    {
+        <EmptyState Icon="search" Title="Apply the changed filters" Description="Paging is paused until the updated filter values are applied." />
+    }
+    else if (loading)
     {
         <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (loadFailed || result is null)
+    {
+        <EmptyState Icon="alert" Title="Instances unavailable" Description="Use Refresh to retry. Authorization and validation errors are shown above." />
     }
     else if (result.Items.Count == 0)
     {
@@ -73,7 +91,7 @@
         <div class="table-responsive">
             <table class="table align-middle">
                 <caption class="visually-hidden">Workflow instances matching the selected filters</caption>
-                <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Execution positions</th><th scope="col">Status</th><th scope="col">Work state</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                <thead><tr><th scope="col">Instance</th><th scope="col">Workflow</th><th scope="col">Execution positions</th><th scope="col">Status</th><th scope="col">Work state</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                 <tbody>
                     @foreach (var instance in result.Items)
                     {
@@ -100,6 +118,10 @@
                                 }
                             </td>
                             <td>@FormatTaskState(instance.UserTasks)</td>
+                            @if (includeVariables)
+                            {
+                                <td><VariableValues Values="@instance.Variables" /></td>
+                            }
                             <td><span title="@instance.UpdatedAt.ToString("O")">@instance.UpdatedAt.ToLocalTime().ToString("g")</span></td>
                             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a></td>
                         </tr>
@@ -111,8 +133,8 @@
         <div class="pagination-bar">
             <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
             <div class="d-flex gap-2">
-                <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-                <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || !HasNextPage)" @onclick="NextPageAsync">Next</button>
             </div>
         </div>
     }
@@ -121,7 +143,8 @@
 @code {
     private PagedResult<InstanceSummaryDto>? result;
     private string? status = "running";
-    private string? variableFilter;
+    private string? variableFilterJson;
+    private string? variableFilterError;
     private long? instanceId;
     private long? workflowId;
     private string? workflowKey;
@@ -130,10 +153,15 @@
     private string? nodeExternalId;
     private string? error;
     private bool advancedOpen;
+    private bool includeVariables;
+    private bool loading;
+    private bool loadFailed;
+    private bool filtersDirty;
+    private long requestVersion;
     private int page = 1;
     private readonly List<string?> pageCursors = [null];
     private const int PageSize = 50;
-    private IReadOnlyList<string> sortClauses = ["updatedAt:desc"];
+    private IReadOnlyList<SearchSortDto> sortClauses = [new("updatedAt", "desc")];
     private static readonly IReadOnlyList<SortFieldOption> InstanceSortOptions =
     [
         new("id", "Instance ID"),
@@ -141,17 +169,19 @@
         new("updatedAt", "Updated")
     ];
 
-    private int ActiveFilterCount => new object?[] { variableFilter, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
+    private int ActiveFilterCount => new object?[] { variableFilterJson, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
         .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
-
-    private IReadOnlyList<string> ParseVariableFilter() =>
-        string.IsNullOrWhiteSpace(variableFilter)
-            ? []
-            : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
     private bool HasNextPage =>
-        result is not null && !string.IsNullOrWhiteSpace(result.NextCursor);
+        !loading && !filtersDirty && result is not null && !string.IsNullOrWhiteSpace(result.NextCursor);
+    private string ResultSummary => filtersDirty
+        ? "Filters changed. Apply them to run a new search."
+        : loading
+            ? "Loading instances…"
+            : loadFailed || result is null
+                ? "Instances could not be loaded."
+                : $"{result.TotalCount:N0} matching instances";
 
     private static string FormatTaskState(UserTaskWorkSummaryDto? tasks)
     {
@@ -177,20 +207,21 @@
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
-    private async Task SetStatusAsync(string? value) { status = value; ResetPaging(); await LoadAsync(); }
-    private async Task ApplyFiltersAsync() { ResetPaging(); await LoadAsync(); }
+    private async Task SetStatusAsync(string? value) { status = value; MarkFiltersDirty(); await LoadAsync(); }
+    private async Task ApplyFiltersAsync() { MarkFiltersDirty(); await LoadAsync(); }
     private async Task ClearFiltersAsync()
     {
-        variableFilter = workflowKey = businessKey = nodeExternalId = null;
+        variableFilterJson = variableFilterError = workflowKey = businessKey = nodeExternalId = null;
         instanceId = workflowId = null;
         nodeId = null;
-        ResetPaging();
+        includeVariables = false;
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
     private async Task PreviousPageAsync()
     {
-        if (page <= 1) return;
+        if (loading || filtersDirty || page <= 1) return;
         pageCursors.RemoveAt(pageCursors.Count - 1);
         page--;
         await LoadAsync();
@@ -204,10 +235,10 @@
         await LoadAsync();
     }
 
-    private async Task ApplySortAsync(IReadOnlyList<string> value)
+    private async Task ApplySortAsync(IReadOnlyList<SearchSortDto> value)
     {
         sortClauses = value;
-        ResetPaging();
+        MarkFiltersDirty();
         await LoadAsync();
     }
 
@@ -218,28 +249,84 @@
         pageCursors.Add(null);
     }
 
+    private void OnVariableFilterChanged(string? value)
+    {
+        variableFilterJson = value;
+        variableFilterError = null;
+        MarkFiltersDirty();
+    }
+
+    private void MarkFiltersDirty()
+    {
+        requestVersion++;
+        filtersDirty = true;
+        loading = false;
+        loadFailed = false;
+        error = null;
+        ResetPaging();
+    }
+
+    private async Task ToggleIncludeVariablesAsync(ChangeEventArgs eventArgs)
+    {
+        includeVariables = eventArgs.Value is true;
+        MarkFiltersDirty();
+        await LoadAsync();
+    }
+
     private async Task LoadAsync()
     {
+        var currentRequest = ++requestVersion;
+        if (filtersDirty)
+        {
+            ResetPaging();
+        }
+
         try
         {
+            loading = true;
+            loadFailed = false;
+            filtersDirty = false;
             error = null;
-            result = await Api.GetInstancesAsync(
-                status,
-                page,
-                PageSize,
-                ParseVariableFilter(),
-                nodeExternalId,
-                nodeId,
-                instanceId,
-                workflowId,
-                workflowKey,
-                businessKey,
-                sort: sortClauses,
-                cursor: pageCursors[page - 1]);
+            result = null;
+            if (!AdvancedVariableFilterInput.TryParse(
+                    variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                return;
+            }
+
+            var loaded = await Api.SearchInstancesAsync(new InstanceSearchRequest
+            {
+                Status = status,
+                Page = page,
+                PageSize = PageSize,
+                VariableFilter = variableFilter,
+                NodeExternalId = nodeExternalId,
+                NodeId = nodeId,
+                InstanceId = instanceId,
+                WorkflowId = workflowId,
+                WorkflowKey = workflowKey,
+                BusinessKey = businessKey,
+                IncludeVariables = includeVariables,
+                Sort = sortClauses,
+                Cursor = pageCursors[page - 1]
+            });
+            if (currentRequest != requestVersion) return;
+            result = loaded;
         }
         catch (Exception ex)
         {
+            if (currentRequest != requestVersion) return;
             error = ex.Message;
+            result = null;
+            loadFailed = true;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
         }
     }
 }

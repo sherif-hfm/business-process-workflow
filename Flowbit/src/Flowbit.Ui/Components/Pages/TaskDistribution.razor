@@ -1,0 +1,341 @@
+@page "/task-distribution"
+@using System.Text.Json
+@inject WorkflowApiClient Api
+@inject IWebHostEnvironment HostEnvironment
+@inject NavigationManager Navigation
+
+<PageTitle>Task Distribution Search · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Developer" Title="Task distribution search"
+            Description="Test the credentialed, workflow-family task search without exposing credentials in a URL.">
+    <Actions>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!CanSearch || loading)"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+
+<section class="panel mb-3" aria-labelledby="distribution-credentials-heading">
+    <div class="section-heading">
+        <div>
+            <h2 id="distribution-credentials-heading">Workflow and credentials</h2>
+            <p>Values remain in this page's server-side component state and are sent only as request headers.</p>
+        </div>
+    </div>
+    <div class="filter-grid">
+        <div>
+            <label class="form-label" for="distribution-workflow-key">Workflow key</label>
+            <input id="distribution-workflow-key" class="form-control" @bind="workflowKey" @bind:event="oninput" @bind:after="MarkFiltersDirty" autocomplete="off" placeholder="health-certificate" />
+        </div>
+        <div>
+            <label class="form-label" for="distribution-client-id">Client ID</label>
+            <input id="distribution-client-id" class="form-control" @bind="clientId" @bind:event="oninput" @bind:after="MarkFiltersDirty" autocomplete="off" />
+        </div>
+        <div>
+            <label class="form-label" for="distribution-client-secret">Client secret</label>
+            <input id="distribution-client-secret" type="password" class="form-control" @bind="clientSecret" @bind:event="oninput" @bind:after="MarkFiltersDirty" autocomplete="off" />
+        </div>
+        <div class="filter-actions">
+            <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@(!CanSearch || loading)">Search tasks</button>
+        </div>
+    </div>
+    <div class="alert alert-warning mt-3 mb-0">
+        This diagnostic page accepts an arbitrary variable predicate. Production distribution clients must derive tenant or medical-center filters from trusted identity data.
+    </div>
+</section>
+
+<section class="filter-panel" aria-labelledby="distribution-filter-heading">
+    <div class="section-heading mb-0">
+        <div><h2 id="distribution-filter-heading">Task filters</h2><p>Combine native task selectors with the advanced current-variable predicate.</p></div>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="() => filtersOpen = !filtersOpen" aria-expanded="@filtersOpen">
+            @(filtersOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
+        </button>
+    </div>
+    @if (filtersOpen)
+    {
+        <div class="filter-grid mt-3" @onchange="MarkFiltersDirty">
+            <div><label class="form-label" for="distribution-task-id">Task ID</label><input id="distribution-task-id" type="number" class="form-control" @bind="taskId" /></div>
+            <div><label class="form-label" for="distribution-instance-id">Instance ID</label><input id="distribution-instance-id" type="number" class="form-control" @bind="instanceId" /></div>
+            <div><label class="form-label" for="distribution-workflow-id">Workflow version ID</label><input id="distribution-workflow-id" type="number" class="form-control" @bind="workflowId" /></div>
+            <div><label class="form-label" for="distribution-business-key">Business key</label><input id="distribution-business-key" class="form-control" @bind="businessKey" /></div>
+            <div><label class="form-label" for="distribution-node-id">Node ID</label><input id="distribution-node-id" type="number" class="form-control" @bind="nodeId" /></div>
+            <div><label class="form-label" for="distribution-node-external">Node external ID</label><input id="distribution-node-external" class="form-control" @bind="nodeExternalId" /></div>
+            <div><label class="form-label" for="distribution-owner">Owner actor ID</label><input id="distribution-owner" class="form-control" @bind="owner" /></div>
+            <div>
+                <label class="form-label" for="distribution-ownership">Ownership</label>
+                <select id="distribution-ownership" class="form-select" @bind="ownership">
+                    <option value="">All</option>
+                    <option value="assigned">Assigned</option>
+                    <option value="claimed">Claimed</option>
+                    <option value="unassigned">Unassigned pool</option>
+                </select>
+            </div>
+            <div class="filter-span-2">
+                <AdvancedVariableFilterEditor Id="distribution-variable-filter"
+                                              Value="@variableFilterJson"
+                                              ValueChanged="OnVariableFilterChanged"
+                                              Error="@variableFilterError" />
+            </div>
+            <div class="form-check align-self-center">
+                <input id="distribution-include-variables" class="form-check-input" type="checkbox" checked="@includeVariables" @onchange="ToggleIncludeVariablesAsync" @onchange:stopPropagation="true" />
+                <label class="form-check-label" for="distribution-include-variables">Include variables in results</label>
+            </div>
+            <div class="filter-actions filter-span-2">
+                <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@(!CanSearch || loading)">Apply filters</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(loading || (ActiveFilterCount == 0 && !includeVariables))">Clear filters</button>
+            </div>
+        </div>
+    }
+</section>
+
+<section class="panel panel-flush" aria-labelledby="distribution-results-heading">
+    <div class="section-heading">
+        <div>
+            <h2 id="distribution-results-heading">Distributable tasks</h2>
+            <p>@ResultsSummary</p>
+        </div>
+    </div>
+    @if (filtersDirty)
+    {
+        <EmptyState Icon="search" Title="Apply the changed search values" Description="Paging is paused until the updated workflow, credentials, or filters are applied." />
+    }
+    else if (loading)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (!hasSearched)
+    {
+        <EmptyState Icon="assignments" Title="Enter distribution credentials" Description="Provide a workflow key and credentials, then search the authenticated workflow family." />
+    }
+    else if (loadFailed)
+    {
+        <EmptyState Icon="alert" Title="Distribution search unavailable" Description="Review the error above, then retry with valid workflow credentials and filters." />
+    }
+    else if (result is null || result.Items.Count == 0)
+    {
+        <EmptyState Icon="check" Title="No distributable tasks" Description="No active task in this workflow family matches the supplied credentials and filters." />
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <caption class="visually-hidden">Tasks returned by the credentialed task-distribution search</caption>
+                <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Ownership</th><th scope="col">Required roles</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Updated</th></tr></thead>
+                <tbody>
+                    @foreach (var item in result.Items)
+                    {
+                        <tr>
+                            <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
+                            <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@(item.WorkflowVersion)</span></td>
+                            <td><StatusBadge Status="@OwnershipTone(item.Ownership)" Text="@OwnershipLabel(item)" /></td>
+                            <td>@if (item.NodeRoles.Count == 0) { <span>Any role</span> } else { @foreach (var role in item.NodeRoles) { <StatusBadge Status="neutral" Text="@role" /> } }</td>
+                            @if (includeVariables)
+                            {
+                                <td><VariableValues Values="@item.Variables" /></td>
+                            }
+                            <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1 || loading || filtersDirty)" @onclick="PreviousPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage || loading || filtersDirty)" @onclick="NextPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
+
+@code {
+    private const int PageSize = 50;
+    private PagedResult<ManagedUserTaskDto>? result;
+    private string? workflowKey;
+    private string? clientId;
+    private string? clientSecret;
+    private long? taskId;
+    private long? instanceId;
+    private long? workflowId;
+    private string? businessKey;
+    private int? nodeId;
+    private string? nodeExternalId;
+    private string? owner;
+    private string? ownership;
+    private string? variableFilterJson;
+    private string? variableFilterError;
+    private string? error;
+    private bool includeVariables;
+    private bool filtersOpen = true;
+    private bool loading;
+    private bool loadFailed;
+    private bool filtersDirty;
+    private bool hasSearched;
+    private long requestVersion;
+    private int page = 1;
+
+    private bool CanSearch => !string.IsNullOrWhiteSpace(workflowKey);
+    private int ActiveFilterCount => new object?[] { taskId, instanceId, workflowId, nodeId, businessKey, nodeExternalId, owner, ownership, variableFilterJson }
+        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
+    private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
+    private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
+    private string ResultsSummary => filtersDirty
+        ? "Search values changed. Apply them to run a new search."
+        : loading
+            ? "Searching active tasks…"
+            : loadFailed
+                ? "The distribution search could not be completed."
+                : result is null
+                    ? "No search has been run."
+                    : $"{result.TotalCount:N0} matching active tasks";
+
+    protected override void OnInitialized()
+    {
+        if (!HostEnvironment.IsDevelopment())
+        {
+            Navigation.NavigateTo("/", replace: true);
+        }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        MarkFiltersDirty();
+        await LoadAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        taskId = instanceId = workflowId = null;
+        nodeId = null;
+        businessKey = nodeExternalId = owner = ownership = variableFilterJson = variableFilterError = null;
+        includeVariables = false;
+        MarkFiltersDirty();
+        if (hasSearched && CanSearch) await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (loading || filtersDirty || page <= 1) return;
+        page--;
+        await LoadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage) return;
+        page++;
+        await LoadAsync();
+    }
+
+    private void OnVariableFilterChanged(string? value)
+    {
+        variableFilterJson = value;
+        variableFilterError = null;
+        MarkFiltersDirty();
+    }
+
+    private void MarkFiltersDirty()
+    {
+        requestVersion++;
+        filtersDirty = true;
+        loading = false;
+        loadFailed = false;
+        error = null;
+        page = 1;
+    }
+
+    private async Task ToggleIncludeVariablesAsync(ChangeEventArgs eventArgs)
+    {
+        includeVariables = eventArgs.Value is true;
+        MarkFiltersDirty();
+        if (hasSearched && CanSearch) await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var currentRequest = ++requestVersion;
+        if (!CanSearch)
+        {
+            error = "A workflow key is required.";
+            result = null;
+            loading = false;
+            loadFailed = true;
+            filtersDirty = false;
+            hasSearched = true;
+            return;
+        }
+
+        if (filtersDirty) page = 1;
+        try
+        {
+            loading = true;
+            loadFailed = false;
+            filtersDirty = false;
+            error = null;
+            result = null;
+            if (!AdvancedVariableFilterInput.TryParse(
+                    variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                hasSearched = true;
+                return;
+            }
+
+            var loaded = await Api.SearchDistributableUserTasksAsync(
+                workflowKey!,
+                clientId,
+                clientSecret,
+                new DistributableUserTaskSearchRequest
+                {
+                    Page = page,
+                    PageSize = PageSize,
+                    TaskId = taskId,
+                    InstanceId = instanceId,
+                    WorkflowId = workflowId,
+                    BusinessKey = businessKey,
+                    NodeId = nodeId,
+                    NodeExternalId = nodeExternalId,
+                    Owner = owner,
+                    Ownership = ownership,
+                    VariableFilter = variableFilter,
+                    IncludeVariables = includeVariables
+                });
+            if (currentRequest != requestVersion) return;
+            result = loaded;
+            hasSearched = true;
+        }
+        catch (Exception exception)
+        {
+            if (currentRequest != requestVersion) return;
+            error = exception.Message;
+            result = null;
+            loadFailed = true;
+            hasSearched = true;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private static string OwnershipLabel(ManagedUserTaskDto task) => task.Ownership switch
+    {
+        UserTaskOwnershipKinds.Assigned => $"Assigned to {task.Owner}",
+        UserTaskOwnershipKinds.Claimed => $"Claimed by {task.Owner}",
+        _ => "Shared pool"
+    };
+
+    private static string OwnershipTone(string value) => value switch
+    {
+        UserTaskOwnershipKinds.Assigned => "primary",
+        UserTaskOwnershipKinds.Claimed => "warning",
+        _ => "neutral"
+    };
+}

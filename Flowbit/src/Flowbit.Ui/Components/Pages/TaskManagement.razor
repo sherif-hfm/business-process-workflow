@@ -53,7 +53,7 @@ else
         </div>
         @if (filtersOpen)
         {
-            <div class="filter-grid mt-3">
+            <div class="filter-grid mt-3" @onchange="MarkFiltersDirty">
                 <div><label class="form-label" for="managed-task-id">Task ID</label><input id="managed-task-id" type="number" class="form-control" @bind="taskId" /></div>
                 <div><label class="form-label" for="managed-instance-id">Instance ID</label><input id="managed-instance-id" type="number" class="form-control" @bind="instanceId" /></div>
                 <div><label class="form-label" for="managed-workflow-id">Workflow version ID</label><input id="managed-workflow-id" type="number" class="form-control" @bind="workflowId" /></div>
@@ -71,10 +71,15 @@ else
                         <option value="unassigned">Unassigned pool</option>
                     </select>
                 </div>
-                <div class="filter-span-2"><label class="form-label" for="managed-variables">Variables</label><input id="managed-variables" class="form-control" @bind="variableFilter" placeholder="reqno:4711, priority:high" /><div class="form-text">Comma-separated name:value pairs.</div></div>
+                <div class="filter-span-2">
+                    <AdvancedVariableFilterEditor Id="managed-variable-filter"
+                                                  Value="@variableFilterJson"
+                                                  ValueChanged="OnVariableFilterChanged"
+                                                  Error="@variableFilterError" />
+                </div>
                 <div class="filter-actions">
-                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync">Apply filters</button>
-                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(ActiveFilterCount == 0)">Clear</button>
+                    <button class="btn btn-primary" @onclick="ApplyFiltersAsync" disabled="@loading">Apply filters</button>
+                    <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@(loading || ActiveFilterCount == 0)">Clear</button>
                 </div>
             </div>
         }
@@ -82,11 +87,19 @@ else
 
     <section class="panel panel-flush" aria-labelledby="managed-task-results-heading">
         <div class="section-heading">
-            <div><h2 id="managed-task-results-heading">Manageable tasks</h2><p>@(result is null ? "Loading active tasks…" : $"{result.TotalCount:N0} active tasks")</p></div>
+            <div><h2 id="managed-task-results-heading">Manageable tasks</h2><p>@ResultSummary</p></div>
         </div>
-        @if (result is null)
+        @if (filtersDirty)
+        {
+            <EmptyState Icon="search" Title="Apply the changed filters" Description="Paging is paused until the updated filter values are applied." />
+        }
+        else if (loading)
         {
             <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || result is null)
+        {
+            <EmptyState Icon="alert" Title="Task assignments unavailable" Description="Use Refresh to retry. Authorization and validation errors are shown above." />
         }
         else if (result.Items.Count == 0)
         {
@@ -123,8 +136,8 @@ else
             <div class="pagination-bar">
                 <span class="pagination-copy">Page @result.Page of @TotalPages · @result.TotalCount.ToString("N0") total</span>
                 <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary btn-sm" disabled="@(page <= 1)" @onclick="PreviousPageAsync">Previous</button>
-                    <button class="btn btn-outline-secondary btn-sm" disabled="@(!HasNextPage)" @onclick="NextPageAsync">Next</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+                    <button class="btn btn-outline-secondary btn-sm" disabled="@(loading || filtersDirty || !HasNextPage)" @onclick="NextPageAsync">Next</button>
                 </div>
             </div>
         }
@@ -172,7 +185,8 @@ else
     private string? nodeExternalId;
     private string? owner;
     private string? ownership;
-    private string? variableFilter;
+    private string? variableFilterJson;
+    private string? variableFilterError;
     private string? targetActor;
     private string? assignmentReason;
     private string? error;
@@ -180,14 +194,24 @@ else
     private string? dialogError;
     private bool filtersOpen;
     private bool loading;
+    private bool loadFailed;
+    private bool filtersDirty;
     private bool submitting;
     private bool unassignMode;
+    private long requestVersion;
     private int page = 1;
 
-    private int ActiveFilterCount => new object?[] { taskId, instanceId, workflowId, nodeId, workflowKey, businessKey, nodeExternalId, owner, ownership, variableFilter }
+    private int ActiveFilterCount => new object?[] { taskId, instanceId, workflowId, nodeId, workflowKey, businessKey, nodeExternalId, owner, ownership, variableFilterJson }
         .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
-    private bool HasNextPage => result is not null && page < TotalPages;
+    private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
+    private string ResultSummary => filtersDirty
+        ? "Filters changed. Apply them to run a new search."
+        : loading
+            ? "Loading active tasks…"
+            : loadFailed || result is null
+                ? "Task assignments could not be loaded."
+                : $"{result.TotalCount:N0} active tasks";
 
     protected override async Task OnInitializedAsync()
     {
@@ -195,35 +219,95 @@ else
         if (Token.HasToken) await LoadAsync();
     }
 
-    private IReadOnlyList<string> ParseVariableFilter() => string.IsNullOrWhiteSpace(variableFilter)
-        ? []
-        : variableFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
     private async Task LoadAsync()
     {
-        if (!Token.HasToken) { result = null; return; }
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            result = null;
+            loading = false;
+            loadFailed = false;
+            filtersDirty = false;
+            error = null;
+            return;
+        }
+        if (filtersDirty) page = 1;
         try
         {
             loading = true;
+            loadFailed = false;
+            filtersDirty = false;
             error = null;
-            result = await Api.GetManagedUserTasksAsync(page, PageSize, taskId, instanceId, workflowId,
-                workflowKey, businessKey, nodeId, nodeExternalId, owner, ownership, ParseVariableFilter());
+            result = null;
+            if (!AdvancedVariableFilterInput.TryParse(
+                    variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                return;
+            }
+
+            var loaded = await Api.SearchManagedUserTasksAsync(new ManageableUserTaskSearchRequest
+            {
+                Page = page,
+                PageSize = PageSize,
+                TaskId = taskId,
+                InstanceId = instanceId,
+                WorkflowId = workflowId,
+                WorkflowKey = workflowKey,
+                BusinessKey = businessKey,
+                NodeId = nodeId,
+                NodeExternalId = nodeExternalId,
+                Owner = owner,
+                Ownership = ownership,
+                VariableFilter = variableFilter
+            });
+            if (currentRequest != requestVersion) return;
+            result = loaded;
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { loading = false; }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion) return;
+            error = ex.Message;
+            result = null;
+            loadFailed = true;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
     }
 
-    private async Task ApplyFiltersAsync() { page = 1; await LoadAsync(); }
+    private async Task ApplyFiltersAsync() { MarkFiltersDirty(); await LoadAsync(); }
     private async Task ClearFiltersAsync()
     {
         taskId = instanceId = workflowId = null;
         nodeId = null;
-        workflowKey = businessKey = nodeExternalId = owner = ownership = variableFilter = null;
-        page = 1;
+        workflowKey = businessKey = nodeExternalId = owner = ownership = variableFilterJson = variableFilterError = null;
+        MarkFiltersDirty();
         await LoadAsync();
     }
-    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
+    private async Task PreviousPageAsync() { if (!loading && !filtersDirty && page > 1) { page--; await LoadAsync(); } }
     private async Task NextPageAsync() { if (HasNextPage) { page++; await LoadAsync(); } }
+
+    private void OnVariableFilterChanged(string? value)
+    {
+        variableFilterJson = value;
+        variableFilterError = null;
+        MarkFiltersDirty();
+    }
+
+    private void MarkFiltersDirty()
+    {
+        requestVersion++;
+        filtersDirty = true;
+        loading = false;
+        loadFailed = false;
+        error = null;
+        page = 1;
+    }
 
     private void OpenAssign(ManagedUserTaskDto task)
     {
@@ -289,7 +373,7 @@ else
         finally { submitting = false; }
     }
 
-    private void OnTokenChanged() => _ = InvokeAsync(async () => { CloseDialog(); page = 1; await LoadAsync(); });
+    private void OnTokenChanged() => _ = InvokeAsync(async () => { CloseDialog(); MarkFiltersDirty(); await LoadAsync(); });
     private static string OwnershipLabel(ManagedUserTaskDto task) => task.Ownership switch
     {
         UserTaskOwnershipKinds.Assigned => $"Assigned to {task.Owner}",

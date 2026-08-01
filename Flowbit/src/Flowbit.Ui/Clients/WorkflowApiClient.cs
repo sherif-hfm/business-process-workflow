@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Net;
+using System.Text.Json;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
@@ -234,6 +235,72 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? new PagedResult<ManagedUserTaskDto>([], page, pageSize, 0);
     }
 
+    public async Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
+        InstanceSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instances/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceSummaryDto>>(cancellationToken)
+            ?? new PagedResult<InstanceSummaryDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<PagedResult<InboxItemDto>> SearchInboxAsync(
+        InboxSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instances/inbox/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InboxItemDto>>(cancellationToken)
+            ?? new PagedResult<InboxItemDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>> SearchManagedUserTasksAsync(
+        ManageableUserTaskSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/user-tasks/manage/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<ManagedUserTaskDto>>(cancellationToken)
+            ?? new PagedResult<ManagedUserTaskDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<PagedResult<ManagedUserTaskDto>> SearchDistributableUserTasksAsync(
+        string workflowKey,
+        string? clientId,
+        string? clientSecret,
+        DistributableUserTaskSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
+        ArgumentNullException.ThrowIfNull(request);
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/task-distribution/workflows/{Uri.EscapeDataString(workflowKey.Trim())}/tasks/search")
+        {
+            Content = JsonContent.Create(request)
+        };
+        if (clientId is not null)
+        {
+            message.Headers.TryAddWithoutValidation("X-Client-Id", clientId);
+        }
+        if (clientSecret is not null)
+        {
+            message.Headers.TryAddWithoutValidation("X-Client-Secret", clientSecret);
+        }
+
+        using var response = await httpClient.SendAsync(message, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<ManagedUserTaskDto>>(cancellationToken)
+            ?? new PagedResult<ManagedUserTaskDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
     public async Task<PagedResult<UserDelegationDto>> GetUserDelegationsAsync(
         string direction = "outgoing",
         string? workflowKey = null,
@@ -428,6 +495,18 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<PagedResult<NodeExecutionSummaryDto>>(cancellationToken)
             ?? new PagedResult<NodeExecutionSummaryDto>([], query.Page, query.PageSize, 0);
+    }
+
+    public async Task<PagedResult<NodeExecutionSummaryDto>> SearchNodeExecutionsAsync(
+        NodeExecutionSearchBodyRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/node-executions/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<NodeExecutionSummaryDto>>(cancellationToken)
+            ?? new PagedResult<NodeExecutionSummaryDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
     }
 
     public async Task<NodeExecutionDetailDto?> GetNodeExecutionAsync(
@@ -731,9 +810,161 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         }
 
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new WorkflowApiException(response.StatusCode, string.IsNullOrWhiteSpace(text)
+        var message = string.IsNullOrWhiteSpace(text)
             ? response.ReasonPhrase
-            : text);
+            : TryReadErrorMessage(text) ?? text;
+        throw new WorkflowApiException(response.StatusCode, message);
+    }
+
+    private static string? TryReadErrorMessage(string text)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.String)
+            {
+                return NonEmptyString(root);
+            }
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            // RFC 7807/9457 problem details use detail/title. Flowbit's domain
+            // responses use error, while some upstream APIs use message.
+            foreach (var propertyName in new[] { "detail", "error", "message" })
+            {
+                if (TryGetPropertyIgnoreCase(root, propertyName, out var property))
+                {
+                    var value = ReadMessageValue(property);
+                    if (value is not null)
+                    {
+                        return value;
+                    }
+                }
+            }
+
+            if (TryGetPropertyIgnoreCase(root, "errors", out var errors))
+            {
+                var validationMessage = ReadValidationErrors(errors);
+                if (validationMessage is not null)
+                {
+                    return validationMessage;
+                }
+            }
+
+            return TryGetPropertyIgnoreCase(root, "title", out var title)
+                ? NonEmptyString(title)
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadMessageValue(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return NonEmptyString(value);
+        }
+
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var propertyName in new[] { "detail", "message", "description" })
+        {
+            if (TryGetPropertyIgnoreCase(value, propertyName, out var nested))
+            {
+                var message = NonEmptyString(nested);
+                if (message is not null)
+                {
+                    return message;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadValidationErrors(JsonElement errors)
+    {
+        var messages = new List<string>();
+        if (errors.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var error in errors.EnumerateObject())
+            {
+                AddValidationMessages(error.Value, messages);
+            }
+        }
+        else
+        {
+            AddValidationMessages(errors, messages);
+        }
+
+        return messages.Count == 0 ? null : string.Join(" ", messages.Distinct(StringComparer.Ordinal));
+    }
+
+    private static void AddValidationMessages(JsonElement value, List<string> messages)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var message = NonEmptyString(value);
+            if (message is not null)
+            {
+                messages.Add(message);
+            }
+
+            return;
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var item in value.EnumerateArray())
+        {
+            var message = NonEmptyString(item);
+            if (message is not null)
+            {
+                messages.Add(message);
+            }
+        }
+    }
+
+    private static string? NonEmptyString(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var text = value.GetString()?.Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(
+        JsonElement element,
+        string propertyName,
+        out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 }
 

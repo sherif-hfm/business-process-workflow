@@ -865,8 +865,8 @@ what the cross-version `workflowKey` instance search matches.
   Existing GET `var=name:value` contracts remain unchanged and are internally
   translated to the shared compiler as exact case-insensitive latest-scalar-text
   comparisons. Repeated GET filters are AND-combined, including the
-  node-execution route's existing ten-filter maximum. The Blazor UI continues to
-  use GET in this change.
+  node-execution route's existing ten-filter maximum. The Blazor search pages use
+  the POST contracts on every load; dashboard summary reads retain GET.
 - **Instance id / workflow id search.** Both list endpoints accept optional
   integer `instanceId=` and `workflowId=` query params: exact matches on the
   instance primary key (`w."Id" = @instanceId`) and the owning definition
@@ -912,11 +912,10 @@ what the cross-version `workflowKey` instance search matches.
 - `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
   variables, and launch an instance.
 - `/instances` (`Instances.razor`) - list instances, filterable by status, by
-  instance id (`instanceId=`), workflow id (`workflowId=`), workflow key
-  (`workflowKey=`), node id (`nodeId=`), node external id (`nodeExternalId=`), and
-  by variables (a comma-separated `name:value` box mapped to repeated `var=`
-  params). A reusable sort toolbar applies up to three instance sort clauses and
-  resets to `updatedAt:desc`.
+  instance id, workflow id, workflow key, node id, node external id, and an
+  advanced JSON `variableFilter`. It always calls `POST /api/instances/search`;
+  a reusable sort toolbar emits up to three structured sort clauses, instance
+  cursors are preserved, and an optional result column expands returned variables.
 - `/activity` (`NodeActivity.razor`) - read-only, role-authorized search across
   node executions, with lifecycle status tabs, advanced context/node/actor/flow/
   variable/time filters, exact totals, up to three sort clauses, and stable
@@ -928,16 +927,24 @@ what the cross-version `workflowKey` instance search matches.
   execution-attributed variable writes. It links to the related instance and
   user task when applicable.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
-  workflow id, workflow key, node id, node external id, and comma-separated
-  `name:value` variable filter boxes. Its sort toolbar exposes the six inbox sort
-  fields and resets to `taskUpdatedAt:desc`. Delegated rows show an
-  `Acting for ...` badge.
+  workflow id, workflow key, node id, node external id, and advanced JSON
+  variable filters. It always calls the actor-scoped POST search route; its sort
+  toolbar exposes the six inbox sort fields, returned variables are optionally
+  expandable, and delegated rows show an `Acting for ...` badge.
 - `/delegations` (`MyDelegations.razor`) - self-service outgoing/incoming grant
   lists, finite-window batch creation by workflow key, acceptance/rejection, and
   withdrawal/revocation with optimistic concurrency.
 - `/task-management` (`TaskManagement.razor`) - workflow-role-scoped manager
-  view for filtering active tasks and assigning, reassigning, or unassigning an
-  item with optimistic concurrency and an optional audit reason.
+  view using the POST search route and advanced JSON variable filters, plus
+  assigning, reassigning, or unassigning an item with optimistic concurrency and
+  an optional audit reason.
+- `/task-distribution` (`TaskDistribution.razor`) - Development-environment-only,
+  read-only tester for the credential-authenticated workflow-family POST search.
+  Its Developer navigation entry is hidden outside Development and direct
+  navigation then redirects to the UI home page.
+  Workflow key and client credentials remain component state; the client secret
+  is sent only in `X-Client-Secret`, never in URLs or browser persistence. It can
+  request and expand returned variable values.
 - `/delegation-management` (`DelegationManagement.razor`) - administrator
   search, cross-user grant creation/revocation, and per-workflow acceptance
   policy management.
@@ -945,7 +952,13 @@ what the cross-version `workflowKey` instance search matches.
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   and view variables and history, including task-assignment audit details.
 
-The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`).
+The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
+legacy GET methods remain for dashboard/compatibility reads; all five interactive
+search surfaces use endpoint-specific POST request DTOs and the shared
+advanced-filter JSON editor performs syntax validation only. Instances, My Work,
+and Task Distribution can display returned variables; Task Assignments and
+Activity only filter by them. API authorization and semantic validation remain
+authoritative.
 
 To run locally from `Flowbit/`:
 
