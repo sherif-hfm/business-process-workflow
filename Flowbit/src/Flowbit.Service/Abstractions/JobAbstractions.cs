@@ -29,6 +29,16 @@ public interface IWorkflowJobRepository
     /// </summary>
     Task<WorkflowJobRecord?> GetForUpdateAsync(long jobId, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<WorkflowJobRecord>> ListOpenByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WorkflowIncidentRecord>> ListOpenIncidentsByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<WorkflowJobLeaseRecord>> LeaseRunnableAsync(
         WorkflowJobLeaseRequest request,
         CancellationToken cancellationToken);
@@ -177,6 +187,11 @@ public interface ITimerSubscriptionRepository
     Task<IReadOnlyList<TimerSubscriptionRecord>> ListForActivationAsync(
         long tokenId,
         Guid activationId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<TimerSubscriptionRecord>> ListActiveOrPausedByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
         CancellationToken cancellationToken);
 
     Task<bool> AdvanceAsync(

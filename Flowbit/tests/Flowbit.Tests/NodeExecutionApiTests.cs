@@ -367,6 +367,7 @@ public sealed class NodeExecutionApiTests(PostgresApiFixture fixture)
         var faulted = new NodeExecutionEntity
         {
             InstanceId = running.Id,
+            WorkflowDefinitionId = running.WorkflowDefinitionId,
             ExecutionTokenId = runningToken.Id,
             NodeId = 3,
             NodeName = "Call Service",
@@ -394,6 +395,7 @@ public sealed class NodeExecutionApiTests(PostgresApiFixture fixture)
         var end = new NodeExecutionEntity
         {
             InstanceId = completed.Id,
+            WorkflowDefinitionId = completed.WorkflowDefinitionId,
             ExecutionTokenId = completedToken.Id,
             NodeId = 9,
             NodeName = "Done",
@@ -506,6 +508,7 @@ public sealed class NodeExecutionApiTests(PostgresApiFixture fixture)
         new()
         {
             InstanceId = instance.Id,
+            WorkflowDefinitionId = instance.WorkflowDefinitionId,
             ExecutionTokenId = token.Id,
             UserTaskId = userTaskId,
             NodeId = 2,

@@ -47,11 +47,17 @@ public static class WorkflowDefinitionEndpoints
             var requiredRole = !string.IsNullOrWhiteSpace(setting?.Value) ? setting.Value : "admin";
 
             var allowedRoles = requiredRole.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (allowedRoles.Length == 0)
+            {
+                allowedRoles = ["admin"];
+                requiredRole = "admin";
+            }
 
-            // Check if the user is in any of the allowed roles (case-insensitive)
-            var userRoles = httpContext.User.FindAll(System.Security.Claims.ClaimTypes.Role)
-                .Select(c => c.Value)
-                .Concat(httpContext.User.FindAll("role").Select(c => c.Value))
+            // Use the same canonical actor roles that workflow mutations and
+            // version-change audit snapshots use.
+            var userRoles = actor.Roles
+                .Where(role => !string.IsNullOrWhiteSpace(role))
+                .Select(role => role.Trim())
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             if (!allowedRoles.Any(r => userRoles.Contains(r)))

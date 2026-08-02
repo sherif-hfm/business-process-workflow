@@ -9,6 +9,9 @@ public sealed class NodeExecutionEntity
     public long InstanceId { get; set; }
     public WorkflowInstanceEntity? Instance { get; set; }
 
+    public long WorkflowDefinitionId { get; set; }
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
+
     public long ExecutionTokenId { get; set; }
     public ExecutionTokenEntity? ExecutionToken { get; set; }
 

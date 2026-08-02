@@ -249,7 +249,22 @@ Open:
 - API OpenAPI JSON: `http://localhost:5017/openapi/v1.json`
 - Blazor UI: `http://localhost:5152`
 
-In development, the API applies migrations and seeds the root `workflow.json` as a published workflow if the database is empty.
+In development, the API applies migrations automatically. It does not import
+the root `workflow.json`; import workflow definitions through the UI or API.
+The additive `SeedDefaultSettings` migration inserts these baseline settings
+when they are missing in any environment where migrations are applied:
+
+| Store | Logical keys | Seed value |
+| --- | --- | --- |
+| Engine | `Workflow.RequiredRole`, `WorkflowInstances.RequiredRole`, `NodeExecution.RequiredRole`, `WorkflowJobs.RequiredRole`, `Delegation.AdminRoles` | `admin` |
+| Engine | `Workflow.Gateway.MaxActiveTokens`, `Workflow.MultiInstance.MaxInstances`, `Workflow.Async.MaxConsecutiveAutomaticActivations` | `1000` |
+| Workflow context | `setting.examples.messageClientId` | JSON string `"example-message-client"` |
+| Workflow context | `setting.examples.messageCorrelation` | JSON string `"orders:inbound"` |
+
+The migration never overwrites existing settings. It deliberately does not seed
+`Authentication.UserIdentityClaim`, task-distribution credentials, or secrets;
+keep deployment secrets in `WorkflowContext:Config` or another secret-backed
+configuration provider.
 
 ### Gateway migration rollout
 

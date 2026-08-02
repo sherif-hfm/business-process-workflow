@@ -96,6 +96,42 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
         return entities.Select(Map).ToArray();
     }
 
+    public async Task<IReadOnlyList<TimerSubscriptionRecord>> ListActiveOrPausedByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken)
+    {
+        List<TimerSubscriptionEntity> entities;
+        if (forUpdate)
+        {
+            entities = await dbContext.TimerSubscriptions
+                .FromSqlInterpolated(
+                    $"""
+                    SELECT *
+                    FROM flowbit.timer_subscriptions
+                    WHERE "InstanceId" = {instanceId}
+                      AND "Status" IN (
+                          {TimerSubscriptionStatuses.Active},
+                          {TimerSubscriptionStatuses.Paused})
+                    ORDER BY "Id"
+                    FOR UPDATE
+                    """)
+                .ToListAsync(cancellationToken);
+        }
+        else
+        {
+            entities = await dbContext.TimerSubscriptions.AsNoTracking()
+                .Where(subscription =>
+                    subscription.InstanceId == instanceId
+                    && (subscription.Status == TimerSubscriptionStatuses.Active
+                        || subscription.Status == TimerSubscriptionStatuses.Paused))
+                .OrderBy(subscription => subscription.Id)
+                .ToListAsync(cancellationToken);
+        }
+
+        return entities.Select(Map).ToArray();
+    }
+
     public async Task<bool> AdvanceAsync(
         long subscriptionId,
         long expectedOccurrence,

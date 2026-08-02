@@ -49,6 +49,56 @@ public sealed record WorkflowDetailDto(
     DateTimeOffset CreatedAt,
     WorkflowModel Definition);
 
+/// <summary>Request payload for checking whether a running instance can move to another workflow version.</summary>
+public sealed record PreviewInstanceVersionChangeRequest(long TargetWorkflowId);
+
+/// <summary>Request payload for atomically changing a running instance's workflow version.</summary>
+public sealed record ChangeInstanceVersionRequest(
+    long TargetWorkflowId,
+    long ExpectedSourceWorkflowId,
+    DateTimeOffset ExpectedUpdatedAt,
+    string Reason);
+
+/// <summary>A structured compatibility finding produced by instance version-change validation.</summary>
+public sealed record InstanceVersionChangeIssueDto(
+    string Code,
+    string Message,
+    string? StateType = null,
+    long? StateId = null,
+    int? NodeId = null,
+    int? FlowId = null,
+    string? VariableName = null);
+
+public static class InstanceVersionChangeDirections
+{
+    public const string Upgrade = "upgrade";
+    public const string Downgrade = "downgrade";
+}
+
+/// <summary>The result of a non-mutating compatibility check for a workflow version change.</summary>
+public sealed record InstanceVersionChangePreviewDto(
+    long InstanceId,
+    WorkflowSummaryDto SourceWorkflow,
+    WorkflowSummaryDto TargetWorkflow,
+    string Direction,
+    bool Compatible,
+    IReadOnlyList<InstanceVersionChangeIssueDto> Blockers,
+    IReadOnlyList<InstanceVersionChangeIssueDto> Warnings,
+    long ExpectedSourceWorkflowId,
+    DateTimeOffset ExpectedUpdatedAt);
+
+/// <summary>An immutable audit entry recording a completed workflow version change.</summary>
+public sealed record InstanceVersionChangeAuditDto(
+    long Id,
+    long InstanceId,
+    WorkflowSummaryDto SourceWorkflow,
+    WorkflowSummaryDto TargetWorkflow,
+    string Direction,
+    string? ChangedBy,
+    IReadOnlyList<string> ChangedByRoles,
+    string Reason,
+    DateTimeOffset ChangedAt);
+
 /// <summary>
 /// Request payload for creating a new workflow definition.
 /// </summary>
@@ -446,7 +496,14 @@ public sealed record InstanceDetailDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionInfoDto? Completion { get; init; }
+
+    public IReadOnlyList<InstanceVersionChangeAuditDto> VersionChanges { get; init; } = [];
 }
+
+/// <summary>The updated instance and audit entry returned after a workflow version change.</summary>
+public sealed record ChangeInstanceVersionResultDto(
+    InstanceDetailDto Instance,
+    InstanceVersionChangeAuditDto VersionChange);
 
 /// <summary>
 /// Slim acknowledgment returned after successfully delivering a message to an intermediate message catch event.

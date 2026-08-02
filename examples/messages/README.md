@@ -6,12 +6,15 @@ contacts an external service.
 
 | Example | Start values | Actors and actions | Expected result | Runtime requirements |
 | --- | --- | --- | --- | --- |
-| [`01-message-start-typed-mapping.json`](01-message-start-typed-mapping.json) | The JSON message supplies `orderId`, `customerEmail`, `totalAmount`, `requestedDate`, and optional typed fields. The `Idempotency-Key` header supplies the separate implicit `messageRequestId`. | A machine client starts the instance. An `OrderReviewer` takes flow `201` and may accept the default `reviewNote`. | A valid message creates an instance at **Review Imported Order**. The review action completes it. Duplicate transport keys are rejected permanently; duplicate active `orderId` business keys are rejected while their owning instance is active. | Published default definition and `Flowbit.Api`; no Worker. Configure the three values listed below. |
-| [`02-message-catch-delivery-idempotency.json`](02-message-catch-delivery-idempotency.json) | Start node `1` with a required `purchaseOrderId`, for example `PO-1001`. | A `Purchasing` actor takes flow `201`; the machine client delivers the receipt; a `Purchasing` actor takes flow `401`. | The instance waits at **Wait for Provider Receipt**. One authenticated, valid delivery writes all six mapped values atomically and advances it. Reusing its delivery key returns `409`. | Published definition and `Flowbit.Api`; no Worker. Configure the message client id and secret. |
+| [`01-message-start-typed-mapping.json`](01-message-start-typed-mapping.json) | The JSON message supplies `orderId`, `customerEmail`, `totalAmount`, `requestedDate`, and optional typed fields. The `Idempotency-Key` header supplies the separate implicit `messageRequestId`. | A machine client starts the instance. An `OrderReviewer` takes flow `201` and may accept the default `reviewNote`. | A valid message creates an instance at **Review Imported Order**. The review action completes it. Duplicate transport keys are rejected permanently; duplicate active `orderId` business keys are rejected while their owning instance is active. | Published default definition and `Flowbit.Api`; no Worker. Supply the message-client secret and optionally override the seeded example settings below. |
+| [`02-message-catch-delivery-idempotency.json`](02-message-catch-delivery-idempotency.json) | Start node `1` with a required `purchaseOrderId`, for example `PO-1001`. | A `Purchasing` actor takes flow `201`; the machine client delivers the receipt; a `Purchasing` actor takes flow `401`. | The instance waits at **Wait for Provider Receipt**. One authenticated, valid delivery writes all six mapped values atomically and advances it. Reusing its delivery key returns `409`. | Published definition and `Flowbit.Api`; no Worker. Supply the message-client secret and optionally override the seeded client id. |
 
 ## Required configuration
 
-Resolve these placeholders in the API deployment before running either example:
+The settings migration supplies the two non-secret `setting.*` example values
+shown below when they are missing. Supply the `config.*` secret through the API
+deployment configuration before running either example, and override the seeded
+values when a different local identity or correlation value is required:
 
 | Context key | Example local value | Purpose |
 | --- | --- | --- |

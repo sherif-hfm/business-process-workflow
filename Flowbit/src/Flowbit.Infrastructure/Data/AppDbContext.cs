@@ -11,6 +11,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<WorkflowInstanceEntity> WorkflowInstances => Set<WorkflowInstanceEntity>();
 
+    public DbSet<WorkflowInstanceVersionChangeEntity> WorkflowInstanceVersionChanges =>
+        Set<WorkflowInstanceVersionChangeEntity>();
+
     public DbSet<WorkflowBusinessKeyScopeEntity> WorkflowBusinessKeyScopes => Set<WorkflowBusinessKeyScopeEntity>();
 
     public DbSet<WorkflowBusinessKeyClaimEntity> WorkflowBusinessKeyClaims => Set<WorkflowBusinessKeyClaimEntity>();
@@ -79,6 +82,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "AND \"DefaultActivatedAt\" IS NULL)");
             });
             entity.HasKey(e => e.Id);
+            entity.HasAlternateKey(e => new { e.Id, e.WorkflowKey });
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired().HasDefaultValue(string.Empty);
             entity.Property(e => e.Definition).HasColumnType("jsonb");
@@ -113,7 +117,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.WorkflowKey, e.BusinessKey, e.Status });
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
-                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<WorkflowBusinessKeyClaimEntity>()
                 .WithMany()
@@ -253,6 +258,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "AND (\"CompletedAt\" IS NULL OR \"CompletedAt\" >= COALESCE(\"StartedAt\", \"CreatedAt\"))");
             });
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
@@ -293,6 +299,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.NodeExecutions)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.NodeExecutions)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.ExecutionToken)
                 .WithMany(e => e.NodeExecutions)
                 .HasForeignKey(e => e.ExecutionTokenId)
@@ -602,6 +612,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_sequence_flow_occurrences_action_or_traversal",
                     "\"IsAction\" OR \"IsTraversal\""));
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.User).HasMaxLength(300);
             entity.Property(e => e.UserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
@@ -617,6 +628,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.SequenceFlowOccurrences)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.SequenceFlowOccurrences)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<SequenceFlowSummaryEntity>(entity =>
@@ -685,6 +700,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             entity.ToTable("instance_history");
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.Payload).HasColumnType("jsonb");
             entity.Property(e => e.PerformedBy).HasMaxLength(300);
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
@@ -697,6 +713,38 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.History)
                 .HasForeignKey(e => e.InstanceId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.InstanceHistory)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowInstanceVersionChangeEntity>(entity =>
+        {
+            entity.ToTable("workflow_instance_version_changes");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ChangedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.ChangedByRolesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'[]'::jsonb");
+            entity.Property(e => e.Reason).HasMaxLength(1000).IsRequired();
+            entity.Property(e => e.ChangedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.ChangedAt, e.Id });
+            entity.HasIndex(e => e.SourceWorkflowDefinitionId);
+            entity.HasIndex(e => e.TargetWorkflowDefinitionId);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.VersionChanges)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.SourceWorkflowDefinition)
+                .WithMany(e => e.SourceVersionChanges)
+                .HasForeignKey(e => e.SourceWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.TargetWorkflowDefinition)
+                .WithMany(e => e.TargetVersionChanges)
+                .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<WorkflowSettingEntity>(entity =>
@@ -888,7 +936,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany()
-                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Token)
                 .WithMany(e => e.TimerSubscriptions)
@@ -970,7 +1019,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany()
-                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Token)
                 .WithMany(e => e.Jobs)
@@ -1065,7 +1115,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany()
-                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
                 .OnDelete(DeleteBehavior.Restrict);
         });
     }

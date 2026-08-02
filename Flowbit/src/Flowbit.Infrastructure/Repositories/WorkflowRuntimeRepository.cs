@@ -1280,9 +1280,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         UserTaskEntity? task = null;
         if (lockActiveUserTask)
         {
-            var activeTasks = await dbContext.UserTasks
-                .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {id} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
+            var lockedTasks = await dbContext.UserTasks
+                .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {id} AND \"Status\" IN ({UserTaskStatuses.Active}, {UserTaskStatuses.Pending}) ORDER BY \"Id\" FOR UPDATE")
                 .ToListAsync(cancellationToken);
+            var activeTasks = lockedTasks
+                .Where(candidate => candidate.Status == UserTaskStatuses.Active)
+                .ToList();
             // Singular compatibility callers must not silently bind to an
             // arbitrary branch when parallel execution exposes multiple tasks.
             task = activeTasks.Count == 1 ? activeTasks[0] : null;
@@ -3285,6 +3288,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                      && t.InstanceId == instanceId
                      && t.Status == ExecutionTokenStatuses.Active,
                 cancellationToken);
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(
+            instanceId,
+            cancellationToken);
         var now = DateTimeOffset.UtcNow;
         var execution = new MultiInstanceExecutionEntity
         {
@@ -3407,7 +3413,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 inserted_executions AS
                 (
                     INSERT INTO flowbit.node_executions
-                        ("InstanceId", "ExecutionTokenId", "UserTaskId",
+                        ("InstanceId", "WorkflowDefinitionId", "ExecutionTokenId",
+                         "UserTaskId",
                          "MultiInstanceExecutionId", "ItemIndex", "NodeId",
                          "NodeName", "NodeExternalId", "NodeType", "ExecutionKind",
                          "Status", "EntryGatewayBranchId", "EnteredViaFlowId",
@@ -3415,7 +3422,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                          "TriggeredActingFor", "TriggeredDelegationId", "CreatedAt",
                          "StartedAt", "UpdatedAt", "IsCutoverSeeded")
                     SELECT
-                        @instance_id, @token_id, task."Id",
+                        @instance_id, @workflow_definition_id, @token_id, task."Id",
                         @execution_id, task."ItemIndex", @node_id,
                         @node_name, @node_external_id, @node_type, 'userTaskItem',
                         task."Status", @entry_gateway_branch_id, @entered_via_flow_id,
@@ -3433,6 +3440,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 transaction))
             {
                 insertItems.Parameters.AddWithValue("instance_id", instanceId);
+                insertItems.Parameters.AddWithValue(
+                    "workflow_definition_id",
+                    workflowDefinitionId);
                 insertItems.Parameters.AddWithValue("token_id", tokenId);
                 insertItems.Parameters.AddWithValue("execution_id", execution.Id);
                 insertItems.Parameters.AddWithValue("node_id", node.Id);
@@ -4479,6 +4489,201 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return now;
     }
 
+    public async Task<IReadOnlyList<WorkflowInstanceVersionChangeRecord>> ListVersionChangesAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var entities = await dbContext.WorkflowInstanceVersionChanges.AsNoTracking()
+            .Where(change => change.InstanceId == instanceId)
+            .OrderBy(change => change.ChangedAt)
+            .ThenBy(change => change.Id)
+            .ToListAsync(cancellationToken);
+        return entities.Select(ToRecord).ToList();
+    }
+
+    public async Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionAsync(
+        long instanceId,
+        long expectedSourceWorkflowDefinitionId,
+        DateTimeOffset expectedUpdatedAt,
+        long targetWorkflowDefinitionId,
+        WorkflowModel targetDefinition,
+        NodeExecutionActorRecord actor,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(targetDefinition);
+        ArgumentNullException.ThrowIfNull(actor);
+
+        reason = reason?.Trim() ?? string.Empty;
+        if (reason.Length == 0 || reason.EnumerateRunes().Count() > 1000)
+        {
+            throw new WorkflowDomainException(
+                "A workflow version-change reason between 1 and 1,000 Unicode characters is required.");
+        }
+
+        var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == instanceId)
+            ?? await dbContext.WorkflowInstances
+                .FromSqlInterpolated(
+                    $"SELECT * FROM flowbit.workflow_instances WHERE \"Id\" = {instanceId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+            ?? throw new WorkflowConflictException("The workflow instance no longer exists.");
+
+        if (targetWorkflowDefinitionId == instance.WorkflowDefinitionId)
+        {
+            throw new WorkflowDomainException("The target workflow version is already assigned to the instance.");
+        }
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            throw new WorkflowConflictException("Only a running workflow instance can change version.");
+        }
+        if (instance.WorkflowDefinitionId != expectedSourceWorkflowDefinitionId
+            || instance.UpdatedAt != expectedUpdatedAt)
+        {
+            throw new WorkflowConflictException(
+                "The workflow instance changed after the version preview; refresh and try again.");
+        }
+
+        var target = await dbContext.WorkflowDefinitions
+            .SingleOrDefaultAsync(
+                definition => definition.Id == targetWorkflowDefinitionId,
+                cancellationToken);
+        if (target is null || !target.IsPublished)
+        {
+            throw new WorkflowConflictException("The target workflow version is no longer published.");
+        }
+        if (!string.Equals(target.WorkflowKey, instance.WorkflowKey, StringComparison.Ordinal))
+        {
+            throw new WorkflowDomainException(
+                "The target workflow version must belong to the instance workflow family.");
+        }
+
+        var targetNodes = targetDefinition.FlowNodes.ToDictionary(node => node.Id);
+        FlowNodeModel RequireTargetNode(int nodeId)
+        {
+            if (targetNodes.TryGetValue(nodeId, out var node))
+            {
+                return node;
+            }
+            throw new WorkflowConflictException(
+                $"Active runtime state references node {nodeId}, which is absent from the target version.");
+        }
+
+        var activeTokens = await dbContext.ExecutionTokens
+            .Where(token => token.InstanceId == instanceId && token.Status == ExecutionTokenStatuses.Active)
+            .OrderBy(token => token.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var token in activeTokens)
+        {
+            var node = RequireTargetNode(token.NodeId);
+            token.NodeName = node.Name;
+            token.NodeExternalId = node.ExternalId;
+            token.NodeType = node.Type;
+        }
+
+        var openTasks = await dbContext.UserTasks
+            .Where(task =>
+                task.InstanceId == instanceId
+                && (task.Status == UserTaskStatuses.Active
+                    || task.Status == UserTaskStatuses.Pending))
+            .OrderBy(task => task.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var task in openTasks)
+        {
+            var node = RequireTargetNode(task.NodeId);
+            task.NodeName = node.Name;
+            task.NodeExternalId = node.ExternalId;
+        }
+
+        var openNodeExecutions = await dbContext.NodeExecutions
+            .Where(execution =>
+                execution.InstanceId == instanceId
+                && (execution.Status == NodeExecutionStatuses.Active
+                    || execution.Status == NodeExecutionStatuses.Pending))
+            .OrderBy(execution => execution.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var execution in openNodeExecutions)
+        {
+            var node = RequireTargetNode(execution.NodeId);
+            execution.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            execution.NodeName = node.Name;
+            execution.NodeExternalId = node.ExternalId;
+            execution.NodeType = node.Type;
+            execution.NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles);
+        }
+
+        var openJobs = await dbContext.WorkflowJobs
+            .Where(job =>
+                job.InstanceId == instanceId
+                && (job.Status == WorkflowJobStatuses.Queued
+                    || job.Status == WorkflowJobStatuses.Running
+                    || job.Status == WorkflowJobStatuses.ResultReady
+                    || job.Status == WorkflowJobStatuses.Retry
+                    || job.Status == WorkflowJobStatuses.Incident))
+            .OrderBy(job => job.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var job in openJobs)
+        {
+            var node = RequireTargetNode(job.NodeId);
+            job.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            job.NodeName = node.Name;
+            job.NodeType = node.Type;
+        }
+
+        var openIncidents = await dbContext.WorkflowIncidents
+            .Where(incident =>
+                incident.InstanceId == instanceId
+                && incident.Status == WorkflowIncidentStatuses.Open)
+            .OrderBy(incident => incident.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var incident in openIncidents)
+        {
+            var node = RequireTargetNode(incident.NodeId);
+            incident.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            incident.NodeName = node.Name;
+        }
+
+        var openTimers = await dbContext.TimerSubscriptions
+            .Where(subscription =>
+                subscription.InstanceId == instanceId
+                && (subscription.Status == TimerSubscriptionStatuses.Active
+                    || subscription.Status == TimerSubscriptionStatuses.Paused))
+            .OrderBy(subscription => subscription.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var timer in openTimers)
+        {
+            var node = RequireTargetNode(timer.TimerNodeId);
+            timer.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            timer.TimerNodeName = node.Name;
+        }
+
+        var clockValue = DateTimeOffset.UtcNow;
+        var now = new DateTimeOffset(
+            clockValue.Ticks - clockValue.Ticks % 10,
+            clockValue.Offset);
+        var normalizedRoles = actor.Roles
+            .Where(role => !string.IsNullOrWhiteSpace(role))
+            .Select(role => role.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(role => role, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var audit = new WorkflowInstanceVersionChangeEntity
+        {
+            InstanceId = instanceId,
+            SourceWorkflowDefinitionId = instance.WorkflowDefinitionId,
+            TargetWorkflowDefinitionId = targetWorkflowDefinitionId,
+            ChangedBy = string.IsNullOrWhiteSpace(actor.User) ? null : actor.User.Trim(),
+            ChangedByRolesJson = JsonMapping.ToJsonDocument(normalizedRoles),
+            Reason = reason,
+            ChangedAt = now
+        };
+        dbContext.WorkflowInstanceVersionChanges.Add(audit);
+        instance.WorkflowDefinitionId = targetWorkflowDefinitionId;
+        instance.UpdatedAt = now;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return ToRecord(audit);
+    }
+
     public Task AddVariableAsync(
         long instanceId,
         string variableName,
@@ -4516,7 +4721,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
-    public Task AddHistoryAsync(
+    public async Task AddHistoryAsync(
         long instanceId,
         int? actionId,
         int fromStepId,
@@ -4528,9 +4733,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? actingFor = null,
         long? delegationId = null)
     {
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             ActionId = actionId,
             FromStepId = fromStepId,
             ToStepId = toStepId,
@@ -4541,10 +4748,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
         });
-        return Task.CompletedTask;
     }
 
-    public Task AddMultiInstanceHistoryAsync(
+    public async Task AddMultiInstanceHistoryAsync(
         long instanceId,
         long tokenId,
         long? userTaskId,
@@ -4560,9 +4766,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? actingFor = null,
         long? delegationId = null)
     {
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             TokenId = tokenId,
             UserTaskId = userTaskId,
             MultiInstanceExecutionId = executionId,
@@ -4577,10 +4785,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
         });
-        return Task.CompletedTask;
     }
 
-    public Task AddTokenHistoryAsync(
+    public async Task AddTokenHistoryAsync(
         long instanceId,
         long tokenId,
         int? actionId,
@@ -4593,9 +4800,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? actingFor = null,
         long? delegationId = null)
     {
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             TokenId = tokenId,
             ActionId = actionId,
             FromStepId = fromStepId,
@@ -4607,10 +4816,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
         });
-        return Task.CompletedTask;
     }
 
-    public Task AddUserTaskActionHistoryAsync(
+    public async Task AddUserTaskActionHistoryAsync(
         long instanceId,
         long tokenId,
         long userTaskId,
@@ -4623,9 +4831,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? actingFor = null,
         long? delegationId = null)
     {
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             TokenId = tokenId,
             UserTaskId = userTaskId,
             ActionId = actionId,
@@ -4637,10 +4847,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Payload = JsonMapping.ToJsonDocument(payload),
             PerformedAt = DateTimeOffset.UtcNow
         });
-        return Task.CompletedTask;
     }
 
-    public Task AddUserTaskHistoryAsync(
+    public async Task AddUserTaskHistoryAsync(
         long instanceId,
         long tokenId,
         long userTaskId,
@@ -4654,9 +4863,11 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? actingFor = null,
         long? delegationId = null)
     {
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             TokenId = tokenId,
             UserTaskId = userTaskId,
             MultiInstanceExecutionId = multiInstanceExecutionId,
@@ -4671,7 +4882,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             Note = note,
             PerformedAt = DateTimeOffset.UtcNow
         });
-        return Task.CompletedTask;
     }
 
     public async Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(
@@ -4780,6 +4990,96 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToDictionary(summary => summary.SequenceFlowId, ToRecord);
     }
 
+    public async Task<IReadOnlyList<ObservedSequenceFlowRecord>> ListObservedSequenceFlowsAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var observed = (await dbContext.SequenceFlowOccurrences.AsNoTracking()
+                .Where(occurrence => occurrence.InstanceId == instanceId)
+                .Select(occurrence => new ObservedSequenceFlowRecord(
+                    occurrence.SequenceFlowId,
+                    occurrence.SourceNodeId,
+                    occurrence.TargetNodeId))
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        var executionFlowIds = await dbContext.NodeExecutions.AsNoTracking()
+            .Where(execution => execution.InstanceId == instanceId)
+            .Select(execution => new
+            {
+                execution.WorkflowDefinitionId,
+                execution.EnteredViaFlowId,
+                execution.SelectedFlowId,
+                execution.ExitedViaFlowId
+            })
+            .ToListAsync(cancellationToken);
+        var historyFlowIds = await dbContext.InstanceHistory.AsNoTracking()
+            .Where(history => history.InstanceId == instanceId && history.ActionId != null)
+            .Select(history => new
+            {
+                history.WorkflowDefinitionId,
+                FlowId = history.ActionId!.Value
+            })
+            .ToListAsync(cancellationToken);
+
+        var flowIdsByDefinition = new Dictionary<long, HashSet<int>>();
+        foreach (var execution in executionFlowIds)
+        {
+            var ids = GetOrAddFlowIdSet(flowIdsByDefinition, execution.WorkflowDefinitionId);
+            AddFlowId(ids, execution.EnteredViaFlowId);
+            AddFlowId(ids, execution.SelectedFlowId);
+            AddFlowId(ids, execution.ExitedViaFlowId);
+        }
+        foreach (var history in historyFlowIds)
+        {
+            GetOrAddFlowIdSet(flowIdsByDefinition, history.WorkflowDefinitionId).Add(history.FlowId);
+        }
+
+        if (flowIdsByDefinition.Count > 0)
+        {
+            var definitionIds = flowIdsByDefinition.Keys.ToArray();
+            var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
+                .Where(definition => definitionIds.Contains(definition.Id))
+                .Select(definition => new { definition.Id, definition.Definition })
+                .ToListAsync(cancellationToken);
+            foreach (var definition in definitions)
+            {
+                var ids = flowIdsByDefinition[definition.Id];
+                foreach (var flow in definition.Definition.SequenceFlows.Where(flow => ids.Contains(flow.Id)))
+                {
+                    observed.Add(new ObservedSequenceFlowRecord(flow.Id, flow.SourceRef, flow.TargetRef));
+                }
+            }
+        }
+
+        return observed
+            .OrderBy(flow => flow.FlowId)
+            .ThenBy(flow => flow.SourceNodeId)
+            .ThenBy(flow => flow.TargetNodeId)
+            .ToList();
+    }
+
+    private static HashSet<int> GetOrAddFlowIdSet(
+        Dictionary<long, HashSet<int>> flowIdsByDefinition,
+        long workflowDefinitionId)
+    {
+        if (!flowIdsByDefinition.TryGetValue(workflowDefinitionId, out var ids))
+        {
+            ids = [];
+            flowIdsByDefinition.Add(workflowDefinitionId, ids);
+        }
+        return ids;
+    }
+
+    private static void AddFlowId(HashSet<int> ids, int? flowId)
+    {
+        if (flowId is int id)
+        {
+            ids.Add(id);
+        }
+    }
+
     public async Task<SequenceFlowSummaryRecord> AppendSequenceFlowOccurrenceAsync(
         SequenceFlowOccurrenceWriteRecord occurrence,
         CancellationToken cancellationToken)
@@ -4791,9 +5091,13 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 nameof(occurrence));
         }
 
+        var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(
+            occurrence.InstanceId,
+            cancellationToken);
         dbContext.SequenceFlowOccurrences.Add(new SequenceFlowOccurrenceEntity
         {
             InstanceId = occurrence.InstanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             SequenceFlowId = occurrence.SequenceFlowId,
             SourceNodeId = occurrence.SourceNodeId,
             TargetNodeId = occurrence.TargetNodeId,
@@ -4938,6 +5242,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         claim.LastInstanceId = instanceId;
     }
 
+    private async Task<long> GetCurrentWorkflowDefinitionIdAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var tracked = dbContext.WorkflowInstances.Local.SingleOrDefault(instance => instance.Id == instanceId);
+        if (tracked is not null)
+        {
+            return tracked.WorkflowDefinitionId;
+        }
+
+        return await dbContext.WorkflowInstances.AsNoTracking()
+            .Where(instance => instance.Id == instanceId)
+            .Select(instance => instance.WorkflowDefinitionId)
+            .SingleAsync(cancellationToken);
+    }
+
     private async Task ReleaseBusinessKeyClaimAsync(
         WorkflowInstanceEntity instance,
         string status,
@@ -4981,6 +5301,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             token.FaultCode,
             token.FaultDescription,
             token.CurrentNodeExecutionId);
+
+    private static WorkflowInstanceVersionChangeRecord ToRecord(
+        WorkflowInstanceVersionChangeEntity entity) =>
+        new(
+            entity.Id,
+            entity.InstanceId,
+            entity.SourceWorkflowDefinitionId,
+            entity.TargetWorkflowDefinitionId,
+            entity.ChangedBy,
+            JsonMapping.ToStringList(entity.ChangedByRolesJson) ?? [],
+            entity.Reason,
+            entity.ChangedAt);
 
     private static ExecutionTokenEntity? SelectRepresentativeToken(
         string instanceStatus,
@@ -5124,6 +5456,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         new(
             entity.Id,
             entity.InstanceId,
+            entity.WorkflowDefinitionId,
             entity.ExecutionTokenId,
             entity.UserTaskId,
             entity.MultiInstanceExecutionId,
@@ -5175,6 +5508,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         new()
         {
             Instance = instance,
+            WorkflowDefinitionId = instance.WorkflowDefinitionId,
             ExecutionToken = token,
             UserTask = userTask,
             MultiInstanceExecution = multiInstanceExecution,

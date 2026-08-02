@@ -6,6 +6,7 @@ using Flowbit.Infrastructure.Data;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -14,9 +15,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Flowbit.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802150520_SeedDefaultSettings")]
+    partial class SeedDefaultSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -512,14 +515,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long?>("UserTaskId")
                         .HasColumnType("bigint");
 
-                    b.Property<long>("WorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
                     b.HasKey("Id");
 
                     b.HasIndex("InstanceId");
-
-                    b.HasIndex("WorkflowDefinitionId");
 
                     b.HasIndex("InstanceId", "TokenId", "ToStepId", "Id")
                         .IsDescending(false, false, false, true);
@@ -899,9 +897,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long?>("UserTaskId")
                         .HasColumnType("bigint");
 
-                    b.Property<long>("WorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
                     b.HasKey("Id");
 
                     b.HasIndex("EntryGatewayBranchId");
@@ -911,8 +906,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("UserTaskId")
                         .IsUnique()
                         .HasFilter("\"UserTaskId\" IS NOT NULL");
-
-                    b.HasIndex("WorkflowDefinitionId");
 
                     b.HasIndex("CompletedAt", "Id");
 
@@ -1022,16 +1015,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("ValuesJson")
                         .HasColumnType("jsonb");
 
-                    b.Property<long>("WorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
                     b.HasKey("Id");
 
                     b.HasIndex("UserTaskId")
                         .IsUnique()
                         .HasFilter("\"UserTaskId\" IS NOT NULL AND \"IsAction\"");
-
-                    b.HasIndex("WorkflowDefinitionId");
 
                     b.HasIndex("InstanceId", "SequenceFlowId", "Id")
                         .IsDescending(false, false, true);
@@ -1204,8 +1192,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("WorkflowDefinitionId", "TimerNodeId")
                         .IsUnique()
                         .HasFilter("\"InstanceId\" IS NULL AND \"Status\" IN ('active', 'paused')");
-
-                    b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
 
                     b.HasIndex("Status", "NextDueAt", "Id");
 
@@ -1700,8 +1686,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("ResolvedAt", "Id")
                         .HasFilter("\"Status\" = 'resolved'");
 
-                    b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
-
                     b.HasIndex("InstanceId", "Status", "Id");
 
                     b.HasIndex("Status", "UpdatedAt", "Id");
@@ -1769,11 +1753,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("WorkflowDefinitionId");
+
                     b.HasIndex("CreatedAt", "Id");
 
                     b.HasIndex("UpdatedAt", "Id");
-
-                    b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
 
                     b.HasIndex("WorkflowKey", "IdempotencyKey");
 
@@ -1782,54 +1766,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("WorkflowKey", "BusinessKey", "Status");
 
                     b.ToTable("workflow_instances", "flowbit");
-                });
-
-            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceVersionChangeEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<DateTimeOffset>("ChangedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<string>("ChangedBy")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<JsonDocument>("ChangedByRolesJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValueSql("'[]'::jsonb");
-
-                    b.Property<long>("InstanceId")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)");
-
-                    b.Property<long>("SourceWorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
-                    b.Property<long>("TargetWorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SourceWorkflowDefinitionId");
-
-                    b.HasIndex("TargetWorkflowDefinitionId");
-
-                    b.HasIndex("InstanceId", "ChangedAt", "Id");
-
-                    b.ToTable("workflow_instance_version_changes", "flowbit");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobAttemptEntity", b =>
@@ -2057,8 +1993,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsDescending()
                         .HasDatabaseName("IX_workflow_jobs_updated_id");
 
-                    b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
-
                     b.HasIndex("InstanceId", "Status", "Id");
 
                     b.HasIndex("Status", "UpdatedAt", "Id")
@@ -2274,15 +2208,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
-                        .WithMany("InstanceHistory")
-                        .HasForeignKey("WorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Instance");
-
-                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.InstanceVariableCurrentValueEntity", b =>
@@ -2397,12 +2323,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("Flowbit.Infrastructure.Entities.NodeExecutionEntity", "UserTaskId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
-                        .WithMany("NodeExecutions")
-                        .HasForeignKey("WorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("EntryGatewayBranch");
 
                     b.Navigation("ExecutionToken");
@@ -2414,8 +2334,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("MultiInstanceExecution");
 
                     b.Navigation("UserTask");
-
-                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.SequenceFlowOccurrenceEntity", b =>
@@ -2426,15 +2344,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
-                        .WithMany("SequenceFlowOccurrences")
-                        .HasForeignKey("WorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Instance");
-
-                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.SequenceFlowSummaryEntity", b =>
@@ -2462,8 +2372,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
                         .WithMany()
-                        .HasForeignKey("WorkflowDefinitionId", "WorkflowKey")
-                        .HasPrincipalKey("Id", "WorkflowKey")
+                        .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2535,8 +2444,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
                         .WithMany()
-                        .HasForeignKey("WorkflowDefinitionId", "WorkflowKey")
-                        .HasPrincipalKey("Id", "WorkflowKey")
+                        .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2551,8 +2459,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
                         .WithMany("Instances")
-                        .HasForeignKey("WorkflowDefinitionId", "WorkflowKey")
-                        .HasPrincipalKey("Id", "WorkflowKey")
+                        .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2567,33 +2474,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("WorkflowDefinition");
-                });
-
-            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceVersionChangeEntity", b =>
-                {
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
-                        .WithMany("VersionChanges")
-                        .HasForeignKey("InstanceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "SourceWorkflowDefinition")
-                        .WithMany("SourceVersionChanges")
-                        .HasForeignKey("SourceWorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "TargetWorkflowDefinition")
-                        .WithMany("TargetVersionChanges")
-                        .HasForeignKey("TargetWorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Instance");
-
-                    b.Navigation("SourceWorkflowDefinition");
-
-                    b.Navigation("TargetWorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobAttemptEntity", b =>
@@ -2641,8 +2521,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
                         .WithMany()
-                        .HasForeignKey("WorkflowDefinitionId", "WorkflowKey")
-                        .HasPrincipalKey("Id", "WorkflowKey")
+                        .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2720,17 +2599,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", b =>
                 {
-                    b.Navigation("InstanceHistory");
-
                     b.Navigation("Instances");
-
-                    b.Navigation("NodeExecutions");
-
-                    b.Navigation("SequenceFlowOccurrences");
-
-                    b.Navigation("SourceVersionChanges");
-
-                    b.Navigation("TargetVersionChanges");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", b =>
@@ -2764,8 +2633,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("UserTasks");
 
                     b.Navigation("Variables");
-
-                    b.Navigation("VersionChanges");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowJobEntity", b =>

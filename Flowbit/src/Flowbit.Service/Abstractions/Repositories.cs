@@ -539,6 +539,20 @@ public interface IWorkflowRuntimeRepository
 
     Task<DateTimeOffset> TouchInstanceAsync(long id, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<WorkflowInstanceVersionChangeRecord>> ListVersionChangesAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionAsync(
+        long instanceId,
+        long expectedSourceWorkflowDefinitionId,
+        DateTimeOffset expectedUpdatedAt,
+        long targetWorkflowDefinitionId,
+        WorkflowModel targetDefinition,
+        NodeExecutionActorRecord actor,
+        string reason,
+        CancellationToken cancellationToken);
+
     Task AddVariableAsync(
         long instanceId,
         string variableName,
@@ -651,6 +665,10 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken);
 
     Task<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>> ListSequenceFlowSummariesAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ObservedSequenceFlowRecord>> ListObservedSequenceFlowsAsync(
         long instanceId,
         CancellationToken cancellationToken);
 

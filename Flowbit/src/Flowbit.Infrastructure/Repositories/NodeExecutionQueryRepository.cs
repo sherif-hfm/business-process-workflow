@@ -25,7 +25,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         JOIN flowbit.workflow_instances w
           ON w."Id" = ne."InstanceId"
         JOIN flowbit.workflow_definitions d
-          ON d."Id" = w."WorkflowDefinitionId"
+          ON d."Id" = ne."WorkflowDefinitionId"
         LEFT JOIN flowbit.user_tasks ut
           ON ut."Id" = ne."UserTaskId"
         LEFT JOIN flowbit.multi_instance_executions mie
@@ -506,7 +506,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             {
                 NodeExecutionSortField.Id => "ne.\"Id\"",
                 NodeExecutionSortField.InstanceId => "ne.\"InstanceId\"",
-                NodeExecutionSortField.WorkflowId => "w.\"WorkflowDefinitionId\"",
+                NodeExecutionSortField.WorkflowId => "ne.\"WorkflowDefinitionId\"",
                 NodeExecutionSortField.NodeId => "ne.\"NodeId\"",
                 NodeExecutionSortField.CreatedAt => "ne.\"CreatedAt\"",
                 NodeExecutionSortField.StartedAt => "ne.\"StartedAt\"",

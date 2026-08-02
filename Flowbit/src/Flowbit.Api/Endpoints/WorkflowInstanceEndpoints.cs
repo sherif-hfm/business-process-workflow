@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
@@ -77,6 +79,24 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
+        RequireWorkflowAdministrator(
+            group.MapPost("/{id:long}/version-change/preview", PreviewInstanceVersionChange)
+                .Produces<InstanceVersionChangePreviewDto>(StatusCodes.Status200OK)
+                .Produces(StatusCodes.Status400BadRequest)
+                .Produces(StatusCodes.Status401Unauthorized)
+                .Produces(StatusCodes.Status403Forbidden)
+                .Produces(StatusCodes.Status404NotFound)
+                .Produces(StatusCodes.Status409Conflict));
+
+        RequireWorkflowAdministrator(
+            group.MapPost("/{id:long}/version-change", ChangeInstanceVersion)
+                .Produces<ChangeInstanceVersionResultDto>(StatusCodes.Status200OK)
+                .Produces(StatusCodes.Status400BadRequest)
+                .Produces(StatusCodes.Status401Unauthorized)
+                .Produces(StatusCodes.Status403Forbidden)
+                .Produces(StatusCodes.Status404NotFound)
+                .Produces(StatusCodes.Status409Conflict));
+
         group.MapGet("/{id:long}/user-tasks", ListUserTasks)
             .Produces<PagedResult<UserTaskDto>>(StatusCodes.Status200OK);
 
@@ -122,6 +142,55 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status415UnsupportedMediaType);
 
         return app;
+    }
+
+    private static RouteHandlerBuilder RequireWorkflowAdministrator(RouteHandlerBuilder endpoint)
+    {
+        endpoint.AddEndpointFilter(async (invocationContext, next) =>
+        {
+            var httpContext = invocationContext.HttpContext;
+            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+            {
+                return await next(invocationContext);
+            }
+
+            var actorResolver = httpContext.RequestServices.GetRequiredService<IActorContextResolver>();
+            var actor = actorResolver.Resolve(httpContext.User);
+            var settings = httpContext.RequestServices.GetRequiredService<IEngineSettingsService>();
+            var setting = await settings.GetByKeyAsync(
+                "Workflow.RequiredRole",
+                httpContext.RequestAborted);
+            var requiredRolesText = !string.IsNullOrWhiteSpace(setting?.Value)
+                ? setting.Value
+                : "admin";
+            var requiredRoles = requiredRolesText.Split(
+                ',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (requiredRoles.Length == 0)
+            {
+                requiredRoles = ["admin"];
+                requiredRolesText = "admin";
+            }
+
+            // Authorize with the same normalized actor-role source that the
+            // service snapshots into the immutable version-change audit.
+            var userRoles = actor.Roles
+                .Where(role => !string.IsNullOrWhiteSpace(role))
+                .Select(role => role.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!requiredRoles.Any(userRoles.Contains))
+            {
+                Log.Warning(
+                    "User '{User}' with roles [{Roles}] is forbidden from changing an instance workflow version. Required role(s): '{RequiredRole}'",
+                    actor.User ?? "anonymous",
+                    string.Join(", ", userRoles),
+                    requiredRolesText);
+                return Results.Forbid();
+            }
+
+            return await next(invocationContext);
+        });
+        return endpoint;
     }
 
     /// <summary>
@@ -366,6 +435,40 @@ public static class WorkflowInstanceEndpoints
         _ = actorResolver.Resolve(principal);
         var instance = await service.GetInstanceAsync(id, cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>Checks whether a running instance can move to a published version in the same workflow family.</summary>
+    public static async Task<IResult> PreviewInstanceVersionChange(
+        long id,
+        PreviewInstanceVersionChangeRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var preview = await service.PreviewInstanceVersionChangeAsync(
+            id,
+            request.TargetWorkflowId,
+            actorResolver.Resolve(principal),
+            cancellationToken);
+        return preview is null ? Results.NotFound() : Results.Ok(preview);
+    }
+
+    /// <summary>Atomically moves a compatible running instance to another published workflow version.</summary>
+    public static async Task<IResult> ChangeInstanceVersion(
+        long id,
+        ChangeInstanceVersionRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ChangeInstanceVersionAsync(
+            id,
+            request,
+            actorResolver.Resolve(principal),
+            cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     /// <summary>

@@ -78,7 +78,8 @@ format rather than normalizing the definition into node/flow tables.
 Projects:
 
 - `src/Flowbit.Api` - API layer: Minimal API endpoints, OpenAPI, startup
-  composition, development migration/seed.
+  composition, and automatic development migration application. The additive
+  migrations seed safe default settings in every environment where they run.
 - `src/Flowbit.Service` - Service layer: workflow engine behavior,
   definition validation, sequence-flow condition evaluation
   (`SequenceFlowConditionEvaluator`, NCalc), service interfaces, repository
@@ -985,8 +986,11 @@ database-cache startup costs and are not representative.
 
 The API listens on `http://localhost:5017` and the UI on
 `http://localhost:5152` by default. In development, the API applies EF
-migrations and seeds the root `workflow.json` as the first published definition
-when the database is empty.
+migrations automatically. Migrations seed missing safe engine defaults and the
+documented non-secret message-example settings without overwriting existing
+values. They do not import the root `workflow.json`; import definitions through
+the UI or API. `Authentication.UserIdentityClaim` and secrets are intentionally
+not seeded.
 
 ---
 
@@ -1474,7 +1478,9 @@ stored variables; context wins on any name collision. Available keys:
 - `config.<name>` for each server-side config entry (keeps secrets out of the
   versioned definition JSON)
 - `setting.<name>` for each row in the `workflow_settings` database table
-  (global, read-only, manually inserted; loaded once per request and cached).
+  (global and read-only; rows may be manually inserted, while the migrations
+  seed the documented non-secret `examples` defaults; loaded once per request
+  and cached).
   When a row has a non-null `Namespace`, the key becomes
   `setting.<namespace>.<name>` (e.g. `setting.finance.taxRate`).
 

@@ -213,9 +213,14 @@ public sealed class SequenceFlowPersistenceTests(PostgresApiFixture fixture)
     {
         var instanceId = await CreateInstanceAsync();
         await using var context = fixture.CreateDbContext();
+        var workflowDefinitionId = await context.WorkflowInstances
+            .Where(instance => instance.Id == instanceId)
+            .Select(instance => instance.WorkflowDefinitionId)
+            .SingleAsync();
         context.SequenceFlowOccurrences.Add(new SequenceFlowOccurrenceEntity
         {
             InstanceId = instanceId,
+            WorkflowDefinitionId = workflowDefinitionId,
             SequenceFlowId = 401,
             SourceNodeId = 4,
             TargetNodeId = 5,

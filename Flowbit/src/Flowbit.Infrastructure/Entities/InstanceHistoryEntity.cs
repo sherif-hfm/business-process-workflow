@@ -10,6 +10,10 @@ public sealed class InstanceHistoryEntity
 
     public WorkflowInstanceEntity? Instance { get; set; }
 
+    public long WorkflowDefinitionId { get; set; }
+
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
+
     public int? ActionId { get; set; }
 
     public int FromStepId { get; set; }

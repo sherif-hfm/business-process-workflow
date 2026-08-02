@@ -7658,6 +7658,7 @@ public sealed partial class WorkflowEngineService(
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var variables = await runtime.ListVariablesAsync(id, cancellationToken);
         var history = await runtime.ListHistoryAsync(id, cancellationToken);
+        var versionChanges = await BuildVersionChangeAuditDtosAsync(id, cancellationToken);
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         var projection = await BuildExecutionProjectionAsync(
             instance,
@@ -7724,7 +7725,8 @@ public sealed partial class WorkflowEngineService(
             MultiInstances = projection.MultiInstances,
             GatewayExecutions = projection.GatewayExecutions,
             ComplexGatewayStates = projection.ComplexGatewayStates,
-            Completion = projection.Completion
+            Completion = projection.Completion,
+            VersionChanges = versionChanges
         };
     }
 

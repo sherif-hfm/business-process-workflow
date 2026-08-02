@@ -10,6 +10,10 @@ public sealed class SequenceFlowOccurrenceEntity
 
     public WorkflowInstanceEntity? Instance { get; set; }
 
+    public long WorkflowDefinitionId { get; set; }
+
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
+
     public int SequenceFlowId { get; set; }
 
     public int SourceNodeId { get; set; }

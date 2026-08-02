@@ -282,6 +282,14 @@ public sealed class WorkflowJobOperationsServiceTests
             Task.FromResult<WorkflowJobRecord?>(jobId == Job.Id ? Job : null);
         public Task<WorkflowJobRecord?> GetForUpdateAsync(long jobId, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+        public Task<IReadOnlyList<WorkflowJobRecord>> ListOpenByInstanceAsync(
+            long instanceId,
+            bool forUpdate,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<WorkflowIncidentRecord>> ListOpenIncidentsByInstanceAsync(
+            long instanceId,
+            bool forUpdate,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<WorkflowJobLeaseRecord>> LeaseRunnableAsync(
             WorkflowJobLeaseRequest request,
             CancellationToken cancellationToken) => throw new NotSupportedException();

@@ -45,10 +45,15 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
 
     public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowVersionsAsync(
         string workflowKey,
-        CancellationToken cancellationToken = default) =>
-        await httpClient.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
             $"/api/workflows/{Uri.EscapeDataString(workflowKey)}/versions",
-            cancellationToken) ?? [];
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(cancellationToken)
+            ?? [];
+    }
 
     public async Task PublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
     {
@@ -588,6 +593,32 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
+
+    public async Task<InstanceVersionChangePreviewDto?> PreviewInstanceVersionChangeAsync(
+        long id,
+        PreviewInstanceVersionChangeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instances/{id}/version-change/preview",
+            request,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVersionChangePreviewDto>(cancellationToken);
+    }
+
+    public async Task<ChangeInstanceVersionResultDto?> ChangeInstanceVersionAsync(
+        long id,
+        ChangeInstanceVersionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instances/{id}/version-change",
+            request,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ChangeInstanceVersionResultDto>(cancellationToken);
+    }
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
         long id,

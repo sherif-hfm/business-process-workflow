@@ -53,4 +53,6 @@ public sealed class WorkflowInstanceEntity
     public List<WorkflowIncidentEntity> Incidents { get; set; } = [];
 
     public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
+
+    public List<WorkflowInstanceVersionChangeEntity> VersionChanges { get; set; } = [];
 }

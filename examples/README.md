@@ -70,8 +70,8 @@ delivery behavior, and local test calls.
 
 | Workflow | Start values | Actors and actions | Expected result | Requirements |
 | --- | --- | --- | --- | --- |
-| [Typed message start](messages/01-message-start-typed-mapping.json) | Deliver the documented order payload to the system-only message start with its correlation and `Idempotency-Key` headers. | No actor starts it; `OrderReviewer` accepts the imported order. | Typed payload fields map atomically, `orderId` becomes an active-scope business key, and duplicate start delivery is rejected by its independent idempotency key. | API and database; configure `${setting.examples.messageClientId}`, `${config.exampleMessageClientSecret}`, and `${setting.examples.messageCorrelation}`; no Worker. |
-| [Message catch delivery idempotency](messages/02-message-catch-delivery-idempotency.json) | `Purchasing` starts with a `PO-*` `purchaseOrderId`, then sends the order. | The authenticated external client delivers a typed receipt; `Purchasing` verifies it. | The catch validates credentials/header, maps values, and accepts a delivery key once; a duplicate `X-Flowbit-Delivery-Key` delivery is rejected. | API and database; configure `${setting.examples.messageClientId}` and `${config.exampleMessageClientSecret}`; no Worker. |
+| [Typed message start](messages/01-message-start-typed-mapping.json) | Deliver the documented order payload to the system-only message start with its correlation and `Idempotency-Key` headers. | No actor starts it; `OrderReviewer` accepts the imported order. | Typed payload fields map atomically, `orderId` becomes an active-scope business key, and duplicate start delivery is rejected by its independent idempotency key. | API and database; the two `setting.examples.*` values have seeded defaults, while `${config.exampleMessageClientSecret}` must be configured; no Worker. |
+| [Message catch delivery idempotency](messages/02-message-catch-delivery-idempotency.json) | `Purchasing` starts with a `PO-*` `purchaseOrderId`, then sends the order. | The authenticated external client delivers a typed receipt; `Purchasing` verifies it. | The catch validates credentials/header, maps values, and accepts a delivery key once; a duplicate `X-Flowbit-Delivery-Key` delivery is rejected. | API and database; the message client id has a seeded default, while `${config.exampleMessageClientSecret}` must be configured; no Worker. |
 
 ## Start events
 
@@ -129,9 +129,9 @@ services:
 | --- | --- |
 | `${config.exampleApiBaseUrl}` | Base URL of a local/private REST mock. |
 | `${config.exampleApiToken}` | Token supplied to that mock. |
-| `${setting.examples.messageClientId}` | Client id accepted by message start/catch nodes. |
+| `${setting.examples.messageClientId}` | Client id accepted by message start/catch nodes; seeded as `example-message-client` when missing. |
 | `${config.exampleMessageClientSecret}` | Message client secret kept outside workflow JSON. |
-| `${setting.examples.messageCorrelation}` | Expected message-start correlation header value. |
+| `${setting.examples.messageCorrelation}` | Expected message-start correlation header value; seeded as `orders:inbound` when missing. |
 | `${config.exampleDistributorClientId}` | Client id for external task distribution. |
 | `${config.exampleDistributorSecret}` | Secret for external task distribution. |
 

@@ -1,5 +1,6 @@
 @page "/instances/{InstanceId:long}"
 @implements IAsyncDisposable
+@using System.Text
 @using System.Text.Json
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
@@ -28,6 +29,12 @@ else
                 Description="@($"{instance.Workflow.Name} · Version {instance.Workflow.Version}")">
         <Actions>
             <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+            @if (IsRunning && canChangeVersion)
+            {
+                <button class="btn btn-outline-primary" @onclick="ToggleVersionChange">
+                    Change version
+                </button>
+            }
             <a class="btn btn-outline-primary" href="instances">Back to instances</a>
         </Actions>
     </PageHeader>
@@ -83,6 +90,107 @@ else
             }
     </section>
 
+    @if (IsRunning && canChangeVersion && showVersionChange)
+    {
+        <section class="panel mb-3" aria-labelledby="version-change-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="version-change-heading">Change workflow version</h2>
+                    <p>Preview strict runtime compatibility before changing this instance in place.</p>
+                </div>
+                <span class="mono-id">Current v@(instance.Workflow.Version)</span>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(versionChangeError))
+            {
+                <div class="alert alert-danger" role="alert">@versionChangeError</div>
+            }
+
+            @if (versionTargets.Count == 0)
+            {
+                <div class="alert alert-info mb-0">There are no other published versions in this workflow family.</div>
+            }
+            else
+            {
+                <div class="row g-3">
+                    <div class="col-md-5">
+                        <label class="form-label" for="version-change-target">Target version</label>
+                        <select id="version-change-target"
+                                class="form-select"
+                                value="@(selectedTargetWorkflowId?.ToString() ?? string.Empty)"
+                                @onchange="OnVersionTargetChanged"
+                                disabled="@(versionPreviewLoading || versionChangeSubmitting)">
+                            <option value="">Choose a published version</option>
+                            @foreach (var target in versionTargets)
+                            {
+                                <option value="@target.Id">
+                                    v@(target.Version) - @VersionDirectionLabel(target) - @target.Name
+                                </option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-md-7">
+                        <label class="form-label" for="version-change-reason">Reason</label>
+                        <textarea id="version-change-reason"
+                                  class="form-control"
+                                  rows="2"
+                                  placeholder="Explain why this running instance must change version."
+                                  @bind="versionChangeReason"
+                                  @bind:event="oninput"
+                                  disabled="@(versionPreviewLoading || versionChangeSubmitting)"></textarea>
+                        <div class="form-text">Required, 1-1,000 Unicode characters after trimming. @VersionChangeReasonLength / 1,000</div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                    <button class="btn btn-outline-primary"
+                            disabled="@(!CanPreviewVersionChange)"
+                            @onclick="PreviewVersionChangeAsync">
+                        @(versionPreviewLoading ? "Checking compatibility..." : "Preview compatibility")
+                    </button>
+                    <button class="btn btn-primary"
+                            disabled="@(!CanConfirmVersionChange)"
+                            @onclick="ChangeVersionAsync">
+                        @(versionChangeSubmitting ? "Changing version..." : "Confirm version change")
+                    </button>
+                </div>
+
+                @if (versionPreview is not null)
+                {
+                    <div class="mt-3">
+                        <div class="alert @(versionPreview.Compatible ? "alert-success" : "alert-warning")">
+                            <strong>@(versionPreview.Compatible ? "Compatible" : "Blocked"):</strong>
+                            v@(versionPreview.SourceWorkflow.Version) to v@(versionPreview.TargetWorkflow.Version)
+                            (@versionPreview.Direction).
+                        </div>
+
+                        @if (versionPreview.Blockers.Count > 0)
+                        {
+                            <h3 class="h6">Compatibility blockers</h3>
+                            <ul>
+                                @foreach (var issue in versionPreview.Blockers)
+                                {
+                                    <li><strong>@issue.Code:</strong> @issue.Message@IssueLocation(issue)</li>
+                                }
+                            </ul>
+                        }
+
+                        @if (versionPreview.Warnings.Count > 0)
+                        {
+                            <h3 class="h6">Warnings</h3>
+                            <ul>
+                                @foreach (var issue in versionPreview.Warnings)
+                                {
+                                    <li><strong>@issue.Code:</strong> @issue.Message@IssueLocation(issue)</li>
+                                }
+                            </ul>
+                        }
+                    </div>
+                }
+            }
+        </section>
+    }
+
     @if (instance.Fault is not null)
     {
         <section class="alert alert-danger mb-3" aria-labelledby="instance-fault-heading">
@@ -105,6 +213,7 @@ else
         @if (instance.GatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#gateway-scopes" @onclick='() => ScrollToSectionAsync("gateway-scopes")' @onclick:preventDefault>Gateway scopes</a> }
         @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
+        @if (instance.VersionChanges.Count > 0) { <a class="status-tab text-decoration-none" href="#version-changes" @onclick='() => ScrollToSectionAsync("version-changes")' @onclick:preventDefault>Version changes</a> }
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
@@ -345,6 +454,47 @@ else
         }
     </section>
 
+    @if (instance.VersionChanges.Count > 0)
+    {
+        <section id="version-changes" class="panel mb-3">
+            <div class="section-heading">
+                <div><h2>Version changes</h2><p>Immutable upgrade and downgrade history for this instance</p></div>
+                <span class="mono-id">@instance.VersionChanges.Count change@(instance.VersionChanges.Count == 1 ? null : "s")</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <caption class="visually-hidden">Workflow version changes for instance #@instance.Id</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">When</th>
+                            <th scope="col">Direction</th>
+                            <th scope="col">From</th>
+                            <th scope="col">To</th>
+                            <th scope="col">Actor</th>
+                            <th scope="col">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var change in instance.VersionChanges.OrderByDescending(item => item.ChangedAt).ThenByDescending(item => item.Id))
+                        {
+                            <tr>
+                                <td>@change.ChangedAt.ToLocalTime().ToString("g")</td>
+                                <td><StatusBadge Status="@change.Direction" /></td>
+                                <td>v@(change.SourceWorkflow.Version)<span class="data-subtitle">@change.SourceWorkflow.Name</span></td>
+                                <td>v@(change.TargetWorkflow.Version)<span class="data-subtitle">@change.TargetWorkflow.Name</span></td>
+                                <td>
+                                    @(change.ChangedBy ?? "anonymous")
+                                    <span class="data-subtitle">@(change.ChangedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", change.ChangedByRoles))</span>
+                                </td>
+                                <td class="text-break">@change.Reason</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
     <section id="variables" class="panel mb-3">
         <h2 class="h4">Variables</h2>
         @if (instance.Variables.Count == 0)
@@ -431,8 +581,44 @@ else
     private Task? pollTask;
     private string? error;
     private bool interruptSubmitting;
+    private IReadOnlyList<WorkflowSummaryDto> versionTargets = [];
+    private InstanceVersionChangePreviewDto? versionPreview;
+    private long? selectedTargetWorkflowId;
+    private long? loadedVersionTargetSourceId;
+    private string versionChangeReason = string.Empty;
+    private string? versionChangeError;
+    private bool canChangeVersion;
+    private bool showVersionChange;
+    private bool versionPreviewLoading;
+    private bool versionChangeSubmitting;
 
     private string ActingUser => NormalizeUser(Token.CurrentUser);
+
+    private bool IsRunning => string.Equals(
+        instance?.Status,
+        "running",
+        StringComparison.OrdinalIgnoreCase);
+
+    private bool HasValidVersionChangeReason
+        => VersionChangeReasonLength is >= 1 and <= 1000;
+
+    private int VersionChangeReasonLength =>
+        versionChangeReason.Trim().EnumerateRunes().Count();
+
+    private bool CanPreviewVersionChange =>
+        selectedTargetWorkflowId is not null
+        && !versionPreviewLoading
+        && !versionChangeSubmitting;
+
+    private bool CanConfirmVersionChange =>
+        instance is not null
+        && versionPreview is { Compatible: true }
+        && versionPreview.TargetWorkflow.Id == selectedTargetWorkflowId
+        && versionPreview.ExpectedSourceWorkflowId == instance.Workflow.Id
+        && versionPreview.ExpectedUpdatedAt == instance.UpdatedAt
+        && HasValidVersionChangeReason
+        && !versionPreviewLoading
+        && !versionChangeSubmitting;
 
     private ValueTask ScrollToSectionAsync(string sectionId) =>
         JS.InvokeVoidAsync("flowbit.scrollToSection", sectionId);
@@ -762,7 +948,7 @@ else
         try
         {
             error = null;
-            await RefreshInstanceStateAsync();
+            await RefreshInstanceStateAsync(forceVersionTargets: true);
         }
         catch (Exception ex)
         {
@@ -901,7 +1087,9 @@ else
         }
     }
 
-    private async Task RefreshInstanceStateAsync(CancellationToken cancellationToken = default)
+    private async Task RefreshInstanceStateAsync(
+        CancellationToken cancellationToken = default,
+        bool forceVersionTargets = false)
     {
         var refreshed = await Api.GetInstanceAsync(InstanceId, cancellationToken);
         if (refreshed is not null)
@@ -909,6 +1097,263 @@ else
             instance = refreshed;
         }
         await LoadAvailableActionsAsync(cancellationToken);
+        await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
+    }
+
+    private async Task LoadVersionTargetsAsync(
+        CancellationToken cancellationToken = default,
+        bool force = false)
+    {
+        if (instance is null || !IsRunning)
+        {
+            canChangeVersion = false;
+            showVersionChange = false;
+            versionTargets = [];
+            loadedVersionTargetSourceId = null;
+            versionPreview = null;
+            selectedTargetWorkflowId = null;
+            return;
+        }
+
+        if (versionPreview is not null
+            && (versionPreview.ExpectedSourceWorkflowId != instance.Workflow.Id
+                || versionPreview.ExpectedUpdatedAt != instance.UpdatedAt))
+        {
+            versionPreview = null;
+            versionChangeError = "Instance state changed after the preview. Run compatibility preview again.";
+        }
+
+        if (!force && loadedVersionTargetSourceId == instance.Workflow.Id)
+        {
+            return;
+        }
+
+        try
+        {
+            var versions = await Api.GetWorkflowVersionsAsync(
+                instance.Workflow.WorkflowKey,
+                cancellationToken);
+            versionTargets = versions
+                .Where(version => version.IsPublished && version.Id != instance.Workflow.Id)
+                .OrderByDescending(version => version.Version)
+                .ThenByDescending(version => version.Id)
+                .ToList();
+            canChangeVersion = true;
+            loadedVersionTargetSourceId = instance.Workflow.Id;
+            if (selectedTargetWorkflowId is long selected
+                && versionTargets.All(version => version.Id != selected))
+            {
+                selectedTargetWorkflowId = null;
+                versionPreview = null;
+            }
+        }
+        catch (WorkflowApiException ex) when (
+            ex.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            canChangeVersion = false;
+            showVersionChange = false;
+            versionTargets = [];
+            loadedVersionTargetSourceId = instance.Workflow.Id;
+        }
+        catch (Exception ex)
+        {
+            canChangeVersion = false;
+            showVersionChange = false;
+            versionTargets = [];
+            loadedVersionTargetSourceId = null;
+            versionChangeError = ex.Message;
+        }
+    }
+
+    private async Task ToggleVersionChange()
+    {
+        showVersionChange = !showVersionChange;
+        versionChangeError = null;
+        if (!showVersionChange)
+        {
+            return;
+        }
+
+        await refreshGate.WaitAsync();
+        try
+        {
+            await LoadVersionTargetsAsync(force: true);
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    private void OnVersionTargetChanged(ChangeEventArgs args)
+    {
+        selectedTargetWorkflowId = long.TryParse(args.Value?.ToString(), out var id) && id > 0
+            ? id
+            : null;
+        versionPreview = null;
+        versionChangeError = null;
+    }
+
+    private async Task PreviewVersionChangeAsync()
+    {
+        if (!CanPreviewVersionChange || selectedTargetWorkflowId is not long targetWorkflowId)
+        {
+            return;
+        }
+
+        await refreshGate.WaitAsync();
+        try
+        {
+            versionPreviewLoading = true;
+            versionChangeError = null;
+
+            // Ordinary single-token instances are not continuously polled. Refresh
+            // before preview so a remote action cannot leave the user with a valid
+            // server preview that is permanently disabled against stale page state.
+            await RefreshInstanceStateAsync(forceVersionTargets: true);
+            if (instance is null
+                || selectedTargetWorkflowId != targetWorkflowId
+                || versionTargets.All(target => target.Id != targetWorkflowId))
+            {
+                versionPreview = null;
+                versionChangeError = "The instance or selected target changed. Choose a target and preview again.";
+                return;
+            }
+
+            var preview = await Api.PreviewInstanceVersionChangeAsync(
+                InstanceId,
+                new PreviewInstanceVersionChangeRequest(targetWorkflowId));
+            if (preview is null)
+            {
+                versionChangeError = "The workflow instance or target version no longer exists.";
+                versionPreview = null;
+                return;
+            }
+
+            if (preview.ExpectedSourceWorkflowId != instance.Workflow.Id
+                || preview.ExpectedUpdatedAt != instance.UpdatedAt)
+            {
+                await RefreshInstanceStateAsync();
+            }
+
+            if (instance is null
+                || preview.ExpectedSourceWorkflowId != instance.Workflow.Id
+                || preview.ExpectedUpdatedAt != instance.UpdatedAt)
+            {
+                versionPreview = null;
+                versionChangeError = "The instance changed during preview. Run compatibility preview again.";
+                return;
+            }
+
+            versionPreview = preview;
+        }
+        catch (Exception ex)
+        {
+            versionPreview = null;
+            versionChangeError = ex.Message;
+        }
+        finally
+        {
+            versionPreviewLoading = false;
+            refreshGate.Release();
+        }
+    }
+
+    private async Task ChangeVersionAsync()
+    {
+        if (!CanConfirmVersionChange
+            || instance is null
+            || versionPreview is null
+            || selectedTargetWorkflowId is not long targetWorkflowId)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Change instance #{InstanceId} from v{versionPreview.SourceWorkflow.Version} to v{versionPreview.TargetWorkflow.Version}?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        await refreshGate.WaitAsync();
+        try
+        {
+            versionChangeSubmitting = true;
+            versionChangeError = null;
+            var result = await Api.ChangeInstanceVersionAsync(
+                InstanceId,
+                new ChangeInstanceVersionRequest(
+                    targetWorkflowId,
+                    versionPreview.ExpectedSourceWorkflowId,
+                    versionPreview.ExpectedUpdatedAt,
+                    versionChangeReason.Trim()));
+            if (result is null)
+            {
+                versionChangeError = "The workflow instance or target version no longer exists.";
+                return;
+            }
+
+            instance = result.Instance;
+            versionPreview = null;
+            selectedTargetWorkflowId = null;
+            versionChangeReason = string.Empty;
+            loadedVersionTargetSourceId = null;
+            showVersionChange = false;
+            await LoadAvailableActionsAsync();
+            await LoadVersionTargetsAsync();
+        }
+        catch (WorkflowApiException ex) when (
+            ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            versionPreview = null;
+            loadedVersionTargetSourceId = null;
+            try
+            {
+                await RefreshInstanceStateAsync();
+            }
+            catch
+            {
+                // Preserve the authoritative conflict below; the normal refresh
+                // action remains available if this follow-up read also failed.
+            }
+            versionChangeError = $"{ex.Message} Refresh completed; run compatibility preview again.";
+        }
+        catch (Exception ex)
+        {
+            versionChangeError = ex.Message;
+            versionPreview = null;
+        }
+        finally
+        {
+            versionChangeSubmitting = false;
+            refreshGate.Release();
+        }
+    }
+
+    private string VersionDirectionLabel(WorkflowSummaryDto target) =>
+        instance is not null && target.Version > instance.Workflow.Version
+            ? "Upgrade"
+            : "Downgrade";
+
+    private static string IssueLocation(InstanceVersionChangeIssueDto issue)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(issue.StateType))
+        {
+            parts.Add(issue.StateId is long stateId
+                ? $"{issue.StateType} #{stateId}"
+                : issue.StateType);
+        }
+        if (issue.NodeId is int nodeId) parts.Add($"node #{nodeId}");
+        if (issue.FlowId is int flowId) parts.Add($"flow #{flowId}");
+        if (!string.IsNullOrWhiteSpace(issue.VariableName))
+        {
+            parts.Add($"variable '{issue.VariableName}'");
+        }
+        return parts.Count == 0 ? string.Empty : $" ({string.Join(", ", parts)})";
     }
 
     private async Task LoadAvailableActionsAsync(CancellationToken cancellationToken = default)

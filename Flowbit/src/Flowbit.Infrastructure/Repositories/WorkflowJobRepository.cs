@@ -196,6 +196,81 @@ public sealed class WorkflowJobRepository(
         return MapJob(entity);
     }
 
+    public async Task<IReadOnlyList<WorkflowJobRecord>> ListOpenByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken)
+    {
+        List<WorkflowJobEntity> entities;
+        if (forUpdate)
+        {
+            entities = await dbContext.WorkflowJobs
+                .FromSqlInterpolated(
+                    $"""
+                    SELECT *
+                    FROM flowbit.workflow_jobs
+                    WHERE "InstanceId" = {instanceId}
+                      AND "Status" IN (
+                          {WorkflowJobStatuses.Queued},
+                          {WorkflowJobStatuses.Running},
+                          {WorkflowJobStatuses.ResultReady},
+                          {WorkflowJobStatuses.Retry},
+                          {WorkflowJobStatuses.Incident})
+                    ORDER BY "Id"
+                    FOR UPDATE
+                    """)
+                .ToListAsync(cancellationToken);
+        }
+        else
+        {
+            entities = await dbContext.WorkflowJobs.AsNoTracking()
+                .Where(job =>
+                    job.InstanceId == instanceId
+                    && (job.Status == WorkflowJobStatuses.Queued
+                        || job.Status == WorkflowJobStatuses.Running
+                        || job.Status == WorkflowJobStatuses.ResultReady
+                        || job.Status == WorkflowJobStatuses.Retry
+                        || job.Status == WorkflowJobStatuses.Incident))
+                .OrderBy(job => job.Id)
+                .ToListAsync(cancellationToken);
+        }
+
+        return entities.Select(MapJob).ToArray();
+    }
+
+    public async Task<IReadOnlyList<WorkflowIncidentRecord>> ListOpenIncidentsByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken)
+    {
+        List<WorkflowIncidentEntity> entities;
+        if (forUpdate)
+        {
+            entities = await dbContext.WorkflowIncidents
+                .FromSqlInterpolated(
+                    $"""
+                    SELECT *
+                    FROM flowbit.workflow_incidents
+                    WHERE "InstanceId" = {instanceId}
+                      AND "Status" = {WorkflowIncidentStatuses.Open}
+                    ORDER BY "Id"
+                    FOR UPDATE
+                    """)
+                .ToListAsync(cancellationToken);
+        }
+        else
+        {
+            entities = await dbContext.WorkflowIncidents.AsNoTracking()
+                .Where(incident =>
+                    incident.InstanceId == instanceId
+                    && incident.Status == WorkflowIncidentStatuses.Open)
+                .OrderBy(incident => incident.Id)
+                .ToListAsync(cancellationToken);
+        }
+
+        return entities.Select(MapIncident).ToArray();
+    }
+
     public async Task<IReadOnlyList<WorkflowJobLeaseRecord>> LeaseRunnableAsync(
         WorkflowJobLeaseRequest request,
         CancellationToken cancellationToken)

@@ -272,11 +272,12 @@ public sealed class RepositoryProjectionTests(PostgresApiFixture fixture)
             await setup.SaveChangesAsync();
 
             var instances = Enumerable.Range(0, executionCount)
-                .Select(_ => new WorkflowInstanceEntity
-                {
-                    WorkflowDefinitionId = definition.Id,
-                    Status = "running"
-                })
+                 .Select(_ => new WorkflowInstanceEntity
+                 {
+                     WorkflowDefinitionId = definition.Id,
+                     WorkflowKey = definition.WorkflowKey,
+                     Status = "running"
+                 })
                 .ToList();
             setup.WorkflowInstances.AddRange(instances);
             await setup.SaveChangesAsync();

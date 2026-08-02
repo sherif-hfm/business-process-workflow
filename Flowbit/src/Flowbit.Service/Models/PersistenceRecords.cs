@@ -32,6 +32,16 @@ public sealed record WorkflowInstanceRecord(
     string? FaultDescription = null,
     long? CurrentNodeExecutionId = null);
 
+public sealed record WorkflowInstanceVersionChangeRecord(
+    long Id,
+    long InstanceId,
+    long SourceWorkflowDefinitionId,
+    long TargetWorkflowDefinitionId,
+    string? ChangedBy,
+    IReadOnlyList<string> ChangedByRoles,
+    string Reason,
+    DateTimeOffset ChangedAt);
+
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
     int Id,
@@ -102,6 +112,7 @@ public sealed record NodeExecutionCompletionRecord(
 public sealed record NodeExecutionRecord(
     long Id,
     long InstanceId,
+    long WorkflowDefinitionId,
     long ExecutionTokenId,
     long? UserTaskId,
     long? MultiInstanceExecutionId,
@@ -498,6 +509,11 @@ public sealed record SequenceFlowOccurrenceWriteRecord(
     DateTimeOffset OccurredAt,
     string? ActingFor = null,
     long? DelegationId = null);
+
+public sealed record ObservedSequenceFlowRecord(
+    int FlowId,
+    int SourceNodeId,
+    int TargetNodeId);
 
 public sealed record SequenceFlowEvidenceRecord(
     string? User,

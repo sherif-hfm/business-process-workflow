@@ -473,6 +473,37 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             return false;
         }
         var workflowKey = entity.WorkflowKey;
+        var isInUse = await dbContext.WorkflowInstances.AsNoTracking()
+                .AnyAsync(instance => instance.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.NodeExecutions.AsNoTracking()
+                .AnyAsync(execution => execution.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.InstanceHistory.AsNoTracking()
+                .AnyAsync(history => history.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.SequenceFlowOccurrences.AsNoTracking()
+                .AnyAsync(occurrence => occurrence.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.WorkflowInstanceVersionChanges.AsNoTracking()
+                .AnyAsync(change =>
+                    change.SourceWorkflowDefinitionId == id
+                    || change.TargetWorkflowDefinitionId == id,
+                    cancellationToken)
+            || await dbContext.WorkflowJobs.AsNoTracking()
+                .AnyAsync(job =>
+                    job.InstanceId != null && job.WorkflowDefinitionId == id,
+                    cancellationToken)
+            || await dbContext.WorkflowIncidents.AsNoTracking()
+                .AnyAsync(incident =>
+                    incident.InstanceId != null && incident.WorkflowDefinitionId == id,
+                    cancellationToken)
+            || await dbContext.TimerSubscriptions.AsNoTracking()
+                .AnyAsync(subscription =>
+                    subscription.InstanceId != null && subscription.WorkflowDefinitionId == id,
+                    cancellationToken);
+        if (isInUse)
+        {
+            throw new WorkflowConflictException(
+                "The workflow definition cannot be deleted because runtime or version-change history references it.");
+        }
+
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
             .AnyAsync(scope => scope.WorkflowKey == workflowKey, cancellationToken);
         var requiresDistributor = entity.IsDefault

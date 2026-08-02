@@ -614,6 +614,7 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
         DateTimeOffset createdAt) => new()
         {
             InstanceId = instance.Id,
+            WorkflowDefinitionId = instance.WorkflowDefinitionId,
             ExecutionTokenId = token.Id,
             UserTaskId = task.Id,
             NodeId = 2,

@@ -25,4 +25,14 @@ public sealed class WorkflowDefinitionEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<WorkflowInstanceEntity> Instances { get; set; } = [];
+
+    public List<NodeExecutionEntity> NodeExecutions { get; set; } = [];
+
+    public List<InstanceHistoryEntity> InstanceHistory { get; set; } = [];
+
+    public List<SequenceFlowOccurrenceEntity> SequenceFlowOccurrences { get; set; } = [];
+
+    public List<WorkflowInstanceVersionChangeEntity> SourceVersionChanges { get; set; } = [];
+
+    public List<WorkflowInstanceVersionChangeEntity> TargetVersionChanges { get; set; } = [];
 }

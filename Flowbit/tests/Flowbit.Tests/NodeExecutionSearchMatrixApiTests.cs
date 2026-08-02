@@ -263,7 +263,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         await db.SaveChangesAsync();
 
         var first = CompletedExecution(
-            instance.Id,
+            instance,
             tokens[0].Id,
             nodeId: 20,
             "Review item zero",
@@ -278,7 +278,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         first.ItemIndex = 0;
 
         var second = CompletedExecution(
-            instance.Id,
+            instance,
             tokens[0].Id,
             nodeId: 20,
             "Review item one",
@@ -293,7 +293,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         second.ItemIndex = 1;
 
         var entryMatch = CompletedExecution(
-            instance.Id,
+            instance,
             tokens[1].Id,
             nodeId: 31,
             "Entered matching branch",
@@ -305,7 +305,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         entryMatch.EntryGatewayBranchId = matchingBranch.Id;
 
         var exitMatch = CompletedExecution(
-            instance.Id,
+            instance,
             tokens[2].Id,
             nodeId: 32,
             "Exited matching branch",
@@ -317,7 +317,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         exitMatch.ExitGatewayBranchId = matchingBranch.Id;
 
         var branchDecoy = CompletedExecution(
-            instance.Id,
+            instance,
             tokens[3].Id,
             nodeId: 33,
             "Other branch",
@@ -387,7 +387,7 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         };
 
     private static NodeExecutionEntity CompletedExecution(
-        long instanceId,
+        WorkflowInstanceEntity instance,
         long tokenId,
         int nodeId,
         string nodeName,
@@ -398,7 +398,8 @@ public sealed class NodeExecutionSearchMatrixApiTests(PostgresApiFixture fixture
         string completionReason) =>
         new()
         {
-            InstanceId = instanceId,
+            InstanceId = instance.Id,
+            WorkflowDefinitionId = instance.WorkflowDefinitionId,
             ExecutionTokenId = tokenId,
             NodeId = nodeId,
             NodeName = nodeName,

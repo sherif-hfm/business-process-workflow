@@ -187,6 +187,18 @@ public interface IWorkflowEngineService
 
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
+    Task<InstanceVersionChangePreviewDto?> PreviewInstanceVersionChangeAsync(
+        long id,
+        long targetWorkflowId,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
+    Task<ChangeInstanceVersionResultDto?> ChangeInstanceVersionAsync(
+        long id,
+        ChangeInstanceVersionRequest request,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
         long id,
         ActorContext actor,
