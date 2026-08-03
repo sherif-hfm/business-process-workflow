@@ -36,6 +36,14 @@ public sealed class EditorNavigationTests
               "type": "scopedInterruptEvent",
               "laneId": 2,
               "gatewayRef": 8
+            },
+            {
+              "id": 10,
+              "name": "First reviewer wins",
+              "externalId": "CANCELLING_JOIN",
+              "type": "exclusiveGateway",
+              "laneId": 2,
+              "joinCancellation": { "gatewayRef": 8 }
             }
           ],
           "sequenceFlows": [
@@ -159,7 +167,9 @@ public sealed class EditorNavigationTests
     [InlineData("""{ "kind": "node", "nodeId": 7 }""", 2)]
     [InlineData("""{ "kind": "node", "nodeId": 8 }""", 9)]
     [InlineData("""{ "kind": "node", "nodeId": 9 }""", 8)]
-    public void Trace_ReportsBoundaryAndScopedInterruptReferencesAsContext(
+    [InlineData("""{ "kind": "node", "nodeId": 8 }""", 10)]
+    [InlineData("""{ "kind": "node", "nodeId": 10 }""", 8)]
+    public void Trace_ReportsBoundaryInterruptAndCancellingJoinReferencesAsContext(
         string selectionJson,
         int expectedContextNodeId)
     {
@@ -196,7 +206,8 @@ public sealed class EditorNavigationTests
               ],
               "sequenceFlows": [
                 { "id": 201, "sourceRef": 2, "targetRef": 3 },
-                { "id": 401, "sourceRef": 4, "targetRef": 5 }
+                { "id": 401, "sourceRef": 4, "targetRef": 5 },
+                { "id": 501, "sourceRef": 5, "targetRef": 6 }
               ]
             }
             """);
@@ -205,7 +216,8 @@ public sealed class EditorNavigationTests
             """
             const adjacency = buildGatewayAdjacencyIndex(JSON.parse(candidateJson));
             canReachWithAdjacency(2, 5, adjacency) &&
-              !canReachWithAdjacency(6, 5, adjacency);
+              !canReachWithAdjacency(6, 5, adjacency) &&
+              !canReachWithAdjacencyAvoiding(2, 6, 5, adjacency);
             """).AsBoolean());
         Assert.Contains(
             "canReachWithAdjacency(candidate.id, node.id, adjacency)",

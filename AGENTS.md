@@ -303,6 +303,27 @@ Storage follows the hybrid design:
   start/reset routing. Every firing is recorded in `gateway_executions`, while
   `gateway_branches` provide generic scope lineage; diverging Inclusive/Complex
   firings create a scope even when only one flow is selected.
+  Any Exclusive, Parallel, Inclusive, or Complex merge may opt into the Flowbit
+  `joinCancellation` extension with `{ "gatewayRef": splitNodeId }`. The
+  reference must identify a structurally upstream Parallel, Inclusive, or
+  Complex split whose activation contains every merge input. The option never
+  changes the gateway's enabling rule: Exclusive becomes explicit
+  first-arrival-wins, Parallel still waits for every static input, Inclusive
+  keeps its unpaired enabling rule, and Complex keeps its activation condition.
+  After firing, the lowest-id contributing token survives and is promoted to the
+  referenced scope's parent; every other active descendant of that split
+  activation is cancelled atomically, including nested scopes, user and
+  multi-instance work, message/timer waits, and durable jobs. Unrelated work is
+  preserved. A cancelling Complex merge closes the activation without reset
+  output. If all contributing tokens do not share a nearest active referenced
+  activation, the transition fails with `409 Conflict` and rolls back. Joined
+  Parallel, Inclusive, and Complex merge executions record `joinCancellation`;
+  an Exclusive merge retains its normal `gateway` history and has no merge
+  execution. A referenced split interrupted with unfinished work records
+  `interruptingJoin` plus the survivor token and merge node identifiers.
+  Enabling, disabling, or changing this policy is a gateway
+  contract change and blocks in-place workflow-version switching while gateway
+  or branch state is active.
   `scopedInterruptEvent` is a Flowbit extension with a required `gatewayRef`.
   On entry it resolves the nearest active activation of the referenced Parallel,
   Inclusive, or Complex split in the token's generic branch ancestry, cancels
@@ -1514,6 +1535,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
 | `type: "inclusiveGateway"` | Inclusive Gateway (OR) | Circle-marked diamond. Split form selects every matching condition or its required default; merge form synchronizes only inputs that can still receive a token according to cached topology and active positions. |
 | `type: "complexGateway"` | Complex Gateway | Asterisk-marked diamond with required `activationCondition`; persists start/reset phase and cycle state and supports incoming-count/phase helpers. |
+| `joinCancellation` on a merge gateway | Flowbit cancelling-join extension | Cancels unfinished descendants of an explicitly referenced upstream split activation after the merge's normal firing rule succeeds. BPMN would normally model cancellation with an interruptible subprocess scope rather than gateway configuration. |
 | `type: "scopedInterruptEvent"` | Flowbit scoped-interrupt extension | Red double-ring event with a scoped-interrupt marker. Cancels the nearest active activation of referenced Parallel, Inclusive, or Complex split `gatewayRef` and follows one fixed authored continuation. Strict BPMN would use an interruptible subprocess scope. |
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
 | `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active gateway scopes, and completes the instance with completion kind `terminate`. |

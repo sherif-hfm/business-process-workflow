@@ -183,6 +183,69 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             WorkflowVersionCompatibilityCodes.TopologyNodeAdded);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Active_branch_state_blocks_join_cancellation_contract_changes(bool removePolicy)
+    {
+        var sourceModel = GatewayModel();
+        var innerSplit = sourceModel.FlowNodes.Single(node => node.Id == 2);
+        innerSplit.Type = BpmnFlowNodeTypes.ParallelGateway;
+        innerSplit.ActivationCondition = null;
+        sourceModel.SequenceFlows.Single(flow => flow.Id == 10).TargetRef = 8;
+        sourceModel.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 8,
+            Name = "Outer split",
+            Type = BpmnFlowNodeTypes.ParallelGateway,
+            ExternalId = "outer-split"
+        });
+        sourceModel.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 9,
+            Name = "Outer end",
+            Type = BpmnFlowNodeTypes.EndEvent,
+            ExternalId = "outer-end"
+        });
+        sourceModel.SequenceFlows.Add(Flow(11, 8, 2));
+        sourceModel.SequenceFlows.Add(Flow(12, 8, 9));
+        sourceModel.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Join",
+            Type = BpmnFlowNodeTypes.ParallelGateway,
+            ExternalId = "join",
+            JoinCancellation = new JoinCancellationModel { GatewayRef = 2 }
+        });
+        sourceModel.SequenceFlows.Single(flow => flow.Id == 40).TargetRef = 6;
+        sourceModel.SequenceFlows.Single(flow => flow.Id == 50).TargetRef = 6;
+        sourceModel.SequenceFlows.Add(Flow(60, 6, 5));
+        var targetModel = Clone(sourceModel);
+        var targetCancellation = targetModel.FlowNodes.Single(node => node.Id == 6).JoinCancellation!;
+        if (removePolicy)
+        {
+            targetModel.FlowNodes.Single(node => node.Id == 6).JoinCancellation = null;
+        }
+        else
+        {
+            targetCancellation.GatewayRef = 8;
+        }
+        var source = Definition(11, 1, sourceModel);
+        var target = Definition(12, 2, targetModel);
+        var context = Context(source, target, activeNodeId: 3) with
+        {
+            ActiveTokens =
+            [
+                Token(101, 3, BpmnFlowNodeTypes.UserTask, "left"),
+                Token(102, 4, BpmnFlowNodeTypes.UserTask, "right")
+            ]
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        AssertCodes(result, WorkflowVersionCompatibilityCodes.GatewayContractChanged);
+    }
+
     [Fact]
     public void Current_values_must_satisfy_target_type_and_validation()
     {

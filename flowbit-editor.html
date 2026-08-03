@@ -1612,6 +1612,14 @@ function buildDiagramTraceContext(candidate, selection, mode) {
     if (node.type === "scopedInterruptEvent" && nodeById.has(node.gatewayRef)) {
       contextNodeIds.add(node.gatewayRef);
     }
+    const cancellationScopeRef = node.joinCancellation &&
+      typeof node.joinCancellation === "object" &&
+      !Array.isArray(node.joinCancellation)
+        ? node.joinCancellation.gatewayRef
+        : null;
+    if (nodeById.has(cancellationScopeRef)) {
+      contextNodeIds.add(cancellationScopeRef);
+    }
     for (const candidateNode of nodes) {
       if (!candidateNode) continue;
       if ((candidateNode.type === "errorBoundaryEvent" ||
@@ -1620,6 +1628,12 @@ function buildDiagramTraceContext(candidate, selection, mode) {
         contextNodeIds.add(candidateNode.id);
       }
       if (candidateNode.type === "scopedInterruptEvent" && candidateNode.gatewayRef === nodeId) {
+        contextNodeIds.add(candidateNode.id);
+      }
+      if (candidateNode.joinCancellation &&
+          typeof candidateNode.joinCancellation === "object" &&
+          !Array.isArray(candidateNode.joinCancellation) &&
+          candidateNode.joinCancellation.gatewayRef === nodeId) {
         contextNodeIds.add(candidateNode.id);
       }
     }
@@ -2506,6 +2520,21 @@ function canReachWithAdjacency(sourceId, targetId, adjacency) {
   }
   return false;
 }
+function canReachWithAdjacencyAvoiding(sourceId, targetId, blockedNodeId, adjacency) {
+  const queue = [sourceId];
+  const visited = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (current === blockedNodeId) continue;
+    if (current === targetId) return true;
+    for (const next of adjacency.structuralOutgoing.get(current) || []) {
+      if (!visited.has(next)) queue.push(next);
+    }
+  }
+  return false;
+}
 function gatewayTopology(node, additionalIncoming = 0, additionalOutgoing = 0, adjacency = null) {
   if (!node || !isGatewayType(node.type)) return "invalid";
   const incoming = (adjacency
@@ -2543,6 +2572,24 @@ function isInterruptibleGatewaySplit(node, adjacency = null) {
   return !!node && (isParallelGatewayType(node.type) ||
     isInclusiveGatewayType(node.type) || isComplexGatewayType(node.type)) &&
     isGatewaySplitNode(node, adjacency);
+}
+function joinCancellationGatewayRef(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value.gatewayRef
+    : null;
+}
+function isEligibleJoinCancellationSplit(split, merge, adjacency = buildGatewayAdjacencyIndex()) {
+  if (!isInterruptibleGatewaySplit(split, adjacency) ||
+      gatewayTopology(merge, 0, 0, adjacency) !== "merge") {
+    return false;
+  }
+  const mergeInputs = adjacency.incoming.get(merge.id) || [];
+  return mergeInputs.length >= 2 && mergeInputs.every(flow =>
+    canReachWithAdjacencyAvoiding(split.id, flow.sourceRef, merge.id, adjacency));
+}
+function eligibleJoinCancellationSplits(merge, adjacency = buildGatewayAdjacencyIndex()) {
+  return model.flowNodes.filter(candidate =>
+    isEligibleJoinCancellationSplit(candidate, merge, adjacency));
 }
 function isForbiddenInterruptMerge(node, additionalIncoming = 0, adjacency = null) {
   if (!node || (!isParallelGatewayType(node.type) && !isComplexGatewayType(node.type))) {
@@ -4331,6 +4378,14 @@ function renderNodeInspector() {
         node.variables = materializeMessageStartVariables(node);
       }
       node.type = v;
+      if (!isGatewayType(v)) {
+        delete node.joinCancellation;
+        model.flowNodes.forEach(candidate => {
+          if (joinCancellationGatewayRef(candidate.joinCancellation) === node.id) {
+            candidate.joinCancellation.gatewayRef = null;
+          }
+        });
+      }
       if (isTimerEventType(v) && !isTimerEventType(previousType)) {
         node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
       }
@@ -4417,6 +4472,8 @@ function renderNodeInspector() {
       inspector.appendChild(warning);
     }
   }
+
+  renderJoinCancellationSection(node);
 
   if (isComplexGatewayType(node.type)) {
     textareaField("Activation condition", node.activationCondition ?? "", v => {
@@ -4844,6 +4901,73 @@ function appendTypedOutputMappingFields(box, mapping, requiredLabel, defaultPlac
   };
   validationField.appendChild(validationInput);
   box.appendChild(validationField);
+}
+
+function renderJoinCancellationSection(node) {
+  const topology = isGatewayType(node.type) ? gatewayTopology(node) : "invalid";
+  const configured = node.joinCancellation !== undefined && node.joinCancellation !== null;
+  if (topology !== "merge" && !configured) return;
+
+  const toggle = variableCheckbox(
+    "Cancel unfinished branches when join fires",
+    configured,
+    enabled => {
+      if (enabled) node.joinCancellation = { gatewayRef: null };
+      else delete node.joinCancellation;
+      renderInspector();
+      renderDiagramLayers();
+    });
+  toggle.style.marginTop = "12px";
+  inspector.appendChild(toggle);
+  if (!configured) return;
+
+  const configIsObject = typeof node.joinCancellation === "object" &&
+    !Array.isArray(node.joinCancellation);
+  const currentRef = configIsObject ? node.joinCancellation.gatewayRef : null;
+  const adjacency = buildGatewayAdjacencyIndex();
+  const eligibleSplits = topology === "merge"
+    ? eligibleJoinCancellationSplits(node, adjacency)
+    : [];
+  const options = [{ value: "", label: "-- select gateway split --" }]
+    .concat(eligibleSplits.map(split => ({
+      value: split.id,
+      label: `#${split.id} ${split.name} - ${typeLabel(split.type)}`
+    })));
+  if (currentRef != null &&
+      !eligibleSplits.some(split => split.id === currentRef)) {
+    options.push({
+      value: currentRef,
+      label: `#${currentRef} (missing or not an eligible upstream split)`
+    });
+  }
+  selectField("Cancellation scope", options, currentRef ?? "", value => {
+    node.joinCancellation = { gatewayRef: value ? +value : null };
+    renderInspector();
+    renderDiagramLayers();
+  });
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = isExclusiveGatewayType(node.type)
+    ? "An Exclusive merge fires on the first arrival, so this makes the first branch win. Only unfinished work descended from the selected split activation is cancelled; unrelated instance work is preserved."
+    : "When this merge fires under its normal join rule, unfinished work descended from the selected split activation is cancelled. Unrelated instance work is preserved.";
+  inspector.appendChild(hint);
+
+  const currentRefIsEligible = Number.isInteger(currentRef) && currentRef > 0 &&
+    eligibleSplits.some(split => split.id === currentRef);
+  if (topology !== "merge" || !configIsObject || !currentRefIsEligible) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    if (!configIsObject) {
+      warning.textContent = "Warning: the imported joinCancellation value is malformed. Disable this option to remove it, or select a cancellation scope to replace it.";
+    } else if (topology !== "merge") {
+      warning.textContent = "Warning: join cancellation is valid only on a merge gateway with at least two incoming flows and exactly one outgoing flow. Disable it or repair the topology before saving.";
+    } else {
+      warning.textContent = "Warning: select an eligible upstream Parallel, Inclusive, or Complex gateway split before saving.";
+    }
+    inspector.appendChild(warning);
+  }
 }
 
 function renderServiceSection(node) {
@@ -7761,6 +7885,9 @@ function deleteNode(id) {
     if (isScopedInterruptEventType(node.type) && node.gatewayRef === id) {
       node.gatewayRef = null;
     }
+    if (joinCancellationGatewayRef(node.joinCancellation) === id) {
+      node.joinCancellation.gatewayRef = null;
+    }
   });
   if (model.initialEventId === id) {
     const nextDefault = model.flowNodes.find(s => isStartEventType(s.type));
@@ -9182,6 +9309,64 @@ function validateModelForSave(candidate) {
     return visited;
   };
   const canReachNode = (sourceId, targetId) => reachableFrom(sourceId).has(targetId);
+  const canReachNodeAvoiding = (sourceId, targetId, blockedNodeId) => {
+    const queue = [sourceId];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (current === blockedNodeId) continue;
+      if (current === targetId) return true;
+      for (const next of structuralTargetsByNode.get(current) || []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    }
+    return false;
+  };
+
+  for (const node of nodes.filter(node => node && node.joinCancellation != null)) {
+    const label = gatewayName(node.type) +
+      " gateway #" + String(node.id) + " joinCancellation";
+    const topology = gatewayTypes.has(node.type) ? gatewayTopologyFor(node) : "invalid";
+    if (!gatewayTypes.has(node.type)) {
+      errors.push("Flow node #" + String(node.id) +
+        " can define joinCancellation only when its type is a gateway merge.");
+    } else if (topology !== "merge") {
+      errors.push(label +
+        " is allowed only on a merge with at least two incoming and exactly one outgoing flow.");
+    }
+
+    const config = node.joinCancellation;
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      errors.push(label + " must be an object with a required positive integer gatewayRef.");
+      continue;
+    }
+
+    const gatewayRef = config.gatewayRef;
+    if (!Number.isInteger(gatewayRef) || gatewayRef <= 0) {
+      errors.push(label + " gatewayRef must be a positive integer.");
+      continue;
+    }
+
+    const referenced = nodesById.get(gatewayRef);
+    if (!referenced ||
+        !["parallelGateway", "inclusiveGateway", "complexGateway"].includes(referenced.type)) {
+      errors.push(label +
+        " gatewayRef must reference an existing Parallel, Inclusive, or Complex gateway split.");
+      continue;
+    }
+    if (gatewayTopologyFor(referenced) !== "split") {
+      errors.push(label +
+        " gatewayRef must reference a split with exactly one incoming and at least two outgoing flows.");
+      continue;
+    }
+    if (topology === "merge" && incomingFor(node.id).some(flow =>
+        !canReachNodeAvoiding(referenced.id, flow.sourceRef, node.id))) {
+      errors.push(label +
+        " gatewayRef must reference an upstream split whose scope contains every merge input.");
+    }
+  }
 
   for (const interrupt of nodes.filter(node => node && node.type === "scopedInterruptEvent")) {
     const label = "Scoped interrupt event #" + String(interrupt.id);
@@ -9776,6 +9961,11 @@ function loadFromObject(obj) {
           typeof s.activationCondition === "string" ? s.activationCondition : undefined,
         gatewayRef: isScopedInterruptEventType(s.type) &&
           typeof s.gatewayRef === "number" ? s.gatewayRef : undefined,
+        // Keep invalid imported policies intact so save validation can explain
+        // them and the inspector can offer an explicit removal path.
+        joinCancellation: s.joinCancellation == null
+          ? undefined
+          : JSON.parse(JSON.stringify(s.joinCancellation)),
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined

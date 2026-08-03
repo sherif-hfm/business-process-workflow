@@ -851,6 +851,8 @@ else
     private static string GatewayCompletionReason(string reason) => reason switch
     {
         "join" => "Joined",
+        "joinCancellation" => "Cancelling join completed",
+        "interruptingJoin" => "Interrupted by a cancelling join",
         "interrupt" or "scopedInterrupt" => "Scoped interrupt",
         "terminateEnd" => "Terminate end",
         "errorEnd" => "Workflow fault",

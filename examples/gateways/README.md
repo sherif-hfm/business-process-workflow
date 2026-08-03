@@ -69,3 +69,25 @@ Response**.
   flows also require conditions.
 - A scoped interrupt must be structurally reachable from the referenced
   Parallel, Inclusive, or Complex split.
+
+## Scope-aware cancelling joins
+
+A merge can opt into Flowbit's cancelling-join extension by referencing the
+upstream split activation whose unfinished branches it owns:
+
+```json
+"joinCancellation": {
+  "gatewayRef": 2
+}
+```
+
+Omit `joinCancellation` to retain the gateway's existing merge behavior.
+The option is valid only on an Exclusive, Parallel, Inclusive, or Complex merge,
+and `gatewayRef` must name a structurally upstream Parallel, Inclusive, or
+Complex split that contains every incoming path to the merge. It does not make
+the merge fire earlier: Exclusive remains first-arrival, Parallel waits for all
+static inputs, Inclusive applies its unpaired enabling rule, and Complex applies
+its activation condition. Once the merge fires, unfinished work inside that
+specific split activation is cancelled atomically; work in outer or unrelated
+scopes is preserved. A missing common active activation is a `409 Conflict`, and
+the transition rolls back without following the outgoing flow.

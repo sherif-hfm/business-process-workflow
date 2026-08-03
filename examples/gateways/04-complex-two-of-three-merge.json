@@ -8,8 +8,8 @@
       "id": 1,
       "name": "Quorum Approval",
       "externalId": "LANE_QUORUM_APPROVAL",
-      "x": 30,
-      "y": 30,
+      "x": -131,
+      "y": 0,
       "w": 1620,
       "h": 620
     }
@@ -21,10 +21,18 @@
       "externalId": "START_QUORUM_REQUESTED",
       "type": "startEvent",
       "laneId": 1,
-      "x": 75,
-      "y": 285,
+      "x": -86,
+      "y": 255,
       "roles": [],
-      "variables": []
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
     },
     {
       "id": 2,
@@ -32,66 +40,141 @@
       "externalId": "GATEWAY_FORK_REVIEWERS",
       "type": "parallelGateway",
       "laneId": 1,
-      "x": 290,
-      "y": 280,
+      "x": 129,
+      "y": 250,
       "roles": [],
-      "variables": []
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
     },
     {
       "id": 3,
       "name": "Reviewer A",
       "externalId": "TASK_REVIEWER_A",
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": 1,
-      "x": 500,
-      "y": 95,
-      "roles": ["Reviewer"],
-      "variables": []
+      "x": 339,
+      "y": 65,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
       "name": "Reviewer B",
       "externalId": "TASK_REVIEWER_B",
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": 1,
-      "x": 500,
-      "y": 280,
-      "roles": ["Reviewer"],
-      "variables": []
+      "x": 339,
+      "y": 250,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 5,
       "name": "Reviewer C",
       "externalId": "TASK_REVIEWER_C",
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": 1,
-      "x": 500,
-      "y": 465,
-      "roles": ["Reviewer"],
-      "variables": []
+      "x": 339,
+      "y": 435,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 6,
       "name": "Continue After Any Two",
       "externalId": "GATEWAY_MERGE_REVIEWER_QUORUM",
       "type": "complexGateway",
-      "activationCondition": "TotalIncomingCount() >= 2",
       "laneId": 1,
-      "x": 920,
-      "y": 280,
+      "x": 759,
+      "y": 250,
       "roles": [],
-      "variables": []
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": [],
+      "activationCondition": "TotalIncomingCount() >= 2",
+      "joinCancellation": {
+        "gatewayRef": 2
+      }
     },
     {
       "id": 7,
       "name": "Finalize Quorum Decision",
       "externalId": "TASK_FINALIZE_QUORUM_DECISION",
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": 1,
-      "x": 1100,
-      "y": 270,
-      "roles": ["Coordinator"],
-      "variables": []
+      "x": 939,
+      "y": 240,
+      "roles": [
+        "Coordinator"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 8,
@@ -99,10 +182,18 @@
       "externalId": "END_TERMINATE_REMAINING_REVIEWS",
       "type": "terminateEndEvent",
       "laneId": 1,
-      "x": 1435,
-      "y": 285,
+      "x": 1274,
+      "y": 255,
       "roles": [],
-      "variables": []
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "assignments": []
     }
   ],
   "sequenceFlows": [
@@ -113,7 +204,16 @@
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
-      "variables": []
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 201,
@@ -122,7 +222,16 @@
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
-      "variables": []
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 202,
@@ -131,7 +240,16 @@
       "sourceRef": 2,
       "targetRef": 4,
       "roles": [],
-      "variables": []
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 203,
@@ -140,7 +258,16 @@
       "sourceRef": 2,
       "targetRef": 5,
       "roles": [],
-      "variables": []
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 301,
@@ -148,8 +275,19 @@
       "externalId": "FLOW_REVIEWER_A_COMPLETED",
       "sourceRef": 3,
       "targetRef": 6,
-      "roles": ["Reviewer"],
-      "variables": []
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 401,
@@ -157,8 +295,19 @@
       "externalId": "FLOW_REVIEWER_B_COMPLETED",
       "sourceRef": 4,
       "targetRef": 6,
-      "roles": ["Reviewer"],
-      "variables": []
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 501,
@@ -166,8 +315,19 @@
       "externalId": "FLOW_REVIEWER_C_COMPLETED",
       "sourceRef": 5,
       "targetRef": 6,
-      "roles": ["Reviewer"],
-      "variables": []
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 601,
@@ -177,7 +337,15 @@
       "targetRef": 7,
       "roles": [],
       "variables": [],
-      "condition": "true"
+      "condition": "true",
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     },
     {
       "id": 701,
@@ -185,12 +353,27 @@
       "externalId": "FLOW_FINALIZE_AND_TERMINATE",
       "sourceRef": 7,
       "targetRef": 8,
-      "roles": ["Coordinator"],
-      "variables": []
+      "roles": [
+        "Coordinator"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
     }
   ],
-  "cancelRoles": ["Coordinator"],
-  "unclaimRoles": ["Coordinator"],
+  "cancelRoles": [
+    "Coordinator"
+  ],
+  "unclaimRoles": [
+    "Coordinator"
+  ],
   "taskAssignmentRoles": [],
   "taskDistribution": null
 }

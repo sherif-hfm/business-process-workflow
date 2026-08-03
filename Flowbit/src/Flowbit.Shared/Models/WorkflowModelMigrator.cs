@@ -27,6 +27,8 @@ public static class WorkflowModelMigrator
             ApplyNodeInvariants(node, model.Variables);
         }
 
+        NormalizeJoinCancellation(model);
+
         foreach (var flow in model.SequenceFlows)
         {
             flow.Roles = NormalizeRoles(flow.Roles);
@@ -52,6 +54,32 @@ public static class WorkflowModelMigrator
         NormalizeExclusiveSplitPriorities(model);
         NormalizeUserTaskDefaultFlows(model);
 
+    }
+
+    /// <summary>
+    /// Tolerant loading removes join-only metadata from node shapes where it
+    /// has no runtime meaning. Create/version authoring validates the raw model
+    /// before this normalization so invalid authored metadata is still rejected.
+    /// </summary>
+    private static void NormalizeJoinCancellation(WorkflowModel model)
+    {
+        var incomingCounts = model.SequenceFlows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var outgoingCounts = model.SequenceFlows
+            .GroupBy(flow => flow.SourceRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        foreach (var node in model.FlowNodes)
+        {
+            var isGatewayMerge = BpmnFlowNodeTypes.IsGateway(node.Type)
+                && incomingCounts.GetValueOrDefault(node.Id) >= 2
+                && outgoingCounts.GetValueOrDefault(node.Id) == 1;
+            if (!isGatewayMerge)
+            {
+                node.JoinCancellation = null;
+            }
+        }
     }
 
     private static void ConvertLegacy(WorkflowModel model)

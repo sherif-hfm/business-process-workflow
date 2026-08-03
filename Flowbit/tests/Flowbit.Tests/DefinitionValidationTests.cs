@@ -2415,6 +2415,165 @@ public sealed class DefinitionValidationTests
     [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
     [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
     [InlineData(BpmnFlowNodeTypes.ComplexGateway)]
+    public async Task CreateAsync_AcceptsScopeAwareCancellationOnGatewayMerges(string gatewayType)
+    {
+        var model = BuildCancellingJoinModel(gatewayType);
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var savedJoin = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 6);
+        Assert.Equal(2, Assert.IsType<JoinCancellationModel>(savedJoin.JoinCancellation).GatewayRef);
+    }
+
+    [Theory]
+    [InlineData("task")]
+    [InlineData("split")]
+    public async Task CreateAsync_RejectsJoinCancellationOutsideGatewayMergeBeforeNormalization(string placement)
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ParallelGateway);
+        var join = model.FlowNodes.Single(node => node.Id == 6);
+        join.JoinCancellation = null;
+        var invalidNode = model.FlowNodes.Single(node => node.Id == (placement == "task" ? 3 : 2));
+        invalidNode.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("joinCancellation", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task CreateAsync_RejectsJoinCancellationWithoutPositiveGatewayRef(int? gatewayRef)
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ParallelGateway);
+        model.FlowNodes.Single(node => node.Id == 6).JoinCancellation!.GatewayRef = gatewayRef;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("positive gatewayRef", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("nonGateway")]
+    [InlineData("exclusive")]
+    [InlineData("self")]
+    public async Task CreateAsync_RejectsInvalidJoinCancellationSplitReference(string scenario)
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ParallelGateway);
+        var cancellation = model.FlowNodes.Single(node => node.Id == 6).JoinCancellation!;
+        switch (scenario)
+        {
+            case "missing":
+                cancellation.GatewayRef = 999;
+                break;
+            case "nonGateway":
+                cancellation.GatewayRef = 3;
+                break;
+            case "exclusive":
+                ConfigureSplitGateway(model, 2, BpmnFlowNodeTypes.ExclusiveGateway);
+                break;
+            case "self":
+                cancellation.GatewayRef = 6;
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("joinCancellation", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("gatewayRef", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsJoinWhenAnyInputIsOutsideCancellationScope()
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ComplexGateway);
+        model.SequenceFlows.RemoveAll(flow => flow.Id == 205);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 8,
+            Name = "Independent start",
+            Type = BpmnFlowNodeTypes.StartEvent
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 801,
+            Name = "Independent review",
+            SourceRef = 8,
+            TargetRef = 5
+        });
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("incoming sequence flow #501", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not structurally downstream", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Normalize_PreservesValidJoinCancellationAndClearsInvalidPlacements()
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ParallelGateway);
+        var join = model.FlowNodes.Single(node => node.Id == 6);
+        var split = model.FlowNodes.Single(node => node.Id == 2);
+        var task = model.FlowNodes.Single(node => node.Id == 3);
+        split.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        task.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.Equal(2, join.JoinCancellation?.GatewayRef);
+        Assert.Null(split.JoinCancellation);
+        Assert.Null(task.JoinCancellation);
+    }
+
+    [Fact]
+    public void Normalize_PreservesMalformedJoinCancellationOnMergeForValidation()
+    {
+        var model = BuildCancellingJoinModel(BpmnFlowNodeTypes.ParallelGateway);
+        var join = model.FlowNodes.Single(node => node.Id == 6);
+        join.JoinCancellation!.GatewayRef = null;
+
+        WorkflowModelMigrator.Normalize(model);
+
+        Assert.NotNull(join.JoinCancellation);
+        Assert.Null(join.JoinCancellation.GatewayRef);
+    }
+
+    [Fact]
+    public void JoinCancellation_UsesCanonicalOptionalJsonContract()
+    {
+        var node = new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Join",
+            Type = BpmnFlowNodeTypes.ComplexGateway
+        };
+
+        var withoutCancellation = JsonSerializer.Serialize(node);
+        node.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        var withCancellation = JsonSerializer.Serialize(node);
+        var roundTripped = JsonSerializer.Deserialize<FlowNodeModel>(withCancellation)!;
+
+        Assert.DoesNotContain("joinCancellation", withoutCancellation, StringComparison.Ordinal);
+        Assert.Contains("\"joinCancellation\":{\"gatewayRef\":2}", withCancellation, StringComparison.Ordinal);
+        Assert.Equal(2, roundTripped.JoinCancellation?.GatewayRef);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ExclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
+    [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
+    [InlineData(BpmnFlowNodeTypes.ComplexGateway)]
     public async Task CreateAsync_RejectsOneInOneOutGateway(string gatewayType)
     {
         var model = BuildGatewaySplitModel(gatewayType);
@@ -2603,6 +2762,55 @@ public sealed class DefinitionValidationTests
         {
             model.SequenceFlows.Single(flow => flow.Id == 201).Condition = "true";
         }
+        return model;
+    }
+
+    private static WorkflowModel BuildCancellingJoinModel(string joinType)
+    {
+        var join = new FlowNodeModel
+        {
+            Id = 6,
+            Name = "Quorum join",
+            Type = joinType,
+            ActivationCondition = joinType == BpmnFlowNodeTypes.ComplexGateway
+                ? "TotalIncomingCount() >= 2"
+                : null,
+            JoinCancellation = new JoinCancellationModel { GatewayRef = 2 }
+        };
+        var model = new WorkflowModel
+        {
+            Id = "cancelling-join-validation",
+            Name = "Cancelling join validation",
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Parallel split", Type = BpmnFlowNodeTypes.ParallelGateway },
+                new FlowNodeModel { Id = 3, Name = "First review", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel { Id = 4, Name = "Second review", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel { Id = 5, Name = "Third review", Type = BpmnFlowNodeTypes.UserTask },
+                join,
+                new FlowNodeModel { Id = 7, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 203, Name = "First", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 204, Name = "Second", SourceRef = 2, TargetRef = 4 },
+                new SequenceFlowModel { Id = 205, Name = "Third", SourceRef = 2, TargetRef = 5 },
+                new SequenceFlowModel { Id = 301, Name = "First done", SourceRef = 3, TargetRef = 6 },
+                new SequenceFlowModel { Id = 401, Name = "Second done", SourceRef = 4, TargetRef = 6 },
+                new SequenceFlowModel { Id = 501, Name = "Third done", SourceRef = 5, TargetRef = 6 },
+                new SequenceFlowModel
+                {
+                    Id = 601,
+                    Name = "Continue",
+                    SourceRef = 6,
+                    TargetRef = 7,
+                    Condition = joinType == BpmnFlowNodeTypes.ComplexGateway ? "true" : null
+                }
+            ]
+        };
         return model;
     }
 

@@ -364,6 +364,18 @@ public sealed class WorkflowDefinitionService(
                 ValidateComplexGateway(node, incoming, outgoing);
             }
 
+            if (node.JoinCancellation is not null)
+            {
+                ValidateJoinCancellation(
+                    node,
+                    definition,
+                    incoming,
+                    outgoing,
+                    incomingByNodeId,
+                    outgoingByNodeId,
+                    structuralTargetsBySource);
+            }
+
             if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
             {
                 ValidateScopedInterrupt(
@@ -798,6 +810,29 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"Flow node #{node.Id} defines gatewayRef but is not a scoped interrupt event.");
+            }
+
+            if (node.JoinCancellation is not null)
+            {
+                if (!BpmnFlowNodeTypes.IsGateway(node.Type))
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines joinCancellation but is not a gateway merge.");
+                }
+
+                var incomingCount = incomingCounts.GetValueOrDefault(node.Id);
+                var outgoingCount = outgoingCounts.GetValueOrDefault(node.Id);
+                if (!IsGatewayMergeTopology(incomingCount, outgoingCount))
+                {
+                    throw new WorkflowDomainException(
+                        $"Gateway #{node.Id} defines joinCancellation but is not a merge with at least two incoming and exactly one outgoing sequence flow.");
+                }
+
+                if (node.JoinCancellation.GatewayRef is null or <= 0)
+                {
+                    throw new WorkflowDomainException(
+                        $"Gateway merge #{node.Id} joinCancellation must define a positive gatewayRef.");
+                }
             }
 
             if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)
@@ -1420,6 +1455,70 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
+    private static void ValidateJoinCancellation(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> incomingByNodeId,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> outgoingByNodeId,
+        IReadOnlyDictionary<int, int[]> structuralTargetsBySource)
+    {
+        if (!BpmnFlowNodeTypes.IsGateway(node.Type)
+            || !IsGatewayMergeTopology(incoming.Count, outgoing.Count))
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} may define joinCancellation only on an Exclusive, Parallel, Inclusive, or Complex gateway merge.");
+        }
+
+        var gatewayRef = node.JoinCancellation!.GatewayRef;
+        if (gatewayRef is null or <= 0)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation must define a positive gatewayRef.");
+        }
+
+        var split = definition.FlowNodes.SingleOrDefault(candidate =>
+            candidate.Id == gatewayRef.Value);
+        if (split is null)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{gatewayRef} does not reference an existing flow node.");
+        }
+
+        if (split.Id == node.Id)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef cannot reference the merge itself.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsScopeProducingGateway(split.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{split.Id} must reference a Parallel, Inclusive, or Complex gateway.");
+        }
+
+        var splitIncomingCount = incomingByNodeId[split.Id].Count;
+        var splitOutgoingCount = outgoingByNodeId[split.Id].Count;
+        if (!IsGatewaySplitTopology(splitIncomingCount, splitOutgoingCount))
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{split.Id} must reference a split with exactly one incoming and at least two outgoing sequence flows.");
+        }
+
+        var unrelatedInput = incoming.FirstOrDefault(flow =>
+            !IsStructurallyDownstreamBeforeMerge(
+                structuralTargetsBySource,
+                split.Id,
+                flow.SourceRef,
+                node.Id));
+        if (unrelatedInput is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} incoming sequence flow #{unrelatedInput.Id} is not structurally downstream of joinCancellation gateway split #{split.Id}.");
+        }
+    }
+
     private static bool IsGatewaySplitTopology(int incomingCount, int outgoingCount) =>
         incomingCount == 1 && outgoingCount >= 2;
 
@@ -1464,6 +1563,52 @@ public sealed class WorkflowDefinitionService(
             foreach (var target in targets)
             {
                 if (target == targetNodeId)
+                {
+                    return true;
+                }
+
+                if (visited.Add(target))
+                {
+                    queue.Enqueue(target);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsStructurallyDownstreamBeforeMerge(
+        IReadOnlyDictionary<int, int[]> targetsBySource,
+        int splitNodeId,
+        int candidateNodeId,
+        int mergeNodeId)
+    {
+        if (candidateNodeId == splitNodeId)
+        {
+            return true;
+        }
+
+        // Do not accept a cyclic path that reaches the candidate only after
+        // passing through the cancelling merge itself.
+        var visited = new HashSet<int> { splitNodeId, mergeNodeId };
+        var queue = new Queue<int>();
+        queue.Enqueue(splitNodeId);
+
+        while (queue.TryDequeue(out var current))
+        {
+            if (!targetsBySource.TryGetValue(current, out var targets))
+            {
+                continue;
+            }
+
+            foreach (var target in targets)
+            {
+                if (target == mergeNodeId)
+                {
+                    continue;
+                }
+
+                if (target == candidateNodeId)
                 {
                     return true;
                 }

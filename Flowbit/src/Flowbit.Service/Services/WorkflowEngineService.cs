@@ -4075,6 +4075,22 @@ public sealed partial class WorkflowEngineService(
                 continue;
             }
 
+            if (BpmnFlowNodeTypes.IsExclusiveGateway(currentNode.Type)
+                && currentNode.JoinCancellation is not null)
+            {
+                await ReleaseExclusiveCancellingJoinAsync(
+                    instance,
+                    token,
+                    currentNode,
+                    definition,
+                    actor,
+                    storedOverlay,
+                    flowInfo,
+                    queue,
+                    cancellationToken);
+                continue;
+            }
+
             if (BpmnFlowNodeTypes.IsParallelGateway(currentNode.Type)
                 || BpmnFlowNodeTypes.IsInclusiveGateway(currentNode.Type)
                 || BpmnFlowNodeTypes.IsComplexGateway(currentNode.Type))
@@ -4308,6 +4324,55 @@ public sealed partial class WorkflowEngineService(
         return execution;
     }
 
+    private async Task ReleaseExclusiveCancellingJoinAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord arrivingToken,
+        FlowNodeModel join,
+        WorkflowModel definition,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        var outgoing = OutgoingFlows(
+            instance.WorkflowDefinitionId,
+            definition,
+            join.Id).Single();
+        var scopeSnapshot = await LoadActiveGatewayScopeSnapshotAsync(
+            instance.Id,
+            cancellationToken);
+        var cancellationScope = ResolveJoinCancellationScope(
+            join,
+            [arrivingToken],
+            scopeSnapshot);
+        var continuationBranchId = await ApplyJoinCancellationAsync(
+            instance,
+            arrivingToken,
+            join,
+            cancellationScope,
+            definition,
+            actor,
+            cancellationToken);
+        await AdvanceAutomaticTokenAsync(
+            instance,
+            arrivingToken,
+            continuationBranchId,
+            join,
+            outgoing,
+            "gateway",
+            definition,
+            actor,
+            storedOverlay,
+            flowInfo,
+            queue,
+            cancellationToken);
+        await CloseInactiveGatewayScopesAsync(
+            instance.Id,
+            "join",
+            cancellationToken);
+    }
+
     private async Task TryReleaseParallelJoinAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord arrivingToken,
@@ -4353,12 +4418,26 @@ public sealed partial class WorkflowEngineService(
                 selected.Add(candidate);
             }
 
+            var cancellationScope = join.JoinCancellation is null
+                ? null
+                : ResolveJoinCancellationScope(join, selected, scopeSnapshot);
             var (survivor, commonBranchId) = await ConsumeGatewayArrivalBatchAsync(
                 instance.Id,
                 selected,
                 actor,
                 cancellationToken,
                 scopeSnapshot);
+            if (cancellationScope is not null)
+            {
+                commonBranchId = await ApplyJoinCancellationAsync(
+                    instance,
+                    survivor,
+                    join,
+                    cancellationScope,
+                    definition,
+                    actor,
+                    cancellationToken);
+            }
             activeAtJoin.RemoveAll(token => selected.Any(item => item.Id == token.Id));
 
             var joinExecution = await runtime.AddGatewayExecutionAsync(
@@ -4387,7 +4466,7 @@ public sealed partial class WorkflowEngineService(
             await runtime.SetGatewayExecutionStatusAsync(
                 joinExecution.Id,
                 GatewayExecutionRecordStatuses.Joined,
-                "join",
+                join.JoinCancellation is null ? "join" : "joinCancellation",
                 null,
                 null,
                 cancellationToken);
@@ -4445,12 +4524,26 @@ public sealed partial class WorkflowEngineService(
                 .OrderBy(id => id)
                 .Select(flowId => activeAtJoin.First(token => token.ArrivedViaFlowId == flowId))
                 .ToList();
+            var cancellationScope = join.JoinCancellation is null
+                ? null
+                : ResolveJoinCancellationScope(join, selected, scopeSnapshot);
             var (survivor, commonBranchId) = await ConsumeGatewayArrivalBatchAsync(
                 instance.Id,
                 selected,
                 actor,
                 cancellationToken,
                 scopeSnapshot);
+            if (cancellationScope is not null)
+            {
+                commonBranchId = await ApplyJoinCancellationAsync(
+                    instance,
+                    survivor,
+                    join,
+                    cancellationScope,
+                    definition,
+                    actor,
+                    cancellationToken);
+            }
             activeTokens.RemoveAll(token => selected.Any(item => item.Id == token.Id));
 
             var outgoing = OutgoingFlows(instance.WorkflowDefinitionId, definition, join.Id).Single();
@@ -4480,7 +4573,7 @@ public sealed partial class WorkflowEngineService(
             await runtime.SetGatewayExecutionStatusAsync(
                 joinExecution.Id,
                 GatewayExecutionRecordStatuses.Joined,
-                "join",
+                join.JoinCancellation is null ? "join" : "joinCancellation",
                 null,
                 null,
                 cancellationToken);
@@ -4710,6 +4803,9 @@ public sealed partial class WorkflowEngineService(
         var scopeSnapshot = await LoadActiveGatewayScopeSnapshotAsync(
             instance.Id,
             cancellationToken);
+        var cancellationScope = gateway.JoinCancellation is null
+            ? null
+            : ResolveJoinCancellationScope(gateway, selectedTokens, scopeSnapshot);
         var priorCycleParents = FindPriorComplexCycleParents(
             selectedTokens,
             gateway.Id,
@@ -4722,6 +4818,84 @@ public sealed partial class WorkflowEngineService(
             cancellationToken,
             scopeSnapshot,
             priorCycleParents);
+        if (cancellationScope is not null)
+        {
+            var activationCycle = state.Cycle;
+            commonBranchId = await ApplyJoinCancellationAsync(
+                instance,
+                survivor,
+                gateway,
+                cancellationScope,
+                definition,
+                actor,
+                cancellationToken);
+            var cancellingSelectedFlows = SelectComplexOutgoingFlows(
+                OutgoingFlows(instance.WorkflowDefinitionId, definition, gateway.Id),
+                variables,
+                conditionContext,
+                flowInfo,
+                failWhenEmpty: true,
+                gateway.Id);
+            var nextState = await runtime.SaveComplexGatewayStateAsync(
+                instance.Id,
+                gateway.Id,
+                ComplexGatewayStateRecordPhases.WaitingForStart,
+                activationCycle + 1,
+                [],
+                incoming.Select(flow => flow.Id).ToArray(),
+                [],
+                [],
+                null,
+                cancellationToken,
+                automaticActivationCount:
+                    WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
+            await EmitComplexGatewayFlowsAsync(
+                instance,
+                survivor,
+                commonBranchId,
+                gateway,
+                cancellingSelectedFlows,
+                "complexActivation",
+                "start",
+                activationCycle,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                cancellationToken,
+                completionReason: "joinCancellation");
+
+            if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+            {
+                return;
+            }
+
+            var surplus = (await runtime.ListExecutionTokensAsync(
+                    instance.Id,
+                    ExecutionTokenRecordStatuses.Active,
+                    cancellationToken))
+                .Where(token => token.NodeId == gateway.Id
+                                && token.Id != survivor.Id
+                                && token.ArrivedViaFlowId is not null)
+                .OrderBy(token => token.Id)
+                .ToList();
+            foreach (var token in surplus)
+            {
+                await runtime.RegisterTokenAtComplexGatewayAsync(
+                    token.Id,
+                    nextState.Id,
+                    nextState.Cycle,
+                    cancellationToken);
+                queue.Enqueue(token.Id);
+            }
+            await CloseInactiveGatewayScopesAsync(
+                instance.Id,
+                "complex",
+                cancellationToken);
+            return;
+        }
+
         var contributing = selectedTokens
             .Select(token => token.ArrivedViaFlowId!.Value)
             .Distinct()
@@ -5133,7 +5307,8 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? completionReason = null)
     {
         var authoredOutgoingCount = OutgoingFlows(
             instance.WorkflowDefinitionId,
@@ -5184,7 +5359,7 @@ public sealed partial class WorkflowEngineService(
         await runtime.SetGatewayExecutionStatusAsync(
             execution.Id,
             GatewayExecutionRecordStatuses.Joined,
-            phase,
+            completionReason ?? phase,
             null,
             null,
             cancellationToken);
@@ -5329,6 +5504,141 @@ public sealed partial class WorkflowEngineService(
         IReadOnlyDictionary<long, GatewayBranchRecord> Branches,
         IReadOnlyDictionary<long, GatewayExecutionRecord> Executions);
 
+    private sealed record JoinCancellationScope(
+        GatewayExecutionRecord Execution,
+        IReadOnlyList<long> ContributingBranchIds);
+
+    private static JoinCancellationScope ResolveJoinCancellationScope(
+        FlowNodeModel join,
+        IReadOnlyList<ExecutionTokenRecord> contributingTokens,
+        GatewayScopeSnapshot snapshot)
+    {
+        var gatewayRef = join.JoinCancellation?.GatewayRef
+            ?? throw new WorkflowConflictException(
+                $"Cancelling join #{join.Id} has no gatewayRef.");
+        if (contributingTokens.Count == 0)
+        {
+            throw new WorkflowConflictException(
+                $"Cancelling join #{join.Id} has no contributing execution token.");
+        }
+
+        var ancestries = contributingTokens
+            .Select(token => BuildGatewayAncestry(
+                token.GatewayBranchId,
+                snapshot.Branches,
+                snapshot.Executions))
+            .ToList();
+        var commonExecutionIds = ancestries
+            .Select(ancestry => ancestry
+                .Where(branch =>
+                    snapshot.Executions.TryGetValue(branch.ExecutionId, out var execution)
+                    && execution.Direction == GatewayExecutionRecordDirections.Split
+                    && execution.GatewayNodeId == gatewayRef)
+                .Select(branch => branch.ExecutionId)
+                .ToHashSet())
+            .Aggregate((common, current) =>
+            {
+                common.IntersectWith(current);
+                return common;
+            });
+        var selectedBranch = ancestries[0]
+            .FirstOrDefault(branch => commonExecutionIds.Contains(branch.ExecutionId));
+        if (selectedBranch is null
+            || !snapshot.Executions.TryGetValue(selectedBranch.ExecutionId, out var execution))
+        {
+            throw new WorkflowConflictException(
+                $"Cancelling join #{join.Id} could not resolve an active activation of gateway #{gatewayRef} shared by every contributing token.");
+        }
+
+        var contributingBranchIds = ancestries
+            .Select(ancestry => ancestry.First(branch => branch.ExecutionId == execution.Id).Id)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        return new JoinCancellationScope(execution, contributingBranchIds);
+    }
+
+    private async Task<long?> ApplyJoinCancellationAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord survivor,
+        FlowNodeModel join,
+        JoinCancellationScope scope,
+        WorkflowModel definition,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        var activeBeforeCancellation = await runtime.ListExecutionTokensAsync(
+            instance.Id,
+            ExecutionTokenRecordStatuses.Active,
+            cancellationToken);
+        var snapshotBeforeCancellation = await LoadActiveGatewayScopeSnapshotAsync(
+            instance.Id,
+            cancellationToken);
+        var hasRemainingDescendant = activeBeforeCancellation.Any(token =>
+            token.Id != survivor.Id
+            && BuildGatewayAncestry(
+                    token.GatewayBranchId,
+                    snapshotBeforeCancellation.Branches,
+                    snapshotBeforeCancellation.Executions)
+                .Any(branch => branch.ExecutionId == scope.Execution.Id));
+        var contributingBranchIds = scope.ContributingBranchIds.ToHashSet();
+        var hasRemainingBranch = snapshotBeforeCancellation.Branches.Values.Any(branch =>
+            branch.ExecutionId == scope.Execution.Id
+            && !contributingBranchIds.Contains(branch.Id));
+        var hasNestedExecution = snapshotBeforeCancellation.Executions.Values.Any(execution =>
+            execution.Id != scope.Execution.Id
+            && BuildGatewayAncestry(
+                    execution.ParentBranchId,
+                    snapshotBeforeCancellation.Branches,
+                    snapshotBeforeCancellation.Executions)
+                .Any(branch => branch.ExecutionId == scope.Execution.Id));
+        var hadRemainingScopeWork = hasRemainingDescendant
+                                    || hasRemainingBranch
+                                    || hasNestedExecution;
+
+        var interrupted = await InterruptGatewayScopeAsync(
+            instance,
+            survivor,
+            join,
+            definition,
+            actor,
+            cancellationToken,
+            gatewayRefOverride: scope.Execution.GatewayNodeId,
+            expectedExecutionId: scope.Execution.Id,
+            completionReason: "interruptingJoin",
+            // The caller's outgoing token update promotes the survivor to the
+            // referenced split's parent. Closing scopes before that update can
+            // hide its outer ancestry when it is the only remaining token.
+            closeInactiveScopes: false);
+        if (!interrupted.Interrupted)
+        {
+            throw new WorkflowConflictException(
+                $"Cancelling join #{join.Id} could not resolve active gateway activation #{scope.Execution.Id}.");
+        }
+
+        await runtime.SetGatewayBranchesStatusAsync(
+            scope.ContributingBranchIds,
+            GatewayBranchRecordStatuses.Merged,
+            cancellationToken);
+
+        if (!hadRemainingScopeWork)
+        {
+            // InterruptGatewayScopeAsync is also responsible for closing nested
+            // Complex state safely. When no sibling work actually survived until
+            // this join, retain that cleanup but report the referenced split as a
+            // normal join rather than an interruption.
+            await runtime.SetGatewayExecutionStatusAsync(
+                scope.Execution.Id,
+                GatewayExecutionRecordStatuses.Joined,
+                "join",
+                null,
+                null,
+                cancellationToken);
+        }
+
+        return interrupted.ParentBranchId;
+    }
+
     private static IReadOnlyCollection<long?> FindPriorComplexCycleParents(
         IReadOnlyCollection<ExecutionTokenRecord> tokens,
         int gatewayNodeId,
@@ -5361,8 +5671,13 @@ public sealed partial class WorkflowEngineService(
         FlowNodeModel interrupt,
         WorkflowModel definition,
         ActorContext actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? gatewayRefOverride = null,
+        long? expectedExecutionId = null,
+        string completionReason = "interrupt",
+        bool closeInactiveScopes = true)
     {
+        var gatewayRef = gatewayRefOverride ?? interrupt.GatewayRef;
         var executions = await runtime.ListGatewayExecutionsAsync(
             instance.Id, GatewayExecutionRecordStatuses.Active, cancellationToken);
         var branches = await runtime.ListGatewayBranchesForInstanceAsync(
@@ -5376,7 +5691,8 @@ public sealed partial class WorkflowEngineService(
                 execution is not null
                 && execution.Status == GatewayExecutionRecordStatuses.Active
                 && execution.Direction == GatewayExecutionRecordDirections.Split
-                && execution.GatewayNodeId == interrupt.GatewayRef);
+                && execution.GatewayNodeId == gatewayRef
+                && (expectedExecutionId is null || execution.Id == expectedExecutionId));
         if (selected is null)
         {
             return (false, token.GatewayBranchId);
@@ -5566,7 +5882,7 @@ public sealed partial class WorkflowEngineService(
         await runtime.SetGatewayExecutionStatusAsync(
             selected.Id,
             GatewayExecutionRecordStatuses.Interrupted,
-            "interrupt",
+            completionReason,
             interrupt.Id,
             token.Id,
             cancellationToken);
@@ -5605,10 +5921,13 @@ public sealed partial class WorkflowEngineService(
             instance,
             definition,
             cancellationToken);
-        await CloseInactiveGatewayScopesAsync(
-            instance.Id,
-            ExecutionTokenTerminationReasons.GatewayScopeCancelled,
-            cancellationToken);
+        if (closeInactiveScopes)
+        {
+            await CloseInactiveGatewayScopesAsync(
+                instance.Id,
+                ExecutionTokenTerminationReasons.GatewayScopeCancelled,
+                cancellationToken);
+        }
         return (true, selected.ParentBranchId);
     }
 

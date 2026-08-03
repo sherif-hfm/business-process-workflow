@@ -2,8 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
+using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -51,6 +53,362 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
             entry.FromNodeId == 5
             && entry.ToNodeId == 6
             && entry.Note == "gateway"));
+    }
+
+    [Fact]
+    public async Task ExclusiveMerge_WithJoinCancellation_FirstArrivalWins()
+    {
+        var workflowId = await CreateWorkflowAsync(
+            CreateExclusiveMergeWorkflow(cancelRemaining: true));
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var winner = initialTasks.Single(task => task.NodeId == 3);
+        var loser = initialTasks.Single(task => task.NodeId == 4);
+
+        var firstArrival = await TakeTaskAsync(winner, 301);
+
+        Assert.Equal("running", firstArrival.InstanceStatus);
+        var downstream = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(6, downstream.NodeId);
+        using var staleResponse = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{loser.Id}/flows/401",
+            new TakeFlowRequest(null),
+            "gateway-tester");
+        Assert.Equal(HttpStatusCode.Conflict, staleResponse.StatusCode);
+
+        var detail = await GetInstanceAsync(started.Id);
+        var interruptedSplit = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 2);
+        Assert.Equal(GatewayExecutionStatuses.Interrupted, interruptedSplit.Status);
+        Assert.Equal("interruptingJoin", interruptedSplit.CompletionReason);
+        Assert.Equal(5, interruptedSplit.InterruptingNodeId);
+        Assert.DoesNotContain(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 5);
+
+        var completed = await TakeTaskAsync(downstream, 601);
+        Assert.Equal("completed", completed.InstanceStatus);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ParallelGateway)]
+    [InlineData(BpmnFlowNodeTypes.InclusiveGateway)]
+    public async Task SynchronizingMerge_WithJoinCancellation_CancelsBypassBranch(
+        string mergeType)
+    {
+        var workflowId = await CreateWorkflowAsync(
+            CreateSynchronizingCancellingJoinWorkflow(mergeType));
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var first = initialTasks.Single(task => task.NodeId == 3);
+        var second = initialTasks.Single(task => task.NodeId == 4);
+        var bypass = initialTasks.Single(task => task.NodeId == 5);
+
+        await TakeTaskAsync(first, 301);
+        Assert.Equal(
+            [4, 5],
+            (await ListActiveTasksAsync(started.Id)).Select(task => task.NodeId).OrderBy(id => id));
+        await TakeTaskAsync(second, 401);
+
+        var downstream = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(7, downstream.NodeId);
+        using var staleResponse = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{bypass.Id}/flows/501",
+            new TakeFlowRequest(null),
+            "gateway-tester");
+        Assert.Equal(HttpStatusCode.Conflict, staleResponse.StatusCode);
+
+        var detail = await GetInstanceAsync(started.Id);
+        var split = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 2);
+        Assert.Equal(GatewayExecutionStatuses.Interrupted, split.Status);
+        Assert.Equal("interruptingJoin", split.CompletionReason);
+        var merge = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6);
+        Assert.Equal(GatewayExecutionStatuses.Joined, merge.Status);
+        Assert.Equal("joinCancellation", merge.CompletionReason);
+
+        var completed = await TakeTaskAsync(downstream, 701);
+        Assert.Equal("completed", completed.InstanceStatus);
+    }
+
+    [Fact]
+    public async Task ComplexMerge_WithJoinCancellation_ClosesCycleAndCancelsThirdReviewer()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateComplexCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var first = initialTasks.Single(task => task.NodeId == 3);
+        var second = initialTasks.Single(task => task.NodeId == 4);
+        var third = initialTasks.Single(task => task.NodeId == 5);
+
+        await TakeTaskAsync(first, 301);
+        await TakeTaskAsync(second, 401);
+
+        var coordinator = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(7, coordinator.NodeId);
+        using var staleResponse = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{third.Id}/flows/501",
+            new TakeFlowRequest(null),
+            "gateway-tester");
+        Assert.Equal(HttpStatusCode.Conflict, staleResponse.StatusCode);
+
+        var detail = await GetInstanceAsync(started.Id);
+        var state = Assert.Single(detail.ComplexGatewayStates);
+        Assert.Equal(ComplexGatewayStatePhases.WaitingForStart, state.Phase);
+        Assert.Equal(1, state.Cycle);
+        Assert.DoesNotContain(detail.History, entry => entry.Note == "complexReset");
+        Assert.DoesNotContain(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6 && execution.Phase == "reset");
+        var activation = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6 && execution.Phase == "start");
+        Assert.Equal("joinCancellation", activation.CompletionReason);
+
+        var completed = await TakeTaskAsync(coordinator, 701);
+        Assert.Equal("completed", completed.InstanceStatus);
+    }
+
+    [Fact]
+    public async Task ComplexMerge_WithJoinCancellation_ConcurrentQuorumCreatesOneOutput()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateComplexCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var first = initialTasks.Single(task => task.NodeId == 3);
+        var second = initialTasks.Single(task => task.NodeId == 4);
+
+        var responses = await Task.WhenAll(
+            SendAsync(
+                HttpMethod.Post,
+                $"/api/user-tasks/{first.Id}/flows/301",
+                new TakeFlowRequest(null),
+                "first-reviewer"),
+            SendAsync(
+                HttpMethod.Post,
+                $"/api/user-tasks/{second.Id}/flows/401",
+                new TakeFlowRequest(null),
+                "second-reviewer"));
+        try
+        {
+            Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+        }
+        finally
+        {
+            foreach (var response in responses)
+            {
+                response.Dispose();
+            }
+        }
+
+        var coordinator = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(7, coordinator.NodeId);
+        var detail = await GetInstanceAsync(started.Id);
+        Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6
+            && execution.Phase == "start"
+            && execution.CompletionReason == "joinCancellation");
+        Assert.DoesNotContain(detail.History, entry => entry.Note == "complexReset");
+    }
+
+    [Fact]
+    public async Task CancellingJoin_MissingActiveScopeRollsBackArrival()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateMissingJoinScopeWorkflow());
+        var started = await StartAsync(workflowId);
+        var task = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(3, task.NodeId);
+
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{task.Id}/flows/301",
+            new TakeFlowRequest(null),
+            "gateway-tester");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var restored = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(task.Id, restored.Id);
+        var detail = await GetInstanceAsync(started.Id);
+        Assert.DoesNotContain(detail.History, entry => entry.FromNodeId == 6);
+    }
+
+    [Fact]
+    public async Task CancellingJoin_DownstreamFailureRollsBackScopeCancellation()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateFailingCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var first = initialTasks.Single(task => task.NodeId == 3);
+        var second = initialTasks.Single(task => task.NodeId == 4);
+
+        await TakeTaskAsync(first, 301);
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{second.Id}/flows/401",
+            new TakeFlowRequest(null),
+            "gateway-tester");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            [4, 5],
+            (await ListActiveTasksAsync(started.Id))
+                .Select(task => task.NodeId)
+                .OrderBy(id => id));
+        var detail = await GetInstanceAsync(started.Id);
+        var split = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 2);
+        Assert.Equal(GatewayExecutionStatuses.Active, split.Status);
+        Assert.DoesNotContain(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6);
+    }
+
+    [Fact]
+    public async Task CancellingJoin_PromotesSurvivorBeforeClosingOuterScope()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateNestedCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var first = initialTasks.Single(task => task.NodeId == 4);
+        var second = initialTasks.Single(task => task.NodeId == 5);
+
+        await TakeTaskAsync(first, 401);
+        await TakeTaskAsync(second, 501);
+
+        var downstream = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(8, downstream.NodeId);
+        var detail = await GetInstanceAsync(started.Id);
+        var outer = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 2);
+        Assert.Equal(GatewayExecutionStatuses.Active, outer.Status);
+        var inner = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 3);
+        Assert.Equal(GatewayExecutionStatuses.Interrupted, inner.Status);
+        Assert.Equal("interruptingJoin", inner.CompletionReason);
+
+        var completed = await TakeTaskAsync(downstream, 801);
+        Assert.Equal("completed", completed.InstanceStatus);
+    }
+
+    [Fact]
+    public async Task CancellingJoin_WithNoUnfinishedScopeWork_ClosesSplitNormally()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateFullyJoinedCancellingWorkflow());
+        var started = await StartAsync(workflowId);
+        var tasks = await ListActiveTasksAsync(started.Id);
+
+        await TakeTaskAsync(tasks.Single(task => task.NodeId == 3), 301);
+        await TakeTaskAsync(tasks.Single(task => task.NodeId == 4), 401);
+        await TakeTaskAsync(tasks.Single(task => task.NodeId == 5), 501);
+
+        var downstream = Assert.Single(await ListActiveTasksAsync(started.Id));
+        Assert.Equal(7, downstream.NodeId);
+        var detail = await GetInstanceAsync(started.Id);
+        var split = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 2);
+        Assert.Equal(GatewayExecutionStatuses.Joined, split.Status);
+        Assert.Equal("join", split.CompletionReason);
+        var merge = Assert.Single(detail.GatewayExecutions, execution =>
+            execution.GatewayNodeId == 6);
+        Assert.Equal("joinCancellation", merge.CompletionReason);
+    }
+
+    [Fact]
+    public async Task CancellingJoin_CancelsDurableWorkInsideReferencedScope()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateDurableCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var tasks = await ListActiveTasksAsync(started.Id);
+        long durableJobId;
+        await using (var queued = fixture.CreateDbContext())
+        {
+            var job = await queued.WorkflowJobs.SingleAsync(candidate =>
+                candidate.InstanceId == started.Id && candidate.NodeId == 5);
+            Assert.Equal(WorkflowJobStatuses.Queued, job.Status);
+            durableJobId = job.Id;
+        }
+
+        await TakeTaskAsync(tasks.Single(task => task.NodeId == 3), 301);
+        await TakeTaskAsync(tasks.Single(task => task.NodeId == 4), 401);
+
+        await using var cancelled = fixture.CreateDbContext();
+        Assert.Equal(
+            WorkflowJobStatuses.Cancelled,
+            await cancelled.WorkflowJobs
+                .Where(job => job.Id == durableJobId)
+                .Select(job => job.Status)
+                .SingleAsync());
+        var detail = await GetInstanceAsync(started.Id);
+        Assert.Contains(detail.ExecutionPositions, position =>
+            position.NodeId == 5
+            && position.TokenStatus == ExecutionTokenStatuses.Cancelled
+            && position.TerminationReason == "gatewayScopeCancelled");
+    }
+
+    [Fact]
+    public async Task ComplexCancellingJoin_ReRegistersUnrelatedWaitingArrivalInNextCycle()
+    {
+        var workflowId = await CreateWorkflowAsync(
+            CreateComplexMultiActivationCancellingJoinWorkflow());
+        var started = await StartAsync(workflowId);
+        var initialTasks = await ListActiveTasksAsync(started.Id);
+        var firstInputTasks = initialTasks
+            .Where(task => task.NodeId == 3)
+            .OrderBy(task => task.TokenId)
+            .ToArray();
+        var secondInputTasks = initialTasks
+            .Where(task => task.NodeId == 4)
+            .OrderBy(task => task.TokenId)
+            .ToArray();
+        Assert.Equal(2, firstInputTasks.Length);
+        Assert.Equal(2, secondInputTasks.Length);
+
+        // Let the second split activation arrive first on one input. The first
+        // activation still owns the lower-id token selected for that input, so
+        // its two arrivals fire cycle 0 while this token remains as unrelated
+        // surplus at the Complex merge.
+        await TakeTaskAsync(firstInputTasks[1], 301);
+        await TakeTaskAsync(firstInputTasks[0], 301);
+        await TakeTaskAsync(secondInputTasks[0], 401);
+
+        var afterFirstCycle = await ListActiveTasksAsync(started.Id);
+        Assert.Equal(
+            [4, 7],
+            afterFirstCycle.Select(task => task.NodeId).OrderBy(id => id));
+        await using (var cycleOne = fixture.CreateDbContext())
+        {
+            var state = await cycleOne.ComplexGatewayStates.SingleAsync(candidate =>
+                candidate.InstanceId == started.Id && candidate.GatewayNodeId == 6);
+            Assert.Equal(ComplexGatewayStatePhases.WaitingForStart, state.Phase);
+            Assert.Equal(1, state.Cycle);
+            Assert.Empty(state.ContributingFlowIds);
+            Assert.Empty(state.ActivationDrainStateIds);
+            Assert.Empty(state.DrainingTokenIds);
+            Assert.Null(state.ActiveExecutionId);
+            Assert.Equal(0, state.AutomaticActivationCount);
+            var waiting = await cycleOne.ExecutionTokens.SingleAsync(token =>
+                token.InstanceId == started.Id
+                && token.Status == ExecutionTokenStatuses.Active
+                && token.NodeId == 6);
+            Assert.Equal(state.Id, waiting.ComplexGatewayStateId);
+            Assert.Equal(1, waiting.ComplexGatewayCycle);
+            Assert.DoesNotContain(state.Id, waiting.AutomaticActivationStateIds);
+        }
+
+        await TakeTaskAsync(secondInputTasks[1], 401);
+
+        var outputs = await ListActiveTasksAsync(started.Id);
+        Assert.Equal(2, outputs.Count);
+        Assert.All(outputs, task => Assert.Equal(7, task.NodeId));
+        var detail = await GetInstanceAsync(started.Id);
+        var stateAfterSecondCycle = Assert.Single(detail.ComplexGatewayStates);
+        Assert.Equal(ComplexGatewayStatePhases.WaitingForStart, stateAfterSecondCycle.Phase);
+        Assert.Equal(2, stateAfterSecondCycle.Cycle);
+        Assert.Equal(2, detail.GatewayExecutions.Count(execution =>
+            execution.GatewayNodeId == 6
+            && execution.Phase == "start"
+            && execution.CompletionReason == "joinCancellation"));
+        Assert.DoesNotContain(detail.History, entry => entry.Note == "complexReset");
     }
 
     [Fact]
@@ -621,9 +979,14 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
         await response.Content.ReadFromJsonAsync<T>(JsonOptions)
         ?? throw new InvalidOperationException("Response body was empty.");
 
-    private static WorkflowModel CreateExclusiveMergeWorkflow()
+    private static WorkflowModel CreateExclusiveMergeWorkflow(bool cancelRemaining = false)
     {
         var suffix = Guid.NewGuid().ToString("N");
+        var merge = Node(5, "Exclusive merge", BpmnFlowNodeTypes.ExclusiveGateway);
+        if (cancelRemaining)
+        {
+            merge.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        }
         return new WorkflowModel
         {
             Id = "exclusive-merge-api-" + suffix,
@@ -635,7 +998,7 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
                 Node(2, "Parallel split", BpmnFlowNodeTypes.ParallelGateway),
                 Node(3, "First branch", BpmnFlowNodeTypes.UserTask),
                 Node(4, "Second branch", BpmnFlowNodeTypes.UserTask),
-                Node(5, "Exclusive merge", BpmnFlowNodeTypes.ExclusiveGateway),
+                merge,
                 Node(6, "Downstream work", BpmnFlowNodeTypes.UserTask),
                 Node(7, "End", BpmnFlowNodeTypes.EndEvent)
             ],
@@ -648,6 +1011,273 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
                 Flow(401, 4, 5),
                 Flow(501, 5, 6),
                 Flow(601, 6, 7)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateSynchronizingCancellingJoinWorkflow(string mergeType)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var merge = Node(6, "Cancelling join", mergeType);
+        merge.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        return new WorkflowModel
+        {
+            Id = "synchronizing-cancelling-join-api-" + suffix,
+            Name = "Synchronizing cancelling join API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(2, "Parallel split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "First contributor", BpmnFlowNodeTypes.UserTask),
+                Node(4, "Second contributor", BpmnFlowNodeTypes.UserTask),
+                Node(5, "Bypass work", BpmnFlowNodeTypes.UserTask),
+                merge,
+                Node(7, "Downstream work", BpmnFlowNodeTypes.UserTask),
+                Node(8, "Joined end", BpmnFlowNodeTypes.EndEvent),
+                Node(9, "Bypass end", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 2),
+                Flow(201, 2, 3),
+                Flow(202, 2, 4),
+                Flow(203, 2, 5),
+                Flow(301, 3, 6),
+                Flow(401, 4, 6),
+                Flow(501, 5, 9),
+                Flow(601, 6, 7),
+                Flow(701, 7, 8)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateComplexCancellingJoinWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "complex-cancelling-join-api-" + suffix,
+            Name = "Complex cancelling join API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(2, "Parallel split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "First reviewer", BpmnFlowNodeTypes.UserTask),
+                Node(4, "Second reviewer", BpmnFlowNodeTypes.UserTask),
+                Node(5, "Third reviewer", BpmnFlowNodeTypes.UserTask),
+                new FlowNodeModel
+                {
+                    Id = 6,
+                    Name = "Two-of-three cancelling join",
+                    Type = BpmnFlowNodeTypes.ComplexGateway,
+                    ActivationCondition = "TotalIncomingCount() >= 2",
+                    JoinCancellation = new JoinCancellationModel { GatewayRef = 2 }
+                },
+                Node(7, "Coordinator", BpmnFlowNodeTypes.UserTask),
+                Node(8, "End", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 2),
+                Flow(201, 2, 3),
+                Flow(202, 2, 4),
+                Flow(203, 2, 5),
+                Flow(301, 3, 6),
+                Flow(401, 4, 6),
+                Flow(501, 5, 6),
+                Flow(601, 6, 7, condition: "true"),
+                Flow(701, 7, 8)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateMissingJoinScopeWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var join = Node(6, "Cancelling merge", BpmnFlowNodeTypes.ExclusiveGateway);
+        join.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        return new WorkflowModel
+        {
+            Id = "missing-join-scope-api-" + suffix,
+            Name = "Missing join scope API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(10, "Choose route", BpmnFlowNodeTypes.InclusiveGateway),
+                Node(2, "Referenced split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "Direct work", BpmnFlowNodeTypes.UserTask),
+                Node(4, "Split-only work", BpmnFlowNodeTypes.UserTask),
+                join,
+                Node(8, "Joined end", BpmnFlowNodeTypes.EndEvent),
+                Node(9, "Fallback end", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 10),
+                Flow(1001, 10, 3, condition: "true"),
+                Flow(1002, 10, 2, condition: "false"),
+                Flow(1003, 10, 9, isDefault: true),
+                Flow(201, 2, 3),
+                Flow(202, 2, 4),
+                Flow(301, 3, 6),
+                Flow(401, 4, 6),
+                Flow(601, 6, 8)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateFailingCancellingJoinWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var join = Node(6, "Cancelling join", BpmnFlowNodeTypes.ParallelGateway);
+        join.JoinCancellation = new JoinCancellationModel { GatewayRef = 2 };
+        return new WorkflowModel
+        {
+            Id = "failing-cancelling-join-api-" + suffix,
+            Name = "Failing cancelling join API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(2, "Parallel split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "First contributor", BpmnFlowNodeTypes.UserTask),
+                Node(4, "Second contributor", BpmnFlowNodeTypes.UserTask),
+                Node(5, "Work that must survive rollback", BpmnFlowNodeTypes.UserTask),
+                join,
+                new FlowNodeModel
+                {
+                    Id = 7,
+                    Name = "Fail downstream",
+                    Type = BpmnFlowNodeTypes.ScriptTask,
+                    ScriptFormat = ScriptFormats.JavaScript,
+                    Script = "throw new Error('join routing failure');",
+                    Assignments = []
+                },
+                Node(8, "Joined end", BpmnFlowNodeTypes.EndEvent),
+                Node(9, "Sibling end", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 2),
+                Flow(201, 2, 3),
+                Flow(202, 2, 4),
+                Flow(203, 2, 5),
+                Flow(301, 3, 6),
+                Flow(401, 4, 6),
+                Flow(501, 5, 9),
+                Flow(601, 6, 7),
+                Flow(701, 7, 8)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateNestedCancellingJoinWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var join = Node(7, "Inner cancelling join", BpmnFlowNodeTypes.ParallelGateway);
+        join.JoinCancellation = new JoinCancellationModel { GatewayRef = 3 };
+        return new WorkflowModel
+        {
+            Id = "nested-cancelling-join-api-" + suffix,
+            Name = "Nested cancelling join API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(2, "Outer split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "Inner split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(4, "First contributor", BpmnFlowNodeTypes.UserTask),
+                Node(5, "Second contributor", BpmnFlowNodeTypes.UserTask),
+                Node(6, "Inner unfinished work", BpmnFlowNodeTypes.UserTask),
+                join,
+                Node(8, "After inner join", BpmnFlowNodeTypes.UserTask),
+                Node(9, "Already completed outer branch", BpmnFlowNodeTypes.Task),
+                Node(10, "End", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 2),
+                Flow(201, 2, 3),
+                Flow(202, 2, 9),
+                Flow(301, 3, 4),
+                Flow(302, 3, 5),
+                Flow(303, 3, 6),
+                Flow(401, 4, 7),
+                Flow(501, 5, 7),
+                Flow(601, 6, 10),
+                Flow(701, 7, 8),
+                Flow(801, 8, 10),
+                Flow(901, 9, 10)
+            ]
+        };
+    }
+
+    private static WorkflowModel CreateFullyJoinedCancellingWorkflow()
+    {
+        var model = CreateSynchronizingCancellingJoinWorkflow(
+            BpmnFlowNodeTypes.ParallelGateway);
+        model.FlowNodes.RemoveAll(node => node.Id == 9);
+        model.SequenceFlows.Single(flow => flow.Id == 501).TargetRef = 6;
+        return model;
+    }
+
+    private static WorkflowModel CreateDurableCancellingJoinWorkflow()
+    {
+        var model = CreateSynchronizingCancellingJoinWorkflow(
+            BpmnFlowNodeTypes.ParallelGateway);
+        var durable = model.FlowNodes.Single(node => node.Id == 5);
+        durable.Type = BpmnFlowNodeTypes.Task;
+        durable.AsyncBefore = true;
+        return model;
+    }
+
+    private static WorkflowModel CreateComplexMultiActivationCancellingJoinWorkflow()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = "complex-multi-activation-cancelling-join-api-" + suffix,
+            Name = "Complex multi-activation cancelling join API " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                Node(1, "Start", BpmnFlowNodeTypes.StartEvent),
+                Node(10, "Create two activations", BpmnFlowNodeTypes.ParallelGateway),
+                Node(11, "First activation route", BpmnFlowNodeTypes.Task),
+                Node(12, "Second activation route", BpmnFlowNodeTypes.Task),
+                Node(13, "Pass each activation", BpmnFlowNodeTypes.ExclusiveGateway),
+                Node(2, "Referenced split", BpmnFlowNodeTypes.ParallelGateway),
+                Node(3, "First input", BpmnFlowNodeTypes.UserTask),
+                Node(4, "Second input", BpmnFlowNodeTypes.UserTask),
+                new FlowNodeModel
+                {
+                    Id = 6,
+                    Name = "Cancelling Complex merge",
+                    Type = BpmnFlowNodeTypes.ComplexGateway,
+                    ActivationCondition =
+                        "IncomingCount(301) >= 1 and IncomingCount(401) >= 1",
+                    JoinCancellation = new JoinCancellationModel { GatewayRef = 2 }
+                },
+                Node(7, "Cycle output", BpmnFlowNodeTypes.UserTask),
+                Node(8, "End", BpmnFlowNodeTypes.EndEvent)
+            ],
+            SequenceFlows =
+            [
+                Flow(101, 1, 10),
+                Flow(1001, 10, 11),
+                Flow(1002, 10, 12),
+                Flow(1101, 11, 13),
+                Flow(1201, 12, 13),
+                Flow(1301, 13, 2),
+                Flow(201, 2, 3),
+                Flow(202, 2, 4),
+                Flow(301, 3, 6),
+                Flow(401, 4, 6),
+                Flow(601, 6, 7, condition: "true"),
+                Flow(701, 7, 8)
             ]
         };
     }

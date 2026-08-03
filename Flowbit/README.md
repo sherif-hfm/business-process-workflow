@@ -89,6 +89,39 @@ merge.
   `TotalIncomingCount()`, and outgoing conditions can use
   `[gateway.waitingForStart]` to distinguish start from reset routing.
 
+Any valid Exclusive, Parallel, Inclusive, or Complex merge may opt into a
+scope-aware cancelling join:
+
+```json
+"joinCancellation": {
+  "gatewayRef": 2
+}
+```
+
+Omitting `joinCancellation` preserves the merge's existing behavior. The policy
+is stored only in the versioned workflow-definition JSONB, so it requires no
+database schema migration.
+
+`gatewayRef` must identify a structurally upstream Parallel, Inclusive, or
+Complex split whose activation contains every merge input. This is a Flowbit
+extension: it does not change when the merge is enabled. After the merge fires,
+Flowbit retains one contributing token, promotes it out of the referenced
+activation, and atomically cancels the activation's other unfinished descendant
+work before following the merge's outgoing flow. Cancellation is limited to
+that activation, including nested branches, user and multi-instance tasks,
+message/timer waits, and durable jobs; unrelated instance work remains active.
+
+The gateway-specific firing rules still apply. An Exclusive merge fires on its
+first arrival, making the option an explicit first-arrival-wins policy. Parallel
+merges still wait for every static input, Inclusive merges still use the
+unpaired enabling rule, and Complex merges still wait for their activation
+condition; a cancelling Complex merge closes that activation without running a
+reset-phase output. If the contributing tokens do not share an active referenced
+scope at firing time, the transition returns `409 Conflict` and rolls back
+rather than routing or partially cancelling work. Enabling, disabling, or
+changing `gatewayRef` is a gateway-contract change, so a running instance cannot
+switch to that workflow version while active gateway/branch state remains.
+
 Every Parallel, Inclusive, or Complex firing is recorded in
 `gateway_executions`; diverging firings create generic branch lineage even when
 only one flow is selected. `scopedInterruptEvent` is a Flowbit extension whose
@@ -97,6 +130,12 @@ split. It interrupts the nearest active matching activation in the triggering
 token's ancestry, cancels sibling and nested work atomically, and follows its
 single authored continuation. A stale event records `scopedInterruptSkipped`
 and continues without cancellation.
+
+Parallel, Inclusive, and Complex cancelling merges record `joinCancellation` on
+their joined merge execution. Exclusive merges retain the normal `gateway`
+history record and create no merge execution. In every case, the referenced
+split execution records `interruptingJoin` when unfinished work was cancelled;
+its interrupting token and merge node identify the winning route.
 
 The fan-out limit is configured by `Workflow.Gateway.MaxActiveTokens` and
 defaults to 1000. Adjacency and reachability plans are cached per immutable

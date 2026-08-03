@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Jint;
 using Flowbit.Shared.Models;
@@ -1242,7 +1243,7 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
-    public void Loader_RoundTripsComplexAndScopedInterruptFieldsWithoutLegacyMetadata()
+    public void Loader_RoundTripsComplexScopedInterruptAndJoinCancellationFields()
     {
         var html = ReadEditorSource();
         var match = Regex.Match(
@@ -1305,14 +1306,16 @@ public sealed class EditorValidatorTests
                   "name": "Activate",
                   "type": "complexGateway",
                   "activationCondition": "IncomingCount(101) > 0",
-                  "gatewayRef": 999
+                  "gatewayRef": 999,
+                  "joinCancellation": { "gatewayRef": 7 }
                 },
                 {
                   "id": 3,
                   "name": "Interrupt",
                   "type": "scopedInterruptEvent",
                   "gatewayRef": 2,
-                  "activationCondition": "invalid"
+                  "activationCondition": "invalid",
+                  "joinCancellation": "malformed-import"
                 }
               ],
               "sequenceFlows": [],
@@ -1327,10 +1330,117 @@ public sealed class EditorValidatorTests
         var complex = loaded.RootElement[1];
         Assert.Equal("IncomingCount(101) > 0", complex.GetProperty("activationCondition").GetString());
         Assert.False(complex.TryGetProperty("gatewayRef", out _));
+        Assert.Equal(7, complex.GetProperty("joinCancellation").GetProperty("gatewayRef").GetInt32());
         var interrupt = loaded.RootElement[2];
         Assert.Equal(2, interrupt.GetProperty("gatewayRef").GetInt32());
         Assert.False(interrupt.TryGetProperty("activationCondition", out _));
+        Assert.Equal("malformed-import", interrupt.GetProperty("joinCancellation").GetString());
         Assert.DoesNotContain("parallelGatewayRef", loaded.RootElement.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validator_ValidatesScopeAwareJoinCancellation()
+    {
+        const string validJson = """
+            {
+              "id": "join-cancellation",
+              "name": "Join cancellation",
+              "initialEventId": 1,
+              "variables": [],
+              "lanes": [],
+              "flowNodes": [
+                { "id": 1, "name": "Start", "type": "startEvent" },
+                { "id": 2, "name": "Fork", "type": "parallelGateway" },
+                { "id": 3, "name": "Review A", "type": "userTask" },
+                { "id": 4, "name": "Review B", "type": "userTask" },
+                {
+                  "id": 5,
+                  "name": "First wins",
+                  "type": "exclusiveGateway",
+                  "joinCancellation": { "gatewayRef": 2 }
+                },
+                { "id": 6, "name": "End", "type": "endEvent" }
+              ],
+              "sequenceFlows": [
+                { "id": 101, "sourceRef": 1, "targetRef": 2 },
+                { "id": 201, "sourceRef": 2, "targetRef": 3 },
+                { "id": 202, "sourceRef": 2, "targetRef": 4 },
+                { "id": 301, "sourceRef": 3, "targetRef": 5 },
+                { "id": 401, "sourceRef": 4, "targetRef": 5 },
+                { "id": 501, "sourceRef": 5, "targetRef": 6 }
+              ],
+              "cancelRoles": [],
+              "unclaimRoles": [],
+              "taskAssignmentRoles": []
+            }
+            """;
+
+        Assert.Empty(ValidateJson(validJson));
+
+        var splitPolicy = validJson.Replace(
+            "\"id\": 2, \"name\": \"Fork\", \"type\": \"parallelGateway\"",
+            "\"id\": 2, \"name\": \"Fork\", \"type\": \"parallelGateway\", \"joinCancellation\": { \"gatewayRef\": 2 }");
+        Assert.Contains(ValidateJson(splitPolicy), error =>
+            error.Contains("only on a merge", StringComparison.OrdinalIgnoreCase));
+
+        var nonGatewayPolicy = JsonNode.Parse(validJson)!.AsObject();
+        var nonGatewayNodes = nonGatewayPolicy["flowNodes"]!.AsArray();
+        nonGatewayNodes[4]!.AsObject().Remove("joinCancellation");
+        nonGatewayNodes[2]!.AsObject()["joinCancellation"] = new JsonObject
+        {
+            ["gatewayRef"] = 2
+        };
+        Assert.Contains(ValidateJson(nonGatewayPolicy.ToJsonString()), error =>
+            error.Contains("only when its type is a gateway merge", StringComparison.OrdinalIgnoreCase));
+
+        var missingRef = validJson.Replace("\"gatewayRef\": 2", "\"gatewayRef\": 0");
+        Assert.Contains(ValidateJson(missingRef), error =>
+            error.Contains("positive integer", StringComparison.OrdinalIgnoreCase));
+
+        var wrongRefType = validJson.Replace("\"gatewayRef\": 2", "\"gatewayRef\": 3");
+        Assert.Contains(ValidateJson(wrongRefType), error =>
+            error.Contains("Parallel, Inclusive, or Complex", StringComparison.OrdinalIgnoreCase));
+
+        var malformed = validJson.Replace(
+            "\"joinCancellation\": { \"gatewayRef\": 2 }",
+            "\"joinCancellation\": \"invalid\"");
+        Assert.Contains(ValidateJson(malformed), error =>
+            error.Contains("must be an object", StringComparison.OrdinalIgnoreCase));
+
+        var unrelatedPolicy = JsonNode.Parse(validJson)!.AsObject();
+        var unrelatedNodes = unrelatedPolicy["flowNodes"]!.AsArray();
+        unrelatedNodes[4]!.AsObject()["joinCancellation"] = new JsonObject
+        {
+            ["gatewayRef"] = 8
+        };
+        unrelatedNodes.Add(new JsonObject { ["id"] = 7, ["name"] = "Other start", ["type"] = "startEvent" });
+        unrelatedNodes.Add(new JsonObject { ["id"] = 8, ["name"] = "Other fork", ["type"] = "parallelGateway" });
+        unrelatedNodes.Add(new JsonObject { ["id"] = 9, ["name"] = "Other end A", ["type"] = "endEvent" });
+        unrelatedNodes.Add(new JsonObject { ["id"] = 10, ["name"] = "Other end B", ["type"] = "endEvent" });
+        var unrelatedFlows = unrelatedPolicy["sequenceFlows"]!.AsArray();
+        unrelatedFlows.Add(new JsonObject { ["id"] = 701, ["sourceRef"] = 7, ["targetRef"] = 8 });
+        unrelatedFlows.Add(new JsonObject { ["id"] = 801, ["sourceRef"] = 8, ["targetRef"] = 9 });
+        unrelatedFlows.Add(new JsonObject { ["id"] = 802, ["sourceRef"] = 8, ["targetRef"] = 10 });
+        Assert.Contains(ValidateJson(unrelatedPolicy.ToJsonString()), error =>
+            error.Contains("scope contains every merge input", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Editor_ExposesJoinCancellationInspectorAndCleanupPaths()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Cancel unfinished branches when join fires", html, StringComparison.Ordinal);
+        Assert.Contains("Cancellation scope", html, StringComparison.Ordinal);
+        Assert.Contains("first branch win", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("eligibleJoinCancellationSplits", html, StringComparison.Ordinal);
+        Assert.Contains("delete node.joinCancellation;", html, StringComparison.Ordinal);
+        Assert.Contains("node.joinCancellation.gatewayRef = null;", html, StringComparison.Ordinal);
+        Assert.Contains("imported joinCancellation value is malformed", html, StringComparison.Ordinal);
+        Assert.Contains("select an eligible upstream Parallel, Inclusive, or Complex gateway split", html, StringComparison.Ordinal);
+        Assert.Matches(
+            "selectField\\(\"Cancellation scope\"[\\s\\S]*?renderInspector\\(\\);[\\s\\S]*?renderDiagramLayers\\(\\);",
+            html);
     }
 
     [Fact]

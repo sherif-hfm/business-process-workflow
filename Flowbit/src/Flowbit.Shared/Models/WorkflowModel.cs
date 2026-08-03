@@ -464,6 +464,29 @@ public sealed class FlowNodeModel
     [JsonPropertyName("gatewayRef")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? GatewayRef { get; set; }
+
+    /// <summary>
+    /// Merge gateway only: optionally cancels unfinished work in the nearest
+    /// active activation of the referenced split after this join fires.
+    /// </summary>
+    [JsonPropertyName("joinCancellation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JoinCancellationModel? JoinCancellation { get; set; }
+}
+
+/// <summary>
+/// Flowbit merge-gateway extension that bounds cancellation to a referenced
+/// Parallel, Inclusive, or Complex split activation.
+/// </summary>
+public sealed class JoinCancellationModel
+{
+    /// <summary>
+    /// The split gateway whose nearest active activation supplies the
+    /// cancellation scope. Authored definitions require a positive value.
+    /// </summary>
+    [JsonPropertyName("gatewayRef")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? GatewayRef { get; set; }
 }
 
 /// <summary>
