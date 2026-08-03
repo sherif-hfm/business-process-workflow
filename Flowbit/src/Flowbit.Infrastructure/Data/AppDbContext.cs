@@ -754,6 +754,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Namespace).HasMaxLength(300);
             entity.Property(e => e.Name).HasMaxLength(300).IsRequired();
             entity.Property(e => e.Value).HasColumnType("jsonb");
+            entity.Property(e => e.Description).HasMaxLength(1000);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Namespace, e.Name }).IsUnique();
@@ -766,6 +767,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Namespace).HasMaxLength(300);
             entity.Property(e => e.Key).HasMaxLength(300).IsRequired();
             entity.Property(e => e.Value).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(1000);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Namespace, e.Key }).IsUnique();

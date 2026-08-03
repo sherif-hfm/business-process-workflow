@@ -627,7 +627,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task InboxProjectionUsesExactlyTwoQueriesAndPreservesPagingAndLatestVariables()
+    public async Task InboxProjectionUsesOneFreshSettingsReadPlusTwoQueriesAndPreservesPagingAndLatestVariables()
     {
         const int taskCount = 100;
         var model = CreateModel("inbox-query-budget", requiresClaim: true, condition: "amount > 5000");
@@ -705,13 +705,14 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
 
         await GetInboxByWorkflowAsync(workflowId, 1, "worker", "Worker");
 
+        // Each non-empty request reads workflow settings once, then runs the bounded count + page queries.
         PagedResult<InboxItemDto>? firstFifty = null;
         foreach (var pageSize in new[] { 1, 50, taskCount })
         {
             fixture.CommandCounter.Reset();
             var page = await GetInboxByWorkflowAsync(workflowId, pageSize, "worker", "Worker");
 
-            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
             Assert.Equal(taskCount, page.TotalCount);
             Assert.Equal(pageSize, page.Items.Count);
             Assert.Equal(expectedInstanceIds.Take(pageSize).ToArray(),
@@ -737,7 +738,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
         {
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var included = await ReadAsync<PagedResult<InboxItemDto>>(response);
-            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
             Assert.Equal(taskCount, included.TotalCount);
             Assert.Equal(50, included.Items.Count);
             Assert.Equal(6000, included.Items[0].Variables!["amount"].GetInt32());
@@ -747,7 +748,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
 
         fixture.CommandCounter.Reset();
         var secondFifty = await GetInboxPageByWorkflowAsync(workflowId, 2, 50, "worker", "Worker");
-        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(taskCount, secondFifty.TotalCount);
         Assert.Equal(expectedInstanceIds.Skip(50).ToArray(),
             secondFifty.Items.Select(item => item.InstanceId).ToArray());
@@ -756,19 +757,19 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
 
         fixture.CommandCounter.Reset();
         var outOfRange = await GetInboxPageByWorkflowAsync(workflowId, 3, 50, "worker", "Worker");
-        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(taskCount, outOfRange.TotalCount);
         Assert.Empty(outOfRange.Items);
 
         fixture.CommandCounter.Reset();
         var empty = await GetInboxAsync(long.MaxValue, "worker", "Worker");
-        Assert.Equal(1, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(0, empty.TotalCount);
         Assert.Empty(empty.Items);
     }
 
     [Fact]
-    public async Task MultiInstanceInboxProjectionUsesExactlyTwoQueriesAndReturnsCorrectProgress()
+    public async Task MultiInstanceInboxProjectionUsesOneFreshSettingsReadPlusTwoQueriesAndReturnsCorrectProgress()
     {
         const int totalCount = 101;
         const int activeCount = totalCount - 1;
@@ -814,12 +815,13 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
             ["User"]);
         Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
 
+        // The per-request settings read keeps changes fresh without growing with the multi-instance page size.
         foreach (var pageSize in new[] { 1, 50, activeCount })
         {
             fixture.CommandCounter.Reset();
             var page = await GetInboxByWorkflowAsync(workflowId, pageSize, "worker", "User");
 
-            Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
             Assert.Equal(activeCount, page.TotalCount);
             Assert.Equal(pageSize, page.Items.Count);
             Assert.Equal(pageSize, page.Items.Select(item => item.UserTaskId).Distinct().Count());
@@ -846,7 +848,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
             roles: ["User"]);
         Assert.Equal(HttpStatusCode.OK, variablesResponse.StatusCode);
         var variablesPage = await ReadAsync<PagedResult<InboxItemDto>>(variablesResponse);
-        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(50, variablesPage.Items.Count);
         Assert.All(variablesPage.Items, item =>
             Assert.Equal(totalCount, item.Variables!["voters"].GetInt32()));

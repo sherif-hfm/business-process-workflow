@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Net;
+using System.Globalization;
 using System.Text.Json;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
@@ -14,6 +15,96 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<ActorContextDto>(cancellationToken)
             ?? throw new InvalidOperationException("The API returned an empty actor context.");
+    }
+
+    public async Task<IReadOnlyList<EngineSettingDto>> GetEngineSettingsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync("/api/engine-settings", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<EngineSettingDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<EngineSettingDto> CreateEngineSettingAsync(
+        CreateEngineSettingRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/engine-settings", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<EngineSettingDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty engine setting.");
+    }
+
+    public async Task<EngineSettingDto> UpdateEngineSettingAsync(
+        long id,
+        UpdateEngineSettingRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/engine-settings/{id}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<EngineSettingDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty engine setting.");
+    }
+
+    public async Task DeleteEngineSettingAsync(
+        long id,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        var expected = Uri.EscapeDataString(
+            expectedUpdatedAt.ToString("O", CultureInfo.InvariantCulture));
+        using var response = await httpClient.DeleteAsync(
+            $"/api/engine-settings/{id}?expectedUpdatedAt={expected}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkflowSettingDto>> GetWorkflowSettingsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync("/api/workflow-settings", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<WorkflowSettingDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<WorkflowSettingDto> CreateWorkflowSettingAsync(
+        CreateWorkflowSettingRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/workflow-settings", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowSettingDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty workflow setting.");
+    }
+
+    public async Task<WorkflowSettingDto> UpdateWorkflowSettingAsync(
+        long id,
+        UpdateWorkflowSettingRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/workflow-settings/{id}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowSettingDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty workflow setting.");
+    }
+
+    public async Task DeleteWorkflowSettingAsync(
+        long id,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        var expected = Uri.EscapeDataString(
+            expectedUpdatedAt.ToString("O", CultureInfo.InvariantCulture));
+        using var response = await httpClient.DeleteAsync(
+            $"/api/workflow-settings/{id}?expectedUpdatedAt={expected}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
     }
 
     public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowsAsync(CancellationToken cancellationToken = default) =>

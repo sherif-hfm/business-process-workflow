@@ -752,6 +752,16 @@ Storage follows the hybrid design:
   values remain independent. `GET /api/auth/context` returns the resolved actor to
   the Blazor UI. Changing the claim requires restarting every API replica and must
   be treated as an identity migration for active work.
+- **Settings management.** Authenticated administrators can manage deployment-wide
+  string settings at `/engine-settings` and typed JSON workflow context settings at
+  `/workflow-settings`. Both tables carry an optional 1,000-character description;
+  namespaces and key/name identifiers are immutable after creation, while values and
+  descriptions use `UpdatedAt` optimistic concurrency. The corresponding
+  `/api/engine-settings` and `/api/workflow-settings` CRUD groups require any role in
+  the comma-separated `Settings.RequiredRole` engine setting (missing/blank defaults
+  to `admin`). Workflow setting rows are read from PostgreSQL for each new request or
+  worker scope, then snapshotted within that scope, so committed edits are visible
+  across processes without a process-local expiration delay.
 
 Definitions are versioned: `POST /api/workflows` creates v1, `PUT
 /api/workflows/{id}` creates a new immutable version, and only a *published*
@@ -831,6 +841,11 @@ what the cross-version `workflowKey` instance search matches.
   `WorkflowDelegationPolicyEndpoints`
   (`/api/user-delegation-policies/{workflowKey}`) exposes authenticated
   administrator `GET`/`PUT` operations for the new-grant acceptance policy.
+- `SettingsEndpoints` (`/api/engine-settings` and `/api/workflow-settings`):
+  authenticated settings administrators can `GET /`, `POST /`, `PUT /{id}`, and
+  `DELETE /{id}?expectedUpdatedAt=...`. Logical identifiers are fixed after create;
+  updates change only the value/description, and stale update/delete requests return
+  409. Workflow values preserve every valid JSON root type.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -1499,9 +1514,9 @@ stored variables; context wins on any name collision. Available keys:
 - `config.<name>` for each server-side config entry (keeps secrets out of the
   versioned definition JSON)
 - `setting.<name>` for each row in the `workflow_settings` database table
-  (global and read-only; rows may be manually inserted, while the migrations
-  seed the documented non-secret `examples` defaults; loaded once per request
-  and cached).
+  (global and read-only to workflow expressions; rows can be managed through the
+  settings API/UI, while migrations seed the documented non-secret `examples`
+  defaults; loaded once and snapshotted within each request or worker scope).
   When a row has a non-null `Namespace`, the key becomes
   `setting.<namespace>.<name>` (e.g. `setting.finance.taxRate`).
 

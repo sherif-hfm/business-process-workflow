@@ -538,7 +538,17 @@ public sealed record EngineSettingRecord(
     string Key,
     string Value,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? Description = null);
+
+public sealed record WorkflowSettingRecord(
+    long Id,
+    string? Namespace,
+    string Name,
+    JsonElement Value,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    string? Description = null);
 
 public static class WorkflowInstanceStatuses
 {

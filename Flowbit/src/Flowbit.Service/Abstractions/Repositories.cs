@@ -705,6 +705,27 @@ public interface IWorkflowSettingsRepository
     Task<IReadOnlyDictionary<string, JsonElement>> LoadAllAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyDictionary<string, JsonElement>> LoadAllFreshAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WorkflowSettingRecord>> ListAsync(CancellationToken cancellationToken);
+
+    Task<WorkflowSettingRecord> CreateAsync(
+        string? settingNamespace,
+        string name,
+        JsonElement value,
+        string? description,
+        CancellationToken cancellationToken);
+
+    Task<WorkflowSettingRecord?> UpdateAsync(
+        long id,
+        JsonElement value,
+        string? description,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken);
+
+    Task<bool> DeleteByIdAsync(
+        long id,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken);
 }
 
 public interface IEngineSettingsRepository
@@ -713,6 +734,35 @@ public interface IEngineSettingsRepository
     Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
     Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken);
     Task<bool> DeleteAsync(string key, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EngineSettingRecord>> ListAsync(CancellationToken cancellationToken) =>
+        Task.FromException<IReadOnlyList<EngineSettingRecord>>(
+            new NotSupportedException("This repository does not support settings management."));
+
+    Task<EngineSettingRecord> CreateAsync(
+        string? settingNamespace,
+        string key,
+        string value,
+        string? description,
+        CancellationToken cancellationToken) =>
+        Task.FromException<EngineSettingRecord>(
+            new NotSupportedException("This repository does not support settings management."));
+
+    Task<EngineSettingRecord?> UpdateAsync(
+        long id,
+        string value,
+        string? description,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken) =>
+        Task.FromException<EngineSettingRecord?>(
+            new NotSupportedException("This repository does not support settings management."));
+
+    Task<bool> DeleteByIdAsync(
+        long id,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken) =>
+        Task.FromException<bool>(
+            new NotSupportedException("This repository does not support settings management."));
 }
 
 public interface IWorkflowTransaction : IAsyncDisposable

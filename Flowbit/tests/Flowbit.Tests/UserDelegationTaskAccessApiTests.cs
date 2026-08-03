@@ -51,11 +51,11 @@ public sealed class UserDelegationTaskAccessApiTests(PostgresApiFixture fixture)
         Assert.Equal(delegation.Id, futureDelegated.DelegatedAccess?.DelegationId);
         Assert.Equal(owner, futureDelegated.DelegatedAccess?.ActingFor);
 
-        // Warm settings/caches before measuring the authoritative count + page query budget.
+        // Warm reusable caches; the measured request still reads workflow settings once for freshness.
         await GetInboxAsync(future.Id, delegateUser, "Worker");
         fixture.CommandCounter.Reset();
         var measured = await GetInboxAsync(future.Id, delegateUser, "Worker");
-        Assert.Equal(2, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(1, measured.TotalCount);
 
         var detail = await GetTaskAsync(

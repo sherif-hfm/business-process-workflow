@@ -22,6 +22,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();
+        services.AddScoped<IWorkflowSettingsService, WorkflowSettingsService>();
         services.AddScoped<IUserDelegationService, UserDelegationService>();
         return services;
     }

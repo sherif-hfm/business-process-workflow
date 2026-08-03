@@ -149,6 +149,11 @@ try
                 {
                     Name = "User Delegation",
                     Description = "Create and administer finite, workflow-family standing grants for acting on behalf of another user."
+                },
+                new()
+                {
+                    Name = "Settings",
+                    Description = "Role-protected administration of engine and workflow settings."
                 }
             };
 
@@ -367,6 +372,7 @@ try
     app.MapNodeExecutionEndpoints();
     app.MapWorkflowJobEndpoints();
     app.MapUserDelegationEndpoints();
+    app.MapSettingsEndpoints();
 
     app.Run();
 }

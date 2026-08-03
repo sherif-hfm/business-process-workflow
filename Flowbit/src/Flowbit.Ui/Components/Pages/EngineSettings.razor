@@ -1,0 +1,613 @@
+@page "/engine-settings"
+@implements IDisposable
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Engine Settings · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Engine settings"
+            Description="Manage deployment-wide runtime configuration. Setting identifiers are immutable after creation.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || loading || submitting)">
+            <AppIcon Name="plus" /> Add setting
+        </button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured settings administrator role.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-label="Current settings administrator">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="data-subtitle mt-0">Managing as</span>
+                <strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                @if (Token.CurrentRoles.Count == 0)
+                {
+                    <StatusBadge Status="neutral" Text="No roles" />
+                }
+                else
+                {
+                    @foreach (var role in Token.CurrentRoles)
+                    {
+                        <StatusBadge Status="primary" Text="@role" />
+                    }
+                }
+            </div>
+        </div>
+    </section>
+
+    @if (formOpen)
+    {
+        <section class="panel mb-3" aria-labelledby="engine-setting-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="engine-setting-form-heading">@(IsEditing ? "Edit engine setting" : "Add engine setting")</h2>
+                    <p>@(IsEditing ? "The namespace and key cannot be changed. Delete and recreate the setting to rename it." : "A blank namespace creates a global or legacy dotted-key setting.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close setting form" @onclick="CloseForm" disabled="@submitting"></button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">
+                    @formError
+                    @if (editConflict)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@(loading || submitting)">
+                            Reload latest
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="engine-setting-namespace">Namespace (optional)</label>
+                    <input id="engine-setting-namespace" class="form-control" maxlength="300" autocomplete="off"
+                           readonly="@IsEditing" @bind="formNamespace" @bind:event="oninput" />
+                </div>
+                <div>
+                    <label class="form-label" for="engine-setting-key">Key</label>
+                    <input id="engine-setting-key" class="form-control" maxlength="300" autocomplete="off"
+                           readonly="@IsEditing" @bind="formKey" @bind:event="oninput" />
+                </div>
+                <div class="full">
+                    <label class="form-label" for="engine-setting-value">Value</label>
+                    <textarea id="engine-setting-value" class="form-control font-monospace" rows="4"
+                              @bind="formValue" @bind:event="oninput"></textarea>
+                    <div class="form-text">Empty strings are valid engine-setting values.</div>
+                </div>
+                <div class="full">
+                    <label class="form-label" for="engine-setting-description">Description (optional)</label>
+                    <textarea id="engine-setting-description" class="form-control" rows="3" maxlength="1000"
+                              @bind="formDescription" @bind:event="oninput"></textarea>
+                </div>
+            </div>
+
+            @if (IsRequiredRoleSetting)
+            {
+                <div class="alert alert-warning mt-3 mb-0">
+                    Changing <span class="mono-id">Settings.RequiredRole</span> can immediately remove this identity's access on the next request.
+                </div>
+            }
+            @if (IsIdentityClaimSetting)
+            {
+                <div class="alert alert-warning mt-3 mb-0">
+                    Changes to <span class="mono-id">Authentication.UserIdentityClaim</span> require restarting every API replica.
+                </div>
+            }
+
+            <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@submitting">Cancel</button>
+                <button type="button" class="btn btn-primary" @onclick="SaveAsync" disabled="@submitting">
+                    @(submitting ? "Saving…" : IsEditing ? "Save changes" : "Create setting")
+                </button>
+            </div>
+        </section>
+    }
+
+    <section class="filter-panel" aria-labelledby="engine-setting-filter-heading">
+        <div class="section-heading mb-0">
+            <div>
+                <h2 id="engine-setting-filter-heading">Filter settings</h2>
+                <p>Filter the loaded list by effective key or description.</p>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(filter))
+            {
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ClearFilter">Clear</button>
+            }
+        </div>
+        <div class="filter-grid mt-3">
+            <div class="filter-span-2">
+                <label class="form-label" for="engine-setting-filter">Key or description</label>
+                <input id="engine-setting-filter" class="form-control" placeholder="Settings.RequiredRole"
+                       @bind="filter" @bind:event="oninput" />
+            </div>
+        </div>
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="engine-setting-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="engine-setting-results-heading">Engine settings</h2>
+                <p>@ResultSummary</p>
+            </div>
+        </div>
+
+        @if (loading && settings is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || settings is null)
+        {
+            <EmptyState Icon="alert" Title="Engine settings unavailable"
+                        Description="Use Refresh to retry. Authorization and API errors are shown above." />
+        }
+        else if (FilteredSettings.Count == 0)
+        {
+            <EmptyState Icon="settings" Title="No engine settings"
+                        Description="No loaded setting matches the current filter." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Setting</th>
+                            <th>Value preview</th>
+                            <th>Description</th>
+                            <th>Timestamps</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in FilteredSettings)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="data-title">@EffectiveKey(item.Namespace, item.Key)</span>
+                                    <span class="data-subtitle">Setting #@item.Id · @(string.IsNullOrWhiteSpace(item.Namespace) ? "Global namespace" : $"Namespace: {item.Namespace}")</span>
+                                </td>
+                                <td><span class="mono-id text-break">@PreviewValue(item.Value)</span></td>
+                                <td>@(string.IsNullOrWhiteSpace(item.Description) ? "—" : item.Description)</td>
+                                <td>
+                                    @item.UpdatedAt.ToLocalTime().ToString("g")
+                                    <span class="data-subtitle">Created @item.CreatedAt.ToLocalTime().ToString("g")</span>
+                                </td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting">Edit</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(item)" disabled="@submitting">Delete</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private IReadOnlyList<EngineSettingDto>? settings;
+    private long? editingId;
+    private DateTimeOffset? expectedUpdatedAt;
+    private string? formNamespace;
+    private string? formKey;
+    private string formValue = string.Empty;
+    private string? formDescription;
+    private string? filter;
+    private string? error;
+    private string? success;
+    private string? formError;
+    private bool formOpen;
+    private bool editConflict;
+    private bool loading;
+    private bool loadFailed;
+    private bool submitting;
+    private long requestVersion;
+    private long identityVersion;
+
+    private bool IsEditing => editingId is not null;
+    private bool IsRequiredRoleSetting => string.Equals(
+        EffectiveKey(formNamespace, formKey),
+        "Settings.RequiredRole",
+        StringComparison.OrdinalIgnoreCase);
+    private bool IsIdentityClaimSetting => string.Equals(
+        EffectiveKey(formNamespace, formKey),
+        "Authentication.UserIdentityClaim",
+        StringComparison.OrdinalIgnoreCase);
+    private IReadOnlyList<EngineSettingDto> FilteredSettings
+    {
+        get
+        {
+            if (settings is null)
+            {
+                return [];
+            }
+
+            var query = filter?.Trim();
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return settings;
+            }
+
+            return settings.Where(item =>
+                    EffectiveKey(item.Namespace, item.Key).Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false))
+                .ToArray();
+        }
+    }
+    private string ResultSummary => settings is null
+        ? loading ? "Loading engine settings…" : "Engine settings could not be loaded."
+        : string.IsNullOrWhiteSpace(filter)
+            ? $"{settings.Count:N0} settings"
+            : $"{FilteredSettings.Count:N0} of {settings.Count:N0} settings";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            settings = null;
+            loading = false;
+            loadFailed = false;
+            error = null;
+            return;
+        }
+
+        try
+        {
+            loading = true;
+            loadFailed = false;
+            error = null;
+            var loaded = await Api.GetEngineSettingsAsync();
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            settings = loaded ?? [];
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            settings = [];
+            loadFailed = true;
+            error = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            loadFailed = true;
+            error = ex.Message;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private void OpenCreate()
+    {
+        editingId = null;
+        expectedUpdatedAt = null;
+        formNamespace = formKey = formDescription = formError = null;
+        formValue = string.Empty;
+        editConflict = false;
+        formOpen = true;
+        success = null;
+    }
+
+    private void OpenEdit(EngineSettingDto item)
+    {
+        editingId = item.Id;
+        expectedUpdatedAt = item.UpdatedAt;
+        formNamespace = item.Namespace;
+        formKey = item.Key;
+        formValue = item.Value;
+        formDescription = item.Description;
+        formError = null;
+        editConflict = false;
+        formOpen = true;
+        success = null;
+    }
+
+    private void CloseForm()
+    {
+        if (submitting)
+        {
+            return;
+        }
+
+        formOpen = false;
+        editingId = null;
+        expectedUpdatedAt = null;
+        formNamespace = formKey = formDescription = formError = null;
+        formValue = string.Empty;
+        editConflict = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(formKey))
+        {
+            formError = "A key is required.";
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        try
+        {
+            submitting = true;
+            formError = null;
+            editConflict = false;
+            error = success = null;
+
+            if (editingId is long id)
+            {
+                if (expectedUpdatedAt is null)
+                {
+                    formError = "The setting's concurrency timestamp is missing. Reload the setting and try again.";
+                    return;
+                }
+
+                await Api.UpdateEngineSettingAsync(
+                    id,
+                    new UpdateEngineSettingRequest(
+                        formValue,
+                        NullIfWhiteSpace(formDescription),
+                        expectedUpdatedAt.Value));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Engine setting {EffectiveKey(formNamespace, formKey)} updated.";
+            }
+            else
+            {
+                await Api.CreateEngineSettingAsync(
+                    new CreateEngineSettingRequest(
+                        NullIfWhiteSpace(formNamespace),
+                        formKey.Trim(),
+                        formValue,
+                        NullIfWhiteSpace(formDescription)));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Engine setting {EffectiveKey(formNamespace, formKey)} created.";
+            }
+
+            CloseFormAfterSave();
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            editConflict = IsEditing;
+            formError = IsEditing
+                ? "This setting changed after you opened it. Your edits are preserved; reload the latest value before saving again."
+                : "A setting with this effective key already exists. Your form is preserved; refresh the list or change the identifier.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = ex.Message;
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        if (editingId is not long id)
+        {
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        await LoadAsync();
+        if (currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        var latest = settings?.FirstOrDefault(item => item.Id == id);
+        if (latest is null)
+        {
+            formError = "This setting no longer exists. Close the form and refresh the list.";
+            editConflict = false;
+            return;
+        }
+
+        OpenEdit(latest);
+    }
+
+    private async Task DeleteAsync(EngineSettingDto item)
+    {
+        var currentIdentity = identityVersion;
+        var key = EffectiveKey(item.Namespace, item.Key);
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Permanently delete engine setting '{key}'? This action cannot be undone.");
+        if (!confirmed || currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            error = success = null;
+            await Api.DeleteEngineSettingAsync(item.Id, item.UpdatedAt);
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            if (editingId == item.Id)
+            {
+                CloseFormAfterSave();
+            }
+            success = $"Engine setting {key} deleted.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = "This setting changed before it could be deleted. Refresh the list and try again.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = ex.Message;
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private void CloseFormAfterSave()
+    {
+        formOpen = false;
+        editingId = null;
+        expectedUpdatedAt = null;
+        formNamespace = formKey = formDescription = formError = null;
+        formValue = string.Empty;
+        editConflict = false;
+    }
+
+    private void ClearFilter() => filter = null;
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        identityVersion++;
+        requestVersion++;
+        settings = null;
+        filter = error = success = null;
+        loading = loadFailed = submitting = false;
+        CloseFormAfterSave();
+        await LoadAsync();
+    });
+
+    private static string EffectiveKey(string? settingNamespace, string? key)
+    {
+        var normalizedKey = key?.Trim() ?? string.Empty;
+        return string.IsNullOrWhiteSpace(settingNamespace)
+            ? normalizedKey
+            : $"{settingNamespace.Trim()}.{normalizedKey}";
+    }
+
+    private static string PreviewValue(string value)
+    {
+        if (value.Length == 0)
+        {
+            return "(empty string)";
+        }
+
+        var compact = value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\t", "\\t", StringComparison.Ordinal);
+        return compact.Length <= 100 ? compact : $"{compact[..100]}…";
+    }
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}
