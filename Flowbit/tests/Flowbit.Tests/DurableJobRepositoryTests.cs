@@ -1463,9 +1463,24 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
         DateTimeOffset now) =>
         new()
         {
-            TargetWorkflowDefinitionId = definition.Id,
             WorkflowKey = workflowKey,
-            FlowExternalId = "RETURN_FOR_REWORK",
+            FlowMappingsJson = JsonDocument.Parse(JsonSerializer.Serialize(
+                new[]
+                {
+                    new AdministrativeActionFlowMappingRecord(
+                        definition.Id,
+                        definition.Version,
+                        1,
+                        "RETURN_FOR_REWORK",
+                        "Return for rework",
+                        1,
+                        "Administrative task",
+                        2,
+                        "Rework task",
+                        ["admin"],
+                        [])
+                },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))),
             Reason = "Repository lease-exhaustion test",
             CommonVariablesJson = JsonDocument.Parse("{}"),
             SelectionJson = JsonDocument.Parse("""{"mode":"explicit"}"""),
@@ -1493,8 +1508,8 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
             InstanceId = instance.Id,
             UserTaskId = task.Id,
             TokenId = token.Id,
-            SourceWorkflowDefinitionId = definition.Id,
-            TargetWorkflowDefinitionId = definition.Id,
+            WorkflowDefinitionId = definition.Id,
+            FlowId = 1,
             CapturedInstanceUpdatedAt = instance.UpdatedAt,
             CapturedUserTaskUpdatedAt = task.UpdatedAt,
             Status = status,

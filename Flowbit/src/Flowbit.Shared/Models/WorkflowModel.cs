@@ -1171,21 +1171,6 @@ public sealed class SequenceFlowModel
     public bool IsSelectable { get; set; } = true;
 
     /// <summary>
-    /// Whether this flow is an explicitly authored privileged administrative
-    /// action. Administrative actions are exposed and executed through their
-    /// dedicated APIs rather than the ordinary user-task action endpoints.
-    /// </summary>
-    [JsonPropertyName("isAdministrative")]
-    public bool IsAdministrative { get; set; }
-
-    /// <summary>
-    /// Whether this administrative action may be applied through the batch
-    /// execution workflow. Batchable flows are always administrative flows.
-    /// </summary>
-    [JsonPropertyName("isBatchable")]
-    public bool IsBatchable { get; set; }
-
-    /// <summary>
     /// If true, an actor can trigger this flow without claiming the userTask first.
     /// </summary>
     [JsonPropertyName("canActWithoutClaim")]

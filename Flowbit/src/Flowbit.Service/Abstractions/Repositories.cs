@@ -522,9 +522,12 @@ public interface IWorkflowRuntimeRepository
 
     Task CompleteAdministrativeActionBatchItemAsync(
         long batchId,
+        long instanceId,
         long sourceUserTaskId,
+        long tokenId,
+        long workflowDefinitionId,
+        int flowId,
         long? newUserTaskId,
-        long? versionChangeAuditId,
         JsonElement? result,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken);
@@ -563,8 +566,7 @@ public interface IWorkflowRuntimeRepository
         WorkflowModel targetDefinition,
         NodeExecutionActorRecord actor,
         string reason,
-        CancellationToken cancellationToken,
-        long? administrativeActionBatchId = null);
+        CancellationToken cancellationToken);
 
     Task AddVariableAsync(
         long instanceId,

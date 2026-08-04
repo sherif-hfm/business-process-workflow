@@ -4,12 +4,9 @@ namespace Flowbit.Service.Models;
 
 public sealed record AdministrativeActionCandidateQuery
 {
-    public required string WorkflowKey { get; init; }
-    public required int SourceNodeId { get; init; }
-    public string? SourceNodeExternalId { get; init; }
+    public required IReadOnlyList<AdministrativeActionFlowTarget> Targets { get; init; }
     public long? UserTaskId { get; init; }
     public long? InstanceId { get; init; }
-    public long? SourceWorkflowDefinitionId { get; init; }
     public string? BusinessKey { get; init; }
     public IReadOnlyCollection<long>? UserTaskIds { get; init; }
     public VariableFilterExpression? VariableFilter { get; init; }
@@ -18,11 +15,17 @@ public sealed record AdministrativeActionCandidateQuery
     public int PageSize { get; init; } = 50;
 }
 
+public sealed record AdministrativeActionFlowTarget(
+    long WorkflowDefinitionId,
+    int FlowId,
+    int SourceNodeId);
+
 public sealed record AdministrativeActionCandidateRecord(
     long UserTaskId,
     long InstanceId,
     long TokenId,
-    long SourceWorkflowDefinitionId,
+    long WorkflowDefinitionId,
+    int FlowId,
     string WorkflowKey,
     string? BusinessKey,
     int NodeId,

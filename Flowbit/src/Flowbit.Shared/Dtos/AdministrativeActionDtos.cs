@@ -3,41 +3,44 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Shared.Dtos;
 
+public sealed record AdministrativeActionFlowMappingDto(
+    long WorkflowDefinitionId,
+    int FlowId);
+
 public sealed record AdministrativeActionSummaryDto(
+    long WorkflowDefinitionId,
+    int WorkflowVersion,
     int FlowId,
-    string FlowExternalId,
+    string? FlowExternalId,
     string Name,
     int SourceNodeId,
     string SourceNodeName,
     int TargetNodeId,
     string TargetNodeName,
-    bool IsBatchable,
+    IReadOnlyList<VariableModel> Variables);
+
+public sealed record AdministrativeActionFlowMappingSnapshotDto(
+    long WorkflowDefinitionId,
+    int WorkflowVersion,
+    int FlowId,
+    string? FlowExternalId,
+    string Name,
+    int SourceNodeId,
+    string SourceNodeName,
+    int TargetNodeId,
+    string TargetNodeName,
+    IReadOnlyList<string> Roles,
     IReadOnlyList<VariableModel> Variables);
 
 /// <summary>
-/// Minimal privileged task context used when an administrative operator is
-/// intentionally not authorized for the task's ordinary work-item view.
+/// Internal execution request for one frozen administrative batch item. This is
+/// deliberately not exposed by a single-task endpoint: ordinary single actions
+/// continue to use the normal user-task API.
 /// </summary>
-public sealed record AdministrativeActionTaskContextDto(
-    long UserTaskId,
-    long InstanceId,
-    long TokenId,
-    int NodeId,
-    string NodeName,
-    string? NodeExternalId,
-    long SourceWorkflowId,
-    string WorkflowKey,
-    string WorkflowName,
-    int SourceWorkflowVersion,
-    DateTimeOffset InstanceUpdatedAt,
-    DateTimeOffset UserTaskUpdatedAt,
-    IReadOnlyList<WorkflowSummaryDto> TargetVersions);
-
 public sealed record AdministrativeActionRequest(
-    long TargetWorkflowId,
-    long ExpectedSourceWorkflowId,
+    long ExpectedWorkflowDefinitionId,
+    int FlowId,
     DateTimeOffset ExpectedInstanceUpdatedAt,
-    string FlowExternalId,
     string Reason,
     Dictionary<string, JsonElement>? Variables)
 {
@@ -49,20 +52,25 @@ public sealed record AdministrativeActionResultDto(
     InstanceDetailDto Instance,
     long CompletedUserTaskId,
     UserTaskDto? NewUserTask,
-    InstanceVersionChangeAuditDto? VersionChange,
-    long? AdministrativeActionBatchId);
+    long AdministrativeActionBatchId);
+
+public sealed record AdministrativeActionIssueDto(
+    string Code,
+    string Message,
+    string? StateType = null,
+    long? StateId = null,
+    int? NodeId = null,
+    int? FlowId = null);
 
 public sealed record AdministrativeActionEligibilityDto(
     bool Eligible,
-    IReadOnlyList<InstanceVersionChangeIssueDto> Issues);
+    IReadOnlyList<AdministrativeActionIssueDto> Issues);
 
 public sealed record AdministrativeActionCandidateSearchRequest
 {
-    public long TargetWorkflowId { get; init; }
-    public string FlowExternalId { get; init; } = string.Empty;
+    public IReadOnlyList<AdministrativeActionFlowMappingDto> FlowMappings { get; init; } = [];
     public long? UserTaskId { get; init; }
     public long? InstanceId { get; init; }
-    public long? SourceWorkflowId { get; init; }
     public string? BusinessKey { get; init; }
     public JsonElement? VariableFilter { get; init; }
     public bool? IncludeVariables { get; init; }
@@ -74,7 +82,10 @@ public sealed record AdministrativeActionCandidateDto(
     long UserTaskId,
     long InstanceId,
     long TokenId,
-    long SourceWorkflowId,
+    long WorkflowDefinitionId,
+    int WorkflowVersion,
+    int FlowId,
+    string FlowName,
     string WorkflowKey,
     string? BusinessKey,
     int NodeId,
@@ -83,7 +94,7 @@ public sealed record AdministrativeActionCandidateDto(
     DateTimeOffset InstanceUpdatedAt,
     DateTimeOffset UserTaskUpdatedAt,
     bool Eligible,
-    IReadOnlyList<InstanceVersionChangeIssueDto> Issues)
+    IReadOnlyList<AdministrativeActionIssueDto> Issues)
 {
     public IReadOnlyDictionary<string, JsonElement>? Variables { get; init; }
 }
@@ -101,8 +112,7 @@ public sealed record AdministrativeActionBatchSelectionDto(
     IReadOnlyList<long>? ExcludedUserTaskIds);
 
 public sealed record CreateAdministrativeActionBatchRequest(
-    long TargetWorkflowId,
-    string FlowExternalId,
+    IReadOnlyList<AdministrativeActionFlowMappingDto> FlowMappings,
     string Reason,
     Dictionary<string, JsonElement>? Variables,
     AdministrativeActionBatchSelectionDto Selection,
@@ -125,9 +135,8 @@ public sealed record AdministrativeActionBatchSearchRequest
 
 public sealed record AdministrativeActionBatchSummaryDto(
     long Id,
-    long TargetWorkflowId,
     string WorkflowKey,
-    string FlowExternalId,
+    int FlowMappingCount,
     string Reason,
     string Status,
     string PreparedBy,
@@ -146,6 +155,7 @@ public sealed record AdministrativeActionBatchSummaryDto(
 
 public sealed record AdministrativeActionBatchDetailDto(
     AdministrativeActionBatchSummaryDto Summary,
+    IReadOnlyList<AdministrativeActionFlowMappingSnapshotDto> FlowMappings,
     IReadOnlyDictionary<string, JsonElement> CommonVariables,
     JsonElement Selection,
     IReadOnlyList<string> PreparedByRoles,
@@ -166,8 +176,8 @@ public sealed record AdministrativeActionBatchItemDto(
     long InstanceId,
     long UserTaskId,
     long TokenId,
-    long SourceWorkflowId,
-    long TargetWorkflowId,
+    long WorkflowDefinitionId,
+    int FlowId,
     DateTimeOffset CapturedInstanceUpdatedAt,
     DateTimeOffset CapturedUserTaskUpdatedAt,
     string Status,
@@ -176,7 +186,6 @@ public sealed record AdministrativeActionBatchItemDto(
     string? ErrorCode,
     string? ErrorDescription,
     long? NewUserTaskId,
-    long? VersionChangeAuditId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? PreparedAt,

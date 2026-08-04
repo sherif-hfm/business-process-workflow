@@ -41,9 +41,7 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
                             ExternalId = "VISIBLE_SEND_BACK",
                             SourceRef = 2,
                             TargetRef = 1,
-                            Roles = [visibleRole.ToUpperInvariant()],
-                            IsAdministrative = true,
-                            IsBatchable = true
+                            Roles = [visibleRole.ToUpperInvariant()]
                         },
                         new SequenceFlowModel
                         {
@@ -52,9 +50,7 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
                             ExternalId = "HIDDEN_SEND_BACK",
                             SourceRef = 2,
                             TargetRef = 1,
-                            Roles = [$"other-role-{suffix}"],
-                            IsAdministrative = true,
-                            IsBatchable = true
+                            Roles = [$"other-role-{suffix}"]
                         }
                     ]
                 }
@@ -63,23 +59,33 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
             await setup.SaveChangesAsync();
 
             var now = DateTimeOffset.UtcNow;
+            var mixedNewest = Batch(
+                definition,
+                now.AddMinutes(5),
+                (101, "VISIBLE_SEND_BACK", visibleRole),
+                (102, "HIDDEN_SEND_BACK", $"other-role-{suffix}"));
             var hiddenNewest = Batch(
                 definition,
-                "HIDDEN_SEND_BACK",
+                102,
+                $"other-role-{suffix}",
                 now.AddMinutes(4));
             var visibleFirst = Batch(
                 definition,
-                "VISIBLE_SEND_BACK",
+                101,
+                visibleRole.ToUpperInvariant(),
                 now.AddMinutes(3));
             var hiddenMiddle = Batch(
                 definition,
-                "HIDDEN_SEND_BACK",
+                102,
+                $"other-role-{suffix}",
                 now.AddMinutes(2));
             var visibleSecond = Batch(
                 definition,
-                "VISIBLE_SEND_BACK",
+                101,
+                visibleRole.ToUpperInvariant(),
                 now.AddMinutes(1));
             setup.AdministrativeActionBatches.AddRange(
+                mixedNewest,
                 hiddenNewest,
                 visibleFirst,
                 hiddenMiddle,
@@ -88,8 +94,8 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
             firstVisibleId = visibleFirst.Id;
             secondVisibleId = visibleSecond.Id;
 
-            // Batch audit visibility is tied to the immutable version and its
-            // flow roles, not to whether that version remains published later.
+            // Batch audit visibility is tied to the frozen mapping role
+            // snapshot, not to whether that immutable version remains published.
             definition.IsPublished = false;
             await setup.SaveChangesAsync();
         }
@@ -133,13 +139,38 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
 
     private static AdministrativeActionBatchEntity Batch(
         WorkflowDefinitionEntity definition,
-        string flowExternalId,
+        int flowId,
+        string role,
         DateTimeOffset updatedAt) =>
+        Batch(
+            definition,
+            updatedAt,
+            (flowId,
+                flowId == 101 ? "VISIBLE_SEND_BACK" : "HIDDEN_SEND_BACK",
+                role));
+
+    private static AdministrativeActionBatchEntity Batch(
+        WorkflowDefinitionEntity definition,
+        DateTimeOffset updatedAt,
+        params (int FlowId, string? ExternalId, string Role)[] mappings) =>
         new()
         {
-            TargetWorkflowDefinitionId = definition.Id,
             WorkflowKey = definition.WorkflowKey,
-            FlowExternalId = flowExternalId,
+            FlowMappingsJson = JsonDocument.Parse(JsonSerializer.Serialize(
+                mappings.Select(mapping =>
+                    new AdministrativeActionFlowMappingRecord(
+                        definition.Id,
+                        definition.Version,
+                        mapping.FlowId,
+                        mapping.ExternalId,
+                        "Send back",
+                        2,
+                        "Second approval",
+                        1,
+                        "First approval",
+                        [mapping.Role],
+                        [])).ToArray(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))),
             Reason = "Authorization paging test",
             CommonVariablesJson = JsonDocument.Parse("{}"),
             SelectionJson = JsonDocument.Parse("{}"),

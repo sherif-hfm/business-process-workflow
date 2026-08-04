@@ -30,7 +30,6 @@ public interface IAdministrativeActionBatchService
     Task<IReadOnlyList<AdministrativeActionSummaryDto>> ListActionsAsync(
         long workflowId,
         ActorContext actor,
-        bool batchableOnly,
         CancellationToken cancellationToken);
 
     Task<PagedResult<AdministrativeActionCandidateDto>> SearchCandidatesAsync(

@@ -155,6 +155,43 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void LoaderDropsLegacyAdministrativeFlagsAndPreservesNormalFlowRoles()
+    {
+        var engine = CreateEditorEngine();
+        using var loaded = JsonDocument.Parse(engine.Evaluate(
+            """
+            loadFromObject({
+              id: 'legacy-administrative-flags',
+              name: 'Legacy administrative flags',
+              variables: [],
+              lanes: [],
+              flowNodes: [
+                { id: 1, name: 'Start', type: 'startEvent', x: 0, y: 0 },
+                { id: 2, name: 'First approval', type: 'userTask', x: 200, y: 0 },
+                { id: 3, name: 'Second approval', type: 'userTask', x: 400, y: 0 }
+              ],
+              sequenceFlows: [
+                { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                {
+                  id: 201,
+                  name: 'Back',
+                  sourceRef: 3,
+                  targetRef: 2,
+                  roles: ['admin'],
+                  isAdministrative: true,
+                  isBatchable: true
+                }
+              ]
+            });
+            JSON.stringify(model.sequenceFlows.find(flow => flow.id === 201));
+            """).AsString());
+
+        Assert.Equal("admin", loaded.RootElement.GetProperty("roles")[0].GetString());
+        Assert.False(loaded.RootElement.TryGetProperty("isAdministrative", out _));
+        Assert.False(loaded.RootElement.TryGetProperty("isBatchable", out _));
+    }
+
+    [Fact]
     public void FriendlyDurationCycleAndLocalDateHelpersProduceCanonicalIsoValues()
     {
         var engine = CreateEditorEngine();

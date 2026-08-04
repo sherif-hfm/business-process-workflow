@@ -82,11 +82,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int>("FailedItemCount")
                         .HasColumnType("integer");
 
-                    b.Property<string>("FlowExternalId")
+                    b.Property<JsonDocument>("FlowMappingsJson")
                         .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)")
-                        .UseCollation("C");
+                        .HasColumnType("jsonb");
 
                     b.Property<string>("IdempotencyKey")
                         .HasMaxLength(300)
@@ -142,9 +140,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int>("SucceededItemCount")
                         .HasColumnType("integer");
 
-                    b.Property<long>("TargetWorkflowDefinitionId")
-                        .HasColumnType("bigint");
-
                     b.Property<int>("TotalItemCount")
                         .HasColumnType("integer");
 
@@ -172,8 +167,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsUnique()
                         .HasFilter("\"IdempotencyKey\" IS NOT NULL");
 
-                    b.HasIndex("TargetWorkflowDefinitionId", "WorkflowKey");
-
                     b.HasIndex("Status", "UpdatedAt", "Id");
 
                     b.HasIndex("WorkflowKey", "Status", "UpdatedAt", "Id");
@@ -181,6 +174,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("administrative_action_batches", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_administrative_action_batches_counts", "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_administrative_action_batches_flow_mappings", "jsonb_typeof(\"FlowMappingsJson\") = 'array' AND jsonb_array_length(\"FlowMappingsJson\") > 0");
 
                             t.HasCheckConstraint("CK_administrative_action_batches_status", "\"Status\" IN ('preparing', 'ready', 'queued', 'running', 'completed', 'completedWithIssues', 'cancelled', 'failed')");
                         });
@@ -234,8 +229,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("ResultJson")
                         .HasColumnType("jsonb");
 
-                    b.Property<long>("SourceWorkflowDefinitionId")
-                        .HasColumnType("bigint");
+                    b.Property<int>("FlowId")
+                        .HasColumnType("integer");
 
                     b.Property<DateTimeOffset?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
@@ -245,7 +240,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
-                    b.Property<long>("TargetWorkflowDefinitionId")
+                    b.Property<long>("WorkflowDefinitionId")
                         .HasColumnType("bigint");
 
                     b.Property<long>("TokenId")
@@ -259,27 +254,20 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long>("UserTaskId")
                         .HasColumnType("bigint");
 
-                    b.Property<long?>("VersionChangeAuditId")
-                        .HasColumnType("bigint");
-
                     b.HasKey("Id");
 
                     b.HasIndex("NewUserTaskId");
-
-                    b.HasIndex("SourceWorkflowDefinitionId");
-
-                    b.HasIndex("TargetWorkflowDefinitionId");
 
                     b.HasIndex("TokenId");
 
                     b.HasIndex("UserTaskId");
 
-                    b.HasIndex("VersionChangeAuditId");
-
                     b.HasIndex("BatchId", "UserTaskId")
                         .IsUnique();
 
                     b.HasIndex("InstanceId", "Id");
+
+                    b.HasIndex("WorkflowDefinitionId", "FlowId");
 
                     b.HasIndex("BatchId", "Status", "Id");
 
@@ -2080,9 +2068,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
-                    b.Property<long?>("AdministrativeActionBatchId")
-                        .HasColumnType("bigint");
-
                     b.Property<DateTimeOffset>("ChangedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -2113,8 +2098,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("bigint");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("AdministrativeActionBatchId");
 
                     b.HasIndex("SourceWorkflowDefinitionId");
 
@@ -2489,18 +2472,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("PreparationJobId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "TargetWorkflowDefinition")
-                        .WithMany("AdministrativeActionBatches")
-                        .HasForeignKey("TargetWorkflowDefinitionId", "WorkflowKey")
-                        .HasPrincipalKey("Id", "WorkflowKey")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("ExecutionJob");
 
                     b.Navigation("PreparationJob");
 
-                    b.Navigation("TargetWorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.AdministrativeActionBatchItemEntity", b =>
@@ -2522,15 +2497,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("NewUserTaskId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "SourceWorkflowDefinition")
-                        .WithMany("AdministrativeActionBatchSourceItems")
-                        .HasForeignKey("SourceWorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "TargetWorkflowDefinition")
-                        .WithMany("AdministrativeActionBatchTargetItems")
-                        .HasForeignKey("TargetWorkflowDefinitionId")
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("AdministrativeActionBatchItems")
+                        .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -2546,26 +2515,17 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceVersionChangeEntity", "VersionChangeAudit")
-                        .WithMany()
-                        .HasForeignKey("VersionChangeAuditId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.Navigation("Batch");
 
                     b.Navigation("Instance");
 
                     b.Navigation("NewUserTask");
 
-                    b.Navigation("SourceWorkflowDefinition");
-
-                    b.Navigation("TargetWorkflowDefinition");
-
                     b.Navigation("Token");
 
                     b.Navigation("UserTask");
 
-                    b.Navigation("VersionChangeAudit");
+                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.ComplexGatewayStateEntity", b =>
@@ -2973,11 +2933,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceVersionChangeEntity", b =>
                 {
-                    b.HasOne("Flowbit.Infrastructure.Entities.AdministrativeActionBatchEntity", "AdministrativeActionBatch")
-                        .WithMany("VersionChanges")
-                        .HasForeignKey("AdministrativeActionBatchId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
                         .WithMany("VersionChanges")
                         .HasForeignKey("InstanceId")
@@ -2995,8 +2950,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("TargetWorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.Navigation("AdministrativeActionBatch");
 
                     b.Navigation("Instance");
 
@@ -3078,7 +3031,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Navigation("Items");
 
-                    b.Navigation("VersionChanges");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.ComplexGatewayStateEntity", b =>
@@ -3140,11 +3092,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", b =>
                 {
-                    b.Navigation("AdministrativeActionBatchSourceItems");
-
-                    b.Navigation("AdministrativeActionBatchTargetItems");
-
-                    b.Navigation("AdministrativeActionBatches");
+                    b.Navigation("AdministrativeActionBatchItems");
 
                     b.Navigation("InstanceHistory");
 

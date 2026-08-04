@@ -1078,7 +1078,7 @@ public sealed partial class WorkflowEngineService(
 
         var roles = NormalizeRoles(executionActor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable && !f.IsDefault && !f.IsAdministrative
+            .Where(f => f.IsSelectable && !f.IsDefault
                         && RoleAllowed(f.Roles, roles)
                         && (!task.RequiresClaim
                             || string.Equals(task.ClaimedBy, EffectiveUser(executionActor), StringComparison.OrdinalIgnoreCase)
@@ -1735,7 +1735,7 @@ public sealed partial class WorkflowEngineService(
         var context = WithContext(stored, actor, instance, workflow.Definition, node);
         AddMultiInstanceExecutionContext(context, execution);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable && !f.IsDefault && !f.IsAdministrative
+            .Where(f => f.IsSelectable && !f.IsDefault
                         && f.CancelRemainingInstances
                         && RoleAllowed(f.Roles, roles)
                         && (string.IsNullOrWhiteSpace(f.Condition)
@@ -1776,7 +1776,7 @@ public sealed partial class WorkflowEngineService(
 
         var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this multi-instance execution.");
-        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative || !flow.CancelRemainingInstances)
+        if (!flow.IsSelectable || flow.IsDefault || !flow.CancelRemainingInstances)
             throw new WorkflowDomainException("Only selectable interrupting flows can be taken at the multi-instance execution level.");
 
         EnsureRoleAllowed(node, actor);
@@ -1900,7 +1900,7 @@ public sealed partial class WorkflowEngineService(
         }
         var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this user task.");
-        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative)
+        if (!flow.IsSelectable || flow.IsDefault)
             throw new WorkflowDomainException("The requested flow is an engine-only/default route and cannot be selected by a user.");
         EnsureUserTaskActor(task, node, executionActor, requireActive: true);
         var actorRoles = NormalizeRoles(executionActor.Roles);
@@ -2251,7 +2251,8 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement>? variableValues,
         long? expectedTaskId,
         CancellationToken cancellationToken,
-        Action<ResolvedUserTaskAccess>? accessResolved = null)
+        Action<ResolvedUserTaskAccess>? accessResolved = null,
+        AdministrativeBatchFlowContext? administrativeBatch = null)
     {
         await LoadSettingsAsync(cancellationToken);
         UserTaskRecord? selectedTask = null;
@@ -2277,6 +2278,11 @@ public sealed partial class WorkflowEngineService(
 
         if (selectedTask.MultiInstanceExecutionId is not null)
         {
+            if (administrativeBatch is not null)
+            {
+                throw new WorkflowConflictException(
+                    "Administrative batch execution does not support multi-instance user tasks.");
+            }
             await TakeUserTaskFlowAsync(selectedTask.Id, flowId, actor, variableValues, cancellationToken);
             return await BuildDetailAsync(id, cancellationToken);
         }
@@ -2295,6 +2301,19 @@ public sealed partial class WorkflowEngineService(
             logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: instance status is {Status} (not Running).", flowId, id, instance.Status);
             throw new WorkflowConflictException("Only running instances can take a sequence flow.");
         }
+        if (administrativeBatch is not null)
+        {
+            if (instance.WorkflowDefinitionId != administrativeBatch.ExpectedWorkflowDefinitionId)
+            {
+                throw new WorkflowConflictException(
+                    "The workflow instance version changed after batch selection.");
+            }
+            if (instance.UpdatedAt != administrativeBatch.ExpectedInstanceUpdatedAt)
+            {
+                throw new WorkflowConflictException(
+                    "The workflow instance changed after batch selection.");
+            }
+        }
 
         var task = await runtime.GetUserTaskAsync(expectedTaskId!.Value, true, cancellationToken);
         if (task is null
@@ -2304,6 +2323,12 @@ public sealed partial class WorkflowEngineService(
         {
             throw new WorkflowConflictException("The selected user task is no longer active.");
         }
+        if (administrativeBatch is not null
+            && task.UpdatedAt != administrativeBatch.ExpectedUserTaskUpdatedAt)
+        {
+            throw new WorkflowConflictException(
+                "The user task changed after batch selection.");
+        }
         var token = await runtime.GetExecutionTokenAsync(task.TokenId, true, cancellationToken);
         if (token is null
             || token.InstanceId != instance.Id
@@ -2311,6 +2336,34 @@ public sealed partial class WorkflowEngineService(
             || token.NodeId != task.NodeId)
         {
             throw new WorkflowConflictException("The selected user task execution token is no longer active.");
+        }
+        if (administrativeBatch is not null
+            && token.Id != administrativeBatch.ExpectedTokenId)
+        {
+            throw new WorkflowConflictException(
+                "The execution token changed after batch selection.");
+        }
+        if (administrativeBatch is not null)
+        {
+            var activeTokens = await runtime.ListExecutionTokensAsync(
+                instance.Id,
+                ExecutionTokenRecordStatuses.Active,
+                cancellationToken);
+            var openTasks = (await runtime.ListUserTasksAsync(
+                    instance.Id,
+                    null,
+                    cancellationToken))
+                .Where(item => item.Status is
+                    UserTaskRecordStatuses.Active or UserTaskRecordStatuses.Pending)
+                .ToList();
+            if (activeTokens.Count != 1
+                || activeTokens[0].Id != token.Id
+                || openTasks.Count != 1
+                || openTasks[0].Id != task.Id)
+            {
+                throw new WorkflowConflictException(
+                    "Administrative batch execution requires exactly one active token and one active ordinary user task.");
+            }
         }
 
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
@@ -2322,12 +2375,16 @@ public sealed partial class WorkflowEngineService(
                 flowId, id, node.Id, node.Type);
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
-        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative)
+        if (!flow.IsSelectable || flow.IsDefault)
         {
             throw new WorkflowDomainException(
-                flow.IsAdministrative
-                    ? "Administrative sequence flows must be taken through the dedicated administrative-action endpoint."
-                    : "The requested sequence flow is an engine-only/default route and cannot be selected by a user.");
+                "The requested sequence flow is an engine-only/default route and cannot be selected by a user.");
+        }
+        if (administrativeBatch is not null
+            && !IsAdministrativeBatchFlowContract(workflow.Definition, node, flow))
+        {
+            throw new WorkflowDomainException(
+                "The requested flow is not a compatible administrative batch action.");
         }
 
         if (task.InstanceId != instance.Id
@@ -2335,19 +2392,30 @@ public sealed partial class WorkflowEngineService(
             || task.MultiInstanceExecutionId is not null
             || expectedTaskId is not null && task.Id != expectedTaskId.Value)
             throw new WorkflowConflictException("The active user task is no longer current.");
-        var access = await ResolveUserTaskAccessAsync(
-            task, instance, node, actor, true, cancellationToken)
-            ?? throw new WorkflowDomainException(
-                "The actor is not assigned or authorized for this user task.");
-        var executionActor = access.ExecutionActor;
-        accessResolved?.Invoke(access);
-        EnsureUserTaskActor(task, node, executionActor, requireActive: true);
+        ActorContext executionActor;
+        if (administrativeBatch is null)
+        {
+            var access = await ResolveUserTaskAccessAsync(
+                task, instance, node, actor, true, cancellationToken)
+                ?? throw new WorkflowDomainException(
+                    "The actor is not assigned or authorized for this user task.");
+            executionActor = access.ExecutionActor;
+            accessResolved?.Invoke(access);
+            EnsureUserTaskActor(task, node, executionActor, requireActive: true);
+        }
+        else
+        {
+            executionActor = actor;
+        }
 
         logger.LogInformation("Taking sequence flow {FlowId} ({FlowName}) on instance {InstanceId} from node {SourceNodeId} ({SourceNodeType}) to {TargetNodeId} by user '{User}'",
             flowId, flow.Name, id, node.Id, node.Type, flow.TargetRef, performedBy ?? "anonymous");
 
         var actorRoles = NormalizeRoles(executionActor.Roles);
-        EnsureRoleAllowed(node, actorRoles, executionActor.User);
+        if (administrativeBatch is null)
+        {
+            EnsureRoleAllowed(node, actorRoles, executionActor.User);
+        }
         if (!RoleAllowed(flow.Roles, actorRoles))
         {
             logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: user '{User}' lacks a flow role ({FlowRoles}).",
@@ -2355,7 +2423,10 @@ public sealed partial class WorkflowEngineService(
             throw new WorkflowDomainException(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
         }
-        EnsureActionAllowedByClaim(task, flow, executionActor);
+        if (administrativeBatch is null)
+        {
+            EnsureActionAllowedByClaim(task, flow, executionActor);
+        }
 
         var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
         var taskInstance = instance with
@@ -2398,7 +2469,12 @@ public sealed partial class WorkflowEngineService(
             flowValues,
             cancellationToken,
             executionActor.ActingFor,
-            executionActor.DelegationId);
+            executionActor.DelegationId,
+            completionKind: administrativeBatch is null
+                ? null
+                : NodeExecutionCompletionReasons.AdministrativeAction,
+            completionReason: administrativeBatch?.Reason,
+            administrativeActionBatchId: administrativeBatch?.BatchId);
         await RecordSequenceFlowOccurrenceAsync(
             flowInfo,
             instance.Id,
@@ -2407,7 +2483,9 @@ public sealed partial class WorkflowEngineService(
             null,
             null,
             flow,
-            "userTaskAction",
+            administrativeBatch is null
+                ? "userTaskAction"
+                : NodeExecutionCompletionReasons.AdministrativeAction,
             isAction: true,
             isTraversal: !node.AsyncAfter,
             actor: executionActor,
@@ -2440,7 +2518,12 @@ public sealed partial class WorkflowEngineService(
             payload,
             cancellationToken,
             executionActor.ActingFor,
-            executionActor.DelegationId);
+            executionActor.DelegationId,
+            note: administrativeBatch is null
+                ? null
+                : NodeExecutionCompletionReasons.AdministrativeAction,
+            reason: administrativeBatch?.Reason,
+            administrativeActionBatchId: administrativeBatch?.BatchId);
 
         if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
                 token.Id,
@@ -2479,6 +2562,14 @@ public sealed partial class WorkflowEngineService(
         }
 
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
+        if (administrativeBatch is not null
+            && (!BpmnFlowNodeTypes.IsUserTask(nextNode.Type)
+                || nextNode.MultiInstance is not null
+                || nextNode.AsyncBefore))
+        {
+            throw new WorkflowDomainException(
+                "Administrative batch flows must target an ordinary synchronous user task.");
+        }
         var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
             ? ExecutionTokenRecordStatuses.Faulted
             : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
@@ -2549,6 +2640,43 @@ public sealed partial class WorkflowEngineService(
             await EnsureMultiInstanceInitializedAsync(
                 instance, workflow.Definition, executionActor, cancellationToken);
             instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, workflow.Definition, cancellationToken);
+        }
+
+        if (administrativeBatch is not null)
+        {
+            var createdTargetTasks = (await runtime.ListUserTasksAsync(
+                    instance.Id,
+                    UserTaskRecordStatuses.Active,
+                    cancellationToken))
+                .Where(candidate => candidate.TokenId == token.Id
+                                    && candidate.NodeId == nextNode.Id
+                                    && candidate.Id != task.Id)
+                .OrderByDescending(candidate => candidate.Id)
+                .ToList();
+            if (createdTargetTasks.Count != 1)
+            {
+                throw new WorkflowConflictException(
+                    "The administrative batch action did not create exactly one active target user task.");
+            }
+            var newUserTaskId = createdTargetTasks[0].Id;
+            await runtime.CompleteAdministrativeActionBatchItemAsync(
+                administrativeBatch.BatchId,
+                instance.Id,
+                task.Id,
+                token.Id,
+                workflow.Id,
+                flow.Id,
+                newUserTaskId,
+                JsonSerializer.SerializeToElement(new
+                {
+                    workflowDefinitionId = workflow.Id,
+                    selectedFlowId = flow.Id,
+                    flowExternalId = flow.ExternalId,
+                    targetNodeId = nextNode.Id,
+                    newUserTaskId
+                }),
+                timeProvider.GetUtcNow(),
+                cancellationToken);
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -8720,7 +8848,7 @@ public sealed partial class WorkflowEngineService(
         if (execution is not null) AddMultiInstanceContext(context, task, execution);
         var roles = NormalizeRoles(actor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(flow => flow.IsSelectable && !flow.IsDefault && !flow.IsAdministrative
+            .Where(flow => flow.IsSelectable && !flow.IsDefault
                            && RoleAllowed(flow.Roles, roles)
                            && (string.IsNullOrWhiteSpace(flow.Condition)
                                || SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context)))

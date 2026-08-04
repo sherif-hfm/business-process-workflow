@@ -63,7 +63,8 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
                        AND column_name IN ('AdministrativeActionBatchId', 'Reason'))
                       OR
                       (table_name = 'workflow_instance_version_changes'
-                       AND column_name = 'AdministrativeActionBatchId'))
+                       AND column_name = 'AdministrativeActionBatchId')
+                      )
                 ORDER BY 1
                 """, connection))
             await using (var reader = await command.ExecuteReaderAsync())
@@ -73,14 +74,57 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
                 {
                     columns.Add(reader.GetString(0));
                 }
-                Assert.Equal(6, columns.Count);
+                Assert.Equal(
+                    [
+                        "instance_history.AdministrativeActionBatchId",
+                        "instance_history.Reason",
+                        "user_tasks.AdministrativeActionBatchId",
+                        "user_tasks.CompletionKind",
+                        "user_tasks.CompletionReason"
+                    ],
+                    columns);
+            }
+
+            await using (var command = new NpgsqlCommand("""
+                SELECT table_name || '.' || column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'flowbit'
+                  AND (
+                      (table_name = 'administrative_action_batches'
+                       AND column_name IN (
+                           'FlowMappingsJson',
+                           'TargetWorkflowDefinitionId',
+                           'FlowExternalId'))
+                      OR
+                      (table_name = 'administrative_action_batch_items'
+                       AND column_name IN (
+                           'WorkflowDefinitionId',
+                           'FlowId',
+                           'SourceWorkflowDefinitionId',
+                           'TargetWorkflowDefinitionId',
+                           'VersionChangeAuditId')))
+                ORDER BY 1
+                """, connection))
+            await using (var reader = await command.ExecuteReaderAsync())
+            {
+                var columns = new List<string>();
+                while (await reader.ReadAsync())
+                {
+                    columns.Add(reader.GetString(0));
+                }
+                Assert.Equal(
+                    [
+                        "administrative_action_batch_items.FlowId",
+                        "administrative_action_batch_items.WorkflowDefinitionId",
+                        "administrative_action_batches.FlowMappingsJson"
+                    ],
+                    columns);
             }
 
             await using (var command = new NpgsqlCommand("""
                 SELECT "Namespace" || '.' || "Key", "Value", "Description"
                 FROM flowbit.engine_settings
                 WHERE ("Namespace", "Key") IN (
-                    ('WorkflowAdministrativeActions', 'RequiredRole'),
                     ('WorkflowBatchActions', 'RequiredRole'),
                     ('WorkflowBatchActions', 'MaxItems'))
                 ORDER BY 1
@@ -95,10 +139,7 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
                         reader.GetString(1),
                         reader.IsDBNull(2) ? null : reader.GetString(2)));
                 }
-                Assert.Equal(3, settings.Count);
-                Assert.Contains(settings, row =>
-                    row.Key == "WorkflowAdministrativeActions.RequiredRole"
-                    && row.Value == "admin");
+                Assert.Equal(2, settings.Count);
                 Assert.Contains(settings, row =>
                     row.Key == "WorkflowBatchActions.RequiredRole"
                     && row.Value == "admin");
@@ -146,18 +187,17 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
                             AND column_name IN ('AdministrativeActionBatchId', 'Reason'))
                            OR
                            (table_name = 'workflow_instance_version_changes'
-                            AND column_name = 'AdministrativeActionBatchId'))),
+                            AND column_name = 'AdministrativeActionBatchId')
+                           )),
                     (SELECT count(*)
                      FROM flowbit.engine_settings
-                     WHERE "Namespace" IN (
-                         'WorkflowAdministrativeActions',
-                         'WorkflowBatchActions'))
+                     WHERE "Namespace" = 'WorkflowBatchActions')
                 """, connection);
             await using var downReader = await verifyDown.ExecuteReaderAsync();
             Assert.True(await downReader.ReadAsync());
             Assert.Equal(0, downReader.GetInt64(0));
             Assert.Equal(0, downReader.GetInt64(1));
-            Assert.Equal(3, downReader.GetInt64(2));
+            Assert.Equal(2, downReader.GetInt64(2));
             await downReader.CloseAsync();
 
             await using var downConstraint = new NpgsqlCommand("""

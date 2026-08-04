@@ -33,7 +33,7 @@
 {
     <section class="panel">
         <EmptyState Icon="token" Title="An administrative identity is required"
-                    Description="Set a test identity that has both the configured administrative role and a role on the authored flow.">
+                    Description="Set a test identity that has both the configured batch role and a role on every selected authored flow.">
             <a class="btn btn-primary" href="token">Set test identity</a>
         </EmptyState>
     </section>
@@ -43,8 +43,8 @@ else
     <section class="panel mb-3" aria-labelledby="admin-action-definition-heading">
         <div class="section-heading">
             <div>
-                <h2 id="admin-action-definition-heading">1. Choose the exact action contract</h2>
-                <p>The selected target version is captured now and is never resolved implicitly during execution.</p>
+                <h2 id="admin-action-definition-heading">1. Map each running workflow version</h2>
+                <p>Select the exact normal sequence flow to use for every included immutable version. Batch execution never changes an instance's version.</p>
             </div>
         </div>
 
@@ -54,12 +54,12 @@ else
         }
         else if (workflowFamilies.Count == 0)
         {
-            <EmptyState Icon="workflows" Title="No workflow definitions" Description="Publish a workflow version with a batchable administrative flow first." />
+            <EmptyState Icon="workflows" Title="No workflow definitions" Description="No workflow family exposes an authorized role-protected user-task flow." />
         }
         else
         {
-            <div class="filter-grid align-items-start">
-                <div>
+            <div class="mb-3">
+                <div class="admin-family-select">
                     <label class="form-label" for="admin-workflow-family">Workflow family</label>
                     <select id="admin-workflow-family" class="form-select" value="@selectedWorkflowKey" @onchange="OnWorkflowChangedAsync" disabled="@loadingDefinition">
                         @foreach (var workflow in workflowFamilies)
@@ -68,37 +68,71 @@ else
                         }
                     </select>
                 </div>
-                <div>
-                    <label class="form-label" for="admin-target-version">Exact published target version</label>
-                    <select id="admin-target-version" class="form-select" value="@(targetWorkflowId == 0 ? string.Empty : targetWorkflowId.ToString())" @onchange="OnTargetVersionChangedAsync" disabled="@(loadingDefinition || publishedVersions.Count == 0)">
-                        @if (publishedVersions.Count == 0)
-                        {
-                            <option value="">No published versions</option>
-                        }
-                        @foreach (var version in publishedVersions)
-                        {
-                            <option value="@version.Id">v@version.Version · #@version.Id@(version.IsDefault ? " · default" : string.Empty)</option>
-                        }
-                    </select>
-                </div>
-                <div class="filter-span-2">
-                    <label class="form-label" for="admin-flow">Batchable administrative flow</label>
-                    <select id="admin-flow" class="form-select" value="@flowExternalId" @onchange="OnActionChanged" disabled="@(loadingDefinition || actions.Count == 0)">
-                        @if (actions.Count == 0)
-                        {
-                            <option value="">No authorized batchable actions</option>
-                        }
-                        @foreach (var action in actions)
-                        {
-                            <option value="@action.FlowExternalId">@ActionLabel(action)</option>
-                        }
-                    </select>
-                    @if (SelectedAction is not null)
-                    {
-                        <div class="form-text">Stable flow ID: <code>@SelectedAction.FlowExternalId</code> · source node #@SelectedAction.SourceNodeId · target node #@SelectedAction.TargetNodeId</div>
-                    }
-                </div>
             </div>
+
+            @if (loadingDefinition)
+            {
+                <div class="skeleton" role="status"></div>
+            }
+            else if (workflowVersions.Count == 0)
+            {
+                <EmptyState Icon="workflows" Title="No versions in this family" Description="Choose another workflow family." />
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table align-middle admin-mapping-table">
+                        <thead><tr><th>Include</th><th>Immutable version</th><th>Exact normal flow</th><th>Input contract</th></tr></thead>
+                        <tbody>
+                            @foreach (var version in workflowVersions)
+                            {
+                                var versionActions = GetActions(version.Id);
+                                var included = includedWorkflowIds.Contains(version.Id);
+                                <tr class="@(included ? "table-active" : null)">
+                                    <td>
+                                        <input class="form-check-input" type="checkbox"
+                                               aria-label="Include workflow version @version.Version"
+                                               checked="@included"
+                                               disabled="@(versionActions.Count == 0)"
+                                               @onchange="_ => ToggleWorkflowVersion(version.Id)" />
+                                    </td>
+                                    <td>
+                                        <strong>v@version.Version</strong>
+                                        <span class="data-subtitle">Definition #@version.Id@(version.IsDefault ? " · default" : string.Empty)@(version.IsPublished ? string.Empty : " · immutable")</span>
+                                    </td>
+                                    <td>
+                                        @if (versionActions.Count == 0)
+                                        {
+                                            <span class="text-muted">No authorized compatible flows</span>
+                                        }
+                                        else
+                                        {
+                                            <select class="form-select" value="@GetSelectedFlowId(version.Id)"
+                                                    disabled="@(!included)"
+                                                    aria-label="Flow for workflow version @version.Version"
+                                                    @onchange="args => OnMappedFlowChanged(version.Id, args)">
+                                                @foreach (var action in versionActions)
+                                                {
+                                                    <option value="@action.FlowId">@ActionLabel(action)</option>
+                                                }
+                                            </select>
+                                        }
+                                    </td>
+                                    <td><span class="small">@(included ? VariableContractLabel(GetSelectedAction(version.Id)) : "Not included")</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="alert @(SelectedMappings.Count == 0 ? "alert-secondary" : MappingsHaveCompatibleVariables ? "alert-info" : "alert-danger") py-2 mb-0">
+                    <strong>@SelectedMappings.Count mapping(s).</strong>
+                    @(SelectedMappings.Count == 0
+                        ? "Include each version that should participate in this batch."
+                        : MappingsHaveCompatibleVariables
+                            ? "Candidate search spans these exact definitions and flows."
+                            : "Mapped flows must expose the same variable names, types, array flags, and required flags.")
+                </div>
+            }
         }
     </section>
 
@@ -106,13 +140,12 @@ else
         <div class="section-heading">
             <div>
                 <h2 id="admin-candidate-filter-heading">2. Search active candidate tasks</h2>
-                <p>Only single-position ordinary user tasks are candidates. Eligibility is prepared again against the frozen task identities.</p>
+                <p>Only active single-position ordinary user tasks on the mapped versions and source nodes are candidates.</p>
             </div>
         </div>
         <div class="filter-grid" @onchange="MarkCandidateFiltersDirty">
             <div><label class="form-label" for="admin-task-id">Task ID</label><input id="admin-task-id" type="number" class="form-control" @bind="candidateTaskId" /></div>
             <div><label class="form-label" for="admin-instance-id">Instance ID</label><input id="admin-instance-id" type="number" class="form-control" @bind="candidateInstanceId" /></div>
-            <div><label class="form-label" for="admin-source-version">Source version ID</label><input id="admin-source-version" type="number" class="form-control" @bind="candidateSourceWorkflowId" /></div>
             <div><label class="form-label" for="admin-business-key">Business key</label><input id="admin-business-key" class="form-control" @bind="candidateBusinessKey" /></div>
             <div class="filter-span-2">
                 <AdvancedVariableFilterEditor Id="admin-variable-filter"
@@ -138,7 +171,7 @@ else
             {
                 <div class="d-flex flex-wrap gap-2">
                     <button class="btn btn-sm btn-outline-secondary" @onclick="SelectCurrentCandidatePage">Select this page</button>
-                    <button class="btn btn-sm btn-outline-secondary" @onclick="ClearSelection">Clear selection</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="ClearSelection">@(allMatchingSelection ? "Clear exclusions" : "Clear selection")</button>
                 </div>
             }
         </div>
@@ -153,7 +186,7 @@ else
         }
         else if (candidates is null)
         {
-            <EmptyState Icon="search" Title="Search for candidates" Description="Choose a published target version and batchable administrative flow, then run a task search." />
+            <EmptyState Icon="search" Title="Search for candidates" Description="Include at least one exact version/flow mapping, then run a task search." />
         }
         else if (candidates.Items.Count == 0)
         {
@@ -177,15 +210,15 @@ else
 
             <div class="table-responsive">
                 <table class="table align-middle">
-                    <thead><tr><th><span class="visually-hidden">Select</span></th><th>Task / instance</th><th>Current node</th><th>Source version</th><th>Precheck</th><th>Updated</th></tr></thead>
+                    <thead><tr><th><span class="visually-hidden">Select</span></th><th>Task / instance</th><th>Current node</th><th>Mapped version / flow</th><th>Precheck</th><th>Updated</th></tr></thead>
                     <tbody>
                         @foreach (var candidate in candidates.Items)
                         {
                             <tr>
                                 <td><input class="form-check-input" type="checkbox" aria-label="Select task @candidate.UserTaskId" checked="@IsCandidateSelected(candidate.UserTaskId)" @onchange="_ => ToggleCandidate(candidate.UserTaskId)" /></td>
-                                <td><a href="@($"user-tasks/{candidate.UserTaskId}")" class="data-title">Task #@candidate.UserTaskId</a><span class="data-subtitle">Instance #@candidate.InstanceId · @(candidate.BusinessKey ?? candidate.WorkflowKey)</span></td>
+                                <td><span class="data-title">Task #@candidate.UserTaskId</span><span class="data-subtitle"><a href="@($"instances/{candidate.InstanceId}")">Instance #@candidate.InstanceId</a> · @(candidate.BusinessKey ?? candidate.WorkflowKey)</span></td>
                                 <td>@candidate.NodeName<span class="data-subtitle">Node #@candidate.NodeId@(string.IsNullOrWhiteSpace(candidate.NodeExternalId) ? string.Empty : $" · {candidate.NodeExternalId}")</span></td>
-                                <td>#@candidate.SourceWorkflowId</td>
+                                <td>v@candidate.WorkflowVersion · #@candidate.WorkflowDefinitionId<span class="data-subtitle">@candidate.FlowName · flow #@candidate.FlowId</span></td>
                                 <td>
                                     <StatusBadge Status="@(candidate.Eligible ? "ready" : "warning")" Text="@(candidate.Eligible ? "Eligible precheck" : "Review blockers")" />
                                     @if (candidate.Issues.Count > 0)
@@ -216,20 +249,24 @@ else
         <div class="row g-3">
             <div class="col-lg-6">
                 <label class="form-label" for="admin-reason">Reason <span class="required-mark">*</span></label>
-                <textarea id="admin-reason" class="form-control" rows="6" maxlength="2000" @bind="reason" @bind:event="oninput" placeholder="Why is this population being sent back for rework?"></textarea>
+                <textarea id="admin-reason" class="form-control" rows="6" maxlength="1000" @bind="reason" @bind:event="oninput" placeholder="Why is this population being sent back for rework?"></textarea>
                 <div class="form-text">Required, 1–1,000 characters. It is retained with each administrative action.</div>
             </div>
             <div class="col-lg-6">
                 <label class="form-label" for="admin-common-variables">Common flow variables (JSON object)</label>
                 <textarea id="admin-common-variables" class="form-control font-monospace" rows="6" @bind="commonVariablesJson" @bind:event="oninput" placeholder="{}"></textarea>
                 <div class="form-text">
-                    @if (SelectedAction?.Variables.Count > 0)
+                    @if (SelectedMappings.Count == 0)
                     {
-                        <text>Authored inputs: @string.Join(", ", SelectedAction.Variables.Select(variable => $"{variable.Name}:{variable.DataType}{(variable.IsArray ? "[]" : string.Empty)}{(variable.Required ? "*" : string.Empty)}"))</text>
+                        <text>Select at least one version/flow mapping to see its input contract.</text>
+                    }
+                    else if (SelectedMappedAction?.Variables.Count > 0)
+                    {
+                        <text>Shared authored inputs: @VariableContractLabel(SelectedMappedAction)</text>
                     }
                     else
                     {
-                        <text>This action declares no flow variables.</text>
+                        <text>The mapped flows declare no common variables.</text>
                     }
                 </div>
             </div>
@@ -245,7 +282,7 @@ else
         var summary = currentBatch.Summary;
         <section class="panel panel-flush mb-3" aria-labelledby="admin-current-batch-heading">
             <div class="section-heading px-3 pt-3">
-                <div><span class="page-eyebrow">Batch #@summary.Id</span><h2 id="admin-current-batch-heading">Preparation and execution</h2><p>@summary.WorkflowKey · <code>@summary.FlowExternalId</code> · updated @summary.UpdatedAt.ToLocalTime().ToString("g")</p></div>
+                <div><span class="page-eyebrow">Batch #@summary.Id</span><h2 id="admin-current-batch-heading">Preparation and execution</h2><p>@summary.WorkflowKey · @summary.FlowMappingCount exact mapping(s) · updated @summary.UpdatedAt.ToLocalTime().ToString("g")</p></div>
                 <div class="d-flex flex-wrap gap-2 align-items-center">
                     <StatusBadge Status="@summary.Status" />
                     <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshCurrentBatchAsync" disabled="@refreshingBatch"><AppIcon Name="refresh" /> Refresh</button>
@@ -270,6 +307,15 @@ else
                     <dd class="col-md-10">@summary.PreparedBy (@string.Join(", ", currentBatch.PreparedByRoles))</dd>
                     <dt class="col-md-2">Confirmed by</dt>
                     <dd class="col-md-10">@(summary.ConfirmedBy is null ? "Not confirmed" : $"{summary.ConfirmedBy} ({string.Join(", ", currentBatch.ConfirmedByRoles ?? [])})")</dd>
+                    <dt class="col-md-2">Flow mappings</dt>
+                    <dd class="col-md-10">
+                        <ul class="list-unstyled mb-0">
+                            @foreach (var mapping in currentBatch.FlowMappings.OrderBy(mapping => mapping.WorkflowVersion))
+                            {
+                                <li>v@mapping.WorkflowVersion / definition #@mapping.WorkflowDefinitionId: @mapping.Name (flow #@mapping.FlowId)</li>
+                            }
+                        </ul>
+                    </dd>
                 </dl>
                 <div class="d-flex flex-wrap gap-3">
                     <details>
@@ -321,14 +367,14 @@ else
             {
                 <div class="table-responsive">
                     <table class="table align-middle">
-                        <thead><tr><th>Item</th><th>Task / instance</th><th>Versions</th><th>Status</th><th>Result / issue</th><th>Updated</th></tr></thead>
+                        <thead><tr><th>Item</th><th>Task / instance</th><th>Version / flow</th><th>Status</th><th>Result / issue</th><th>Updated</th></tr></thead>
                         <tbody>
                             @foreach (var item in batchItems.Items)
                             {
                                 <tr>
                                     <td>#@item.Id</td>
                                     <td><a href="@($"instances/{item.InstanceId}")">Instance #@item.InstanceId</a><span class="data-subtitle">Task #@item.UserTaskId · token #@item.TokenId</span></td>
-                                    <td>#@item.SourceWorkflowId → #@item.TargetWorkflowId</td>
+                                    <td>Definition #@item.WorkflowDefinitionId<span class="data-subtitle">Flow #@item.FlowId</span></td>
                                     <td><StatusBadge Status="@item.Status" /></td>
                                     <td class="admin-result-cell">
                                         @if (!string.IsNullOrWhiteSpace(item.ErrorDescription))
@@ -393,7 +439,7 @@ else
                         {
                             <tr class="@(currentBatch?.Summary.Id == item.Id ? "table-active" : null)">
                                 <td>#@item.Id</td>
-                                <td>@item.WorkflowKey<span class="data-subtitle"><code>@item.FlowExternalId</code> · target #@item.TargetWorkflowId</span></td>
+                                <td>@item.WorkflowKey<span class="data-subtitle">@item.FlowMappingCount exact mapping(s)</span></td>
                                 <td>@item.PreparedBy</td>
                                 <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.EligibleItemCount.ToString("N0") eligible · @item.FailedItemCount.ToString("N0") failed</span></td>
                                 <td><StatusBadge Status="@item.Status" /></td>
@@ -438,14 +484,13 @@ else
 
     private IReadOnlyList<WorkflowSummaryDto>? workflowFamilies;
     private IReadOnlyList<WorkflowSummaryDto> administrativeWorkflowCatalog = [];
-    private IReadOnlyList<WorkflowSummaryDto> publishedVersions = [];
-    private IReadOnlyList<AdministrativeActionSummaryDto> actions = [];
+    private IReadOnlyList<WorkflowSummaryDto> workflowVersions = [];
+    private readonly Dictionary<long, IReadOnlyList<AdministrativeActionSummaryDto>> actionsByWorkflowId = [];
+    private readonly HashSet<long> includedWorkflowIds = [];
+    private readonly Dictionary<long, int> selectedFlowIds = [];
     private string? selectedWorkflowKey;
-    private long targetWorkflowId;
-    private string? flowExternalId;
     private long? candidateTaskId;
     private long? candidateInstanceId;
-    private long? candidateSourceWorkflowId;
     private string? candidateBusinessKey;
     private string? candidateVariableFilterJson;
     private string? candidateVariableFilterError;
@@ -478,14 +523,25 @@ else
     private readonly CancellationTokenSource pollCancellation = new();
     private Task? pollTask;
 
-    private AdministrativeActionSummaryDto? SelectedAction => actions.FirstOrDefault(action =>
-        string.Equals(action.FlowExternalId, flowExternalId, StringComparison.OrdinalIgnoreCase));
-    private bool CanSearchCandidates => !candidateLoading && targetWorkflowId > 0 && !string.IsNullOrWhiteSpace(flowExternalId);
+    private IReadOnlyList<AdministrativeActionFlowMappingDto> SelectedMappings => workflowVersions
+        .Where(version => includedWorkflowIds.Contains(version.Id) && selectedFlowIds.ContainsKey(version.Id))
+        .OrderBy(version => version.Version)
+        .Select(version => new AdministrativeActionFlowMappingDto(version.Id, selectedFlowIds[version.Id]))
+        .ToArray();
+    private IReadOnlyList<AdministrativeActionSummaryDto> SelectedMappedActions => workflowVersions
+        .Where(version => includedWorkflowIds.Contains(version.Id))
+        .Select(version => GetSelectedAction(version.Id))
+        .Where(action => action is not null)
+        .Cast<AdministrativeActionSummaryDto>()
+        .ToArray();
+    private AdministrativeActionSummaryDto? SelectedMappedAction => SelectedMappedActions.FirstOrDefault();
+    private bool MappingsHaveCompatibleVariables => HaveCompatibleVariableContracts(SelectedMappedActions);
+    private bool CanSearchCandidates => !candidateLoading && SelectedMappings.Count > 0 && MappingsHaveCompatibleVariables;
     private long SelectedCandidateCount => allMatchingSelection
         ? Math.Max(0, (candidates?.TotalCount ?? 0) - excludedTaskIds.Count)
         : explicitlySelectedTaskIds.Count;
     private bool CanCreateBatch => !batchOperation && !candidateFiltersDirty && SelectedCandidateCount > 0
-        && SelectedCandidateCount <= 10_000 && targetWorkflowId > 0 && !string.IsNullOrWhiteSpace(flowExternalId)
+        && SelectedCandidateCount <= 10_000 && SelectedMappings.Count > 0 && MappingsHaveCompatibleVariables
         && !string.IsNullOrWhiteSpace(reason) && reason.Trim().EnumerateRunes().Count() <= 1000
         && appliedCandidateSearch is not null;
     private int CandidateTotalPages => TotalPages(candidates?.TotalCount ?? 0, CandidatePageSize);
@@ -525,7 +581,7 @@ else
             selectedWorkflowKey = workflowFamilies.FirstOrDefault()?.WorkflowKey;
             if (!string.IsNullOrWhiteSpace(selectedWorkflowKey))
             {
-                await LoadPublishedVersionsAsync(selectedWorkflowKey);
+                await LoadWorkflowVersionsAsync(selectedWorkflowKey);
             }
             await LoadBatchListAsync();
             if (RequestedBatchId is > 0)
@@ -554,34 +610,40 @@ else
     private async Task OnWorkflowChangedAsync(ChangeEventArgs args)
     {
         selectedWorkflowKey = args.Value?.ToString();
-        if (!string.IsNullOrWhiteSpace(selectedWorkflowKey)) await LoadPublishedVersionsAsync(selectedWorkflowKey);
+        if (!string.IsNullOrWhiteSpace(selectedWorkflowKey)) await LoadWorkflowVersionsAsync(selectedWorkflowKey);
     }
 
-    private async Task LoadPublishedVersionsAsync(string workflowKey)
+    private async Task LoadWorkflowVersionsAsync(string workflowKey)
     {
         try
         {
             loadingDefinition = true;
             error = null;
-            publishedVersions = administrativeWorkflowCatalog
+            workflowVersions = administrativeWorkflowCatalog
                 .Where(version => string.Equals(
                     version.WorkflowKey,
                     workflowKey,
                     StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(version => version.Version)
                 .ToArray();
-            targetWorkflowId = publishedVersions.FirstOrDefault(version => version.IsDefault)?.Id
-                ?? publishedVersions.FirstOrDefault()?.Id
-                ?? 0;
-            await LoadActionsAsync();
+
+            var actionResults = await Task.WhenAll(workflowVersions.Select(async version =>
+                (version.Id, Actions: await Api.GetWorkflowAdministrativeActionsAsync(version.Id))));
+            actionsByWorkflowId.Clear();
+            foreach (var result in actionResults)
+            {
+                actionsByWorkflowId[result.Id] = result.Actions;
+            }
+            includedWorkflowIds.Clear();
+            selectedFlowIds.Clear();
         }
         catch (Exception ex)
         {
             error = ex.Message;
-            publishedVersions = [];
-            targetWorkflowId = 0;
-            actions = [];
-            flowExternalId = null;
+            workflowVersions = [];
+            actionsByWorkflowId.Clear();
+            includedWorkflowIds.Clear();
+            selectedFlowIds.Clear();
         }
         finally
         {
@@ -590,24 +652,37 @@ else
         }
     }
 
-    private async Task OnTargetVersionChangedAsync(ChangeEventArgs args)
+    private IReadOnlyList<AdministrativeActionSummaryDto> GetActions(long workflowDefinitionId) =>
+        actionsByWorkflowId.GetValueOrDefault(workflowDefinitionId) ?? [];
+
+    private AdministrativeActionSummaryDto? GetSelectedAction(long workflowDefinitionId) =>
+        selectedFlowIds.TryGetValue(workflowDefinitionId, out var flowId)
+            ? GetActions(workflowDefinitionId).FirstOrDefault(action => action.FlowId == flowId)
+            : null;
+
+    private string GetSelectedFlowId(long workflowDefinitionId) =>
+        selectedFlowIds.TryGetValue(workflowDefinitionId, out var flowId) ? flowId.ToString() : string.Empty;
+
+    private void ToggleWorkflowVersion(long workflowDefinitionId)
     {
-        _ = long.TryParse(args.Value?.ToString(), out targetWorkflowId);
-        await LoadActionsAsync();
+        if (!includedWorkflowIds.Add(workflowDefinitionId))
+        {
+            includedWorkflowIds.Remove(workflowDefinitionId);
+        }
+        else if (!selectedFlowIds.ContainsKey(workflowDefinitionId))
+        {
+            var firstAction = GetActions(workflowDefinitionId).FirstOrDefault();
+            if (firstAction is not null) selectedFlowIds[workflowDefinitionId] = firstAction.FlowId;
+        }
         ResetCandidateResults();
     }
 
-    private async Task LoadActionsAsync()
+    private void OnMappedFlowChanged(long workflowDefinitionId, ChangeEventArgs args)
     {
-        actions = targetWorkflowId == 0
-            ? []
-            : await Api.GetWorkflowAdministrativeActionsAsync(targetWorkflowId, batchableOnly: true);
-        flowExternalId = actions.FirstOrDefault()?.FlowExternalId;
-    }
-
-    private void OnActionChanged(ChangeEventArgs args)
-    {
-        flowExternalId = args.Value?.ToString();
+        if (int.TryParse(args.Value?.ToString(), out var flowId))
+        {
+            selectedFlowIds[workflowDefinitionId] = flowId;
+        }
         ResetCandidateResults();
     }
 
@@ -630,7 +705,6 @@ else
     {
         candidateTaskId = null;
         candidateInstanceId = null;
-        candidateSourceWorkflowId = null;
         candidateBusinessKey = null;
         candidateVariableFilterJson = null;
         candidateVariableFilterError = null;
@@ -688,11 +762,9 @@ else
 
     private AdministrativeActionCandidateSearchRequest BuildCandidateSearch(int? page, int? pageSize, JsonElement? variableFilter) => new()
     {
-        TargetWorkflowId = targetWorkflowId,
-        FlowExternalId = flowExternalId ?? string.Empty,
+        FlowMappings = SelectedMappings,
         UserTaskId = candidateTaskId,
         InstanceId = candidateInstanceId,
-        SourceWorkflowId = candidateSourceWorkflowId,
         BusinessKey = string.IsNullOrWhiteSpace(candidateBusinessKey) ? null : candidateBusinessKey.Trim(),
         VariableFilter = variableFilter,
         IncludeVariables = true,
@@ -776,8 +848,7 @@ else
                     null,
                     null);
             currentBatch = await Api.CreateAdministrativeActionBatchAsync(new CreateAdministrativeActionBatchRequest(
-                targetWorkflowId,
-                flowExternalId!,
+                appliedCandidateSearch.FlowMappings,
                 reason.Trim(),
                 variables,
                 selection,
@@ -1031,7 +1102,28 @@ else
     }
 
     private static string ActionLabel(AdministrativeActionSummaryDto action) =>
-        $"{(string.IsNullOrWhiteSpace(action.Name) ? action.FlowExternalId : action.Name)} · {action.SourceNodeName} → {action.TargetNodeName}";
+        $"{(string.IsNullOrWhiteSpace(action.Name) ? $"Flow #{action.FlowId}" : action.Name)} · {action.SourceNodeName} → {action.TargetNodeName} · flow #{action.FlowId}";
+
+    private static string VariableContractLabel(AdministrativeActionSummaryDto? action) =>
+        action is null || action.Variables.Count == 0
+            ? "No flow variables"
+            : string.Join(", ", action.Variables
+                .OrderBy(variable => variable.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(variable => $"{variable.Name}:{variable.DataType}{(variable.IsArray ? "[]" : string.Empty)}{(variable.Required ? "*" : string.Empty)}"));
+
+    private static bool HaveCompatibleVariableContracts(IReadOnlyList<AdministrativeActionSummaryDto> actions)
+    {
+        if (actions.Count <= 1) return true;
+        var expected = VariableSignatures(actions[0]);
+        return actions.Skip(1).All(action => expected.SequenceEqual(
+            VariableSignatures(action),
+            StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> VariableSignatures(AdministrativeActionSummaryDto action) => action.Variables
+        .OrderBy(variable => variable.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(variable => $"{variable.Name}\u001f{variable.DataType}\u001f{variable.IsArray}\u001f{variable.Required}")
+        .ToArray();
     private static string FormatJson(JsonElement? value) => value is null ? string.Empty : JsonSerializer.Serialize(value.Value, JsonOptions);
     private static int TotalPages(long totalCount, int pageSize) => totalCount == 0 ? 1 : (int)Math.Ceiling(totalCount / (double)pageSize);
     private static bool IsCancellable(string status) => status.Equals("preparing", StringComparison.OrdinalIgnoreCase)

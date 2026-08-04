@@ -7,13 +7,9 @@ public sealed class AdministrativeActionBatchEntity
 {
     public long Id { get; set; }
 
-    public long TargetWorkflowDefinitionId { get; set; }
-
-    public WorkflowDefinitionEntity? TargetWorkflowDefinition { get; set; }
-
     public string WorkflowKey { get; set; } = string.Empty;
 
-    public string FlowExternalId { get; set; } = string.Empty;
+    public JsonDocument FlowMappingsJson { get; set; } = JsonDocument.Parse("[]");
 
     public string Reason { get; set; } = string.Empty;
 
@@ -82,6 +78,4 @@ public sealed class AdministrativeActionBatchEntity
     public List<UserTaskEntity> CompletedUserTasks { get; set; } = [];
 
     public List<InstanceHistoryEntity> InstanceHistory { get; set; } = [];
-
-    public List<WorkflowInstanceVersionChangeEntity> VersionChanges { get; set; } = [];
 }

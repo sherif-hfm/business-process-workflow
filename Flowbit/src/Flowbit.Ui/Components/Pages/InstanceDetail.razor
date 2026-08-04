@@ -214,7 +214,6 @@ else
         @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
         @if (instance.VersionChanges.Count > 0) { <a class="status-tab text-decoration-none" href="#version-changes" @onclick='() => ScrollToSectionAsync("version-changes")' @onclick:preventDefault>Version changes</a> }
-        @if (administrativeActions.Count > 0) { <a class="status-tab text-decoration-none" href="#administrative-actions" @onclick='() => ScrollToSectionAsync("administrative-actions")' @onclick:preventDefault>Administrative actions</a> }
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
@@ -455,41 +454,6 @@ else
         }
     </section>
 
-    @if (administrativeTaskId is long privilegedTaskId && administrativeActions.Count > 0)
-    {
-        <section id="administrative-actions" class="panel mb-3 border-warning">
-            <div class="section-heading">
-                <div>
-                    <h2>Administrative actions</h2>
-                    <p>Privileged authored send-back actions available for the exact active task and current published version</p>
-                </div>
-                <span class="mono-id">Task #@privilegedTaskId</span>
-            </div>
-            <div class="alert alert-warning">
-                A send-back creates a new visit. It does not restore variables, erase history, or reverse external effects.
-            </div>
-            <div class="row g-3">
-                @foreach (var action in administrativeActions)
-                {
-                    <div class="col-md-6">
-                        <div class="card h-100 border-warning">
-                            <div class="card-body">
-                                <h3 class="h5">@action.Name</h3>
-                                <p class="mb-2">@action.SourceNodeName &rarr; @action.TargetNodeName</p>
-                                <div class="data-subtitle">
-                                    @action.FlowExternalId@if (action.IsBatchable) { <text> &middot; Batchable</text> }
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                }
-            </div>
-            <a class="btn btn-warning mt-3" href="@($"user-tasks/{privilegedTaskId}")">
-                Open privileged task actions
-            </a>
-        </section>
-    }
-
     @if (instance.VersionChanges.Count > 0)
     {
         <section id="version-changes" class="panel mb-3">
@@ -508,7 +472,6 @@ else
                             <th scope="col">To</th>
                             <th scope="col">Actor</th>
                             <th scope="col">Reason</th>
-                            <th scope="col">Batch</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -524,16 +487,6 @@ else
                                     <span class="data-subtitle">@(change.ChangedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", change.ChangedByRoles))</span>
                                 </td>
                                 <td class="text-break">@change.Reason</td>
-                                <td>
-                                    @if (change.AdministrativeActionBatchId is long batchId)
-                                    {
-                                        <a href="@($"administrative-actions?batchId={batchId}")">Batch #@batchId</a>
-                                    }
-                                    else
-                                    {
-                                        <span>&mdash;</span>
-                                    }
-                                </td>
                             </tr>
                         }
                     </tbody>
@@ -633,8 +586,6 @@ else
     private InstanceDetailDto? instance;
     private IReadOnlyList<SequenceFlowModel> availableFlows = [];
     private IReadOnlyList<SequenceFlowModel> interruptFlows = [];
-    private IReadOnlyList<AdministrativeActionSummaryDto> administrativeActions = [];
-    private long? administrativeTaskId;
     private readonly Dictionary<string, string?> flowInputs = [];
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private readonly CancellationTokenSource pollCancellation = new();
@@ -1426,41 +1377,6 @@ else
         interruptFlows = SoleActiveMultiInstance is { } progress
             ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId, cancellationToken)
             : [];
-
-        administrativeActions = [];
-        administrativeTaskId = instance?.UserTasks is
-            {
-                IsMultiInstance: false,
-                ActiveCount: 1,
-                PendingCount: 0,
-                NormalTaskCount: 1,
-                SoleUserTaskId: long taskId
-            }
-            ? taskId
-            : null;
-        if (instance is null || !IsRunning || administrativeTaskId is not long activeTaskId)
-        {
-            return;
-        }
-
-        try
-        {
-            administrativeActions = await Api.GetUserTaskAdministrativeActionsAsync(
-                activeTaskId,
-                instance.Workflow.Id,
-                cancellationToken);
-        }
-        catch (WorkflowApiException exception) when (exception.StatusCode is
-            System.Net.HttpStatusCode.BadRequest
-                or System.Net.HttpStatusCode.Unauthorized
-                or System.Net.HttpStatusCode.Forbidden
-                or System.Net.HttpStatusCode.NotFound)
-        {
-            // This is a privileged optional section. Ordinary viewers keep the
-            // normal instance page without disclosing administrative actions.
-            administrativeActions = [];
-            administrativeTaskId = null;
-        }
     }
 
     private async Task RefreshFrom(Func<Task> action)

@@ -36,13 +36,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
             migrationBuilder.AddColumn<long>(
                 name: "AdministrativeActionBatchId",
                 schema: "flowbit",
-                table: "workflow_instance_version_changes",
-                type: "bigint",
-                nullable: true);
-
-            migrationBuilder.AddColumn<long>(
-                name: "AdministrativeActionBatchId",
-                schema: "flowbit",
                 table: "user_tasks",
                 type: "bigint",
                 nullable: true);
@@ -85,9 +78,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 {
                     Id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
-                    TargetWorkflowDefinitionId = table.Column<long>(type: "bigint", nullable: false),
                     WorkflowKey = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: false),
-                    FlowExternalId = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: false, collation: "C"),
+                    FlowMappingsJson = table.Column<JsonDocument>(type: "jsonb", nullable: false),
                     Reason = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: false),
                     CommonVariablesJson = table.Column<JsonDocument>(type: "jsonb", nullable: false, defaultValueSql: "'{}'::jsonb"),
                     SelectionJson = table.Column<JsonDocument>(type: "jsonb", nullable: false),
@@ -122,14 +114,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 {
                     table.PrimaryKey("PK_administrative_action_batches", x => x.Id);
                     table.CheckConstraint("CK_administrative_action_batches_counts", "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
+                    table.CheckConstraint("CK_administrative_action_batches_flow_mappings", "jsonb_typeof(\"FlowMappingsJson\") = 'array' AND jsonb_array_length(\"FlowMappingsJson\") > 0");
                     table.CheckConstraint("CK_administrative_action_batches_status", "\"Status\" IN ('preparing', 'ready', 'queued', 'running', 'completed', 'completedWithIssues', 'cancelled', 'failed')");
-                    table.ForeignKey(
-                        name: "FK_administrative_action_batches_workflow_definitions_TargetWo~",
-                        columns: x => new { x.TargetWorkflowDefinitionId, x.WorkflowKey },
-                        principalSchema: "flowbit",
-                        principalTable: "workflow_definitions",
-                        principalColumns: new[] { "Id", "WorkflowKey" },
-                        onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_administrative_action_batches_workflow_jobs_ExecutionJobId",
                         column: x => x.ExecutionJobId,
@@ -157,8 +143,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     InstanceId = table.Column<long>(type: "bigint", nullable: false),
                     UserTaskId = table.Column<long>(type: "bigint", nullable: false),
                     TokenId = table.Column<long>(type: "bigint", nullable: false),
-                    SourceWorkflowDefinitionId = table.Column<long>(type: "bigint", nullable: false),
-                    TargetWorkflowDefinitionId = table.Column<long>(type: "bigint", nullable: false),
+                    WorkflowDefinitionId = table.Column<long>(type: "bigint", nullable: false),
+                    FlowId = table.Column<int>(type: "integer", nullable: false),
                     CapturedInstanceUpdatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     CapturedUserTaskUpdatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     Status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
@@ -167,7 +153,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     ErrorCode = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     ErrorDescription = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true),
                     NewUserTaskId = table.Column<long>(type: "bigint", nullable: true),
-                    VersionChangeAuditId = table.Column<long>(type: "bigint", nullable: true),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
                     UpdatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
                     PreparedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
@@ -207,24 +192,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_administrative_action_batch_items_workflow_definitions_Sour~",
-                        column: x => x.SourceWorkflowDefinitionId,
+                        name: "FK_administrative_action_batch_items_workflow_definitions_Work~",
+                        column: x => x.WorkflowDefinitionId,
                         principalSchema: "flowbit",
                         principalTable: "workflow_definitions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_administrative_action_batch_items_workflow_definitions_Targ~",
-                        column: x => x.TargetWorkflowDefinitionId,
-                        principalSchema: "flowbit",
-                        principalTable: "workflow_definitions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_administrative_action_batch_items_workflow_instance_version~",
-                        column: x => x.VersionChangeAuditId,
-                        principalSchema: "flowbit",
-                        principalTable: "workflow_instance_version_changes",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
@@ -235,12 +206,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                 });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_workflow_instance_version_changes_AdministrativeActionBatch~",
-                schema: "flowbit",
-                table: "workflow_instance_version_changes",
-                column: "AdministrativeActionBatchId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_user_tasks_AdministrativeActionBatchId",
@@ -280,16 +245,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 column: "NewUserTaskId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_administrative_action_batch_items_SourceWorkflowDefinitionId",
+                name: "IX_administrative_action_batch_items_WorkflowDefinitionId_Flow~",
                 schema: "flowbit",
                 table: "administrative_action_batch_items",
-                column: "SourceWorkflowDefinitionId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_administrative_action_batch_items_TargetWorkflowDefinitionId",
-                schema: "flowbit",
-                table: "administrative_action_batch_items",
-                column: "TargetWorkflowDefinitionId");
+                columns: new[] { "WorkflowDefinitionId", "FlowId" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_administrative_action_batch_items_TokenId",
@@ -302,12 +261,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 schema: "flowbit",
                 table: "administrative_action_batch_items",
                 column: "UserTaskId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_administrative_action_batch_items_VersionChangeAuditId",
-                schema: "flowbit",
-                table: "administrative_action_batch_items",
-                column: "VersionChangeAuditId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_administrative_action_batches_ExecutionJobId",
@@ -340,12 +293,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 columns: new[] { "Status", "UpdatedAt", "Id" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_administrative_action_batches_TargetWorkflowDefinitionId_Wo~",
-                schema: "flowbit",
-                table: "administrative_action_batches",
-                columns: new[] { "TargetWorkflowDefinitionId", "WorkflowKey" });
-
-            migrationBuilder.CreateIndex(
                 name: "IX_administrative_action_batches_WorkflowKey_Status_UpdatedAt_~",
                 schema: "flowbit",
                 table: "administrative_action_batches",
@@ -371,27 +318,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 principalColumn: "Id",
                 onDelete: ReferentialAction.Restrict);
 
-            migrationBuilder.AddForeignKey(
-                name: "FK_workflow_instance_version_changes_administrative_action_bat~",
-                schema: "flowbit",
-                table: "workflow_instance_version_changes",
-                column: "AdministrativeActionBatchId",
-                principalSchema: "flowbit",
-                principalTable: "administrative_action_batches",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-
             migrationBuilder.Sql("""
                 WITH desired("Namespace", "Key", "FullKey", "Value", "Description") AS
                 (
                     VALUES
-                        (
-                            'WorkflowAdministrativeActions',
-                            'RequiredRole',
-                            'WorkflowAdministrativeActions.RequiredRole',
-                            'admin',
-                            'Comma-separated roles required in addition to an administrative sequence flow role. Missing or blank values default to admin.'
-                        ),
                         (
                             'WorkflowBatchActions',
                             'RequiredRole',
@@ -435,12 +365,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 WITH desired("Namespace", "Key", "FullKey", "Description") AS
                 (
                     VALUES
-                        (
-                            'WorkflowAdministrativeActions',
-                            'RequiredRole',
-                            'WorkflowAdministrativeActions.RequiredRole',
-                            'Comma-separated roles required in addition to an administrative sequence flow role. Missing or blank values default to admin.'
-                        ),
                         (
                             'WorkflowBatchActions',
                             'RequiredRole',
@@ -509,11 +433,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 schema: "flowbit",
                 table: "user_tasks");
 
-            migrationBuilder.DropForeignKey(
-                name: "FK_workflow_instance_version_changes_administrative_action_bat~",
-                schema: "flowbit",
-                table: "workflow_instance_version_changes");
-
             migrationBuilder.DropTable(
                 name: "administrative_action_batch_items",
                 schema: "flowbit");
@@ -521,11 +440,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
             migrationBuilder.DropTable(
                 name: "administrative_action_batches",
                 schema: "flowbit");
-
-            migrationBuilder.DropIndex(
-                name: "IX_workflow_instance_version_changes_AdministrativeActionBatch~",
-                schema: "flowbit",
-                table: "workflow_instance_version_changes");
 
             migrationBuilder.DropIndex(
                 name: "IX_user_tasks_AdministrativeActionBatchId",
@@ -536,11 +450,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                 name: "IX_instance_history_AdministrativeActionBatchId",
                 schema: "flowbit",
                 table: "instance_history");
-
-            migrationBuilder.DropColumn(
-                name: "AdministrativeActionBatchId",
-                schema: "flowbit",
-                table: "workflow_instance_version_changes");
 
             migrationBuilder.DropColumn(
                 name: "AdministrativeActionBatchId",

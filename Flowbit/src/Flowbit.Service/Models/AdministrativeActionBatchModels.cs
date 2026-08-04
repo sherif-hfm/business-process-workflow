@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Models;
 
@@ -40,13 +41,10 @@ public static class AdministrativeActionConstraints
     public const int MaxBatchItems = 10_000;
     public const int MaxActorNameLength = 300;
     public const int MaxWorkflowKeyLength = 300;
-    public const int MaxExternalIdLength = 300;
     public const int MaxIdempotencyKeyLength = 300;
     public const int MaxErrorCodeLength = 100;
     public const int MaxErrorDescriptionLength = 1000;
 
-    public const string AdministrativeRequiredRoleSetting =
-        "WorkflowAdministrativeActions.RequiredRole";
     public const string BatchRequiredRoleSetting =
         "WorkflowBatchActions.RequiredRole";
     public const string BatchMaxItemsSetting =
@@ -63,11 +61,29 @@ public sealed record AdministrativeActionBatchJobPayload(long BatchId)
     public IReadOnlyDictionary<string, string>? ActorClaims { get; init; }
 }
 
+/// <summary>
+/// Immutable authoring snapshot for the exact normal sequence flow selected in
+/// one workflow version. Batch execution uses the numeric definition/flow pair;
+/// the remaining fields preserve review and audit evidence even if authoring
+/// metadata changes in a later version.
+/// </summary>
+public sealed record AdministrativeActionFlowMappingRecord(
+    long WorkflowDefinitionId,
+    int WorkflowVersion,
+    int FlowId,
+    string? FlowExternalId,
+    string FlowName,
+    int SourceNodeId,
+    string SourceNodeName,
+    int TargetNodeId,
+    string TargetNodeName,
+    IReadOnlyList<string> Roles,
+    IReadOnlyList<VariableModel> Variables);
+
 public sealed record AdministrativeActionBatchRecord(
     long Id,
-    long TargetWorkflowDefinitionId,
     string WorkflowKey,
-    string FlowExternalId,
+    IReadOnlyList<AdministrativeActionFlowMappingRecord> FlowMappings,
     string Reason,
     IReadOnlyDictionary<string, JsonElement> CommonVariables,
     JsonElement Selection,
@@ -99,9 +115,8 @@ public sealed record AdministrativeActionBatchRecord(
     DateTimeOffset? CancelledAt);
 
 public sealed record NewAdministrativeActionBatchRecord(
-    long TargetWorkflowDefinitionId,
     string WorkflowKey,
-    string FlowExternalId,
+    IReadOnlyList<AdministrativeActionFlowMappingRecord> FlowMappings,
     string Reason,
     IReadOnlyDictionary<string, JsonElement> CommonVariables,
     JsonElement Selection,
@@ -116,8 +131,8 @@ public sealed record AdministrativeActionBatchItemRecord(
     long InstanceId,
     long UserTaskId,
     long TokenId,
-    long SourceWorkflowDefinitionId,
-    long TargetWorkflowDefinitionId,
+    long WorkflowDefinitionId,
+    int FlowId,
     DateTimeOffset CapturedInstanceUpdatedAt,
     DateTimeOffset CapturedUserTaskUpdatedAt,
     string Status,
@@ -126,7 +141,6 @@ public sealed record AdministrativeActionBatchItemRecord(
     string? ErrorCode,
     string? ErrorDescription,
     long? NewUserTaskId,
-    long? VersionChangeAuditId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? PreparedAt,
@@ -137,8 +151,8 @@ public sealed record NewAdministrativeActionBatchItemRecord(
     long InstanceId,
     long UserTaskId,
     long TokenId,
-    long SourceWorkflowDefinitionId,
-    long TargetWorkflowDefinitionId,
+    long WorkflowDefinitionId,
+    int FlowId,
     DateTimeOffset CapturedInstanceUpdatedAt,
     DateTimeOffset CapturedUserTaskUpdatedAt,
     DateTimeOffset CreatedAt);
@@ -186,7 +200,6 @@ public sealed record AdministrativeActionBatchItemUpdateRecord(
     string? ErrorCode,
     string? ErrorDescription,
     long? NewUserTaskId,
-    long? VersionChangeAuditId,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? PreparedAt,
     DateTimeOffset? StartedAt,

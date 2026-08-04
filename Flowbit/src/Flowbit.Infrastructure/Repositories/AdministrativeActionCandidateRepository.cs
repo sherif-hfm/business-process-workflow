@@ -19,9 +19,10 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
+        var targets = NormalizeTargets(query.Targets);
         var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 200);
-        var (where, arguments) = BuildWhere(query, []);
+        var (where, arguments) = BuildWhere(query, targets, []);
 
         var total = await dbContext.Database.SqlQueryRaw<long>(
                 $"""
@@ -44,7 +45,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                  """,
                 BuildParameters(arguments))
             .ToListAsync(cancellationToken);
-        var rows = await LoadAsync(taskIds, query.IncludeVariables, cancellationToken);
+        var rows = await LoadAsync(taskIds, targets, query.IncludeVariables, cancellationToken);
         return new PagedResult<AdministrativeActionCandidateRecord>(rows, page, pageSize, total);
     }
 
@@ -56,6 +57,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        var targets = NormalizeTargets(query.Targets);
         if (query.UserTaskIds is { Count: > 0 })
         {
             var excluded = excludedUserTaskIds.ToHashSet();
@@ -69,22 +71,39 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
             }
             var explicitArguments = new List<(string Name, object Value)>
             {
-                ("workflowKey", query.WorkflowKey),
+                ("workflowDefinitionIds", targets.Select(target => target.WorkflowDefinitionId).ToArray()),
+                ("flowIds", targets.Select(target => target.FlowId).ToArray()),
+                ("sourceNodeIds", targets.Select(target => target.SourceNodeId).ToArray()),
                 ("userTaskIds", selectedIds),
                 ("take", limit + 1)
             };
             // Explicit selections preserve existing tasks that became stale
             // after the search screen was rendered. Preparation will classify
             // those frozen rows as ineligible instead of silently dropping
-            // them. The family predicate prevents cross-workflow probing.
+            // them. Exact definition/flow targets prevent cross-version or
+            // cross-workflow probing.
             var explicitTaskIds = await dbContext.Database.SqlQueryRaw<long>(
                     """
                     SELECT ut."Id" AS "Value"
                     FROM flowbit.user_tasks AS ut
                     INNER JOIN flowbit.workflow_instances AS w
                         ON w."Id" = ut."InstanceId"
-                    WHERE w."WorkflowKey" = @workflowKey
-                      AND ut."Id" = ANY(@userTaskIds)
+                    INNER JOIN unnest(
+                        CAST(@workflowDefinitionIds AS bigint[]),
+                        CAST(@flowIds AS integer[]),
+                        CAST(@sourceNodeIds AS integer[]))
+                        AS selected("WorkflowDefinitionId", "FlowId", "SourceNodeId")
+                        ON selected."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                       AND selected."SourceNodeId" = ut."NodeId"
+                    INNER JOIN flowbit.workflow_definitions AS selected_definition
+                        ON selected_definition."Id" = selected."WorkflowDefinitionId"
+                    INNER JOIN LATERAL jsonb_array_elements(
+                        COALESCE(
+                            selected_definition."Definition" -> 'sequenceFlows',
+                            '[]'::jsonb)) AS selected_flow(value)
+                        ON (selected_flow.value ->> 'id')::integer = selected."FlowId"
+                       AND (selected_flow.value ->> 'sourceRef')::integer = selected."SourceNodeId"
+                    WHERE ut."Id" = ANY(@userTaskIds)
                     ORDER BY ut."Id"
                     LIMIT @take
                     """,
@@ -92,11 +111,12 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                 .ToListAsync(cancellationToken);
             return await LoadAsync(
                 explicitTaskIds,
+                targets,
                 includeVariables: false,
                 cancellationToken);
         }
 
-        var (where, arguments) = BuildWhere(query, excludedUserTaskIds);
+        var (where, arguments) = BuildWhere(query, targets, excludedUserTaskIds);
         arguments.Add(("take", limit + 1));
         var taskIds = await dbContext.Database.SqlQueryRaw<long>(
                 $"""
@@ -108,7 +128,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                  """,
                 BuildParameters(arguments))
             .ToListAsync(cancellationToken);
-        return await LoadAsync(taskIds, includeVariables: false, cancellationToken);
+        return await LoadAsync(taskIds, targets, includeVariables: false, cancellationToken);
     }
 #pragma warning restore EF1002
 
@@ -116,13 +136,27 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
         FROM flowbit.user_tasks AS ut
         INNER JOIN flowbit.workflow_instances AS w ON w."Id" = ut."InstanceId"
         INNER JOIN flowbit.execution_tokens AS token ON token."Id" = ut."TokenId"
-        INNER JOIN flowbit.workflow_definitions AS source_definition
-            ON source_definition."Id" = w."WorkflowDefinitionId"
+        INNER JOIN unnest(
+            CAST(@workflowDefinitionIds AS bigint[]),
+            CAST(@flowIds AS integer[]),
+            CAST(@sourceNodeIds AS integer[]))
+            AS selected("WorkflowDefinitionId", "FlowId", "SourceNodeId")
+            ON selected."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+           AND selected."SourceNodeId" = ut."NodeId"
+        INNER JOIN flowbit.workflow_definitions AS selected_definition
+            ON selected_definition."Id" = selected."WorkflowDefinitionId"
+        INNER JOIN LATERAL jsonb_array_elements(
+            COALESCE(
+                selected_definition."Definition" -> 'sequenceFlows',
+                '[]'::jsonb)) AS selected_flow(value)
+            ON (selected_flow.value ->> 'id')::integer = selected."FlowId"
+           AND (selected_flow.value ->> 'sourceRef')::integer = selected."SourceNodeId"
         """;
 
     private static (StringBuilder Where, List<(string Name, object Value)> Arguments)
         BuildWhere(
             AdministrativeActionCandidateQuery query,
+            IReadOnlyList<AdministrativeActionFlowTarget> targets,
             IReadOnlyCollection<long> excludedUserTaskIds)
     {
         var where = new StringBuilder("""
@@ -132,8 +166,6 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
               AND token."Status" = 'active'
               AND token."InstanceId" = w."Id"
               AND token."NodeId" = ut."NodeId"
-              AND source_definition."WorkflowKey" = @workflowKey
-              AND ut."NodeId" = @sourceNodeId
               AND (
                     SELECT COUNT(*)
                     FROM flowbit.execution_tokens AS active_token
@@ -149,15 +181,11 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
             """);
         var arguments = new List<(string Name, object Value)>
         {
-            ("workflowKey", query.WorkflowKey),
-            ("sourceNodeId", query.SourceNodeId)
+            ("workflowDefinitionIds", targets.Select(target => target.WorkflowDefinitionId).ToArray()),
+            ("flowIds", targets.Select(target => target.FlowId).ToArray()),
+            ("sourceNodeIds", targets.Select(target => target.SourceNodeId).ToArray())
         };
 
-        if (!string.IsNullOrWhiteSpace(query.SourceNodeExternalId))
-        {
-            arguments.Add(("sourceNodeExternalId", query.SourceNodeExternalId.Trim()));
-            where.Append(" AND lower(ut.\"NodeExternalId\") = lower(@sourceNodeExternalId)");
-        }
         if (query.UserTaskId is long taskId)
         {
             arguments.Add(("userTaskId", taskId));
@@ -167,11 +195,6 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
         {
             arguments.Add(("instanceId", instanceId));
             where.Append(" AND w.\"Id\" = @instanceId");
-        }
-        if (query.SourceWorkflowDefinitionId is long sourceWorkflowId)
-        {
-            arguments.Add(("sourceWorkflowId", sourceWorkflowId));
-            where.Append(" AND w.\"WorkflowDefinitionId\" = @sourceWorkflowId");
         }
         if (!string.IsNullOrWhiteSpace(query.BusinessKey))
         {
@@ -194,6 +217,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
 
     private async Task<IReadOnlyList<AdministrativeActionCandidateRecord>> LoadAsync(
         IReadOnlyList<long> taskIds,
+        IReadOnlyList<AdministrativeActionFlowTarget> targets,
         bool includeVariables,
         CancellationToken cancellationToken)
     {
@@ -230,10 +254,15 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
         }
 
         var result = new List<AdministrativeActionCandidateRecord>(taskIds.Count);
+        var targetsByDefinition = targets.ToDictionary(
+            target => target.WorkflowDefinitionId);
         foreach (var taskId in taskIds)
         {
             if (!tasks.TryGetValue(taskId, out var task)
-                || !instances.TryGetValue(task.InstanceId, out var instance))
+                || !instances.TryGetValue(task.InstanceId, out var instance)
+                || !targetsByDefinition.TryGetValue(
+                    instance.WorkflowDefinitionId,
+                    out var target))
             {
                 continue;
             }
@@ -243,6 +272,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                 instance.Id,
                 task.TokenId,
                 instance.WorkflowDefinitionId,
+                target.FlowId,
                 instance.WorkflowKey,
                 instance.BusinessKey,
                 task.NodeId,
@@ -253,6 +283,37 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                 variables));
         }
         return result;
+    }
+
+    private static IReadOnlyList<AdministrativeActionFlowTarget> NormalizeTargets(
+        IReadOnlyList<AdministrativeActionFlowTarget> targets)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        if (targets.Count == 0)
+        {
+            throw new ArgumentException(
+                "At least one exact workflow-definition and flow target is required.",
+                nameof(targets));
+        }
+
+        if (targets.Any(target => target.WorkflowDefinitionId <= 0
+                || target.FlowId <= 0
+                || target.SourceNodeId <= 0))
+        {
+            throw new ArgumentException(
+                "Workflow definition, flow, and source node identifiers must be positive.",
+                nameof(targets));
+        }
+
+        if (targets.Select(target => target.WorkflowDefinitionId).Distinct().Count()
+            != targets.Count)
+        {
+            throw new ArgumentException(
+                "Only one exact flow target may be supplied per workflow definition.",
+                nameof(targets));
+        }
+
+        return targets.ToArray();
     }
 
     private static NpgsqlParameter[] BuildParameters(

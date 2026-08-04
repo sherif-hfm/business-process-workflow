@@ -63,7 +63,6 @@ public sealed class WorkflowDefinitionService(
         bool publish,
         CancellationToken cancellationToken)
     {
-        ValidateAuthoredAdministrativeFlowMetadata(definition);
         ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
@@ -93,7 +92,6 @@ public sealed class WorkflowDefinitionService(
         }
 
         definition.Id = source.WorkflowKey;
-        ValidateAuthoredAdministrativeFlowMetadata(definition);
         ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
@@ -223,7 +221,6 @@ public sealed class WorkflowDefinitionService(
         }
 
         ValidateUniqueIdentifiers(definition);
-        ValidateAdministrativeFlowMetadata(definition);
         ValidateMessageStartExternalIds(definition);
         ValidateFlowInfoUsage(definition);
         ValidateGatewayExpressionUsage(definition);
@@ -716,99 +713,6 @@ public sealed class WorkflowDefinitionService(
     }
 
     /// <summary>
-    /// Administrative-flow invariants are checked before tolerant compatibility
-    /// normalization so an authored default or engine-only flow cannot be
-    /// silently rewritten into an apparently valid privileged action.
-    /// </summary>
-    private static void ValidateAuthoredAdministrativeFlowMetadata(WorkflowModel definition) =>
-        ValidateAdministrativeFlowMetadata(definition);
-
-    private static void ValidateAdministrativeFlowMetadata(WorkflowModel definition)
-    {
-        var nodes = definition.FlowNodes ?? [];
-        var flows = definition.SequenceFlows ?? [];
-
-        foreach (var flow in flows.Where(flow => flow.IsAdministrative || flow.IsBatchable))
-        {
-            if (flow.IsBatchable && !flow.IsAdministrative)
-            {
-                throw new WorkflowDomainException(
-                    $"Sequence flow #{flow.Id} is batchable but is not marked as an administrative action.");
-            }
-
-            if (!flow.IsSelectable)
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} must be selectable.");
-            }
-
-            if (flow.IsDefault)
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} cannot be a default flow.");
-            }
-
-            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
-            if (source is not null
-                && (!BpmnFlowNodeTypes.IsUserTask(source.Type) || source.MultiInstance is not null))
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} must leave an ordinary, non-multi-instance user task.");
-            }
-
-            var target = nodes.FirstOrDefault(node => node.Id == flow.TargetRef);
-            if (target is not null
-                && (!BpmnFlowNodeTypes.IsUserTask(target.Type) || target.MultiInstance is not null))
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} must directly target an ordinary, non-multi-instance user task.");
-            }
-
-            if (source?.AsyncAfter == true)
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} cannot leave user task #{source.Id} because asyncAfter is enabled.");
-            }
-
-            if (target?.AsyncBefore == true)
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} cannot target user task #{target.Id} because asyncBefore is enabled.");
-            }
-
-            if (string.IsNullOrWhiteSpace(flow.ExternalId))
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} must have a stable externalId.");
-            }
-
-            var externalId = flow.ExternalId.Trim();
-            if (externalId.EnumerateRunes().Count()
-                > AdministrativeActionConstraints.MaxExternalIdLength)
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} externalId must contain at most {AdministrativeActionConstraints.MaxExternalIdLength} Unicode scalar values.");
-            }
-            if (flows.Any(candidate => !ReferenceEquals(candidate, flow)
-                    && !string.IsNullOrWhiteSpace(candidate.ExternalId)
-                    && string.Equals(
-                        candidate.ExternalId.Trim(),
-                        externalId,
-                        StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow externalId '{externalId}' is duplicated; matching is case-insensitive.");
-            }
-
-            if (flow.Roles is null || !flow.Roles.Any(role => !string.IsNullOrWhiteSpace(role)))
-            {
-                throw new WorkflowDomainException(
-                    $"Administrative sequence flow #{flow.Id} must require at least one flow role.");
-            }
-        }
-    }
-
-    /// <summary>
     /// Rejects catch-only delivery-idempotency metadata on newly authored message
     /// starts before the tolerant migrator removes it. Persisted legacy snapshots
     /// continue to normalize without failing at runtime.
@@ -1210,8 +1114,6 @@ public sealed class WorkflowDefinitionService(
 
     private static bool HasUnsupportedPassThroughMetadata(SequenceFlowModel flow) =>
         !flow.IsSelectable
-        || flow.IsAdministrative
-        || flow.IsBatchable
         || flow.IsDefault
         || !string.IsNullOrWhiteSpace(flow.Condition)
         || flow.ConditionPriority is not null
@@ -1225,8 +1127,6 @@ public sealed class WorkflowDefinitionService(
 
     private static bool HasUnsupportedGatewayActionMetadata(SequenceFlowModel flow) =>
         !flow.IsSelectable
-        || flow.IsAdministrative
-        || flow.IsBatchable
         || flow.Roles is { Count: > 0 }
         || flow.Variables is { Count: > 0 }
         || flow.CanActWithoutClaim

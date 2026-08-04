@@ -762,10 +762,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.TargetVersionChanges)
                 .HasForeignKey(e => e.TargetWorkflowDefinitionId)
                 .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.AdministrativeActionBatch)
-                .WithMany(e => e.VersionChanges)
-                .HasForeignKey(e => e.AdministrativeActionBatchId)
-                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AdministrativeActionBatchEntity>(entity =>
@@ -783,15 +779,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 "
                     + "AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 "
                     + "AND \"CancelledItemCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batches_flow_mappings",
+                    "jsonb_typeof(\"FlowMappingsJson\") = 'array' "
+                    + "AND jsonb_array_length(\"FlowMappingsJson\") > 0");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey)
                 .HasMaxLength(AdministrativeActionConstraints.MaxWorkflowKeyLength)
                 .IsRequired();
-            entity.Property(e => e.FlowExternalId)
-                .HasMaxLength(AdministrativeActionConstraints.MaxExternalIdLength)
-                .IsRequired()
-                .UseCollation("C");
+            entity.Property(e => e.FlowMappingsJson)
+                .HasColumnType("jsonb")
+                .IsRequired();
             entity.Property(e => e.Reason)
                 .HasMaxLength(AdministrativeActionConstraints.MaxReasonLength)
                 .IsRequired();
@@ -832,11 +831,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.ExecutionJobId)
                 .IsUnique()
                 .HasFilter("\"ExecutionJobId\" IS NOT NULL");
-            entity.HasOne(e => e.TargetWorkflowDefinition)
-                .WithMany(e => e.AdministrativeActionBatches)
-                .HasForeignKey(e => new { e.TargetWorkflowDefinitionId, e.WorkflowKey })
-                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
-                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.PreparationJob)
                 .WithMany()
                 .HasForeignKey(e => e.PreparationJobId)
@@ -869,8 +863,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.BatchId, e.UserTaskId }).IsUnique();
             entity.HasIndex(e => new { e.BatchId, e.Status, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Id });
-            entity.HasIndex(e => e.SourceWorkflowDefinitionId);
-            entity.HasIndex(e => e.TargetWorkflowDefinitionId);
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.FlowId });
             entity.HasOne(e => e.Batch)
                 .WithMany(e => e.Items)
                 .HasForeignKey(e => e.BatchId)
@@ -887,21 +880,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.TokenId)
                 .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.SourceWorkflowDefinition)
-                .WithMany(e => e.AdministrativeActionBatchSourceItems)
-                .HasForeignKey(e => e.SourceWorkflowDefinitionId)
-                .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.TargetWorkflowDefinition)
-                .WithMany(e => e.AdministrativeActionBatchTargetItems)
-                .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.AdministrativeActionBatchItems)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.NewUserTask)
                 .WithMany()
                 .HasForeignKey(e => e.NewUserTaskId)
-                .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.VersionChangeAudit)
-                .WithMany()
-                .HasForeignKey(e => e.VersionChangeAuditId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

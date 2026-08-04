@@ -18,7 +18,7 @@ public static class AdministrativeActionEndpoints
                 ListWorkflowCatalog)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
-            .WithSummary("List published workflow versions with an authorized batchable administrative action")
+            .WithSummary("List workflow versions with an authorized normal flow eligible for administrative batch execution")
             .Produces<IReadOnlyList<WorkflowSummaryDto>>()
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
@@ -28,7 +28,7 @@ public static class AdministrativeActionEndpoints
                 ListWorkflowActions)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
-            .WithSummary("List authorized administrative actions for an exact published workflow version")
+            .WithSummary("List authorized normal flows eligible for administrative batch execution")
             .Produces<IReadOnlyList<AdministrativeActionSummaryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -41,7 +41,7 @@ public static class AdministrativeActionEndpoints
             .RequireAuthorization()
             .Accepts<AdministrativeActionCandidateSearchRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxBatchRequestBodyBytes))
-            .WithSummary("Search active single-position candidates for a batchable administrative action")
+            .WithSummary("Search active single-position candidates across exact workflow-version and flow mappings")
             .Produces<PagedResult<AdministrativeActionCandidateDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -105,7 +105,6 @@ public static class AdministrativeActionEndpoints
 
     private static async Task<IResult> ListWorkflowActions(
         long workflowId,
-        bool? batchableOnly,
         ClaimsPrincipal principal,
         IActorContextResolver actorResolver,
         IAdministrativeActionBatchService service,
@@ -113,7 +112,6 @@ public static class AdministrativeActionEndpoints
         Results.Ok(await service.ListActionsAsync(
             workflowId,
             actorResolver.Resolve(principal),
-            batchableOnly ?? false,
             cancellationToken));
 
     private static async Task<IResult> SearchCandidates(

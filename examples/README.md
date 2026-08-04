@@ -6,7 +6,7 @@ format, an `example-*` workflow id, integer node and sequence-flow ids, and no
 legacy properties. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 31 workflows. Automated tests recursively discover every
+The catalog contains 32 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -28,6 +28,7 @@ values. Adjust them before production use.
 | Workflow | Start values | Actors and actions | Expected result | Requirements |
 | --- | --- | --- | --- | --- |
 | [Lanes, external IDs, and variable scopes](basics/01-lanes-external-ids-and-variable-scopes.json) | As `Requester`, supply required `requestId`; optional typed values have defaults. | A `FinanceReviewer` approves an eligible stored request with `approvalNote`; a `FinanceManager` may approve or escalate with `escalationReason`. | Demonstrates lanes; node/flow `externalId`; process, start, and action scopes; every data type; arrays; a nullable process value; defaults; validation; and stored-state action conditions. | API and database; no Worker or configuration. |
+| [Two-step approval with role-protected return](basics/02-two-step-approval.json) | No values or special start role. | Complete `approval1`, then an `admin` may take `back` from `approval2` for another visit or complete the second approval normally. | Demonstrates an ordinary role-protected return flow that remains available for normal execution and can be selected by administrative batch tooling. | API and database; no Worker or configuration. |
 
 ## User tasks
 

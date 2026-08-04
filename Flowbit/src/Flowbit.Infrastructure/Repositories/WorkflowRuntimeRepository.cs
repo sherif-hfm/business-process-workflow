@@ -4192,9 +4192,12 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
 
     public async Task CompleteAdministrativeActionBatchItemAsync(
         long batchId,
+        long instanceId,
         long sourceUserTaskId,
+        long tokenId,
+        long workflowDefinitionId,
+        int flowId,
         long? newUserTaskId,
-        long? versionChangeAuditId,
         JsonElement? result,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken)
@@ -4215,10 +4218,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             throw new WorkflowConflictException(
                 "The administrative action batch item is no longer queued for execution.");
         }
+        if (item.InstanceId != instanceId
+            || item.UserTaskId != sourceUserTaskId
+            || item.TokenId != tokenId
+            || item.WorkflowDefinitionId != workflowDefinitionId
+            || item.FlowId != flowId)
+        {
+            throw new WorkflowConflictException(
+                "The administrative action does not match the batch item's frozen instance, task, token, workflow-definition, and flow identity.");
+        }
 
         item.Status = AdministrativeActionBatchItemStatuses.Succeeded;
         item.NewUserTaskId = newUserTaskId;
-        item.VersionChangeAuditId = versionChangeAuditId;
         item.ResultJson = result is null
             ? null
             : JsonMapping.ToJsonDocument(result.Value);
@@ -4560,8 +4571,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         WorkflowModel targetDefinition,
         NodeExecutionActorRecord actor,
         string reason,
-        CancellationToken cancellationToken,
-        long? administrativeActionBatchId = null)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetDefinition);
         ArgumentNullException.ThrowIfNull(actor);
@@ -4726,7 +4736,6 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ChangedBy = string.IsNullOrWhiteSpace(actor.User) ? null : actor.User.Trim(),
             ChangedByRolesJson = JsonMapping.ToJsonDocument(normalizedRoles),
             Reason = reason,
-            AdministrativeActionBatchId = administrativeActionBatchId,
             ChangedAt = now
         };
         dbContext.WorkflowInstanceVersionChanges.Add(audit);
@@ -5371,10 +5380,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.ChangedBy,
             JsonMapping.ToStringList(entity.ChangedByRolesJson) ?? [],
             entity.Reason,
-            entity.ChangedAt)
-        {
-            AdministrativeActionBatchId = entity.AdministrativeActionBatchId
-        };
+            entity.ChangedAt);
 
     private static ExecutionTokenEntity? SelectRepresentativeToken(
         string instanceStatus,

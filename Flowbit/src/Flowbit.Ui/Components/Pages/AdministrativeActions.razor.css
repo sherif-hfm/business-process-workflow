@@ -28,6 +28,9 @@
 .selection-mode-card small { margin-top: .15rem; color: var(--fb-muted); }
 
 .admin-status-filter { width: min(15rem, 100%); }
+.admin-family-select { width: min(36rem, 100%); }
+.admin-mapping-table select { min-width: 22rem; }
+.admin-mapping-table td:nth-child(4) { min-width: 14rem; }
 .admin-cancellation-input { width: min(28rem, 100%); }
 .admin-result-cell { min-width: 15rem; max-width: 30rem; }
 .admin-json {

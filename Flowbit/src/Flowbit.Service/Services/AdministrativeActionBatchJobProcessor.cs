@@ -190,24 +190,20 @@ public sealed class AdministrativeActionBatchJobProcessor(
         try
         {
             var actions = await batchService.ListActionsAsync(
-                batch.TargetWorkflowDefinitionId,
+                item.WorkflowDefinitionId,
                 actor,
-                batchableOnly: true,
                 cancellationToken);
-            if (!actions.Any(action => string.Equals(
-                    action.FlowExternalId,
-                    batch.FlowExternalId,
-                    StringComparison.OrdinalIgnoreCase)))
+            if (!actions.Any(action => action.FlowId == item.FlowId))
             {
                 eligibility = new AdministrativeActionEligibilityDto(
                     false,
                     [AdministrativeActionBatchService.Issue(
                         "administrative_action_unavailable",
-                        "The batchable administrative action is no longer available to the preparing operator.")]);
+                        "The mapped flow is no longer available to the preparing operator.")]);
             }
             else
             {
-                eligibility = await engine.PreviewUserTaskAdministrativeActionAsync(
+                eligibility = await engine.PreviewAdministrativeBatchFlowAsync(
                     item.UserTaskId,
                     BuildRequest(batch, item),
                     actor,
@@ -430,31 +426,26 @@ public sealed class AdministrativeActionBatchJobProcessor(
             try
             {
                 var actions = await batchService.ListActionsAsync(
-                    batch.TargetWorkflowDefinitionId,
+                    item.WorkflowDefinitionId,
                     actor,
-                    batchableOnly: true,
                     cancellationToken);
-                if (!actions.Any(action => string.Equals(
-                        action.FlowExternalId,
-                        batch.FlowExternalId,
-                        StringComparison.OrdinalIgnoreCase)))
+                if (!actions.Any(action => action.FlowId == item.FlowId))
                 {
                     throw new WorkflowForbiddenException(
-                        "The confirmer no longer has the required global, batch, and flow roles.");
+                        "The confirmer no longer has the required batch and mapped-flow roles.");
                 }
-                result = await engine.ExecuteUserTaskAdministrativeActionAsync(
+                result = await engine.ExecuteAdministrativeBatchFlowAsync(
                     item.UserTaskId,
                     BuildRequest(batch, item),
                     actor,
-                    cancellationToken,
-                    batch.Id);
+                    batch.Id,
+                    cancellationToken);
                 if (result is null)
                 {
                     result = await ReconcileSucceededAsync(
                         runtime,
                         batch,
                         item,
-                        actor,
                         cancellationToken);
                     if (result is null)
                     {
@@ -471,7 +462,6 @@ public sealed class AdministrativeActionBatchJobProcessor(
                     runtime,
                     batch,
                     item,
-                    actor,
                     cancellationToken);
                 if (result is null)
                 {
@@ -497,27 +487,12 @@ public sealed class AdministrativeActionBatchJobProcessor(
         var completedAt = timeProvider.GetUtcNow();
         if (result is not null)
         {
-            var compact = JsonSerializer.SerializeToElement(new
-            {
-                instanceId = result.Instance.Id,
-                completedUserTaskId = result.CompletedUserTaskId,
-                newUserTaskId = result.NewUserTask?.Id,
-                versionChangeAuditId = result.VersionChange?.Id,
-                administrativeActionBatchId = result.AdministrativeActionBatchId
-            });
-            await resultRepository.UpdateItemAsync(
-                AdministrativeActionBatchService.ToItemUpdate(current) with
-                {
-                    Status = AdministrativeActionBatchItemStatuses.Succeeded,
-                    Result = compact,
-                    ErrorCode = null,
-                    ErrorDescription = null,
-                    NewUserTaskId = result.NewUserTask?.Id,
-                    VersionChangeAuditId = result.VersionChange?.Id,
-                    UpdatedAt = completedAt,
-                    CompletedAt = completedAt
-                },
-                cancellationToken);
+            // The engine commits the transition and succeeded item state in the
+            // same transaction. A returned result with a still-queued item
+            // indicates an invalid implementation and must be retried rather
+            // than recorded non-atomically by the worker.
+            throw new WorkflowConflictException(
+                "The administrative transition returned without atomically completing its batch item.");
         }
         else
         {
@@ -542,52 +517,35 @@ public sealed class AdministrativeActionBatchJobProcessor(
         IWorkflowRuntimeRepository runtime,
         AdministrativeActionBatchRecord batch,
         AdministrativeActionBatchItemRecord item,
-        ActorContext actor,
         CancellationToken cancellationToken)
     {
         var task = await runtime.GetUserTaskAsync(item.UserTaskId, false, cancellationToken);
         if (task?.AdministrativeActionBatchId != batch.Id
+            || task.InstanceId != item.InstanceId
+            || task.TokenId != item.TokenId
             || !string.Equals(task.CompletionKind, "administrativeAction", StringComparison.Ordinal)
+            || task.SelectedFlowId != item.FlowId
             || task.Status != UserTaskRecordStatuses.Completed)
         {
             return null;
         }
-        var instance = await engineDetailAsync(item.InstanceId, actor, cancellationToken);
+        var instance = await engineDetailAsync(item.InstanceId, cancellationToken);
         if (instance is null)
         {
             return null;
         }
-        var newTask = (await runtime.ListUserTasksAsync(
-                item.InstanceId,
-                UserTaskRecordStatuses.Active,
-                cancellationToken))
-            .Where(candidate => candidate.TokenId == item.TokenId
-                                && candidate.Id != item.UserTaskId)
-            .OrderByDescending(candidate => candidate.Id)
-            .FirstOrDefault();
-        UserTaskDto? newTaskDto = null;
-        if (newTask is not null)
+        if (instance.Workflow.Id != item.WorkflowDefinitionId)
         {
-            await using var detailScope = scopeFactory.CreateAsyncScope();
-            var detailEngine = detailScope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
-            newTaskDto = await detailEngine.GetUserTaskAsync(newTask.Id, actor, cancellationToken);
+            return null;
         }
-        var version = (await runtime.ListVersionChangesAsync(item.InstanceId, cancellationToken))
-            .Where(change => change.AdministrativeActionBatchId == batch.Id)
-            .OrderByDescending(change => change.Id)
-            .FirstOrDefault();
-        var versionDto = instance.VersionChanges
-            .FirstOrDefault(change => change.Id == version?.Id);
         return new AdministrativeActionResultDto(
             instance,
             item.UserTaskId,
-            newTaskDto,
-            versionDto,
+            null,
             batch.Id);
 
         async Task<InstanceDetailDto?> engineDetailAsync(
             long instanceId,
-            ActorContext _,
             CancellationToken token)
         {
             await using var detailScope = scopeFactory.CreateAsyncScope();
@@ -734,10 +692,9 @@ public sealed class AdministrativeActionBatchJobProcessor(
         AdministrativeActionBatchRecord batch,
         AdministrativeActionBatchItemRecord item) =>
         new(
-            batch.TargetWorkflowDefinitionId,
-            item.SourceWorkflowDefinitionId,
+            item.WorkflowDefinitionId,
+            item.FlowId,
             item.CapturedInstanceUpdatedAt,
-            batch.FlowExternalId,
             batch.Reason,
             batch.CommonVariables.ToDictionary(
                 pair => pair.Key,

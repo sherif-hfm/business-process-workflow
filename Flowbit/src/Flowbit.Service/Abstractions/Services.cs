@@ -210,31 +210,17 @@ public interface IWorkflowEngineService
 
     Task<UserTaskDto?> GetUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
-    Task<AdministrativeActionTaskContextDto?> GetAdministrativeActionTaskContextAsync(
-        long taskId,
-        ActorContext actor,
-        CancellationToken cancellationToken);
-    Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetUserTaskAdministrativeActionsAsync(
-        long taskId,
-        long targetWorkflowId,
-        ActorContext actor,
-        CancellationToken cancellationToken);
-    Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetWorkflowAdministrativeActionsAsync(
-        long workflowId,
-        ActorContext actor,
-        bool batchableOnly,
-        CancellationToken cancellationToken);
-    Task<AdministrativeActionEligibilityDto> PreviewUserTaskAdministrativeActionAsync(
+    Task<AdministrativeActionEligibilityDto> PreviewAdministrativeBatchFlowAsync(
         long taskId,
         AdministrativeActionRequest request,
         ActorContext actor,
         CancellationToken cancellationToken);
-    Task<AdministrativeActionResultDto?> ExecuteUserTaskAdministrativeActionAsync(
+    Task<AdministrativeActionResultDto?> ExecuteAdministrativeBatchFlowAsync(
         long taskId,
         AdministrativeActionRequest request,
         ActorContext actor,
-        CancellationToken cancellationToken,
-        long? administrativeActionBatchId = null);
+        long administrativeActionBatchId,
+        CancellationToken cancellationToken);
     Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(

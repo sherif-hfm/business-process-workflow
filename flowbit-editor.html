@@ -1060,7 +1060,6 @@
   .flow-marker-condition { fill: var(--flow-condition); }
   .flow-marker-default { fill: var(--flow-default); }
   .flow-marker-interrupt { fill: var(--flow-interrupt); }
-  .flow-marker-administrative { fill: var(--warning-text); font-weight: 700; }
   #svg[data-label-mode="off"] .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
   #svg[data-label-mode="smart"][data-zoom-level="medium"]
     .edge:not(.trace-active):not(.selected):not(.hovered) .flow-label-name { display: none; }
@@ -3063,7 +3062,6 @@ function migrateLegacyUserTaskDefaultFlows() {
         sourceRef: legacyDefault.sourceRef, targetRef: legacyDefault.targetRef,
         roles: [], variables: [], condition: null, conditionPriority: null,
         isDefault: true, isSelectable: false, canActWithoutClaim: false,
-        isAdministrative: false, isBatchable: false,
         canActWithoutClaimRoles: [],
         completionCondition: null, completionPriority: null, cancelRemainingInstances: false
       };
@@ -3083,12 +3081,6 @@ function applyFlowInvariants(flow) {
     isComplexGatewayType(source.type));
   flow.canActWithoutClaimRoles = normalizeRoles(flow.canActWithoutClaimRoles);
   if (typeof flow.isSelectable !== "boolean") flow.isSelectable = true;
-  flow.isAdministrative = flow.isAdministrative === true;
-  flow.isBatchable = flow.isBatchable === true;
-  if (!isUserTaskFlow || source.multiInstance) {
-    flow.isAdministrative = false;
-    flow.isBatchable = false;
-  }
   if (!isUserTaskFlow || !source.multiInstance) flow.isSelectable = true;
   if (!isUserTaskFlow) {
     flow.roles = [];
@@ -3609,7 +3601,6 @@ function flowLabelInfo(flow, source) {
   const roles = normalizeRoles(flow.roles);
   if (isUserTaskType(source.type) && flow.isSelectable === false) metadata.push("engine-only");
   if (flow.cancelRemainingInstances) metadata.push("interrupt");
-  if (flow.isAdministrative) metadata.push(flow.isBatchable ? "administrative · batch" : "administrative");
   if (roles.length) metadata.push(`roles: ${roles.join(", ")}`);
   if (flow.isDefault) metadata.push("default");
   else if (isExclusiveGatewayType(source.type) && Number.isInteger(flow.conditionPriority)) {
@@ -3628,9 +3619,6 @@ function flowLabelInfo(flow, source) {
   }
   if (flow.cancelRemainingInstances) {
     markers.push({ text: "!", className: "flow-marker-interrupt", label: "Interrupt flow" });
-  }
-  if (flow.isAdministrative) {
-    markers.push({ text: "A", className: "flow-marker-administrative", label: "Administrative action" });
   }
   const variables = Array.isArray(flow.variables)
     ? flow.variables.map(variable => variable && variable.name).filter(Boolean) : [];
@@ -3665,7 +3653,6 @@ function flowRoutingLabelMetrics(flow, source) {
   const roles = normalizeRoles(flow.roles);
   if (isUserTaskType(source.type) && flow.isSelectable === false) metadata.push("engine-only");
   if (flow.cancelRemainingInstances) metadata.push("interrupt");
-  if (flow.isAdministrative) metadata.push(flow.isBatchable ? "administrative batch" : "administrative");
   if (roles.length) metadata.push(roles.join(", "));
   if (flow.isDefault) metadata.push("default");
   else if (isExclusiveGatewayType(source.type) && Number.isInteger(flow.conditionPriority)) {
@@ -4805,7 +4792,6 @@ function renderNodeInspector() {
       let extra = usesConditionalGatewayRouting(node)
         ? (flow.isDefault ? " · default" : (flow.condition ? ` · [${flow.condition}]` : ""))
         : (isUserTaskType(node.type) && flow.isSelectable === false ? " · engine-only" : "");
-      if (flow.isAdministrative) extra += flow.isBatchable ? " · administrative batch" : " · administrative";
       const name = flowLabel(flow, node) || "(unnamed)";
       box.innerHTML = `<div class="badge">flow #${flow.id} · ${name} → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'missing'}${extra}</div>`;
       box.onclick = () => select('flow', flow.id);
@@ -6651,37 +6637,6 @@ function renderFlowInspector() {
       inspector.appendChild(routingHint);
     }
     if (isUserTaskFlow) {
-      if (!source.multiInstance) {
-        inspector.appendChild(variableCheckbox("Administrative action", flow.isAdministrative === true, checked => {
-          flow.isAdministrative = checked;
-          if (!checked) flow.isBatchable = false;
-          if (checked) {
-            flow.isSelectable = true;
-            flow.isDefault = false;
-          }
-          renderInspector();
-          renderEdges();
-        }));
-        if (flow.isAdministrative || flow.isBatchable) {
-          inspector.appendChild(variableCheckbox("Available for batch execution", flow.isBatchable === true, checked => {
-            flow.isBatchable = checked;
-            if (checked) flow.isAdministrative = true;
-            renderInspector();
-            renderEdges();
-          }));
-
-          const administrativeWarning = document.createElement("p");
-          administrativeWarning.className = "empty-note";
-          administrativeWarning.style.color = "var(--warning-text)";
-          administrativeWarning.textContent = "Warning: this action creates a new task visit. It does not restore variables, erase history, or reverse external effects.";
-          inspector.appendChild(administrativeWarning);
-
-          const administrativeHint = document.createElement("p");
-          administrativeHint.className = "empty-note";
-          administrativeHint.textContent = "Administrative actions require a stable unique External ID, at least one flow role, an ordinary user-task target, no source asyncAfter, and no target asyncBefore. Do not add the global admin role to the task itself merely to enable this action.";
-          inspector.appendChild(administrativeHint);
-        }
-      }
       if (source.multiInstance) {
         inspector.appendChild(variableCheckbox("Default fallback", !!flow.isDefault, checked => {
           flow.isDefault = checked;
@@ -6722,9 +6677,7 @@ function renderFlowInspector() {
         rolesField(flow, () => renderEdges());
         const rolesHint = document.createElement("p");
         rolesHint.className = "empty-note";
-        rolesHint.textContent = flow.isAdministrative
-          ? "At least one flow role is required. Administrative authorization combines this role with the configured global administrative role."
-          : 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
+        rolesHint.textContent = 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
         inspector.appendChild(rolesHint);
         field("Condition", "text", flow.condition ?? "", v => {
           flow.condition = v.trim() ? v : null;
@@ -7847,7 +7800,6 @@ function createFlow(sourceId, targetId) {
                  conditionPriority: isExclusiveGatewayType(getNode(sourceId)?.type) &&
                    outgoingFlows(sourceId).length >= 1 ? nextConditionPriority(sourceId) : null,
                  isDefault: false, isSelectable: true, canActWithoutClaim: false,
-                 isAdministrative: false, isBatchable: false,
                  canActWithoutClaimRoles: [],
                  completionCondition: null, completionPriority: null, cancelRemainingInstances: false };
   model.sequenceFlows.push(flow);
@@ -8129,13 +8081,11 @@ function validateModelForSave(candidate) {
   const countItems = value => Array.isArray(value) ? value.length : 0;
   const assignmentModes = { fresh: "fresh", previous: "previous", fromNode: "fromNode" };
   const hasUnsupportedPassThroughMetadata = flow => flow.isSelectable === false || !!flow.isDefault ||
-    !!flow.isAdministrative || !!flow.isBatchable ||
     !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
     countItems(flow.variables) > 0 || hasText(flow.condition) ||
     hasText(flow.completionCondition) || flow.completionPriority != null;
   const hasGatewayActionMetadata = flow => flow.isSelectable === false ||
-    !!flow.isAdministrative || !!flow.isBatchable ||
     !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
     countItems(flow.variables) > 0 || hasText(flow.completionCondition) ||
@@ -8562,51 +8512,6 @@ function validateModelForSave(candidate) {
 
   validateUniqueIds(nodes, "Flow node");
   validateUniqueIds(flows, "Sequence flow");
-  const externalIdCounts = new Map();
-  for (const flow of flows) {
-    if (!flow || !hasText(flow.externalId)) continue;
-    const key = flow.externalId.trim().toLowerCase();
-    externalIdCounts.set(key, (externalIdCounts.get(key) || 0) + 1);
-  }
-  for (const flow of flows) {
-    if (!flow || (!flow.isAdministrative && !flow.isBatchable)) continue;
-    const label = flowLabel(flow);
-    if (flow.isBatchable && !flow.isAdministrative) {
-      errors.push(label + " is batchable but is not marked as an administrative action.");
-    }
-    if (flow.isSelectable === false) {
-      errors.push(label + " must be selectable when it is administrative.");
-    }
-    if (flow.isDefault) {
-      errors.push(label + " cannot be both administrative and a default flow.");
-    }
-
-    const source = nodesById.get(flow.sourceRef);
-    if (!source || source.type !== "userTask" || source.multiInstance != null) {
-      errors.push(label + " must leave an ordinary, non-multi-instance user task when it is administrative.");
-    } else if (source.asyncAfter === true) {
-      errors.push(label + " cannot be administrative because its source user task has asyncAfter enabled.");
-    }
-
-    const target = nodesById.get(flow.targetRef);
-    if (!target || target.type !== "userTask" || target.multiInstance != null) {
-      errors.push(label + " must directly target an ordinary, non-multi-instance user task when it is administrative.");
-    } else if (target.asyncBefore === true) {
-      errors.push(label + " cannot be administrative because its target user task has asyncBefore enabled.");
-    }
-
-    if (!hasText(flow.externalId)) {
-      errors.push(label + " must have a stable externalId when it is administrative.");
-    } else if (Array.from(flow.externalId.trim()).length > 300) {
-      errors.push(label + " externalId must contain at most 300 Unicode scalar values when it is administrative.");
-    } else if ((externalIdCounts.get(flow.externalId.trim().toLowerCase()) || 0) > 1) {
-      errors.push("Administrative sequence flow externalId '" + flow.externalId.trim() +
-        "' is duplicated; matching is case-insensitive.");
-    }
-    if (!Array.isArray(flow.roles) || !flow.roles.some(role => hasText(role))) {
-      errors.push(label + " must require at least one flow role when it is administrative.");
-    }
-  }
   if (candidate && candidate.taskDistribution != null) {
     if (!hasText(candidate.taskDistribution.clientId)) {
       errors.push("Workflow taskDistribution must have a clientId when enabled.");
@@ -9936,14 +9841,12 @@ function migrateLegacyToNew(obj) {
       if (target != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
                              roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
-                             isAdministrative: false, isBatchable: false,
                              canActWithoutClaimRoles: [] });
       }
     } else if (isAutomaticType(type)) {
       if (s.nextStepId != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
                              roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
-                             isAdministrative: false, isBatchable: false,
                              canActWithoutClaimRoles: [] });
       }
     } else {
@@ -9951,7 +9854,6 @@ function migrateLegacyToNew(obj) {
         if (a.toStepId == null) continue;
         sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
                              roles: a.roles, variables: a.variables, condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
-                             isAdministrative: false, isBatchable: false,
                              canActWithoutClaimRoles: [] });
       }
     }
@@ -10083,8 +9985,6 @@ function loadFromObject(obj) {
         conditionPriority: f.conditionPriority ?? null,
         isDefault: !!f.isDefault,
         isSelectable: f.isSelectable !== false,
-        isAdministrative: f.isAdministrative === true,
-        isBatchable: f.isBatchable === true,
         canActWithoutClaim: !!f.canActWithoutClaim,
         canActWithoutClaimRoles: normalizeRoles(f.canActWithoutClaimRoles),
         completionCondition: (typeof f.completionCondition === "string" && f.completionCondition.trim()) ? f.completionCondition : null,

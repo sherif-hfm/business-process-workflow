@@ -1502,28 +1502,37 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public void SequenceFlowAdministrativeFlags_DefaultFalseAndRoundTrip()
+    public void SequenceFlow_LegacyAdministrativeFlagsAreIgnoredAndOmitted()
     {
-        var legacy = JsonSerializer.Deserialize<SequenceFlowModel>("{}");
+        const string legacyJson =
+            """
+            {
+              "id": 301,
+              "name": "Back",
+              "sourceRef": 3,
+              "targetRef": 2,
+              "roles": ["admin"],
+              "isAdministrative": true,
+              "isBatchable": true
+            }
+            """;
 
-        Assert.NotNull(legacy);
-        Assert.False(legacy.IsAdministrative);
-        Assert.False(legacy.IsBatchable);
+        var flow = JsonSerializer.Deserialize<SequenceFlowModel>(legacyJson);
 
-        legacy.IsAdministrative = true;
-        legacy.IsBatchable = true;
-        var roundTripped = Clone(legacy);
-        Assert.True(roundTripped.IsAdministrative);
-        Assert.True(roundTripped.IsBatchable);
+        Assert.NotNull(flow);
+        Assert.Equal(["admin"], flow.Roles);
+
+        using var roundTrip = JsonDocument.Parse(JsonSerializer.Serialize(flow));
+        Assert.False(roundTrip.RootElement.TryGetProperty("isAdministrative", out _));
+        Assert.False(roundTrip.RootElement.TryGetProperty("isBatchable", out _));
     }
 
     [Fact]
-    public async Task CreateAsync_AcceptsAndNormalizesBatchableAdministrativeFlow()
+    public async Task CreateAsync_AcceptsRoleProtectedBackFlowWithoutSpecialMetadata()
     {
-        var model = CreateAdministrativeFlowModel();
-        var administrative = model.SequenceFlows.Single(flow => flow.Id == 301);
-        administrative.ExternalId = " ADMIN_RETURN_FOR_REWORK ";
-        administrative.Roles = [" OperationsAdmin ", "operationsadmin"];
+        var model = CreateRoleProtectedBackFlowModel();
+        var back = model.SequenceFlows.Single(flow => flow.Id == 301);
+        back.Roles = [" admin ", "ADMIN"];
 
         await CreateService(out var repository).CreateAsync(
             model,
@@ -1531,58 +1540,8 @@ public sealed class DefinitionValidationTests
             CancellationToken.None);
 
         var saved = repository.Added!.Definition.SequenceFlows.Single(flow => flow.Id == 301);
-        Assert.True(saved.IsAdministrative);
-        Assert.True(saved.IsBatchable);
-        Assert.Equal("ADMIN_RETURN_FOR_REWORK", saved.ExternalId);
-        Assert.Equal(["OperationsAdmin"], saved.Roles);
-    }
-
-    [Theory]
-    [InlineData("batchWithoutAdministrative", "batchable")]
-    [InlineData("engineOnly", "selectable")]
-    [InlineData("default", "default")]
-    [InlineData("automaticSource", "ordinary")]
-    [InlineData("multiInstanceSource", "non-multi-instance")]
-    [InlineData("automaticTarget", "ordinary")]
-    [InlineData("multiInstanceTarget", "non-multi-instance")]
-    [InlineData("asyncAfterSource", "asyncAfter")]
-    [InlineData("asyncBeforeTarget", "asyncBefore")]
-    [InlineData("missingExternalId", "externalId")]
-    [InlineData("longExternalId", "300 Unicode scalar")]
-    [InlineData("duplicateExternalId", "case-insensitive")]
-    [InlineData("missingRoles", "flow role")]
-    public async Task CreateAsync_RejectsInvalidAdministrativeFlow(
-        string invalid,
-        string expectedMessage)
-    {
-        var model = CreateAdministrativeFlowModel();
-        var administrative = model.SequenceFlows.Single(flow => flow.Id == 301);
-        var source = model.FlowNodes.Single(node => node.Id == administrative.SourceRef);
-        var target = model.FlowNodes.Single(node => node.Id == administrative.TargetRef);
-
-        switch (invalid)
-        {
-            case "batchWithoutAdministrative": administrative.IsAdministrative = false; break;
-            case "engineOnly": administrative.IsSelectable = false; break;
-            case "default": administrative.IsDefault = true; break;
-            case "automaticSource": source.Type = BpmnFlowNodeTypes.Task; break;
-            case "multiInstanceSource": source.MultiInstance = new MultiInstanceModel(); break;
-            case "automaticTarget": target.Type = BpmnFlowNodeTypes.Task; break;
-            case "multiInstanceTarget": target.MultiInstance = new MultiInstanceModel(); break;
-            case "asyncAfterSource": source.AsyncAfter = true; break;
-            case "asyncBeforeTarget": target.AsyncBefore = true; break;
-            case "missingExternalId": administrative.ExternalId = " "; break;
-            case "longExternalId": administrative.ExternalId = new string('x', 301); break;
-            case "duplicateExternalId":
-                model.SequenceFlows.Single(flow => flow.Id == 201).ExternalId = "admin_return";
-                break;
-            case "missingRoles": administrative.Roles = [" "]; break;
-        }
-
-        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
-            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
-
-        Assert.Contains(expectedMessage, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(saved.ExternalId);
+        Assert.Equal(["admin"], saved.Roles);
     }
 
     private static WorkflowModel CreateMessageStartModel()
@@ -3263,10 +3222,10 @@ public sealed class DefinitionValidationTests
         Assert.Empty(Assert.IsType<List<string>>(explicitEmpty.Job!.RetryDelays));
     }
 
-    internal static WorkflowModel CreateAdministrativeFlowModel() => new()
+    internal static WorkflowModel CreateRoleProtectedBackFlowModel() => new()
     {
-        Id = "administrative-return-validation",
-        Name = "Administrative return validation",
+        Id = "role-protected-back-validation",
+        Name = "Role-protected back validation",
         InitialEventId = 1,
         FlowNodes =
         [
@@ -3283,12 +3242,9 @@ public sealed class DefinitionValidationTests
             {
                 Id = 301,
                 Name = "Return for rework",
-                ExternalId = "ADMIN_RETURN",
                 SourceRef = 3,
                 TargetRef = 2,
-                Roles = ["OperationsAdmin"],
-                IsAdministrative = true,
-                IsBatchable = true
+                Roles = ["admin"]
             },
             new SequenceFlowModel { Id = 302, Name = "Finish", SourceRef = 3, TargetRef = 4 }
         ]

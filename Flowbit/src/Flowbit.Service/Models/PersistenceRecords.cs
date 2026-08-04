@@ -40,10 +40,7 @@ public sealed record WorkflowInstanceVersionChangeRecord(
     string? ChangedBy,
     IReadOnlyList<string> ChangedByRoles,
     string Reason,
-    DateTimeOffset ChangedAt)
-{
-    public long? AdministrativeActionBatchId { get; init; }
-}
+    DateTimeOffset ChangedAt);
 
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(

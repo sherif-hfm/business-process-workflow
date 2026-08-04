@@ -23,13 +23,11 @@ public sealed class AdministrativeActionBatchItemEntity
 
     public ExecutionTokenEntity? Token { get; set; }
 
-    public long SourceWorkflowDefinitionId { get; set; }
+    public long WorkflowDefinitionId { get; set; }
 
-    public WorkflowDefinitionEntity? SourceWorkflowDefinition { get; set; }
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
 
-    public long TargetWorkflowDefinitionId { get; set; }
-
-    public WorkflowDefinitionEntity? TargetWorkflowDefinition { get; set; }
+    public int FlowId { get; set; }
 
     public DateTimeOffset CapturedInstanceUpdatedAt { get; set; }
 
@@ -48,10 +46,6 @@ public sealed class AdministrativeActionBatchItemEntity
     public long? NewUserTaskId { get; set; }
 
     public UserTaskEntity? NewUserTask { get; set; }
-
-    public long? VersionChangeAuditId { get; set; }
-
-    public WorkflowInstanceVersionChangeEntity? VersionChangeAudit { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 

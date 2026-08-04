@@ -11,15 +11,16 @@ namespace Flowbit.Infrastructure.Repositories;
 public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
     : IAdministrativeActionBatchRepository
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<AdministrativeActionBatchRecord> AddAsync(
         NewAdministrativeActionBatchRecord batch,
         CancellationToken cancellationToken)
     {
         var entity = new AdministrativeActionBatchEntity
         {
-            TargetWorkflowDefinitionId = batch.TargetWorkflowDefinitionId,
             WorkflowKey = batch.WorkflowKey,
-            FlowExternalId = batch.FlowExternalId,
+            FlowMappingsJson = ToDocument(batch.FlowMappings),
             Reason = batch.Reason,
             CommonVariablesJson = ToDocument(batch.CommonVariables),
             SelectionJson = JsonMapping.ToJsonDocument(batch.Selection),
@@ -51,8 +52,8 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             InstanceId = item.InstanceId,
             UserTaskId = item.UserTaskId,
             TokenId = item.TokenId,
-            SourceWorkflowDefinitionId = item.SourceWorkflowDefinitionId,
-            TargetWorkflowDefinitionId = item.TargetWorkflowDefinitionId,
+            WorkflowDefinitionId = item.WorkflowDefinitionId,
+            FlowId = item.FlowId,
             CapturedInstanceUpdatedAt = item.CapturedInstanceUpdatedAt,
             CapturedUserTaskUpdatedAt = item.CapturedUserTaskUpdatedAt,
             Status = AdministrativeActionBatchItemStatuses.Preparing,
@@ -123,31 +124,21 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
                 .FromSqlInterpolated($"""
                     SELECT batch.*
                     FROM flowbit.administrative_action_batches AS batch
-                    INNER JOIN flowbit.workflow_definitions AS definition
-                        ON definition."Id" = batch."TargetWorkflowDefinitionId"
-                       AND definition."WorkflowKey" = batch."WorkflowKey"
-                    WHERE EXISTS
+                    WHERE jsonb_typeof(batch."FlowMappingsJson") = 'array'
+                      AND jsonb_array_length(batch."FlowMappingsJson") > 0
+                      AND NOT EXISTS
                       (
                           SELECT 1
-                          FROM jsonb_array_elements(
-                              COALESCE(
-                                  definition."Definition" -> 'sequenceFlows',
-                                  '[]'::jsonb)) AS flow(value)
-                          WHERE lower(btrim(flow.value ->> 'externalId')) =
-                                lower(btrim(batch."FlowExternalId"))
-                            AND COALESCE(
-                                    (flow.value ->> 'isAdministrative')::boolean,
-                                    false)
-                            AND COALESCE(
-                                    (flow.value ->> 'isBatchable')::boolean,
-                                    false)
-                            AND EXISTS
+                          FROM jsonb_array_elements(batch."FlowMappingsJson") AS mapping(value)
+                          WHERE NOT EXISTS
                             (
                                 SELECT 1
                                 FROM jsonb_array_elements_text(
-                                    COALESCE(
-                                        flow.value -> 'roles',
-                                        '[]'::jsonb)) AS flow_role(value)
+                                    CASE
+                                        WHEN jsonb_typeof(mapping.value -> 'roles') = 'array'
+                                        THEN mapping.value -> 'roles'
+                                        ELSE '[]'::jsonb
+                                    END) AS flow_role(value)
                                 WHERE lower(btrim(flow_role.value)) = ANY ({lowerActorRoles})
                             )
                       )
@@ -335,7 +326,6 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         entity.ErrorCode = update.ErrorCode;
         entity.ErrorDescription = update.ErrorDescription;
         entity.NewUserTaskId = update.NewUserTaskId;
-        entity.VersionChangeAuditId = update.VersionChangeAuditId;
         entity.UpdatedAt = update.UpdatedAt;
         entity.PreparedAt = update.PreparedAt;
         entity.StartedAt = update.StartedAt;
@@ -364,9 +354,8 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         AdministrativeActionBatchEntity entity) =>
         new(
             entity.Id,
-            entity.TargetWorkflowDefinitionId,
             entity.WorkflowKey,
-            entity.FlowExternalId,
+            ToFlowMappings(entity.FlowMappingsJson),
             entity.Reason,
             JsonMapping.ToDictionary(entity.CommonVariablesJson)
                 ?? new Dictionary<string, JsonElement>(),
@@ -406,8 +395,8 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             entity.InstanceId,
             entity.UserTaskId,
             entity.TokenId,
-            entity.SourceWorkflowDefinitionId,
-            entity.TargetWorkflowDefinitionId,
+            entity.WorkflowDefinitionId,
+            entity.FlowId,
             entity.CapturedInstanceUpdatedAt,
             entity.CapturedUserTaskUpdatedAt,
             entity.Status,
@@ -416,7 +405,6 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             entity.ErrorCode,
             entity.ErrorDescription,
             entity.NewUserTaskId,
-            entity.VersionChangeAuditId,
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.PreparedAt,
@@ -425,7 +413,17 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
 
     private static JsonDocument ToDocument(
         IReadOnlyDictionary<string, JsonElement> values) =>
-        JsonDocument.Parse(JsonSerializer.Serialize(values));
+        JsonDocument.Parse(JsonSerializer.Serialize(values, JsonOptions));
+
+    private static JsonDocument ToDocument(
+        IReadOnlyList<AdministrativeActionFlowMappingRecord> mappings) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(mappings, JsonOptions));
+
+    private static IReadOnlyList<AdministrativeActionFlowMappingRecord> ToFlowMappings(
+        JsonDocument document) =>
+        JsonSerializer.Deserialize<List<AdministrativeActionFlowMappingRecord>>(
+            document.RootElement.GetRawText(),
+            JsonOptions) ?? [];
 
     private static JsonDocument? CloneDocument(JsonElement? value) =>
         value is null ? null : JsonDocument.Parse(value.Value.GetRawText());

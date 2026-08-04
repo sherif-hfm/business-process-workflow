@@ -97,11 +97,7 @@ public sealed record InstanceVersionChangeAuditDto(
     string? ChangedBy,
     IReadOnlyList<string> ChangedByRoles,
     string Reason,
-    DateTimeOffset ChangedAt)
-{
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public long? AdministrativeActionBatchId { get; init; }
-}
+    DateTimeOffset ChangedAt);
 
 /// <summary>
 /// Request payload for creating a new workflow definition.

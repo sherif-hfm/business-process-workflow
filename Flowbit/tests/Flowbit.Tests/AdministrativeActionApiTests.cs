@@ -4,6 +4,7 @@ using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +20,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         new(JsonSerializerDefaults.Web);
 
     [Fact]
-    public async Task AdministrativeAction_IsHiddenFromNormalActions_BypassesOnlyTaskOwnership_AndDoesNotInheritOperator()
+    public async Task RoleProtectedReturn_RemainsANormalManualFlow_AndBatchDiscoveryRequiresStackedRoles()
     {
         var model = CreateAdministrativeReturnModel();
         EnableAdministrativeFlowEvidence(model);
@@ -53,50 +54,6 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             "approval-owner",
             "Approver");
         Assert.Equal("approval-owner", approval.Assignee);
-
-        using (var forbiddenGlobal = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions?targetWorkflowId={workflowId}",
-                   user: "operator",
-                   roles: ["Ops"],
-                   suppressImplicitAdmin: true))
-        {
-            Assert.Equal(HttpStatusCode.Forbidden, forbiddenGlobal.StatusCode);
-        }
-
-        using (var missingFlowRole = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions?targetWorkflowId={workflowId}",
-                   user: "operator",
-                   roles: ["admin"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, missingFlowRole.StatusCode);
-            Assert.Empty(await ReadAsync<List<AdministrativeActionSummaryDto>>(
-                missingFlowRole));
-        }
-
-        using (var ordinaryTaskView = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}",
-                   user: "operator",
-                   roles: ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.BadRequest, ordinaryTaskView.StatusCode);
-        }
-        using (var privilegedContext = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}/administrative-context",
-                   user: "operator",
-                   roles: ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, privilegedContext.StatusCode);
-            var context = await ReadAsync<AdministrativeActionTaskContextDto>(
-                privilegedContext);
-            Assert.Equal(approval.Id, context.UserTaskId);
-            Assert.Equal(instance.Id, context.InstanceId);
-            Assert.Equal(workflowId, context.SourceWorkflowId);
-            Assert.Contains(context.TargetVersions, version => version.Id == workflowId);
-        }
 
         using (var catalog = await SendAsync(
                    HttpMethod.Get,
@@ -139,6 +96,17 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             Assert.Equal(HttpStatusCode.OK, normalList.StatusCode);
             Assert.Empty(await ReadAsync<List<SequenceFlowModel>>(normalList));
         }
+        using (var ownerList = await SendAsync(
+                   HttpMethod.Get,
+                   $"/api/user-tasks/{approval.Id}/flows",
+                   user: "approval-owner",
+                   roles: ["Approver", "Ops"]))
+        {
+            Assert.Equal(HttpStatusCode.OK, ownerList.StatusCode);
+            var flows = await ReadAsync<List<SequenceFlowModel>>(ownerList);
+            Assert.Contains(flows, flow => flow.Id == 301);
+            Assert.Contains(flows, flow => flow.Id == 302);
+        }
         using (var normalTake = await SendAsync(
                    HttpMethod.Post,
                    $"/api/user-tasks/{approval.Id}/flows/301",
@@ -151,7 +119,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
 
         using (var definitionActions = await SendAsync(
                    HttpMethod.Get,
-                   $"/api/workflows/{workflowId}/administrative-actions?batchableOnly=true",
+                   $"/api/workflows/{workflowId}/administrative-actions",
                    user: "operator",
                    roles: ["admin", "Ops"]))
         {
@@ -159,104 +127,50 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             var action = Assert.Single(
                 await ReadAsync<List<AdministrativeActionSummaryDto>>(
                     definitionActions));
-            Assert.Equal("RETURN_FOR_REWORK", action.FlowExternalId);
-            Assert.True(action.IsBatchable);
+            Assert.Equal(workflowId, action.WorkflowDefinitionId);
+            Assert.Equal(301, action.FlowId);
+            Assert.Null(action.FlowExternalId);
         }
 
-        using (var taskActions = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions?targetWorkflowId={workflowId}",
-                   user: "operator",
-                   roles: ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, taskActions.StatusCode);
-            Assert.Equal(
-                301,
-                Assert.Single(await ReadAsync<List<AdministrativeActionSummaryDto>>(
-                    taskActions)).FlowId);
-        }
-
-        var current = await GetInstanceAsync(instance.Id);
-        var request = new AdministrativeActionRequest(
-            workflowId,
-            workflowId,
-            current.UpdatedAt,
-            "return_for_rework",
-            "  compliance correction  ",
-            new Dictionary<string, JsonElement>
-            {
-                ["comment"] = JsonSerializer.SerializeToElement(
-                    "Missing supporting document")
-            })
-        {
-            ExpectedTokenId = approval.TokenId,
-            ExpectedUserTaskUpdatedAt = approval.UpdatedAt
-        };
-
-        using (var staleTokenPreview = await SendAsync(
+        using (var manualReturn = await SendAsync(
                    HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions/preview",
-                   request with { ExpectedTokenId = approval.TokenId + 10_000 },
-                   "operator",
-                   ["admin", "Ops"]))
+                   $"/api/user-tasks/{approval.Id}/flows/301",
+                   new TakeFlowRequest(new Dictionary<string, JsonElement>
+                   {
+                       ["comment"] = JsonSerializer.SerializeToElement(
+                           "Missing supporting document")
+                   }),
+                   "approval-owner",
+                   ["Approver", "Ops"]))
         {
-            Assert.Equal(HttpStatusCode.OK, staleTokenPreview.StatusCode);
-            var eligibility = await ReadAsync<AdministrativeActionEligibilityDto>(
-                staleTokenPreview);
-            Assert.False(eligibility.Eligible);
-            Assert.Contains(eligibility.Issues, issue => issue.Code == "tokenChanged");
+            Assert.Equal(HttpStatusCode.OK, manualReturn.StatusCode);
         }
 
-        using (var preview = await SendAsync(
-                   HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions/preview",
-                   request,
-                   "operator",
-                   ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
-            var eligibility = await ReadAsync<AdministrativeActionEligibilityDto>(preview);
-            Assert.True(eligibility.Eligible);
-            Assert.Empty(eligibility.Issues);
-        }
-
-        AdministrativeActionResultDto result;
-        using (var execute = await SendAsync(
-                   HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions",
-                   request,
-                   "operator",
-                   ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, execute.StatusCode);
-            result = await ReadAsync<AdministrativeActionResultDto>(execute);
-        }
-
-        Assert.Equal(approval.Id, result.CompletedUserTaskId);
-        Assert.Null(result.VersionChange);
-        Assert.Null(result.AdministrativeActionBatchId);
-        Assert.Equal(2, result.Instance.CurrentNodeId);
-        var returned = Assert.IsType<UserTaskDto>(result.NewUserTask);
+        var returned = await GetSingleActiveTaskAsync(
+            instance.Id,
+            "approval-owner",
+            "Worker");
         Assert.Equal(2, returned.NodeId);
-        Assert.Equal("reviewer", returned.ClaimedBy);
-        Assert.NotEqual("operator", returned.ClaimedBy);
+        Assert.Equal("approval-owner", returned.ClaimedBy);
 
         var completed = await GetTaskAsync(
             approval.Id,
             "approval-owner",
             "Approver");
-        Assert.Equal("operator", completed.CompletedBy);
-        Assert.Equal("administrativeAction", completed.CompletionKind);
-        Assert.Equal("compliance correction", completed.CompletionReason);
+        Assert.Equal("approval-owner", completed.CompletedBy);
+        Assert.Null(completed.CompletionKind);
+        Assert.Null(completed.CompletionReason);
         Assert.Null(completed.AdministrativeActionBatchId);
 
         var detail = await GetInstanceAsync(instance.Id);
+        Assert.Equal(workflowId, detail.Workflow.Id);
+        Assert.Empty(detail.VersionChanges);
         var history = Assert.Single(detail.History, item =>
             item.UserTaskId == approval.Id
             && item.SequenceFlowId == 301);
-        Assert.Equal("administrativeAction", history.Note);
-        Assert.Equal("compliance correction", history.Reason);
-        Assert.Equal("operator", history.PerformedBy);
+        Assert.Null(history.Note);
+        Assert.Null(history.Reason);
+        Assert.Equal("approval-owner", history.PerformedBy);
         Assert.Null(history.AdministrativeActionBatchId);
         Assert.Equal(
             "Missing supporting document",
@@ -270,8 +184,8 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                                      && item.SequenceFlowId == 301);
             Assert.True(occurrence.IsAction);
             Assert.True(occurrence.IsTraversal);
-            Assert.Equal("administrativeAction", occurrence.Kind);
-            Assert.Equal("operator", occurrence.User);
+            Assert.Equal("userTaskAction", occurrence.Kind);
+            Assert.Equal("approval-owner", occurrence.User);
             Assert.Contains("Ops", occurrence.UserRoles);
 
             var evidence = await db.SequenceFlowSummaries
@@ -280,47 +194,32 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                                      && item.SequenceFlowId == 301);
             Assert.Equal(1, evidence.ActionCount);
             Assert.Equal(1, evidence.TraversalCount);
-            Assert.Equal("administrativeAction", evidence.LastActionKind);
-            Assert.Equal("administrativeAction", evidence.LastTraversalKind);
+            Assert.Equal("userTaskAction", evidence.LastActionKind);
+            Assert.Equal("userTaskAction", evidence.LastTraversalKind);
         }
     }
 
     [Fact]
-    public async Task DiscoveryAndPreview_LoadWorkflowSettingsForConditionsAndVariableValidation()
+    public async Task PreviewAdministrativeBatchFlow_LoadsSettingsChecksAuthorizationAndDoesNotMutateInstance()
     {
         var settingNamespace = $"administrativeaction{Guid.NewGuid():N}";
         await CreateWorkflowSettingAsync(settingNamespace, "enabled", true);
         await CreateWorkflowSettingAsync(settingNamespace, "minimumCommentLength", 12);
 
         var model = CreateAdministrativeReturnModel();
-        var administrativeFlow = model.SequenceFlows.Single(flow => flow.IsAdministrative);
-        administrativeFlow.Condition = $"[setting.{settingNamespace}.enabled] == true";
-        administrativeFlow.Variables.Single(variable => variable.Name == "comment").Validation =
+        var returnFlow = model.SequenceFlows.Single(flow => flow.Id == 301);
+        returnFlow.Condition = $"[setting.{settingNamespace}.enabled] == true";
+        returnFlow.Variables.Single(variable => variable.Name == "comment").Validation =
             $"Length(comment) >= [setting.{settingNamespace}.minimumCommentLength]";
 
         var workflowId = await CreateWorkflowAsync(model);
         var instance = await StartAsync(workflowId);
         var approval = await MoveToApprovalAsync(instance.Id, "settings-reviewer");
-
-        using (var discovery = await SendAsync(
-                   HttpMethod.Get,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions?targetWorkflowId={workflowId}",
-                   user: "settings-operator",
-                   roles: ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, discovery.StatusCode);
-            Assert.Equal(
-                301,
-                Assert.Single(await ReadAsync<List<AdministrativeActionSummaryDto>>(
-                    discovery)).FlowId);
-        }
-
         var selectedState = await GetInstanceAsync(instance.Id);
         var request = new AdministrativeActionRequest(
             workflowId,
-            workflowId,
+            301,
             selectedState.UpdatedAt,
-            "RETURN_FOR_REWORK",
             "Settings-backed correction",
             new Dictionary<string, JsonElement>
             {
@@ -330,53 +229,182 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             ExpectedTokenId = approval.TokenId,
             ExpectedUserTaskUpdatedAt = approval.UpdatedAt
         };
+        var operatorContext = new ActorContext(
+            "settings-operator",
+            ["admin", "Ops"],
+            new Dictionary<string, string>());
 
-        using (var invalidPreview = await SendAsync(
-                   HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions/preview",
-                   request,
-                   "settings-operator",
-                   ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, invalidPreview.StatusCode);
-            var eligibility = await ReadAsync<AdministrativeActionEligibilityDto>(
-                invalidPreview);
-            Assert.False(eligibility.Eligible);
-            Assert.Contains(eligibility.Issues, issue => issue.Code == "invalidVariables");
-            Assert.DoesNotContain(
-                eligibility.Issues,
-                issue => issue.Code == "conditionNotSatisfied");
-        }
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
+        var invalid = await engine.PreviewAdministrativeBatchFlowAsync(
+            approval.Id,
+            request,
+            operatorContext,
+            CancellationToken.None);
+        Assert.False(invalid.Eligible);
+        Assert.Contains(invalid.Issues, issue => issue.Code == "invalidVariables");
+        Assert.DoesNotContain(
+            invalid.Issues,
+            issue => issue.Code == "conditionNotSatisfied");
 
-        request = request with
-        {
-            Variables = new Dictionary<string, JsonElement>
+        var stale = await engine.PreviewAdministrativeBatchFlowAsync(
+            approval.Id,
+            request with { ExpectedTokenId = approval.TokenId + 10_000 },
+            operatorContext,
+            CancellationToken.None);
+        Assert.False(stale.Eligible);
+        Assert.Contains(stale.Issues, issue => issue.Code == "tokenChanged");
+
+        var missingFlowRole = await engine.PreviewAdministrativeBatchFlowAsync(
+            approval.Id,
+            request,
+            operatorContext with { Roles = ["admin"] },
+            CancellationToken.None);
+        Assert.False(missingFlowRole.Eligible);
+        Assert.Contains(missingFlowRole.Issues, issue => issue.Code == "flowRoleRequired");
+
+        await Assert.ThrowsAsync<WorkflowForbiddenException>(() =>
+            engine.PreviewAdministrativeBatchFlowAsync(
+                approval.Id,
+                request,
+                operatorContext with { Roles = ["Ops"] },
+                CancellationToken.None));
+
+        var valid = await engine.PreviewAdministrativeBatchFlowAsync(
+            approval.Id,
+            request with
             {
-                ["comment"] = JsonSerializer.SerializeToElement(
-                    "Long enough correction comment")
+                Variables = new Dictionary<string, JsonElement>
+                {
+                    ["comment"] = JsonSerializer.SerializeToElement(
+                        "Long enough correction comment")
+                }
+            },
+            operatorContext,
+            CancellationToken.None);
+        Assert.True(valid.Eligible);
+        Assert.Empty(valid.Issues);
+
+        var afterPreview = await GetInstanceAsync(instance.Id);
+        Assert.Equal(workflowId, afterPreview.Workflow.Id);
+        Assert.Equal(selectedState.UpdatedAt, afterPreview.UpdatedAt);
+        Assert.Empty(afterPreview.VersionChanges);
+    }
+
+    [Fact]
+    public async Task ExactFlowMappings_RejectInvalidMappingSetsBeforeCandidateSearch()
+    {
+        var firstModel = CreateAdministrativeReturnModel();
+        var firstWorkflowId = await CreateWorkflowAsync(firstModel);
+
+        var incompatibleModel = CreateAdministrativeReturnModel();
+        incompatibleModel.Id = firstModel.Id;
+        incompatibleModel.Name = firstModel.Name;
+        var incompatibleFlow = incompatibleModel.SequenceFlows.Single(flow => flow.Id == 301);
+        incompatibleFlow.Id = 901;
+        incompatibleFlow.Variables.Single(variable => variable.Name == "comment").Required = false;
+        var incompatibleVersion = await CreateVersionAsync(
+            firstWorkflowId,
+            incompatibleModel);
+
+        var unrelatedWorkflowId = await CreateWorkflowAsync(
+            CreateAdministrativeReturnModel());
+        var cases = new[]
+        {
+            new
+            {
+                Name = "duplicate definition mapping",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 301),
+                    new(firstWorkflowId, 301)
+                },
+                Roles = new[] { "admin", "Ops" },
+                ExpectedStatus = HttpStatusCode.BadRequest,
+                ExpectedError = "more than one selected flow mapping"
+            },
+            new
+            {
+                Name = "missing flow",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 999_999)
+                },
+                Roles = new[] { "admin", "Ops" },
+                ExpectedStatus = HttpStatusCode.BadRequest,
+                ExpectedError = "not eligible for administrative batch execution"
+            },
+            new
+            {
+                Name = "existing but ineligible flow",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 302)
+                },
+                Roles = new[] { "admin", "Ops" },
+                ExpectedStatus = HttpStatusCode.BadRequest,
+                ExpectedError = "not eligible for administrative batch execution"
+            },
+            new
+            {
+                Name = "different workflow families",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 301),
+                    new(unrelatedWorkflowId, 301)
+                },
+                Roles = new[] { "admin", "Ops" },
+                ExpectedStatus = HttpStatusCode.BadRequest,
+                ExpectedError = "same workflow family"
+            },
+            new
+            {
+                Name = "incompatible variable contracts",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 301),
+                    new(incompatibleVersion.Id, 901)
+                },
+                Roles = new[] { "admin", "Ops" },
+                ExpectedStatus = HttpStatusCode.BadRequest,
+                ExpectedError = "same variable names, types, array flags, and required flags"
+            },
+            new
+            {
+                Name = "missing mapped flow role",
+                Mappings = new AdministrativeActionFlowMappingDto[]
+                {
+                    new(firstWorkflowId, 301)
+                },
+                Roles = new[] { "admin" },
+                ExpectedStatus = HttpStatusCode.Forbidden,
+                ExpectedError = "does not have a role permitted for flow"
             }
         };
-        using (var validPreview = await SendAsync(
-                   HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions/preview",
-                   request,
-                   "settings-operator",
-                   ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, validPreview.StatusCode);
-            var eligibility = await ReadAsync<AdministrativeActionEligibilityDto>(
-                validPreview);
-            Assert.True(eligibility.Eligible);
-            Assert.Empty(eligibility.Issues);
-        }
 
-        using var execute = await SendAsync(
-            HttpMethod.Post,
-            $"/api/user-tasks/{approval.Id}/administrative-actions",
-            request,
-            "settings-operator",
-            ["admin", "Ops"]);
-        Assert.Equal(HttpStatusCode.OK, execute.StatusCode);
+        foreach (var testCase in cases)
+        {
+            using var response = await SendAsync(
+                HttpMethod.Post,
+                "/api/administrative-actions/candidates/search",
+                new AdministrativeActionCandidateSearchRequest
+                {
+                    FlowMappings = testCase.Mappings,
+                    Page = 1,
+                    PageSize = 10
+                },
+                $"invalid-mapping-{Guid.NewGuid():N}",
+                testCase.Roles);
+
+            Assert.True(
+                response.StatusCode == testCase.ExpectedStatus,
+                $"{testCase.Name}: expected {(int)testCase.ExpectedStatus} but received "
+                + $"{(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+            Assert.Contains(
+                testCase.ExpectedError,
+                await response.Content.ReadAsStringAsync(),
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -389,8 +417,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             ["Comment"] = JsonSerializer.SerializeToElement("second")
         };
         var request = new CreateAdministrativeActionBatchRequest(
-            workflowId,
-            "RETURN_FOR_REWORK",
+            FlowMappings(workflowId),
             "Correct duplicated variable input",
             variables,
             new AdministrativeActionBatchSelectionDto(
@@ -418,8 +445,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         var approval = await MoveToApprovalAsync(instance.Id, "idempotency-reviewer");
         var idempotencyKey = $"batch-create-{Guid.NewGuid():N}";
         var request = new CreateAdministrativeActionBatchRequest(
-            workflowId,
-            "RETURN_FOR_REWORK",
+            FlowMappings(workflowId),
             "Concurrent retry",
             new Dictionary<string, JsonElement>
             {
@@ -490,8 +516,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             "frozen-two");
         var filter = new AdministrativeActionCandidateSearchRequest
         {
-            TargetWorkflowId = workflowId,
-            FlowExternalId = "RETURN_FOR_REWORK",
+            FlowMappings = FlowMappings(workflowId),
             Page = 1,
             PageSize = 1
         };
@@ -505,8 +530,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Freeze the current matching population",
                        new Dictionary<string, JsonElement>
                        {
@@ -566,8 +590,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                 HttpMethod.Post,
                 "/api/administrative-action-batches",
                 new CreateAdministrativeActionBatchRequest(
-                    workflowId,
-                    "RETURN_FOR_REWORK",
+                    FlowMappings(workflowId),
                     "Reject this oversized frozen population",
                     new Dictionary<string, JsonElement>
                     {
@@ -594,16 +617,35 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
     [Fact]
     public async Task Batch_FreezesPreparesConfirmsAndExecutesItemsIndependently()
     {
-        var workflowId = await CreateWorkflowAsync(CreateAdministrativeReturnModel());
+        var model = CreateAdministrativeReturnModel();
+        EnableAdministrativeFlowEvidence(model);
+        var approvalNode = model.FlowNodes.Single(node => node.Id == 3);
+        approvalNode.AssigneeExpression = null;
+        approvalNode.RequiresAssignment = false;
+        approvalNode.AssignmentMode = AssignmentModes.Fresh;
+        approvalNode.RequiresClaim = true;
+        approvalNode.ClaimMode = ClaimModes.Fresh;
+        var workflowId = await CreateWorkflowAsync(model);
         var firstInstance = await StartAsync(workflowId);
         var secondInstance = await StartAsync(workflowId);
         var firstApproval = await MoveToApprovalAsync(firstInstance.Id, "reviewer-one");
         var secondApproval = await MoveToApprovalAsync(secondInstance.Id, "reviewer-two");
+        foreach (var approval in new[] { firstApproval, secondApproval })
+        {
+            using var claim = await SendAsync(
+                HttpMethod.Post,
+                $"/api/user-tasks/{approval.Id}/claim",
+                user: "approval-owner",
+                roles: ["Approver"]);
+            Assert.True(
+                claim.StatusCode == HttpStatusCode.OK,
+                $"Expected the source task claim to succeed, but received {(int)claim.StatusCode}: "
+                + await claim.Content.ReadAsStringAsync());
+        }
 
         var search = new AdministrativeActionCandidateSearchRequest
         {
-            TargetWorkflowId = workflowId,
-            FlowExternalId = "RETURN_FOR_REWORK",
+            FlowMappings = FlowMappings(workflowId),
             IncludeVariables = true,
             Page = 1,
             PageSize = 50
@@ -627,8 +669,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Correct two requests",
                        new Dictionary<string, JsonElement>
                        {
@@ -721,6 +762,47 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         Assert.Equal("reviewer-two", secondReturned.ClaimedBy);
         Assert.NotEqual("batch-confirmer", firstReturned.ClaimedBy);
         Assert.NotEqual("batch-confirmer", secondReturned.ClaimedBy);
+
+        await using var db = fixture.CreateDbContext();
+        var instanceIds = new[] { firstInstance.Id, secondInstance.Id };
+        var occurrences = await db.SequenceFlowOccurrences
+            .AsNoTracking()
+            .Where(item => instanceIds.Contains(item.InstanceId)
+                           && item.SequenceFlowId == 301)
+            .OrderBy(item => item.InstanceId)
+            .ToListAsync();
+        Assert.Equal(2, occurrences.Count);
+        Assert.All(occurrences, occurrence =>
+        {
+            Assert.Equal(workflowId, occurrence.WorkflowDefinitionId);
+            Assert.True(occurrence.IsAction);
+            Assert.True(occurrence.IsTraversal);
+            Assert.Equal("administrativeAction", occurrence.Kind);
+            Assert.Equal("batch-confirmer", occurrence.User);
+            Assert.Contains("admin", occurrence.UserRoles);
+            Assert.Contains("Ops", occurrence.UserRoles);
+        });
+
+        var summaries = await db.SequenceFlowSummaries
+            .AsNoTracking()
+            .Where(item => instanceIds.Contains(item.InstanceId)
+                           && item.SequenceFlowId == 301)
+            .OrderBy(item => item.InstanceId)
+            .ToListAsync();
+        Assert.Equal(2, summaries.Count);
+        Assert.All(summaries, summary =>
+        {
+            Assert.Equal(1, summary.ActionCount);
+            Assert.Equal(1, summary.TraversalCount);
+            Assert.Equal("administrativeAction", summary.LastActionKind);
+            Assert.Equal("administrativeAction", summary.LastTraversalKind);
+            Assert.Equal("batch-confirmer", summary.LastActionUser);
+            Assert.Equal("batch-confirmer", summary.LastTraversalUser);
+            Assert.Contains("admin", summary.LastActionUserRoles);
+            Assert.Contains("Ops", summary.LastActionUserRoles);
+            Assert.Contains("admin", summary.LastTraversalUserRoles);
+            Assert.Contains("Ops", summary.LastTraversalUserRoles);
+        });
     }
 
     [Fact]
@@ -735,8 +817,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Race with the ordinary approval",
                        new Dictionary<string, JsonElement>
                        {
@@ -827,8 +908,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Resume after committed item transition",
                        new Dictionary<string, JsonElement>
                        {
@@ -874,13 +954,12 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
-            var result = await engine.ExecuteUserTaskAdministrativeActionAsync(
+            var result = await engine.ExecuteAdministrativeBatchFlowAsync(
                 item.UserTaskId,
                 new AdministrativeActionRequest(
-                    batch.Summary.TargetWorkflowId,
-                    item.SourceWorkflowId,
+                    item.WorkflowDefinitionId,
+                    item.FlowId,
                     item.CapturedInstanceUpdatedAt,
-                    batch.Summary.FlowExternalId,
                     batch.Summary.Reason,
                     batch.CommonVariables.ToDictionary(
                         pair => pair.Key,
@@ -894,8 +973,8 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                     "resume-confirmer",
                     ["admin", "Ops"],
                     new Dictionary<string, string>()),
-                CancellationToken.None,
-                batch.Summary.Id);
+                batch.Summary.Id,
+                CancellationToken.None);
             Assert.NotNull(result);
         }
 
@@ -939,8 +1018,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Freeze a task that went stale",
                        new Dictionary<string, JsonElement>
                        {
@@ -986,7 +1064,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
     public async Task Batch_DurableJobsPreserveAllowlistedClaimsForPreparationAndExecution()
     {
         var model = CreateAdministrativeReturnModel();
-        model.SequenceFlows.Single(flow => flow.IsAdministrative).Condition =
+        model.SequenceFlows.Single(flow => flow.Id == 301).Condition =
             "[sys.claim.department] == 'finance'";
         var workflowId = await CreateWorkflowAsync(model);
         var instance = await StartAsync(workflowId);
@@ -1001,8 +1079,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Finance claim context",
                        new Dictionary<string, JsonElement>
                        {
@@ -1058,8 +1135,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Post,
                    "/api/administrative-action-batches",
                    new CreateAdministrativeActionBatchRequest(
-                       workflowId,
-                       "RETURN_FOR_REWORK",
+                       FlowMappings(workflowId),
                        "Settle started item after cancellation",
                        new Dictionary<string, JsonElement>
                        {
@@ -1125,97 +1201,135 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task CrossVersionAction_RollsBackIncompatibleTransitionThenChangesVersionAndReturnsAtomically()
+    public async Task MultiVersionBatch_UsesExactFlowMappingsWithoutChangingInstanceVersions()
     {
-        var sourceModel = CreateAdministrativeReturnModel();
-        sourceModel.SequenceFlows.RemoveAll(flow => flow.IsAdministrative);
-        var sourceWorkflowId = await CreateWorkflowAsync(sourceModel);
-        var instance = await StartAsync(sourceWorkflowId);
-        var approval = await MoveToApprovalAsync(instance.Id, "version-reviewer");
-        var selectedState = await GetInstanceAsync(instance.Id);
+        var firstModel = CreateAdministrativeReturnModel();
+        var firstWorkflowId = await CreateWorkflowAsync(firstModel);
+        var firstInstance = await StartAsync(firstWorkflowId);
+        var firstApproval = await MoveToApprovalAsync(
+            firstInstance.Id,
+            "version-one-reviewer");
 
-        var guardedTargetModel = CreateAdministrativeReturnModel();
-        guardedTargetModel.Id = sourceModel.Id;
-        guardedTargetModel.Name = sourceModel.Name;
-        guardedTargetModel.SequenceFlows.Single(flow => flow.IsAdministrative).Condition =
-            "amount > 1000";
-        var guardedTarget = await CreateVersionAsync(
-            sourceWorkflowId,
-            guardedTargetModel);
-        var guardedRequest = new AdministrativeActionRequest(
-            guardedTarget.Id,
-            sourceWorkflowId,
-            selectedState.UpdatedAt,
-            "RETURN_FOR_REWORK",
-            "Condition should roll back",
-            new Dictionary<string, JsonElement>
-            {
-                ["comment"] = JsonSerializer.SerializeToElement("Guarded")
-            })
+        var secondModel = CreateAdministrativeReturnModel();
+        secondModel.Id = firstModel.Id;
+        secondModel.Name = firstModel.Name;
+        secondModel.SequenceFlows.Single(flow => flow.Id == 301).Id = 901;
+        var secondWorkflow = await CreateVersionAsync(firstWorkflowId, secondModel);
+        var secondInstance = await StartAsync(secondWorkflow.Id);
+        var secondApproval = await MoveToApprovalAsync(
+            secondInstance.Id,
+            "version-two-reviewer");
+        var mappings = new AdministrativeActionFlowMappingDto[]
         {
-            ExpectedTokenId = approval.TokenId,
-            ExpectedUserTaskUpdatedAt = approval.UpdatedAt
+            new(firstWorkflowId, 301),
+            new(secondWorkflow.Id, 901)
         };
 
-        using (var rejected = await SendAsync(
+        using (var searchResponse = await SendAsync(
                    HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions",
-                   guardedRequest,
+                   "/api/administrative-actions/candidates/search",
+                   new AdministrativeActionCandidateSearchRequest
+                   {
+                       FlowMappings = mappings,
+                       Page = 1,
+                       PageSize = 50
+                   },
                    "version-operator",
                    ["admin", "Ops"]))
         {
-            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, searchResponse.StatusCode);
+            var candidates = await ReadAsync<PagedResult<AdministrativeActionCandidateDto>>(
+                searchResponse);
+            Assert.Contains(candidates.Items, item =>
+                item.UserTaskId == firstApproval.Id
+                && item.WorkflowDefinitionId == firstWorkflowId
+                && item.FlowId == 301);
+            Assert.Contains(candidates.Items, item =>
+                item.UserTaskId == secondApproval.Id
+                && item.WorkflowDefinitionId == secondWorkflow.Id
+                && item.FlowId == 901);
         }
 
-        var afterRejected = await GetInstanceAsync(instance.Id);
-        Assert.Equal(sourceWorkflowId, afterRejected.Workflow.Id);
-        Assert.Equal(selectedState.UpdatedAt, afterRejected.UpdatedAt);
-        Assert.Empty(afterRejected.VersionChanges);
+        AdministrativeActionBatchDetailDto batch;
+        using (var create = await SendAsync(
+                   HttpMethod.Post,
+                   "/api/administrative-action-batches",
+                   new CreateAdministrativeActionBatchRequest(
+                       mappings,
+                       "Mapped multi-version correction",
+                       new Dictionary<string, JsonElement>
+                       {
+                           ["comment"] = JsonSerializer.SerializeToElement(
+                               "Correct both immutable versions")
+                       },
+                       new AdministrativeActionBatchSelectionDto(
+                           AdministrativeActionBatchSelectionModes.Explicit,
+                           [firstApproval.Id, secondApproval.Id],
+                           null,
+                           null),
+                       $"multi-version-{Guid.NewGuid():N}"),
+                   "version-operator",
+                   ["admin", "Ops"]))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, create.StatusCode);
+            batch = await ReadAsync<AdministrativeActionBatchDetailDto>(create);
+        }
+        Assert.Equal(2, batch.FlowMappings.Count);
+        Assert.Contains(batch.FlowMappings, mapping =>
+            mapping.WorkflowDefinitionId == firstWorkflowId && mapping.FlowId == 301);
+        Assert.Contains(batch.FlowMappings, mapping =>
+            mapping.WorkflowDefinitionId == secondWorkflow.Id && mapping.FlowId == 901);
+        Assert.All(batch.FlowMappings, mapping => Assert.Null(mapping.FlowExternalId));
+
+        await ProcessBatchJobAsync(Assert.IsType<long>(batch.PreparationJobId));
+        batch = await GetBatchAsync(batch.Summary.Id);
+        Assert.Equal(2, batch.Summary.EligibleItemCount);
+        using (var confirm = await SendAsync(
+                   HttpMethod.Post,
+                   $"/api/administrative-action-batches/{batch.Summary.Id}/confirm",
+                   new ConfirmAdministrativeActionBatchRequest(
+                       2,
+                       batch.Summary.UpdatedAt),
+                   "version-operator",
+                   ["admin", "Ops"]))
+        {
+            Assert.Equal(HttpStatusCode.OK, confirm.StatusCode);
+            batch = await ReadAsync<AdministrativeActionBatchDetailDto>(confirm);
+        }
+        await ProcessBatchJobAsync(Assert.IsType<long>(batch.ExecutionJobId));
+        batch = await GetBatchAsync(batch.Summary.Id);
+        Assert.Equal(AdministrativeActionBatchStatuses.Completed, batch.Summary.Status);
+        Assert.Equal(2, batch.Summary.SucceededItemCount);
+
+        var firstAfter = await GetInstanceAsync(firstInstance.Id);
+        var secondAfter = await GetInstanceAsync(secondInstance.Id);
+        Assert.Equal(firstWorkflowId, firstAfter.Workflow.Id);
+        Assert.Equal(secondWorkflow.Id, secondAfter.Workflow.Id);
+        Assert.Empty(firstAfter.VersionChanges);
+        Assert.Empty(secondAfter.VersionChanges);
+        Assert.Equal(2, firstAfter.CurrentNodeId);
+        Assert.Equal(2, secondAfter.CurrentNodeId);
+        Assert.Single(firstAfter.History, row =>
+            row.UserTaskId == firstApproval.Id
+            && row.Note == "administrativeAction"
+            && row.AdministrativeActionBatchId == batch.Summary.Id);
+        Assert.Single(secondAfter.History, row =>
+            row.UserTaskId == secondApproval.Id
+            && row.Note == "administrativeAction"
+            && row.AdministrativeActionBatchId == batch.Summary.Id);
+
         Assert.Equal(
-            approval.Id,
+            "version-one-reviewer",
             (await GetSingleActiveTaskAsync(
-                instance.Id,
-                "approval-owner",
-                "Approver")).Id);
-
-        var targetModel = CreateAdministrativeReturnModel();
-        targetModel.Id = sourceModel.Id;
-        targetModel.Name = sourceModel.Name;
-        var target = await CreateVersionAsync(sourceWorkflowId, targetModel);
-        var request = guardedRequest with
-        {
-            TargetWorkflowId = target.Id,
-            Reason = "Approved cross-version correction"
-        };
-
-        AdministrativeActionResultDto result;
-        using (var response = await SendAsync(
-                   HttpMethod.Post,
-                   $"/api/user-tasks/{approval.Id}/administrative-actions",
-                   request,
-                   "version-operator",
-                   ["admin", "Ops"]))
-        {
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            result = await ReadAsync<AdministrativeActionResultDto>(response);
-        }
-
-        Assert.Equal(target.Id, result.Instance.Workflow.Id);
-        Assert.Equal(3, result.Instance.Workflow.Version);
-        Assert.Equal(2, result.Instance.CurrentNodeId);
-        Assert.Equal("version-reviewer", result.NewUserTask?.ClaimedBy);
-        var versionChange = Assert.IsType<InstanceVersionChangeAuditDto>(
-            result.VersionChange);
-        Assert.Equal(sourceWorkflowId, versionChange.SourceWorkflow.Id);
-        Assert.Equal(target.Id, versionChange.TargetWorkflow.Id);
-        Assert.Equal("Approved cross-version correction", versionChange.Reason);
-        Assert.Equal("version-operator", versionChange.ChangedBy);
-
-        var detail = await GetInstanceAsync(instance.Id);
-        Assert.Equal(versionChange.Id, Assert.Single(detail.VersionChanges).Id);
-        Assert.Single(detail.History, row =>
-            row.UserTaskId == approval.Id
-            && row.Note == "administrativeAction");
+                firstInstance.Id,
+                "version-one-reviewer",
+                "Worker")).ClaimedBy);
+        Assert.Equal(
+            "version-two-reviewer",
+            (await GetSingleActiveTaskAsync(
+                secondInstance.Id,
+                "version-two-reviewer",
+                "Worker")).ClaimedBy);
     }
 
     private async Task<long> CreateWorkflowAsync(WorkflowModel model)
@@ -1406,6 +1520,11 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         await response.Content.ReadFromJsonAsync<T>(JsonOptions)
         ?? throw new InvalidOperationException("Response body was empty.");
 
+    private static IReadOnlyList<AdministrativeActionFlowMappingDto> FlowMappings(
+        long workflowDefinitionId,
+        int flowId = 301) =>
+        [new AdministrativeActionFlowMappingDto(workflowDefinitionId, flowId)];
+
     private static WorkflowModel CreateAdministrativeReturnModel()
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -1477,13 +1596,10 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                 {
                     Id = 301,
                     Name = "Return for rework",
-                    ExternalId = "RETURN_FOR_REWORK",
                     SourceRef = 3,
                     TargetRef = 2,
                     Roles = ["Ops"],
                     Condition = "amount > 100",
-                    IsAdministrative = true,
-                    IsBatchable = true,
                     Variables =
                     [
                         new VariableModel
