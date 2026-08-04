@@ -17,8 +17,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<WorkflowEngineService>();
         services.AddScoped<IWorkflowEngineService>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
-        services.AddScoped<IWorkflowJobProcessor>(provider =>
-            provider.GetRequiredService<WorkflowEngineService>());
+        services.AddScoped<IAdministrativeActionBatchService, AdministrativeActionBatchService>();
+        services.AddScoped<IAdministrativeActionBatchJobProcessor, AdministrativeActionBatchJobProcessor>();
+        services.AddScoped<IWorkflowJobProcessor, WorkflowJobProcessorRouter>();
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();

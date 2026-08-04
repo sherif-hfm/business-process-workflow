@@ -1501,6 +1501,90 @@ public sealed class DefinitionValidationTests
         Assert.Contains("engine-only", engineOnlyError.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void SequenceFlowAdministrativeFlags_DefaultFalseAndRoundTrip()
+    {
+        var legacy = JsonSerializer.Deserialize<SequenceFlowModel>("{}");
+
+        Assert.NotNull(legacy);
+        Assert.False(legacy.IsAdministrative);
+        Assert.False(legacy.IsBatchable);
+
+        legacy.IsAdministrative = true;
+        legacy.IsBatchable = true;
+        var roundTripped = Clone(legacy);
+        Assert.True(roundTripped.IsAdministrative);
+        Assert.True(roundTripped.IsBatchable);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsAndNormalizesBatchableAdministrativeFlow()
+    {
+        var model = CreateAdministrativeFlowModel();
+        var administrative = model.SequenceFlows.Single(flow => flow.Id == 301);
+        administrative.ExternalId = " ADMIN_RETURN_FOR_REWORK ";
+        administrative.Roles = [" OperationsAdmin ", "operationsadmin"];
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var saved = repository.Added!.Definition.SequenceFlows.Single(flow => flow.Id == 301);
+        Assert.True(saved.IsAdministrative);
+        Assert.True(saved.IsBatchable);
+        Assert.Equal("ADMIN_RETURN_FOR_REWORK", saved.ExternalId);
+        Assert.Equal(["OperationsAdmin"], saved.Roles);
+    }
+
+    [Theory]
+    [InlineData("batchWithoutAdministrative", "batchable")]
+    [InlineData("engineOnly", "selectable")]
+    [InlineData("default", "default")]
+    [InlineData("automaticSource", "ordinary")]
+    [InlineData("multiInstanceSource", "non-multi-instance")]
+    [InlineData("automaticTarget", "ordinary")]
+    [InlineData("multiInstanceTarget", "non-multi-instance")]
+    [InlineData("asyncAfterSource", "asyncAfter")]
+    [InlineData("asyncBeforeTarget", "asyncBefore")]
+    [InlineData("missingExternalId", "externalId")]
+    [InlineData("longExternalId", "300 Unicode scalar")]
+    [InlineData("duplicateExternalId", "case-insensitive")]
+    [InlineData("missingRoles", "flow role")]
+    public async Task CreateAsync_RejectsInvalidAdministrativeFlow(
+        string invalid,
+        string expectedMessage)
+    {
+        var model = CreateAdministrativeFlowModel();
+        var administrative = model.SequenceFlows.Single(flow => flow.Id == 301);
+        var source = model.FlowNodes.Single(node => node.Id == administrative.SourceRef);
+        var target = model.FlowNodes.Single(node => node.Id == administrative.TargetRef);
+
+        switch (invalid)
+        {
+            case "batchWithoutAdministrative": administrative.IsAdministrative = false; break;
+            case "engineOnly": administrative.IsSelectable = false; break;
+            case "default": administrative.IsDefault = true; break;
+            case "automaticSource": source.Type = BpmnFlowNodeTypes.Task; break;
+            case "multiInstanceSource": source.MultiInstance = new MultiInstanceModel(); break;
+            case "automaticTarget": target.Type = BpmnFlowNodeTypes.Task; break;
+            case "multiInstanceTarget": target.MultiInstance = new MultiInstanceModel(); break;
+            case "asyncAfterSource": source.AsyncAfter = true; break;
+            case "asyncBeforeTarget": target.AsyncBefore = true; break;
+            case "missingExternalId": administrative.ExternalId = " "; break;
+            case "longExternalId": administrative.ExternalId = new string('x', 301); break;
+            case "duplicateExternalId":
+                model.SequenceFlows.Single(flow => flow.Id == 201).ExternalId = "admin_return";
+                break;
+            case "missingRoles": administrative.Roles = [" "]; break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(expectedMessage, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static WorkflowModel CreateMessageStartModel()
     {
         var model = LoadModel("votes-users-list.json");
@@ -3178,6 +3262,37 @@ public sealed class DefinitionValidationTests
             .Single(node => node.Id == 2);
         Assert.Empty(Assert.IsType<List<string>>(explicitEmpty.Job!.RetryDelays));
     }
+
+    internal static WorkflowModel CreateAdministrativeFlowModel() => new()
+    {
+        Id = "administrative-return-validation",
+        Name = "Administrative return validation",
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel { Id = 2, Name = "Previous review", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 3, Name = "Current review", Type = BpmnFlowNodeTypes.UserTask },
+            new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, Name = "Continue", SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel
+            {
+                Id = 301,
+                Name = "Return for rework",
+                ExternalId = "ADMIN_RETURN",
+                SourceRef = 3,
+                TargetRef = 2,
+                Roles = ["OperationsAdmin"],
+                IsAdministrative = true,
+                IsBatchable = true
+            },
+            new SequenceFlowModel { Id = 302, Name = "Finish", SourceRef = 3, TargetRef = 4 }
+        ]
+    };
 
     private static WorkflowModel CreateTerminalModel(string terminalType) => new()
     {

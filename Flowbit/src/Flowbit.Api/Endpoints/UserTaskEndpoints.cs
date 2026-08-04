@@ -38,6 +38,38 @@ public static class UserTaskEndpoints
         group.MapGet("/{taskId:long}/flows", GetFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>()
             .Produces(StatusCodes.Status401Unauthorized);
+        group.MapGet("/{taskId:long}/administrative-actions", GetAdministrativeActions)
+            .WithSummary("List authorized administrative actions for an exact workflow version")
+            .Produces<IReadOnlyList<AdministrativeActionSummaryDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+        group.MapGet("/{taskId:long}/administrative-context", GetAdministrativeContext)
+            .WithSummary("Get minimal context for a privileged administrative task action")
+            .WithDescription(
+                "Returns only the task and optimistic-concurrency context needed for authorized administrative actions; it does not grant ordinary task access.")
+            .Produces<AdministrativeActionTaskContextDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+        group.MapPost("/{taskId:long}/administrative-actions", ExecuteAdministrativeAction)
+            .WithSummary("Atomically execute an administrative user-task action")
+            .WithDescription(
+                "Optionally changes the instance to the exact compatible published target version, then takes the authored administrative flow in the same transaction. " +
+                "This creates a new task visit; it does not restore variables, erase history, or reverse external effects.")
+            .Produces<AdministrativeActionResultDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+        group.MapPost("/{taskId:long}/administrative-actions/preview", PreviewAdministrativeAction)
+            .WithSummary("Preview administrative-action eligibility without changing runtime state")
+            .Produces<AdministrativeActionEligibilityDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
         group.MapPost("/{taskId:long}/claim", Claim)
             .Produces<UserTaskDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -133,6 +165,62 @@ public static class UserTaskEndpoints
     private static async Task<IResult> GetFlows(long taskId, ClaimsPrincipal principal,
         IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken) =>
         Results.Ok(await service.GetUserTaskAvailableFlowsAsync(taskId, actorResolver.Resolve(principal), cancellationToken));
+
+    private static async Task<IResult> GetAdministrativeActions(
+        long taskId,
+        long targetWorkflowId,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.GetUserTaskAdministrativeActionsAsync(
+            taskId,
+            targetWorkflowId,
+            actorResolver.Resolve(principal),
+            cancellationToken));
+
+    private static async Task<IResult> GetAdministrativeContext(
+        long taskId,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var context = await service.GetAdministrativeActionTaskContextAsync(
+            taskId,
+            actorResolver.Resolve(principal),
+            cancellationToken);
+        return context is null ? Results.NotFound() : Results.Ok(context);
+    }
+
+    private static async Task<IResult> PreviewAdministrativeAction(
+        long taskId,
+        AdministrativeActionRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.PreviewUserTaskAdministrativeActionAsync(
+            taskId,
+            request,
+            actorResolver.Resolve(principal),
+            cancellationToken));
+
+    private static async Task<IResult> ExecuteAdministrativeAction(
+        long taskId,
+        AdministrativeActionRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ExecuteUserTaskAdministrativeActionAsync(
+            taskId,
+            request,
+            actorResolver.Resolve(principal),
+            cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
+    }
 
     private static async Task<IResult> Claim(long taskId, ClaimsPrincipal principal,
         IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)

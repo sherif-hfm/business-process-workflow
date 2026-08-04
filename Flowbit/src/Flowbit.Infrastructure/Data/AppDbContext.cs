@@ -14,6 +14,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkflowInstanceVersionChangeEntity> WorkflowInstanceVersionChanges =>
         Set<WorkflowInstanceVersionChangeEntity>();
 
+    public DbSet<AdministrativeActionBatchEntity> AdministrativeActionBatches =>
+        Set<AdministrativeActionBatchEntity>();
+
+    public DbSet<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems =>
+        Set<AdministrativeActionBatchItemEntity>();
+
     public DbSet<WorkflowBusinessKeyScopeEntity> WorkflowBusinessKeyScopes => Set<WorkflowBusinessKeyScopeEntity>();
 
     public DbSet<WorkflowBusinessKeyClaimEntity> WorkflowBusinessKeyClaims => Set<WorkflowBusinessKeyClaimEntity>();
@@ -232,7 +238,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR "
                     + "(\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') "
                     + "AND \"CompletionReason\" IN "
-                    + "('normal', 'userAction', 'messageDelivery', 'multiInstanceItem', "
+                    + "('normal', 'userAction', 'administrativeAction', 'messageDelivery', 'multiInstanceItem', "
                     + "'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', "
                     + "'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', "
                     + "'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', "
@@ -339,6 +345,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedByRoles).HasColumnType("text[]");
             entity.Property(e => e.CompletedActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.CompletionKind).HasMaxLength(64);
+            entity.Property(e => e.CompletionReason).HasMaxLength(AdministrativeActionConstraints.MaxReasonLength);
             entity.Property(e => e.ItemValueJson).HasColumnType("jsonb");
             entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
@@ -363,6 +371,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.MultiInstanceExecution)
                 .WithMany(e => e.UserTasks)
                 .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.AdministrativeActionBatch)
+                .WithMany(e => e.CompletedUserTasks)
+                .HasForeignKey(e => e.AdministrativeActionBatchId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -705,6 +717,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.PerformedBy).HasMaxLength(300);
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.Note).HasMaxLength(1000);
+            entity.Property(e => e.Reason).HasMaxLength(AdministrativeActionConstraints.MaxReasonLength);
             entity.Property(e => e.PerformedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.InstanceId);
             entity.HasIndex(e => new { e.InstanceId, e.TokenId, e.ToStepId, e.Id })
@@ -716,6 +729,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.InstanceHistory)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.AdministrativeActionBatch)
+                .WithMany(e => e.InstanceHistory)
+                .HasForeignKey(e => e.AdministrativeActionBatchId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -744,6 +761,147 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.TargetWorkflowDefinition)
                 .WithMany(e => e.TargetVersionChanges)
                 .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.AdministrativeActionBatch)
+                .WithMany(e => e.VersionChanges)
+                .HasForeignKey(e => e.AdministrativeActionBatchId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AdministrativeActionBatchEntity>(entity =>
+        {
+            entity.ToTable("administrative_action_batches", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batches_status",
+                    "\"Status\" IN ('preparing', 'ready', 'queued', 'running', "
+                    + "'completed', 'completedWithIssues', 'cancelled', 'failed')");
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batches_counts",
+                    "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 "
+                    + "AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 "
+                    + "AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 "
+                    + "AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 "
+                    + "AND \"CancelledItemCount\" >= 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey)
+                .HasMaxLength(AdministrativeActionConstraints.MaxWorkflowKeyLength)
+                .IsRequired();
+            entity.Property(e => e.FlowExternalId)
+                .HasMaxLength(AdministrativeActionConstraints.MaxExternalIdLength)
+                .IsRequired()
+                .UseCollation("C");
+            entity.Property(e => e.Reason)
+                .HasMaxLength(AdministrativeActionConstraints.MaxReasonLength)
+                .IsRequired();
+            entity.Property(e => e.CommonVariablesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::jsonb");
+            entity.Property(e => e.SelectionJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.PreparedBy)
+                .HasMaxLength(AdministrativeActionConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.PreparedByRolesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'[]'::jsonb");
+            entity.Property(e => e.ConfirmedBy)
+                .HasMaxLength(AdministrativeActionConstraints.MaxActorNameLength);
+            entity.Property(e => e.ConfirmedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IssuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(AdministrativeActionConstraints.MaxIdempotencyKeyLength)
+                .UseCollation("C");
+            entity.Property(e => e.CancelledBy)
+                .HasMaxLength(AdministrativeActionConstraints.MaxActorNameLength);
+            entity.Property(e => e.CancellationReason)
+                .HasMaxLength(AdministrativeActionConstraints.MaxReasonLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.WorkflowKey, e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.PreparedBy, e.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            entity.HasIndex(e => e.PreparationJobId)
+                .IsUnique()
+                .HasFilter("\"PreparationJobId\" IS NOT NULL");
+            entity.HasIndex(e => e.ExecutionJobId)
+                .IsUnique()
+                .HasFilter("\"ExecutionJobId\" IS NOT NULL");
+            entity.HasOne(e => e.TargetWorkflowDefinition)
+                .WithMany(e => e.AdministrativeActionBatches)
+                .HasForeignKey(e => new { e.TargetWorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.PreparationJob)
+                .WithMany()
+                .HasForeignKey(e => e.PreparationJobId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.ExecutionJob)
+                .WithMany()
+                .HasForeignKey(e => e.ExecutionJobId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<AdministrativeActionBatchItemEntity>(entity =>
+        {
+            entity.ToTable("administrative_action_batch_items", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batch_items_status",
+                    "\"Status\" IN ('preparing', 'eligible', 'ineligible', 'queued', "
+                    + "'succeeded', 'skipped', 'failed', 'cancelled')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.IssuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorCode)
+                .HasMaxLength(AdministrativeActionConstraints.MaxErrorCodeLength);
+            entity.Property(e => e.ErrorDescription)
+                .HasMaxLength(AdministrativeActionConstraints.MaxErrorDescriptionLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.BatchId, e.UserTaskId }).IsUnique();
+            entity.HasIndex(e => new { e.BatchId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
+            entity.HasIndex(e => e.SourceWorkflowDefinitionId);
+            entity.HasIndex(e => e.TargetWorkflowDefinitionId);
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.Items)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.AdministrativeActionBatchItems)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.UserTask)
+                .WithMany()
+                .HasForeignKey(e => e.UserTaskId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Token)
+                .WithMany()
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.SourceWorkflowDefinition)
+                .WithMany(e => e.AdministrativeActionBatchSourceItems)
+                .HasForeignKey(e => e.SourceWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.TargetWorkflowDefinition)
+                .WithMany(e => e.AdministrativeActionBatchTargetItems)
+                .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.NewUserTask)
+                .WithMany()
+                .HasForeignKey(e => e.NewUserTaskId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.VersionChangeAudit)
+                .WithMany()
+                .HasForeignKey(e => e.VersionChangeAuditId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

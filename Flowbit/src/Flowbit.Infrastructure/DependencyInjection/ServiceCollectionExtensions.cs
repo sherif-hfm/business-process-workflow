@@ -36,10 +36,12 @@ public static class ServiceCollectionExtensions
         services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
+        services.AddScoped<IAdministrativeActionCandidateRepository, AdministrativeActionCandidateRepository>();
         services.AddScoped<INodeExecutionQueryRepository, NodeExecutionQueryRepository>();
         services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();
         services.AddScoped<IEngineSettingsRepository, EngineSettingsRepository>();
         services.AddScoped<IUserDelegationRepository, UserDelegationRepository>();
+        services.AddScoped<IAdministrativeActionBatchRepository, AdministrativeActionBatchRepository>();
         services.AddScoped<IWorkflowJobRepository, WorkflowJobRepository>();
         services.AddScoped<ITimerSubscriptionRepository, TimerSubscriptionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();

@@ -458,6 +458,53 @@ Storage follows the hybrid design:
   inherited user still passes the normal role check when they act.
   `ValidateDefinition` requires `requiresClaim` for a non-`fresh` mode and a valid
   `userTask` reference for `fromNode`.
+- **Administrative actions and batches.** A sequence flow may opt into the
+  privileged administrative surface with `isAdministrative=true`; adding
+  `isBatchable=true` also permits frozen-set background execution. These flags
+  model send-back/rework as a new forward visit and never rewrite a token,
+  restore variables, erase history, or reverse an external side effect. A
+  privileged flow is a selectable, non-default, directly connected ordinary
+  `userTask`-to-`userTask` flow with a stable case-insensitively unique
+  `externalId` (at most 300 Unicode scalar values), at least one flow role, no
+  source `asyncAfter`, and no target `asyncBefore`. Runtime execution requires
+  exactly one active token and one
+  active ordinary task. The configured
+  `WorkflowAdministrativeActions.RequiredRole` role and a flow role are both
+  mandatory; a batch also requires `WorkflowBatchActions.RequiredRole`. Only
+  the dedicated administrative endpoint bypasses the source task's roles,
+  claim, and direct assignment. Normal flow discovery/take endpoints always
+  hide or reject administrative flows.
+  An operator supplies an exact published target version, frozen source/task
+  timestamps (including the frozen token ID), a 1-1,000-character reason, and
+  one shared variable payload. If
+  the instance uses an older compatible version, the engine locks the workflow
+  family and instance, changes version, resolves the action by its stable flow
+  external ID, validates condition/variables, and traverses the action in one
+  transaction. Failure rolls back both operations. Audit rows, FlowInfo action
+  and traversal evidence, the completed task/node execution, and the optional
+  batch item are correlated with kind `administrativeAction`. Such completions
+  are excluded from both claim and assignment inheritance, so the operator can
+  never become the returned task's owner merely by sending it back.
+  Batch drafts freeze either explicit task IDs or an `allMatching` search plus
+  exclusions, capped by `WorkflowBatchActions.MaxItems` (default and hard cap
+  10,000). Durable `administrativeBatchPrepare` and
+  `administrativeBatchExecute` activity jobs page items through fresh scopes.
+  Batch creation idempotency keys are serialized transactionally, and a replay
+  must match the original frozen request. Preparation records
+  eligible/ineligible items; confirmation is optimistic and idempotent and
+  queues only eligible rows. Allowlisted actor claims needed by authored
+  expressions are snapshotted into each durable phase job. Every queued item revalidates its
+  frozen identity and permissions and commits independently; stale items are
+  skipped, retries resume nonterminal rows, cancellation stops unstarted rows,
+  and prior successes are never reversed. Exhaustion of a final worker lease
+  atomically incidents the job and terminally reconciles outstanding rows while
+  preserving committed successes and already-ready batches. The API exposes an
+  administrative-only published-version catalog, exact-version action discovery,
+  candidate search, individual execution/preview, a minimal privileged task
+  context, and batch create/list/detail/item/confirm/cancel operations. The
+  Blazor UI provides the dedicated `/administrative-actions` workspace (including
+  the frozen reason, variables, selection, and operator-role snapshots) and
+  privileged individual sections on task and instance detail.
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.

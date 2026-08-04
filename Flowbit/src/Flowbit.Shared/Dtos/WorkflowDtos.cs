@@ -97,7 +97,11 @@ public sealed record InstanceVersionChangeAuditDto(
     string? ChangedBy,
     IReadOnlyList<string> ChangedByRoles,
     string Reason,
-    DateTimeOffset ChangedAt);
+    DateTimeOffset ChangedAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AdministrativeActionBatchId { get; init; }
+}
 
 /// <summary>
 /// Request payload for creating a new workflow definition.
@@ -260,6 +264,7 @@ public sealed record UserTaskWorkSummaryDto(
 {
     public int NormalTaskCount { get; init; }
     public int MultiInstanceTaskCount { get; init; }
+    public long? SoleUserTaskId { get; init; }
 }
 
 public sealed record UserTaskCapabilitiesDto(
@@ -305,6 +310,15 @@ public sealed record UserTaskDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DelegatedTaskAccessDto? CompletedDelegatedAccess { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompletionKind { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompletionReason { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AdministrativeActionBatchId { get; init; }
 }
 
 public sealed record UserTaskActionAckDto(
@@ -631,6 +645,12 @@ public sealed record InstanceHistoryDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? DelegationId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AdministrativeActionBatchId { get; init; }
 }
 
 /// <summary>

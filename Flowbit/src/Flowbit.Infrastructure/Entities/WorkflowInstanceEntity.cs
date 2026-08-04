@@ -55,4 +55,6 @@ public sealed class WorkflowInstanceEntity
     public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
 
     public List<WorkflowInstanceVersionChangeEntity> VersionChanges { get; set; } = [];
+
+    public List<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems { get; set; } = [];
 }

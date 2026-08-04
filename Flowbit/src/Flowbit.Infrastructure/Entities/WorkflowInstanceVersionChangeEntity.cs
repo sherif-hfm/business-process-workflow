@@ -24,5 +24,9 @@ public sealed class WorkflowInstanceVersionChangeEntity
 
     public string Reason { get; set; } = string.Empty;
 
+    public long? AdministrativeActionBatchId { get; set; }
+
+    public AdministrativeActionBatchEntity? AdministrativeActionBatch { get; set; }
+
     public DateTimeOffset ChangedAt { get; set; } = DateTimeOffset.UtcNow;
 }

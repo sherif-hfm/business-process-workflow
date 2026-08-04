@@ -35,4 +35,7 @@ public sealed class InstanceHistoryEntity
     public long? UserTaskId { get; set; }
     public long? MultiInstanceExecutionId { get; set; }
     public int? ItemIndex { get; set; }
+    public long? AdministrativeActionBatchId { get; set; }
+    public AdministrativeActionBatchEntity? AdministrativeActionBatch { get; set; }
+    public string? Reason { get; set; }
 }

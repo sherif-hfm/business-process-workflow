@@ -40,7 +40,10 @@ public sealed record WorkflowInstanceVersionChangeRecord(
     string? ChangedBy,
     IReadOnlyList<string> ChangedByRoles,
     string Reason,
-    DateTimeOffset ChangedAt);
+    DateTimeOffset ChangedAt)
+{
+    public long? AdministrativeActionBatchId { get; init; }
+}
 
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
@@ -241,6 +244,9 @@ public sealed record UserTaskRecord(
 {
     public string? CompletedActingFor { get; init; }
     public long? CompletionDelegationId { get; init; }
+    public string? CompletionKind { get; init; }
+    public string? CompletionReason { get; init; }
+    public long? AdministrativeActionBatchId { get; init; }
 
     /// <summary>
     /// Request-local delegation metadata populated by actor-scoped repository
@@ -284,7 +290,8 @@ public sealed record UserTaskWorkSummaryRecord(
     string? SoleClaimedBy,
     string? SoleAssignee,
     int NormalTaskCount,
-    int MultiInstanceTaskCount);
+    int MultiInstanceTaskCount,
+    long? SoleUserTaskId);
 
 public sealed record MultiInstanceProgressRecord(
     MultiInstanceExecutionRecord Execution,
@@ -489,7 +496,11 @@ public sealed record InstanceHistoryRecord(
     string? Note,
     DateTimeOffset PerformedAt,
     string? ActingFor = null,
-    long? DelegationId = null);
+    long? DelegationId = null)
+{
+    public long? AdministrativeActionBatchId { get; init; }
+    public string? Reason { get; init; }
+}
 
 public sealed record SequenceFlowOccurrenceWriteRecord(
     long InstanceId,
@@ -613,6 +624,7 @@ public static class NodeExecutionCompletionReasons
 {
     public const string Normal = "normal";
     public const string UserAction = "userAction";
+    public const string AdministrativeAction = "administrativeAction";
     public const string MessageDelivery = "messageDelivery";
     public const string MultiInstanceItem = "multiInstanceItem";
     public const string MultiInstanceCompleted = "multiInstanceCompleted";

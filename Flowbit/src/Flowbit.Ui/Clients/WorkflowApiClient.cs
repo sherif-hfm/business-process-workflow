@@ -146,6 +146,139 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? [];
     }
 
+    public async Task<IReadOnlyList<WorkflowSummaryDto>> GetAdministrativeActionWorkflowCatalogAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            "/api/administrative-actions/workflows",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(
+                   cancellationToken)
+               ?? [];
+    }
+
+    public async Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetWorkflowAdministrativeActionsAsync(
+        long workflowId,
+        bool batchableOnly = false,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/api/workflows/{workflowId}/administrative-actions";
+        if (batchableOnly)
+        {
+            url += "?batchableOnly=true";
+        }
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<AdministrativeActionSummaryDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<PagedResult<AdministrativeActionCandidateDto>> SearchAdministrativeActionCandidatesAsync(
+        AdministrativeActionCandidateSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/administrative-actions/candidates/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<AdministrativeActionCandidateDto>>(cancellationToken)
+            ?? new PagedResult<AdministrativeActionCandidateDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<AdministrativeActionBatchDetailDto> CreateAdministrativeActionBatchAsync(
+        CreateAdministrativeActionBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/administrative-action-batches", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty administrative action batch.");
+    }
+
+    public async Task<PagedResult<AdministrativeActionBatchSummaryDto>> GetAdministrativeActionBatchesAsync(
+        AdministrativeActionBatchSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var parameters = new List<string>
+        {
+            $"page={request.Page ?? 1}",
+            $"pageSize={request.PageSize ?? 50}"
+        };
+        AddQueryValue(parameters, "workflowKey", request.WorkflowKey);
+        AddQueryValue(parameters, "status", request.Status);
+        AddQueryValue(parameters, "preparedBy", request.PreparedBy);
+
+        using var response = await httpClient.GetAsync(
+            $"/api/administrative-action-batches?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<AdministrativeActionBatchSummaryDto>>(cancellationToken)
+            ?? new PagedResult<AdministrativeActionBatchSummaryDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<AdministrativeActionBatchDetailDto?> GetAdministrativeActionBatchAsync(
+        long batchId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/administrative-action-batches/{batchId}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionBatchDetailDto>(cancellationToken);
+    }
+
+    public async Task<PagedResult<AdministrativeActionBatchItemDto>> GetAdministrativeActionBatchItemsAsync(
+        long batchId,
+        string? status = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        AddQueryValue(parameters, "status", status);
+        using var response = await httpClient.GetAsync(
+            $"/api/administrative-action-batches/{batchId}/items?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<AdministrativeActionBatchItemDto>>(cancellationToken)
+            ?? new PagedResult<AdministrativeActionBatchItemDto>([], page, pageSize, 0);
+    }
+
+    public async Task<AdministrativeActionBatchDetailDto> ConfirmAdministrativeActionBatchAsync(
+        long batchId,
+        ConfirmAdministrativeActionBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/administrative-action-batches/{batchId}/confirm", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty administrative action batch.");
+    }
+
+    public async Task<AdministrativeActionBatchDetailDto> CancelAdministrativeActionBatchAsync(
+        long batchId,
+        CancelAdministrativeActionBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/administrative-action-batches/{batchId}/cancel", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty administrative action batch.");
+    }
+
     public async Task PublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsync($"/api/workflows/{id}/publish", null, cancellationToken);
@@ -764,8 +897,62 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
     }
 
-    public Task<UserTaskDto?> GetUserTaskAsync(long taskId, CancellationToken cancellationToken = default) =>
-        httpClient.GetFromJsonAsync<UserTaskDto>($"/api/user-tasks/{taskId}", cancellationToken);
+    public async Task<UserTaskDto?> GetUserTaskAsync(
+        long taskId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/user-tasks/{taskId}",
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskDto>(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetUserTaskAdministrativeActionsAsync(
+        long taskId,
+        long targetWorkflowId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/user-tasks/{taskId}/administrative-actions?targetWorkflowId={targetWorkflowId}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<AdministrativeActionSummaryDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<AdministrativeActionTaskContextDto?> GetAdministrativeActionTaskContextAsync(
+        long taskId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/user-tasks/{taskId}/administrative-context",
+            cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionTaskContextDto>(
+            cancellationToken);
+    }
+
+    public async Task<AdministrativeActionResultDto> TakeUserTaskAdministrativeActionAsync(
+        long taskId,
+        AdministrativeActionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/user-tasks/{taskId}/administrative-actions", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionResultDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty administrative action result.");
+    }
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskFlowsAsync(
         long taskId, CancellationToken cancellationToken = default) =>

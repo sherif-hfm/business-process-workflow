@@ -501,6 +501,295 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task FinalAdministrativeBatchLeaseExhaustionReconcilesOnlyNonterminalWork()
+    {
+        var suffix = $"administrative-lease-exhaustion-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        long preparingBatchId = 0;
+        long confirmedBatchId = 0;
+        long cancelledBatchId = 0;
+        try
+        {
+            await using (var setup = fixture.CreateDbContext())
+            {
+                var definition = NewDefinition(suffix);
+                setup.WorkflowDefinitions.Add(definition);
+                await setup.SaveChangesAsync();
+
+                var instance = NewInstance(definition, suffix);
+                setup.WorkflowInstances.Add(instance);
+                await setup.SaveChangesAsync();
+
+                var tokens = Enumerable.Range(0, 8)
+                    .Select(index => new ExecutionTokenEntity
+                    {
+                        InstanceId = instance.Id,
+                        NodeId = index + 1,
+                        NodeName = $"Administrative task {index + 1}",
+                        NodeType = BpmnFlowNodeTypes.UserTask,
+                        Status = ExecutionTokenStatuses.Active,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    })
+                    .ToArray();
+                setup.ExecutionTokens.AddRange(tokens);
+                await setup.SaveChangesAsync();
+
+                var tasks = tokens.Select((token, index) => new UserTaskEntity
+                {
+                    InstanceId = instance.Id,
+                    TokenId = token.Id,
+                    NodeId = index + 1,
+                    NodeName = token.NodeName,
+                    Status = UserTaskStatuses.Active,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                }).ToArray();
+                setup.UserTasks.AddRange(tasks);
+                await setup.SaveChangesAsync();
+
+                var preparationJob = NewFinalExpiredAdministrativeJob(
+                    definition,
+                    suffix,
+                    WorkflowJobKinds.AdministrativeBatchPrepare,
+                    now.AddHours(-3));
+                var completedPreparationJob = NewFinalExpiredAdministrativeJob(
+                    definition,
+                    suffix,
+                    WorkflowJobKinds.AdministrativeBatchPrepare,
+                    now.AddHours(-2));
+                var executionJob = NewFinalExpiredAdministrativeJob(
+                    definition,
+                    suffix,
+                    WorkflowJobKinds.AdministrativeBatchExecute,
+                    now.AddHours(-1));
+                setup.WorkflowJobs.AddRange(
+                    preparationJob,
+                    completedPreparationJob,
+                    executionJob);
+                await setup.SaveChangesAsync();
+
+                var preparingBatch = NewAdministrativeBatch(
+                    definition,
+                    suffix,
+                    AdministrativeActionBatchStatuses.Preparing,
+                    now);
+                preparingBatch.PreparationJobId = preparationJob.Id;
+                preparingBatch.TotalItemCount = 3;
+                preparingBatch.EligibleItemCount = 1;
+                preparingBatch.IneligibleItemCount = 1;
+
+                var confirmedBatch = NewAdministrativeBatch(
+                    definition,
+                    suffix,
+                    AdministrativeActionBatchStatuses.Queued,
+                    now);
+                confirmedBatch.PreparationJobId = completedPreparationJob.Id;
+                confirmedBatch.TotalItemCount = 1;
+                confirmedBatch.QueuedItemCount = 1;
+                confirmedBatch.PreparedAt = now;
+                confirmedBatch.ConfirmedAt = now;
+
+                var cancelledBatch = NewAdministrativeBatch(
+                    definition,
+                    suffix,
+                    AdministrativeActionBatchStatuses.Cancelled,
+                    now);
+                cancelledBatch.ExecutionJobId = executionJob.Id;
+                cancelledBatch.TotalItemCount = 4;
+                cancelledBatch.QueuedItemCount = 1;
+                cancelledBatch.SucceededItemCount = 1;
+                cancelledBatch.SkippedItemCount = 1;
+                cancelledBatch.CancelledItemCount = 1;
+                cancelledBatch.CancelledBy = "repository-test";
+                cancelledBatch.CancelledAt = now;
+                setup.AdministrativeActionBatches.AddRange(
+                    preparingBatch,
+                    confirmedBatch,
+                    cancelledBatch);
+                await setup.SaveChangesAsync();
+                preparingBatchId = preparingBatch.Id;
+                confirmedBatchId = confirmedBatch.Id;
+                cancelledBatchId = cancelledBatch.Id;
+
+                setup.AdministrativeActionBatchItems.AddRange(
+                    NewAdministrativeBatchItem(
+                        preparingBatch,
+                        definition,
+                        instance,
+                        tasks[0],
+                        tokens[0],
+                        AdministrativeActionBatchItemStatuses.Preparing,
+                        now),
+                    NewAdministrativeBatchItem(
+                        preparingBatch,
+                        definition,
+                        instance,
+                        tasks[1],
+                        tokens[1],
+                        AdministrativeActionBatchItemStatuses.Eligible,
+                        now),
+                    NewAdministrativeBatchItem(
+                        preparingBatch,
+                        definition,
+                        instance,
+                        tasks[2],
+                        tokens[2],
+                        AdministrativeActionBatchItemStatuses.Ineligible,
+                        now,
+                        issues: """[{"Code":"existing","Message":"Preserve this issue."}]"""),
+                    NewAdministrativeBatchItem(
+                        confirmedBatch,
+                        definition,
+                        instance,
+                        tasks[3],
+                        tokens[3],
+                        AdministrativeActionBatchItemStatuses.Queued,
+                        now),
+                    NewAdministrativeBatchItem(
+                        cancelledBatch,
+                        definition,
+                        instance,
+                        tasks[4],
+                        tokens[4],
+                        AdministrativeActionBatchItemStatuses.Queued,
+                        now,
+                        startedAt: now),
+                    NewAdministrativeBatchItem(
+                        cancelledBatch,
+                        definition,
+                        instance,
+                        tasks[5],
+                        tokens[5],
+                        AdministrativeActionBatchItemStatuses.Succeeded,
+                        now,
+                        result: """{"outcome":"preserved"}"""),
+                    NewAdministrativeBatchItem(
+                        cancelledBatch,
+                        definition,
+                        instance,
+                        tasks[6],
+                        tokens[6],
+                        AdministrativeActionBatchItemStatuses.Skipped,
+                        now),
+                    NewAdministrativeBatchItem(
+                        cancelledBatch,
+                        definition,
+                        instance,
+                        tasks[7],
+                        tokens[7],
+                        AdministrativeActionBatchItemStatuses.Cancelled,
+                        now));
+                await setup.SaveChangesAsync();
+            }
+
+            await using (var leaseDb = fixture.CreateDbContext())
+            {
+                var repository = new WorkflowJobRepository(leaseDb, fixture.DataSource);
+                await repository.LeaseRunnableAsync(
+                    new WorkflowJobLeaseRequest(
+                        $"administrative-exhaustion-sweeper-{suffix}",
+                        MaxCount: 3,
+                        MaxActivityCount: 0,
+                        MaxPerInstance: 1,
+                        LeaseDuration: TimeSpan.FromMinutes(1)),
+                    CancellationToken.None);
+            }
+
+            await using var verification = fixture.CreateDbContext();
+            var preparing = await verification.AdministrativeActionBatches
+                .AsNoTracking()
+                .SingleAsync(batch => batch.Id == preparingBatchId);
+            Assert.Equal(AdministrativeActionBatchStatuses.Failed, preparing.Status);
+            Assert.Equal(3, preparing.TotalItemCount);
+            Assert.Equal(0, preparing.EligibleItemCount);
+            Assert.Equal(1, preparing.IneligibleItemCount);
+            Assert.Equal(2, preparing.FailedItemCount);
+            Assert.NotNull(preparing.CompletedAt);
+            Assert.Equal(
+                "lease_exhausted",
+                preparing.IssuesJson!.RootElement[0].GetProperty("Code").GetString());
+
+            var preparingItems = await verification.AdministrativeActionBatchItems
+                .AsNoTracking()
+                .Where(item => item.BatchId == preparingBatchId)
+                .OrderBy(item => item.Id)
+                .ToArrayAsync();
+            Assert.All(preparingItems.Take(2), item =>
+            {
+                Assert.Equal(AdministrativeActionBatchItemStatuses.Failed, item.Status);
+                Assert.Equal("lease_exhausted", item.ErrorCode);
+                Assert.Equal(
+                    "The final permitted worker attempt lost its lease.",
+                    item.ErrorDescription);
+                Assert.NotNull(item.CompletedAt);
+            });
+            Assert.Equal(
+                AdministrativeActionBatchItemStatuses.Ineligible,
+                preparingItems[2].Status);
+            Assert.Equal(
+                "existing",
+                preparingItems[2].IssuesJson!.RootElement[0].GetProperty("Code").GetString());
+            Assert.Null(preparingItems[2].ErrorCode);
+
+            var confirmed = await verification.AdministrativeActionBatches
+                .AsNoTracking()
+                .SingleAsync(batch => batch.Id == confirmedBatchId);
+            Assert.Equal(AdministrativeActionBatchStatuses.Queued, confirmed.Status);
+            Assert.Equal(1, confirmed.QueuedItemCount);
+            Assert.Equal(0, confirmed.FailedItemCount);
+            Assert.Null(confirmed.CompletedAt);
+            var confirmedItem = await verification.AdministrativeActionBatchItems
+                .AsNoTracking()
+                .SingleAsync(item => item.BatchId == confirmedBatchId);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Queued, confirmedItem.Status);
+            Assert.Null(confirmedItem.ErrorCode);
+
+            var cancelled = await verification.AdministrativeActionBatches
+                .AsNoTracking()
+                .SingleAsync(batch => batch.Id == cancelledBatchId);
+            Assert.Equal(AdministrativeActionBatchStatuses.Cancelled, cancelled.Status);
+            Assert.Equal(4, cancelled.TotalItemCount);
+            Assert.Equal(0, cancelled.QueuedItemCount);
+            Assert.Equal(1, cancelled.SucceededItemCount);
+            Assert.Equal(1, cancelled.SkippedItemCount);
+            Assert.Equal(1, cancelled.FailedItemCount);
+            Assert.Equal(1, cancelled.CancelledItemCount);
+            Assert.NotNull(cancelled.CompletedAt);
+
+            var cancelledItems = await verification.AdministrativeActionBatchItems
+                .AsNoTracking()
+                .Where(item => item.BatchId == cancelledBatchId)
+                .OrderBy(item => item.Id)
+                .ToArrayAsync();
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Failed, cancelledItems[0].Status);
+            Assert.Equal("lease_exhausted", cancelledItems[0].ErrorCode);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Succeeded, cancelledItems[1].Status);
+            Assert.Equal(
+                "preserved",
+                cancelledItems[1].ResultJson!.RootElement.GetProperty("outcome").GetString());
+            Assert.Null(cancelledItems[1].ErrorCode);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Skipped, cancelledItems[2].Status);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Cancelled, cancelledItems[3].Status);
+
+            var exhaustedJobs = await verification.WorkflowJobs
+                .AsNoTracking()
+                .Where(job => job.WorkflowKey == suffix)
+                .OrderBy(job => job.Id)
+                .ToArrayAsync();
+            Assert.All(exhaustedJobs, job =>
+            {
+                Assert.Equal(WorkflowJobStatuses.Incident, job.Status);
+                Assert.Equal("lease_exhausted", job.LastFailureCode);
+            });
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(suffix);
+        }
+    }
+
+    [Fact]
     public async Task ReleaseResultReadyLeaseExpiresOnlyTheMatchingFenceAndPreservesResult()
     {
         var suffix = $"release-result-{Guid.NewGuid():N}";
@@ -1133,6 +1422,98 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
         return job;
     }
 
+    private static WorkflowJobEntity NewFinalExpiredAdministrativeJob(
+        WorkflowDefinitionEntity definition,
+        string workflowKey,
+        string kind,
+        DateTimeOffset expiredAt)
+    {
+        var job = NewJob(definition, null, workflowKey, 1000, 100, kind);
+        job.NodeType = BpmnFlowNodeTypes.UserTask;
+        job.QueueClass = WorkflowJobClasses.Activity;
+        job.Phase = kind == WorkflowJobKinds.AdministrativeBatchPrepare
+            ? "prepare"
+            : "execute";
+        job.Status = WorkflowJobStatuses.Running;
+        job.AttemptCount = 1;
+        job.MaxAttempts = 1;
+        job.RetryDelays = [];
+        job.FailureHandling = WorkflowJobFailureHandling.RetryFirst;
+        job.WorkerId = $"expired-administrative-worker-{Guid.NewGuid():N}";
+        job.LeaseToken = Guid.NewGuid();
+        job.LeaseGeneration = 1;
+        job.LeaseExpiresAt = expiredAt;
+        job.HeartbeatAt = expiredAt.AddMinutes(-1);
+        job.StartedAt = expiredAt.AddMinutes(-2);
+        job.Attempts.Add(new WorkflowJobAttemptEntity
+        {
+            AttemptNumber = 1,
+            Status = WorkflowJobAttemptStatuses.Running,
+            WorkerId = job.WorkerId,
+            LeaseGeneration = job.LeaseGeneration,
+            StartedAt = job.StartedAt.Value
+        });
+        return job;
+    }
+
+    private static AdministrativeActionBatchEntity NewAdministrativeBatch(
+        WorkflowDefinitionEntity definition,
+        string workflowKey,
+        string status,
+        DateTimeOffset now) =>
+        new()
+        {
+            TargetWorkflowDefinitionId = definition.Id,
+            WorkflowKey = workflowKey,
+            FlowExternalId = "RETURN_FOR_REWORK",
+            Reason = "Repository lease-exhaustion test",
+            CommonVariablesJson = JsonDocument.Parse("{}"),
+            SelectionJson = JsonDocument.Parse("""{"mode":"explicit"}"""),
+            Status = status,
+            PreparedBy = "repository-test",
+            PreparedByRolesJson = JsonDocument.Parse("""["admin","Ops"]"""),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+    private static AdministrativeActionBatchItemEntity NewAdministrativeBatchItem(
+        AdministrativeActionBatchEntity batch,
+        WorkflowDefinitionEntity definition,
+        WorkflowInstanceEntity instance,
+        UserTaskEntity task,
+        ExecutionTokenEntity token,
+        string status,
+        DateTimeOffset now,
+        DateTimeOffset? startedAt = null,
+        string? issues = null,
+        string? result = null) =>
+        new()
+        {
+            BatchId = batch.Id,
+            InstanceId = instance.Id,
+            UserTaskId = task.Id,
+            TokenId = token.Id,
+            SourceWorkflowDefinitionId = definition.Id,
+            TargetWorkflowDefinitionId = definition.Id,
+            CapturedInstanceUpdatedAt = instance.UpdatedAt,
+            CapturedUserTaskUpdatedAt = task.UpdatedAt,
+            Status = status,
+            IssuesJson = issues is null ? null : JsonDocument.Parse(issues),
+            ResultJson = result is null ? null : JsonDocument.Parse(result),
+            CreatedAt = now,
+            UpdatedAt = now,
+            PreparedAt = status == AdministrativeActionBatchItemStatuses.Preparing
+                ? null
+                : now,
+            StartedAt = startedAt,
+            CompletedAt = status is AdministrativeActionBatchItemStatuses.Ineligible
+                or AdministrativeActionBatchItemStatuses.Succeeded
+                or AdministrativeActionBatchItemStatuses.Skipped
+                or AdministrativeActionBatchItemStatuses.Cancelled
+                ? now
+                : null
+        };
+
     private static WorkflowIncidentEntity NewResolvedIncident(
         WorkflowJobEntity job,
         WorkflowDefinitionEntity definition,
@@ -1178,6 +1559,19 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
     private async Task DeleteWorkflowAsync(string workflowKey)
     {
         await using var cleanup = fixture.CreateDbContext();
+        var batchIds = await cleanup.AdministrativeActionBatches
+            .Where(batch => batch.WorkflowKey == workflowKey)
+            .Select(batch => batch.Id)
+            .ToArrayAsync();
+        if (batchIds.Length > 0)
+        {
+            await cleanup.AdministrativeActionBatchItems
+                .Where(item => batchIds.Contains(item.BatchId))
+                .ExecuteDeleteAsync();
+            await cleanup.AdministrativeActionBatches
+                .Where(batch => batchIds.Contains(batch.Id))
+                .ExecuteDeleteAsync();
+        }
         await cleanup.WorkflowIncidents
             .Where(incident => incident.WorkflowKey == workflowKey)
             .ExecuteDeleteAsync();

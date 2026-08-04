@@ -448,7 +448,10 @@ public sealed partial class WorkflowEngineService
             record.ChangedBy,
             record.ChangedByRoles,
             record.Reason,
-            record.ChangedAt);
+            record.ChangedAt)
+        {
+            AdministrativeActionBatchId = record.AdministrativeActionBatchId
+        };
 
     private static WorkflowSummaryDto ToVersionSummary(
         WorkflowDefinitionRecord workflow) =>

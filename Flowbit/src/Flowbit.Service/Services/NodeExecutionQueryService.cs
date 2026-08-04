@@ -43,6 +43,7 @@ public sealed class NodeExecutionQueryService(
         CanonicalMap(
             NodeExecutionCompletionReasons.Normal,
             NodeExecutionCompletionReasons.UserAction,
+            NodeExecutionCompletionReasons.AdministrativeAction,
             NodeExecutionCompletionReasons.MessageDelivery,
             NodeExecutionCompletionReasons.MultiInstanceItem,
             NodeExecutionCompletionReasons.MultiInstanceCompleted,

@@ -1,4 +1,6 @@
 @page "/user-tasks/{TaskId:long}"
+@using System.Net
+@using System.Text
 @using System.Text.Json
 @inject WorkflowApiClient Api
 @inject NavigationManager Navigation
@@ -10,20 +12,25 @@
     <div class="alert alert-danger" role="alert">@error</div>
 }
 
-@if (task is null)
+@if (task is null && administrativeContext is null)
 {
     <PageHeader Eyebrow="My work" Title="Loading task" Description="@($"Retrieving work item #{TaskId}…")" />
     <div class="panel"><div class="skeleton" role="status"></div></div>
 }
 else
 {
-    <PageHeader Eyebrow="User task" Title="@task.NodeName" Description="@($"Task #{task.Id} · Instance #{task.InstanceId}")">
+    var displayTaskId = task?.Id ?? administrativeContext!.UserTaskId;
+    var displayInstanceId = task?.InstanceId ?? administrativeContext!.InstanceId;
+    var displayNodeName = task?.NodeName ?? administrativeContext!.NodeName;
+    <PageHeader Eyebrow="@(task is null ? "Privileged administrative task" : "User task")" Title="@displayNodeName" Description="@($"Task #{displayTaskId} · Instance #{displayInstanceId}")">
         <Actions>
-            <a class="btn btn-outline-secondary" href="inbox">Back to my work</a>
-            <a class="btn btn-outline-primary" href="@($"instances/{task.InstanceId}")">View instance</a>
+            <a class="btn btn-outline-secondary" href="@(task is null ? "administrative-actions" : "inbox")">@(task is null ? "Back to administrative actions" : "Back to my work")</a>
+            <a class="btn btn-outline-primary" href="@($"instances/{displayInstanceId}")">View instance</a>
         </Actions>
     </PageHeader>
 
+    @if (task is not null)
+    {
     @if (task.DelegatedAccess is not null)
     {
         <div class="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2" role="status">
@@ -107,31 +114,253 @@ else
             </div>
         }
     </section>
+
+    }
+
+    @if (administrativeSectionVisible)
+    {
+        <section class="panel mt-3" aria-labelledby="task-administrative-actions-heading">
+            <div class="section-heading">
+                <div>
+                    <span class="page-eyebrow">Privileged</span>
+                    <h2 id="task-administrative-actions-heading">Administrative actions</h2>
+                    <p>These authored actions use separate administrative authorization and do not depend on the task's normal claim or assignment.</p>
+                </div>
+                <a class="btn btn-sm btn-outline-secondary" href="administrative-actions">Open batch workspace</a>
+            </div>
+            <div class="alert alert-warning">
+                <strong>This is not a rollback.</strong> The action creates a new task visit and does not restore variables,
+                erase history, or reverse external effects.
+            </div>
+            @if (!string.IsNullOrWhiteSpace(administrativeError))
+            {
+                <div class="alert alert-danger" role="alert">@administrativeError</div>
+            }
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label" for="task-admin-target-version">Exact published target version</label>
+                    <select id="task-admin-target-version" class="form-select" value="@administrativeTargetWorkflowId" @onchange="OnAdministrativeTargetChangedAsync" disabled="@administrativeBusy">
+                        @foreach (var version in administrativeTargetVersions)
+                        {
+                            <option value="@version.Id">v@version.Version · #@version.Id@(version.IsDefault ? " · default" : string.Empty)</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="task-admin-action">Authorized administrative action</label>
+                    <select id="task-admin-action" class="form-select" @bind="selectedAdministrativeFlowExternalId" disabled="@(administrativeBusy || administrativeActions.Count == 0)">
+                        @if (administrativeActions.Count == 0)
+                        {
+                            <option value="">No compatible actions</option>
+                        }
+                        @foreach (var action in administrativeActions)
+                        {
+                            <option value="@action.FlowExternalId">@(string.IsNullOrWhiteSpace(action.Name) ? action.FlowExternalId : action.Name) · @action.SourceNodeName → @action.TargetNodeName</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="task-admin-reason">Reason <span class="required-mark">*</span></label>
+                    <textarea id="task-admin-reason" class="form-control" rows="5" maxlength="2000" @bind="administrativeReason" @bind:event="oninput"></textarea>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="task-admin-variables">Flow variables (JSON object)</label>
+                    <textarea id="task-admin-variables" class="form-control font-monospace" rows="5" @bind="administrativeVariablesJson" @bind:event="oninput"></textarea>
+                    @if (SelectedAdministrativeAction?.Variables.Count > 0)
+                    {
+                        <div class="form-text">Authored inputs: @string.Join(", ", SelectedAdministrativeAction.Variables.Select(variable => $"{variable.Name}:{variable.DataType}{(variable.IsArray ? "[]" : string.Empty)}{(variable.Required ? "*" : string.Empty)}"))</div>
+                    }
+                </div>
+            </div>
+            <div class="d-flex justify-content-end mt-3">
+                <button class="btn btn-warning" @onclick="TakeAdministrativeActionAsync" disabled="@(!CanTakeAdministrativeAction)">@(administrativeBusy ? "Submitting…" : "Perform administrative action")</button>
+            </div>
+        </section>
+    }
 }
 
 @code {
     [Parameter] public long TaskId { get; set; }
     private UserTaskDto? task;
     private IReadOnlyList<SequenceFlowModel> flows = [];
+    private AdministrativeActionTaskContextDto? administrativeContext;
+    private IReadOnlyList<WorkflowSummaryDto> administrativeTargetVersions = [];
+    private IReadOnlyList<AdministrativeActionSummaryDto> administrativeActions = [];
     private readonly Dictionary<string, string?> inputs = [];
     private string? error;
+    private string? administrativeError;
+    private string? selectedAdministrativeFlowExternalId;
+    private string administrativeReason = string.Empty;
+    private string administrativeVariablesJson = "{}";
+    private long administrativeTargetWorkflowId;
     private bool busy;
+    private bool administrativeBusy;
+    private bool administrativeSectionVisible;
     private long loadedTaskId;
+
+    private AdministrativeActionSummaryDto? SelectedAdministrativeAction => administrativeActions.FirstOrDefault(action =>
+        string.Equals(action.FlowExternalId, selectedAdministrativeFlowExternalId, StringComparison.OrdinalIgnoreCase));
+    private bool CanTakeAdministrativeAction => !administrativeBusy && SelectedAdministrativeAction is not null
+        && administrativeContext is not null && administrativeTargetWorkflowId > 0
+        && !string.IsNullOrWhiteSpace(administrativeReason)
+        && administrativeReason.Trim().EnumerateRunes().Count() <= 1000;
 
     protected override async Task OnParametersSetAsync()
     {
         if (loadedTaskId == TaskId) return;
         loadedTaskId = TaskId;
         task = null;
+        administrativeContext = null;
         flows = [];
+        administrativeActions = [];
+        administrativeTargetVersions = [];
+        administrativeSectionVisible = false;
         inputs.Clear();
         await LoadAsync();
     }
 
     private async Task LoadAsync()
     {
-        try { error = null; task = await Api.GetUserTaskAsync(TaskId); flows = await Api.GetUserTaskFlowsAsync(TaskId); }
+        try
+        {
+            error = null;
+            task = await Api.GetUserTaskAsync(TaskId);
+            flows = await Api.GetUserTaskFlowsAsync(TaskId);
+            if (task is not null) await LoadAdministrativeContextAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is
+            HttpStatusCode.BadRequest
+                or HttpStatusCode.Forbidden
+                or HttpStatusCode.Unauthorized)
+        {
+            task = null;
+            flows = [];
+            await LoadAdministrativeContextAsync();
+            if (!administrativeSectionVisible)
+            {
+                error = ex.Message;
+            }
+        }
         catch (Exception ex) { error = ex.Message; }
+    }
+
+    private async Task LoadAdministrativeContextAsync()
+    {
+        try
+        {
+            administrativeBusy = true;
+            administrativeError = null;
+            administrativeContext = await Api.GetAdministrativeActionTaskContextAsync(TaskId);
+            if (administrativeContext is null)
+            {
+                administrativeSectionVisible = false;
+                return;
+            }
+            administrativeTargetVersions = administrativeContext.TargetVersions;
+            administrativeTargetWorkflowId = administrativeTargetVersions
+                .FirstOrDefault(version => version.Id == administrativeContext.SourceWorkflowId)?.Id
+                ?? administrativeTargetVersions.FirstOrDefault(version => version.IsDefault)?.Id
+                ?? administrativeTargetVersions.FirstOrDefault()?.Id
+                ?? 0;
+            if (administrativeTargetWorkflowId == 0) return;
+            administrativeActions = await Api.GetUserTaskAdministrativeActionsAsync(TaskId, administrativeTargetWorkflowId);
+            selectedAdministrativeFlowExternalId = administrativeActions.FirstOrDefault()?.FlowExternalId;
+            administrativeSectionVisible = true;
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized or HttpStatusCode.NotFound)
+        {
+            administrativeSectionVisible = false;
+        }
+        catch (Exception ex)
+        {
+            administrativeSectionVisible = true;
+            administrativeError = ex.Message;
+        }
+        finally
+        {
+            administrativeBusy = false;
+        }
+    }
+
+    private async Task OnAdministrativeTargetChangedAsync(ChangeEventArgs args)
+    {
+        if (!long.TryParse(args.Value?.ToString(), out administrativeTargetWorkflowId)) return;
+        try
+        {
+            administrativeBusy = true;
+            administrativeError = null;
+            administrativeActions = await Api.GetUserTaskAdministrativeActionsAsync(TaskId, administrativeTargetWorkflowId);
+            selectedAdministrativeFlowExternalId = administrativeActions.FirstOrDefault()?.FlowExternalId;
+        }
+        catch (Exception ex)
+        {
+            administrativeError = ex.Message;
+            administrativeActions = [];
+            selectedAdministrativeFlowExternalId = null;
+        }
+        finally
+        {
+            administrativeBusy = false;
+        }
+    }
+
+    private async Task TakeAdministrativeActionAsync()
+    {
+        if (!CanTakeAdministrativeAction || administrativeContext is null || SelectedAdministrativeAction is null) return;
+        var expectedTaskUpdatedAt = administrativeContext.UserTaskUpdatedAt;
+        if (!TryParseAdministrativeVariables(administrativeVariablesJson, out var values, out administrativeError)) return;
+        try
+        {
+            administrativeBusy = true;
+            administrativeError = null;
+            var result = await Api.TakeUserTaskAdministrativeActionAsync(TaskId, new AdministrativeActionRequest(
+                administrativeTargetWorkflowId,
+                administrativeContext.SourceWorkflowId,
+                administrativeContext.InstanceUpdatedAt,
+                SelectedAdministrativeAction.FlowExternalId,
+                administrativeReason.Trim(),
+                values)
+            {
+                ExpectedTokenId = administrativeContext.TokenId,
+                ExpectedUserTaskUpdatedAt = expectedTaskUpdatedAt
+            });
+            Navigation.NavigateTo(result.NewUserTask is not null
+                ? $"user-tasks/{result.NewUserTask.Id}"
+                : $"instances/{result.Instance.Id}");
+        }
+        catch (Exception ex)
+        {
+            administrativeError = ex.Message;
+        }
+        finally
+        {
+            administrativeBusy = false;
+        }
+    }
+
+    private static bool TryParseAdministrativeVariables(
+        string? json,
+        out Dictionary<string, JsonElement> values,
+        out string? parseError)
+    {
+        values = [];
+        parseError = null;
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                parseError = "Administrative flow variables must be a JSON object.";
+                return false;
+            }
+            foreach (var property in document.RootElement.EnumerateObject()) values[property.Name] = property.Value.Clone();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            parseError = $"Administrative flow variables JSON is invalid: {ex.Message}";
+            return false;
+        }
     }
 
     private async Task ClaimAsync() => await RunBusyAsync(async () => { task = await Api.ClaimUserTaskAsync(TaskId); await LoadAsync(); });

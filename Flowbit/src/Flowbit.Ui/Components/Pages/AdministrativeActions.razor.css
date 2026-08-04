@@ -1,0 +1,51 @@
+.admin-no-rollback-warning {
+    position: sticky;
+    z-index: 3;
+    top: .75rem;
+    box-shadow: 0 8px 22px rgba(146, 64, 14, .08);
+}
+
+.selection-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+}
+
+.selection-mode-card {
+    display: flex;
+    align-items: flex-start;
+    gap: .65rem;
+    padding: .8rem;
+    cursor: pointer;
+    border: 1px solid var(--fb-border-strong);
+    border-radius: var(--fb-radius-sm);
+    background: var(--fb-surface-soft);
+}
+
+.selection-mode-card input { margin-top: .25rem; }
+.selection-mode-card span, .selection-mode-card small { display: block; }
+.selection-mode-card strong { color: var(--fb-ink); }
+.selection-mode-card small { margin-top: .15rem; color: var(--fb-muted); }
+
+.admin-status-filter { width: min(15rem, 100%); }
+.admin-cancellation-input { width: min(28rem, 100%); }
+.admin-result-cell { min-width: 15rem; max-width: 30rem; }
+.admin-json {
+    max-width: 34rem;
+    max-height: 14rem;
+    margin-bottom: 0;
+    padding: .65rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--fb-text);
+    background: var(--fb-surface-soft);
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+    font-size: .7rem;
+}
+
+@media (max-width: 760px) {
+    .selection-mode-grid { grid-template-columns: 1fr; }
+    .admin-no-rollback-warning { position: static; }
+}

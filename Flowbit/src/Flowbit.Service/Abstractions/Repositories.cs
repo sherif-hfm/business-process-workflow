@@ -515,7 +515,19 @@ public interface IWorkflowRuntimeRepository
         Dictionary<string, JsonElement> result,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        string? completionKind = null,
+        string? completionReason = null,
+        long? administrativeActionBatchId = null);
+
+    Task CompleteAdministrativeActionBatchItemAsync(
+        long batchId,
+        long sourceUserTaskId,
+        long? newUserTaskId,
+        long? versionChangeAuditId,
+        JsonElement? result,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken);
 
     Task ActivateNextMultiInstanceItemAsync(
         long executionId,
@@ -551,7 +563,8 @@ public interface IWorkflowRuntimeRepository
         WorkflowModel targetDefinition,
         NodeExecutionActorRecord actor,
         string reason,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        long? administrativeActionBatchId = null);
 
     Task AddVariableAsync(
         long instanceId,
@@ -620,7 +633,10 @@ public interface IWorkflowRuntimeRepository
         Dictionary<string, JsonElement> payload,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        string? note = null,
+        string? reason = null,
+        long? administrativeActionBatchId = null);
 
     Task AddUserTaskHistoryAsync(
         long instanceId,

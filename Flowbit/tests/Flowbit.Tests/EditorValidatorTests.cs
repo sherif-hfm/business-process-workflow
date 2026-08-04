@@ -2170,6 +2170,70 @@ public sealed class EditorValidatorTests
         Assert.Contains("Advanced ISO value", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Validator_AcceptsBatchableAdministrativeFlow()
+    {
+        var model = DefinitionValidationTests.CreateAdministrativeFlowModel();
+
+        Assert.Empty(Validate(model));
+    }
+
+    [Theory]
+    [InlineData("batchWithoutAdministrative", "batchable")]
+    [InlineData("engineOnly", "selectable")]
+    [InlineData("default", "default")]
+    [InlineData("multiInstanceSource", "non-multi-instance")]
+    [InlineData("automaticTarget", "ordinary")]
+    [InlineData("asyncAfterSource", "asyncAfter")]
+    [InlineData("asyncBeforeTarget", "asyncBefore")]
+    [InlineData("missingExternalId", "externalId")]
+    [InlineData("longExternalId", "300 Unicode scalar")]
+    [InlineData("duplicateExternalId", "case-insensitive")]
+    [InlineData("missingRoles", "flow role")]
+    public void Validator_RejectsInvalidAdministrativeFlow(
+        string invalid,
+        string expectedMessage)
+    {
+        var model = DefinitionValidationTests.CreateAdministrativeFlowModel();
+        var administrative = model.SequenceFlows.Single(flow => flow.Id == 301);
+        var source = model.FlowNodes.Single(node => node.Id == administrative.SourceRef);
+        var target = model.FlowNodes.Single(node => node.Id == administrative.TargetRef);
+
+        switch (invalid)
+        {
+            case "batchWithoutAdministrative": administrative.IsAdministrative = false; break;
+            case "engineOnly": administrative.IsSelectable = false; break;
+            case "default": administrative.IsDefault = true; break;
+            case "multiInstanceSource": source.MultiInstance = new MultiInstanceModel(); break;
+            case "automaticTarget": target.Type = BpmnFlowNodeTypes.Task; break;
+            case "asyncAfterSource": source.AsyncAfter = true; break;
+            case "asyncBeforeTarget": target.AsyncBefore = true; break;
+            case "missingExternalId": administrative.ExternalId = " "; break;
+            case "longExternalId": administrative.ExternalId = new string('x', 301); break;
+            case "duplicateExternalId":
+                model.SequenceFlows.Single(flow => flow.Id == 201).ExternalId = "admin_return";
+                break;
+            case "missingRoles": administrative.Roles = [" "]; break;
+        }
+
+        Assert.Contains(Validate(model), error =>
+            error.Contains(expectedMessage, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Editor_ExposesAdministrativeFlowAuthoringNormalizationAndWarning()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Contains("Administrative action", html, StringComparison.Ordinal);
+        Assert.Contains("Available for batch execution", html, StringComparison.Ordinal);
+        Assert.Contains("this action creates a new task visit", html, StringComparison.Ordinal);
+        Assert.Contains("Do not add the global admin role to the task itself", html, StringComparison.Ordinal);
+        Assert.Contains("isAdministrative: f.isAdministrative === true", html, StringComparison.Ordinal);
+        Assert.Contains("isBatchable: f.isBatchable === true", html, StringComparison.Ordinal);
+        Assert.Contains("flow-marker-administrative", html, StringComparison.Ordinal);
+    }
+
     private static WorkflowModel CreateTimerStartModel(TimerDefinitionModel timer) => new()
     {
         Id = "timer-start-editor-validation",

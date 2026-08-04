@@ -1,0 +1,1059 @@
+@page "/administrative-actions"
+@implements IAsyncDisposable
+@using System.Text
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>Administrative Actions · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Administrative actions"
+            Description="Prepare, review, and execute authorized send-back actions across a frozen set of active tasks.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="RefreshAllAsync" disabled="@loading"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+<div class="alert alert-warning admin-no-rollback-warning" role="note">
+    <strong>Send-back is not a rollback.</strong> It creates a new visit to the target task. It does not restore variables,
+    erase history, reopen the previous visit, or reverse messages, service calls, scripts, or other external effects.
+</div>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set a test identity that has both the configured administrative role and a role on the authored flow.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-labelledby="admin-action-definition-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="admin-action-definition-heading">1. Choose the exact action contract</h2>
+                <p>The selected target version is captured now and is never resolved implicitly during execution.</p>
+            </div>
+        </div>
+
+        @if (workflowFamilies is null)
+        {
+            <div class="skeleton" role="status"></div>
+        }
+        else if (workflowFamilies.Count == 0)
+        {
+            <EmptyState Icon="workflows" Title="No workflow definitions" Description="Publish a workflow version with a batchable administrative flow first." />
+        }
+        else
+        {
+            <div class="filter-grid align-items-start">
+                <div>
+                    <label class="form-label" for="admin-workflow-family">Workflow family</label>
+                    <select id="admin-workflow-family" class="form-select" value="@selectedWorkflowKey" @onchange="OnWorkflowChangedAsync" disabled="@loadingDefinition">
+                        @foreach (var workflow in workflowFamilies)
+                        {
+                            <option value="@workflow.WorkflowKey">@workflow.Name (@workflow.WorkflowKey)</option>
+                        }
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label" for="admin-target-version">Exact published target version</label>
+                    <select id="admin-target-version" class="form-select" value="@(targetWorkflowId == 0 ? string.Empty : targetWorkflowId.ToString())" @onchange="OnTargetVersionChangedAsync" disabled="@(loadingDefinition || publishedVersions.Count == 0)">
+                        @if (publishedVersions.Count == 0)
+                        {
+                            <option value="">No published versions</option>
+                        }
+                        @foreach (var version in publishedVersions)
+                        {
+                            <option value="@version.Id">v@version.Version · #@version.Id@(version.IsDefault ? " · default" : string.Empty)</option>
+                        }
+                    </select>
+                </div>
+                <div class="filter-span-2">
+                    <label class="form-label" for="admin-flow">Batchable administrative flow</label>
+                    <select id="admin-flow" class="form-select" value="@flowExternalId" @onchange="OnActionChanged" disabled="@(loadingDefinition || actions.Count == 0)">
+                        @if (actions.Count == 0)
+                        {
+                            <option value="">No authorized batchable actions</option>
+                        }
+                        @foreach (var action in actions)
+                        {
+                            <option value="@action.FlowExternalId">@ActionLabel(action)</option>
+                        }
+                    </select>
+                    @if (SelectedAction is not null)
+                    {
+                        <div class="form-text">Stable flow ID: <code>@SelectedAction.FlowExternalId</code> · source node #@SelectedAction.SourceNodeId · target node #@SelectedAction.TargetNodeId</div>
+                    }
+                </div>
+            </div>
+        }
+    </section>
+
+    <section class="filter-panel mb-3" aria-labelledby="admin-candidate-filter-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="admin-candidate-filter-heading">2. Search active candidate tasks</h2>
+                <p>Only single-position ordinary user tasks are candidates. Eligibility is prepared again against the frozen task identities.</p>
+            </div>
+        </div>
+        <div class="filter-grid" @onchange="MarkCandidateFiltersDirty">
+            <div><label class="form-label" for="admin-task-id">Task ID</label><input id="admin-task-id" type="number" class="form-control" @bind="candidateTaskId" /></div>
+            <div><label class="form-label" for="admin-instance-id">Instance ID</label><input id="admin-instance-id" type="number" class="form-control" @bind="candidateInstanceId" /></div>
+            <div><label class="form-label" for="admin-source-version">Source version ID</label><input id="admin-source-version" type="number" class="form-control" @bind="candidateSourceWorkflowId" /></div>
+            <div><label class="form-label" for="admin-business-key">Business key</label><input id="admin-business-key" class="form-control" @bind="candidateBusinessKey" /></div>
+            <div class="filter-span-2">
+                <AdvancedVariableFilterEditor Id="admin-variable-filter"
+                                              Label="Advanced current-variable filter (JSON)"
+                                              Value="@candidateVariableFilterJson"
+                                              ValueChanged="OnCandidateVariableFilterChanged"
+                                              Error="@candidateVariableFilterError" />
+            </div>
+            <div class="filter-actions filter-span-2">
+                <button class="btn btn-primary" @onclick="SearchCandidatesAsync" disabled="@(!CanSearchCandidates)"><AppIcon Name="search" /> Search candidates</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearCandidateFiltersAsync" disabled="@candidateLoading">Clear filters</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel panel-flush mb-3" aria-labelledby="admin-candidates-heading">
+        <div class="section-heading px-3 pt-3">
+            <div>
+                <h2 id="admin-candidates-heading">3. Select the frozen population</h2>
+                <p>@CandidateSummary</p>
+            </div>
+            @if (candidates is not null && candidates.TotalCount > 0 && !candidateFiltersDirty)
+            {
+                <div class="d-flex flex-wrap gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="SelectCurrentCandidatePage">Select this page</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="ClearSelection">Clear selection</button>
+                </div>
+            }
+        </div>
+
+        @if (candidateFiltersDirty)
+        {
+            <EmptyState Icon="search" Title="Search the changed filters" Description="The prior results and selection are no longer used for batch creation." />
+        }
+        else if (candidateLoading)
+        {
+            <div class="p-3"><div class="skeleton" role="status"></div></div>
+        }
+        else if (candidates is null)
+        {
+            <EmptyState Icon="search" Title="Search for candidates" Description="Choose a published target version and batchable administrative flow, then run a task search." />
+        }
+        else if (candidates.Items.Count == 0)
+        {
+            <EmptyState Icon="inbox" Title="No candidate tasks" Description="No active single-position tasks match the selected action and filters." />
+        }
+        else
+        {
+            <div class="px-3 pb-3">
+                <div class="selection-mode-grid mb-3">
+                    <label class="selection-mode-card">
+                        <input type="radio" name="admin-selection-mode" checked="@(!allMatchingSelection)" @onchange="_ => SetSelectionMode(false)" />
+                        <span><strong>Explicit tasks</strong><small>Freeze only checked task IDs across visited pages.</small></span>
+                    </label>
+                    <label class="selection-mode-card">
+                        <input type="radio" name="admin-selection-mode" checked="@allMatchingSelection" @onchange="_ => SetSelectionMode(true)" />
+                        <span><strong>All @candidates.TotalCount.ToString("N0") matching</strong><small>Freeze the server-side result, except unchecked exclusions.</small></span>
+                    </label>
+                </div>
+                <div class="alert alert-info py-2 mb-0">Selected for preparation: <strong>@SelectedCandidateCount.ToString("N0")</strong>. The server rejects a frozen selection above 10,000 items.</div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th><span class="visually-hidden">Select</span></th><th>Task / instance</th><th>Current node</th><th>Source version</th><th>Precheck</th><th>Updated</th></tr></thead>
+                    <tbody>
+                        @foreach (var candidate in candidates.Items)
+                        {
+                            <tr>
+                                <td><input class="form-check-input" type="checkbox" aria-label="Select task @candidate.UserTaskId" checked="@IsCandidateSelected(candidate.UserTaskId)" @onchange="_ => ToggleCandidate(candidate.UserTaskId)" /></td>
+                                <td><a href="@($"user-tasks/{candidate.UserTaskId}")" class="data-title">Task #@candidate.UserTaskId</a><span class="data-subtitle">Instance #@candidate.InstanceId · @(candidate.BusinessKey ?? candidate.WorkflowKey)</span></td>
+                                <td>@candidate.NodeName<span class="data-subtitle">Node #@candidate.NodeId@(string.IsNullOrWhiteSpace(candidate.NodeExternalId) ? string.Empty : $" · {candidate.NodeExternalId}")</span></td>
+                                <td>#@candidate.SourceWorkflowId</td>
+                                <td>
+                                    <StatusBadge Status="@(candidate.Eligible ? "ready" : "warning")" Text="@(candidate.Eligible ? "Eligible precheck" : "Review blockers")" />
+                                    @if (candidate.Issues.Count > 0)
+                                    {
+                                        <details class="mt-1"><summary class="section-link">@candidate.Issues.Count issue(s)</summary><ul class="small mb-0 mt-1">@foreach (var issue in candidate.Issues) { <li>@issue.Message</li> }</ul></details>
+                                    }
+                                </td>
+                                <td>@candidate.UserTaskUpdatedAt.ToLocalTime().ToString("g")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @candidatePage of @CandidateTotalPages · @candidates.TotalCount.ToString("N0") total</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(candidateLoading || candidatePage <= 1)" @onclick="PreviousCandidatePageAsync">Previous</button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(candidateLoading || candidatePage >= CandidateTotalPages)" @onclick="NextCandidatePageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+
+    <section class="panel mb-3" aria-labelledby="admin-batch-input-heading">
+        <div class="section-heading">
+            <div><h2 id="admin-batch-input-heading">4. Provide the shared audit input</h2><p>The same reason and variable payload are evaluated independently for every selected task.</p></div>
+        </div>
+        <div class="row g-3">
+            <div class="col-lg-6">
+                <label class="form-label" for="admin-reason">Reason <span class="required-mark">*</span></label>
+                <textarea id="admin-reason" class="form-control" rows="6" maxlength="2000" @bind="reason" @bind:event="oninput" placeholder="Why is this population being sent back for rework?"></textarea>
+                <div class="form-text">Required, 1–1,000 characters. It is retained with each administrative action.</div>
+            </div>
+            <div class="col-lg-6">
+                <label class="form-label" for="admin-common-variables">Common flow variables (JSON object)</label>
+                <textarea id="admin-common-variables" class="form-control font-monospace" rows="6" @bind="commonVariablesJson" @bind:event="oninput" placeholder="{}"></textarea>
+                <div class="form-text">
+                    @if (SelectedAction?.Variables.Count > 0)
+                    {
+                        <text>Authored inputs: @string.Join(", ", SelectedAction.Variables.Select(variable => $"{variable.Name}:{variable.DataType}{(variable.IsArray ? "[]" : string.Empty)}{(variable.Required ? "*" : string.Empty)}"))</text>
+                    }
+                    else
+                    {
+                        <text>This action declares no flow variables.</text>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+            <button class="btn btn-primary" @onclick="CreateBatchAsync" disabled="@(!CanCreateBatch)">@(batchOperation ? "Submitting…" : "Prepare batch asynchronously")</button>
+            <span class="text-muted small">No task is moved until a ready batch is confirmed.</span>
+        </div>
+    </section>
+
+    @if (currentBatch is not null)
+    {
+        var summary = currentBatch.Summary;
+        <section class="panel panel-flush mb-3" aria-labelledby="admin-current-batch-heading">
+            <div class="section-heading px-3 pt-3">
+                <div><span class="page-eyebrow">Batch #@summary.Id</span><h2 id="admin-current-batch-heading">Preparation and execution</h2><p>@summary.WorkflowKey · <code>@summary.FlowExternalId</code> · updated @summary.UpdatedAt.ToLocalTime().ToString("g")</p></div>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <StatusBadge Status="@summary.Status" />
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshCurrentBatchAsync" disabled="@refreshingBatch"><AppIcon Name="refresh" /> Refresh</button>
+                </div>
+            </div>
+            <div class="summary-grid px-3 pb-3">
+                <div class="summary-item"><span>Frozen</span><strong>@summary.TotalItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Eligible</span><strong>@summary.EligibleItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Ineligible</span><strong>@summary.IneligibleItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Succeeded</span><strong>@summary.SucceededItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Queued</span><strong>@summary.QueuedItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Skipped</span><strong>@summary.SkippedItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Failed</span><strong>@summary.FailedItemCount.ToString("N0")</strong></div>
+                <div class="summary-item"><span>Cancelled</span><strong>@summary.CancelledItemCount.ToString("N0")</strong></div>
+            </div>
+            <div class="border-top px-3 py-3">
+                <h3 class="h6">Frozen request</h3>
+                <dl class="row mb-2">
+                    <dt class="col-md-2">Reason</dt>
+                    <dd class="col-md-10">@summary.Reason</dd>
+                    <dt class="col-md-2">Prepared by</dt>
+                    <dd class="col-md-10">@summary.PreparedBy (@string.Join(", ", currentBatch.PreparedByRoles))</dd>
+                    <dt class="col-md-2">Confirmed by</dt>
+                    <dd class="col-md-10">@(summary.ConfirmedBy is null ? "Not confirmed" : $"{summary.ConfirmedBy} ({string.Join(", ", currentBatch.ConfirmedByRoles ?? [])})")</dd>
+                </dl>
+                <div class="d-flex flex-wrap gap-3">
+                    <details>
+                        <summary class="section-link">Common variables</summary>
+                        <pre class="admin-json mt-2">@FormatJson(JsonSerializer.SerializeToElement(currentBatch.CommonVariables))</pre>
+                    </details>
+                    <details>
+                        <summary class="section-link">Selection snapshot</summary>
+                        <pre class="admin-json mt-2">@FormatJson(currentBatch.Selection)</pre>
+                    </details>
+                </div>
+            </div>
+            @if (currentBatch.Issues is not null)
+            {
+                <div class="px-3 pb-3"><details><summary class="section-link">Batch preparation issues</summary><pre class="admin-json mt-2">@FormatJson(currentBatch.Issues)</pre></details></div>
+            }
+            <div class="d-flex flex-wrap gap-2 px-3 pb-3">
+                @if (CanConfirmCurrentBatch)
+                {
+                    <button class="btn btn-primary" @onclick="ConfirmCurrentBatchAsync" disabled="@batchOperation">Confirm @summary.EligibleItemCount.ToString("N0") eligible items</button>
+                }
+                @if (CanCancelCurrentBatch)
+                {
+                    <input class="form-control admin-cancellation-input" maxlength="1000" @bind="cancellationReason" placeholder="Cancellation reason (optional)" aria-label="Cancellation reason" />
+                    <button class="btn btn-outline-danger" @onclick="CancelCurrentBatchAsync" disabled="@batchOperation">Cancel unstarted items</button>
+                }
+            </div>
+
+            <div class="border-top px-3 pt-3">
+                <div class="section-heading">
+                    <div><h3 class="h6 mb-0">Paged item results</h3><p>@(batchItems is null ? "Loading items…" : $"{batchItems.TotalCount:N0} matching items")</p></div>
+                    <select class="form-select admin-status-filter" value="@batchItemStatus" @onchange="OnBatchItemStatusChangedAsync" aria-label="Filter batch items by status">
+                        @foreach (var option in BatchItemStatusOptions)
+                        {
+                            <option value="@option.Value">@option.Label</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            @if (batchItems is null)
+            {
+                <div class="p-3"><div class="skeleton"></div></div>
+            }
+            else if (batchItems.Items.Count == 0)
+            {
+                <div class="px-3 pb-3"><EmptyState Icon="inbox" Title="No items in this view" Description="Preparation may still be running, or no item has the selected status." /></div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Item</th><th>Task / instance</th><th>Versions</th><th>Status</th><th>Result / issue</th><th>Updated</th></tr></thead>
+                        <tbody>
+                            @foreach (var item in batchItems.Items)
+                            {
+                                <tr>
+                                    <td>#@item.Id</td>
+                                    <td><a href="@($"instances/{item.InstanceId}")">Instance #@item.InstanceId</a><span class="data-subtitle">Task #@item.UserTaskId · token #@item.TokenId</span></td>
+                                    <td>#@item.SourceWorkflowId → #@item.TargetWorkflowId</td>
+                                    <td><StatusBadge Status="@item.Status" /></td>
+                                    <td class="admin-result-cell">
+                                        @if (!string.IsNullOrWhiteSpace(item.ErrorDescription))
+                                        {
+                                            <span class="text-danger">@item.ErrorDescription</span>
+                                        }
+                                        else if (item.Issues is not null)
+                                        {
+                                            <details><summary class="section-link">Issues</summary><pre class="admin-json mt-1">@FormatJson(item.Issues)</pre></details>
+                                        }
+                                        else if (item.Result is not null)
+                                        {
+                                            <details><summary class="section-link">Result</summary><pre class="admin-json mt-1">@FormatJson(item.Result)</pre></details>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">—</span>
+                                        }
+                                    </td>
+                                    <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pagination-bar">
+                    <span class="pagination-copy">Page @batchItemPage of @BatchItemTotalPages</span>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(batchItemPage <= 1 || refreshingBatch)" @onclick="PreviousBatchItemPageAsync">Previous</button>
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(batchItemPage >= BatchItemTotalPages || refreshingBatch)" @onclick="NextBatchItemPageAsync">Next</button>
+                    </div>
+                </div>
+            }
+        </section>
+    }
+
+    <section class="panel panel-flush" aria-labelledby="admin-batches-heading">
+        <div class="section-heading px-3 pt-3">
+            <div><h2 id="admin-batches-heading">Recent batches</h2><p>Executed audit batches are retained and can be reopened for review.</p></div>
+            <select class="form-select admin-status-filter" value="@batchListStatus" @onchange="OnBatchListStatusChangedAsync" aria-label="Filter batches by status">
+                @foreach (var option in BatchStatusOptions)
+                {
+                    <option value="@option.Value">@option.Label</option>
+                }
+            </select>
+        </div>
+        @if (batchList is null)
+        {
+            <div class="p-3"><div class="skeleton" role="status"></div></div>
+        }
+        else if (batchList.Items.Count == 0)
+        {
+            <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No administrative batches" Description="No visible batch matches the selected status." /></div>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th>Batch</th><th>Workflow / flow</th><th>Prepared by</th><th>Progress</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var item in batchList.Items)
+                        {
+                            <tr class="@(currentBatch?.Summary.Id == item.Id ? "table-active" : null)">
+                                <td>#@item.Id</td>
+                                <td>@item.WorkflowKey<span class="data-subtitle"><code>@item.FlowExternalId</code> · target #@item.TargetWorkflowId</span></td>
+                                <td>@item.PreparedBy</td>
+                                <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.EligibleItemCount.ToString("N0") eligible · @item.FailedItemCount.ToString("N0") failed</span></td>
+                                <td><StatusBadge Status="@item.Status" /></td>
+                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="() => OpenBatchAsync(item.Id)">Open</button></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @batchListPage of @BatchListTotalPages · @batchList.TotalCount.ToString("N0") batches</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(batchListPage <= 1 || loadingBatches)" @onclick="PreviousBatchListPageAsync">Previous</button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(batchListPage >= BatchListTotalPages || loadingBatches)" @onclick="NextBatchListPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "batchId")]
+    public long? RequestedBatchId { get; set; }
+
+    private const int CandidatePageSize = 50;
+    private const int BatchListPageSize = 25;
+    private const int BatchItemPageSize = 50;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly (string Value, string Label)[] BatchStatusOptions =
+    [
+        ("", "All statuses"), ("preparing", "Preparing"), ("ready", "Ready"), ("queued", "Queued"),
+        ("running", "Running"), ("completed", "Completed"), ("completedWithIssues", "Completed with issues"),
+        ("cancelled", "Cancelled"), ("failed", "Failed")
+    ];
+    private static readonly (string Value, string Label)[] BatchItemStatusOptions =
+    [
+        ("", "All item statuses"), ("preparing", "Preparing"), ("eligible", "Eligible"),
+        ("ineligible", "Ineligible"), ("queued", "Queued"), ("succeeded", "Succeeded"),
+        ("skipped", "Skipped"), ("failed", "Failed"), ("cancelled", "Cancelled")
+    ];
+
+    private IReadOnlyList<WorkflowSummaryDto>? workflowFamilies;
+    private IReadOnlyList<WorkflowSummaryDto> administrativeWorkflowCatalog = [];
+    private IReadOnlyList<WorkflowSummaryDto> publishedVersions = [];
+    private IReadOnlyList<AdministrativeActionSummaryDto> actions = [];
+    private string? selectedWorkflowKey;
+    private long targetWorkflowId;
+    private string? flowExternalId;
+    private long? candidateTaskId;
+    private long? candidateInstanceId;
+    private long? candidateSourceWorkflowId;
+    private string? candidateBusinessKey;
+    private string? candidateVariableFilterJson;
+    private string? candidateVariableFilterError;
+    private PagedResult<AdministrativeActionCandidateDto>? candidates;
+    private AdministrativeActionCandidateSearchRequest? appliedCandidateSearch;
+    private readonly HashSet<long> explicitlySelectedTaskIds = [];
+    private readonly HashSet<long> excludedTaskIds = [];
+    private bool allMatchingSelection;
+    private int candidatePage = 1;
+    private bool candidateFiltersDirty;
+    private string reason = string.Empty;
+    private string commonVariablesJson = "{}";
+    private string? draftIdempotencyKey;
+    private AdministrativeActionBatchDetailDto? currentBatch;
+    private PagedResult<AdministrativeActionBatchItemDto>? batchItems;
+    private string? batchItemStatus;
+    private int batchItemPage = 1;
+    private PagedResult<AdministrativeActionBatchSummaryDto>? batchList;
+    private string? batchListStatus;
+    private int batchListPage = 1;
+    private string? cancellationReason;
+    private string? error;
+    private string? success;
+    private bool loading;
+    private bool loadingDefinition;
+    private bool candidateLoading;
+    private bool batchOperation;
+    private bool refreshingBatch;
+    private bool loadingBatches;
+    private readonly CancellationTokenSource pollCancellation = new();
+    private Task? pollTask;
+
+    private AdministrativeActionSummaryDto? SelectedAction => actions.FirstOrDefault(action =>
+        string.Equals(action.FlowExternalId, flowExternalId, StringComparison.OrdinalIgnoreCase));
+    private bool CanSearchCandidates => !candidateLoading && targetWorkflowId > 0 && !string.IsNullOrWhiteSpace(flowExternalId);
+    private long SelectedCandidateCount => allMatchingSelection
+        ? Math.Max(0, (candidates?.TotalCount ?? 0) - excludedTaskIds.Count)
+        : explicitlySelectedTaskIds.Count;
+    private bool CanCreateBatch => !batchOperation && !candidateFiltersDirty && SelectedCandidateCount > 0
+        && SelectedCandidateCount <= 10_000 && targetWorkflowId > 0 && !string.IsNullOrWhiteSpace(flowExternalId)
+        && !string.IsNullOrWhiteSpace(reason) && reason.Trim().EnumerateRunes().Count() <= 1000
+        && appliedCandidateSearch is not null;
+    private int CandidateTotalPages => TotalPages(candidates?.TotalCount ?? 0, CandidatePageSize);
+    private int BatchItemTotalPages => TotalPages(batchItems?.TotalCount ?? 0, BatchItemPageSize);
+    private int BatchListTotalPages => TotalPages(batchList?.TotalCount ?? 0, BatchListPageSize);
+    private bool CanConfirmCurrentBatch => currentBatch is not null
+        && currentBatch.Summary.Status.Equals("ready", StringComparison.OrdinalIgnoreCase);
+    private bool CanCancelCurrentBatch => currentBatch is not null && IsCancellable(currentBatch.Summary.Status);
+    private string CandidateSummary => candidateFiltersDirty
+        ? "Filters changed. Search again to establish a new server-side result."
+        : candidateLoading ? "Searching authorized active tasks…"
+        : candidates is null ? "No search has run yet."
+        : $"{candidates.TotalCount:N0} candidate tasks";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        pollTask = PollCurrentBatchAsync(pollCancellation.Token);
+        if (Token.HasToken)
+        {
+            await LoadInitialAsync();
+        }
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        try
+        {
+            loading = true;
+            error = null;
+            administrativeWorkflowCatalog = await Api.GetAdministrativeActionWorkflowCatalogAsync();
+            workflowFamilies = administrativeWorkflowCatalog
+                .GroupBy(workflow => workflow.WorkflowKey, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.OrderByDescending(workflow => workflow.Version).First())
+                .OrderBy(workflow => workflow.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            selectedWorkflowKey = workflowFamilies.FirstOrDefault()?.WorkflowKey;
+            if (!string.IsNullOrWhiteSpace(selectedWorkflowKey))
+            {
+                await LoadPublishedVersionsAsync(selectedWorkflowKey);
+            }
+            await LoadBatchListAsync();
+            if (RequestedBatchId is > 0)
+            {
+                await OpenBatchAsync(RequestedBatchId.Value);
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            workflowFamilies ??= [];
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        if (!Token.HasToken) return;
+        await LoadInitialAsync();
+        if (currentBatch is not null) await RefreshCurrentBatchAsync();
+    }
+
+    private async Task OnWorkflowChangedAsync(ChangeEventArgs args)
+    {
+        selectedWorkflowKey = args.Value?.ToString();
+        if (!string.IsNullOrWhiteSpace(selectedWorkflowKey)) await LoadPublishedVersionsAsync(selectedWorkflowKey);
+    }
+
+    private async Task LoadPublishedVersionsAsync(string workflowKey)
+    {
+        try
+        {
+            loadingDefinition = true;
+            error = null;
+            publishedVersions = administrativeWorkflowCatalog
+                .Where(version => string.Equals(
+                    version.WorkflowKey,
+                    workflowKey,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(version => version.Version)
+                .ToArray();
+            targetWorkflowId = publishedVersions.FirstOrDefault(version => version.IsDefault)?.Id
+                ?? publishedVersions.FirstOrDefault()?.Id
+                ?? 0;
+            await LoadActionsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            publishedVersions = [];
+            targetWorkflowId = 0;
+            actions = [];
+            flowExternalId = null;
+        }
+        finally
+        {
+            loadingDefinition = false;
+            ResetCandidateResults();
+        }
+    }
+
+    private async Task OnTargetVersionChangedAsync(ChangeEventArgs args)
+    {
+        _ = long.TryParse(args.Value?.ToString(), out targetWorkflowId);
+        await LoadActionsAsync();
+        ResetCandidateResults();
+    }
+
+    private async Task LoadActionsAsync()
+    {
+        actions = targetWorkflowId == 0
+            ? []
+            : await Api.GetWorkflowAdministrativeActionsAsync(targetWorkflowId, batchableOnly: true);
+        flowExternalId = actions.FirstOrDefault()?.FlowExternalId;
+    }
+
+    private void OnActionChanged(ChangeEventArgs args)
+    {
+        flowExternalId = args.Value?.ToString();
+        ResetCandidateResults();
+    }
+
+    private void MarkCandidateFiltersDirty()
+    {
+        if (candidates is not null) candidateFiltersDirty = true;
+        candidatePage = 1;
+        ClearSelection();
+    }
+
+    private Task OnCandidateVariableFilterChanged(string? value)
+    {
+        candidateVariableFilterJson = value;
+        candidateVariableFilterError = null;
+        MarkCandidateFiltersDirty();
+        return Task.CompletedTask;
+    }
+
+    private async Task ClearCandidateFiltersAsync()
+    {
+        candidateTaskId = null;
+        candidateInstanceId = null;
+        candidateSourceWorkflowId = null;
+        candidateBusinessKey = null;
+        candidateVariableFilterJson = null;
+        candidateVariableFilterError = null;
+        candidatePage = 1;
+        await SearchCandidatesAsync();
+    }
+
+    private async Task SearchCandidatesAsync()
+    {
+        if (!CanSearchCandidates) return;
+        if (!TryParseOptionalJson(candidateVariableFilterJson, out var variableFilter, out candidateVariableFilterError)) return;
+
+        try
+        {
+            candidateLoading = true;
+            error = null;
+            success = null;
+            var request = BuildCandidateSearch(candidatePage, CandidatePageSize, variableFilter);
+            candidates = await Api.SearchAdministrativeActionCandidatesAsync(request);
+            appliedCandidateSearch = BuildCandidateSearch(null, null, variableFilter);
+            candidateFiltersDirty = false;
+            ClearSelection();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            candidates = null;
+            appliedCandidateSearch = null;
+        }
+        finally
+        {
+            candidateLoading = false;
+        }
+    }
+
+    private async Task LoadCandidatePageAsync(int page)
+    {
+        if (appliedCandidateSearch is null) return;
+        try
+        {
+            candidateLoading = true;
+            candidatePage = page;
+            var request = appliedCandidateSearch with { Page = candidatePage, PageSize = CandidatePageSize };
+            candidates = await Api.SearchAdministrativeActionCandidatesAsync(request);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            candidateLoading = false;
+        }
+    }
+
+    private AdministrativeActionCandidateSearchRequest BuildCandidateSearch(int? page, int? pageSize, JsonElement? variableFilter) => new()
+    {
+        TargetWorkflowId = targetWorkflowId,
+        FlowExternalId = flowExternalId ?? string.Empty,
+        UserTaskId = candidateTaskId,
+        InstanceId = candidateInstanceId,
+        SourceWorkflowId = candidateSourceWorkflowId,
+        BusinessKey = string.IsNullOrWhiteSpace(candidateBusinessKey) ? null : candidateBusinessKey.Trim(),
+        VariableFilter = variableFilter,
+        IncludeVariables = true,
+        Page = page,
+        PageSize = pageSize
+    };
+
+    private Task PreviousCandidatePageAsync() => LoadCandidatePageAsync(Math.Max(1, candidatePage - 1));
+    private Task NextCandidatePageAsync() => LoadCandidatePageAsync(Math.Min(CandidateTotalPages, candidatePage + 1));
+
+    private bool IsCandidateSelected(long taskId) => allMatchingSelection
+        ? !excludedTaskIds.Contains(taskId)
+        : explicitlySelectedTaskIds.Contains(taskId);
+
+    private void ToggleCandidate(long taskId)
+    {
+        if (allMatchingSelection)
+        {
+            if (!excludedTaskIds.Add(taskId)) excludedTaskIds.Remove(taskId);
+        }
+        else if (!explicitlySelectedTaskIds.Add(taskId))
+        {
+            explicitlySelectedTaskIds.Remove(taskId);
+        }
+        draftIdempotencyKey = null;
+    }
+
+    private void SelectCurrentCandidatePage()
+    {
+        if (candidates is null) return;
+        if (allMatchingSelection)
+        {
+            foreach (var candidate in candidates.Items) excludedTaskIds.Remove(candidate.UserTaskId);
+        }
+        else
+        {
+            foreach (var candidate in candidates.Items) explicitlySelectedTaskIds.Add(candidate.UserTaskId);
+        }
+        draftIdempotencyKey = null;
+    }
+
+    private void SetSelectionMode(bool allMatching)
+    {
+        allMatchingSelection = allMatching;
+        explicitlySelectedTaskIds.Clear();
+        excludedTaskIds.Clear();
+        draftIdempotencyKey = null;
+    }
+
+    private void ClearSelection()
+    {
+        explicitlySelectedTaskIds.Clear();
+        excludedTaskIds.Clear();
+        draftIdempotencyKey = null;
+    }
+
+    private async Task CreateBatchAsync()
+    {
+        if (!CanCreateBatch || appliedCandidateSearch is null) return;
+        if (!TryParseVariables(commonVariablesJson, out var variables, out var parseError))
+        {
+            error = parseError;
+            return;
+        }
+
+        try
+        {
+            batchOperation = true;
+            error = null;
+            success = null;
+            draftIdempotencyKey ??= Guid.NewGuid().ToString("N");
+            var selection = allMatchingSelection
+                ? new AdministrativeActionBatchSelectionDto(
+                    AdministrativeActionBatchSelectionModes.AllMatching,
+                    null,
+                    appliedCandidateSearch,
+                    excludedTaskIds.Order().ToArray())
+                : new AdministrativeActionBatchSelectionDto(
+                    AdministrativeActionBatchSelectionModes.Explicit,
+                    explicitlySelectedTaskIds.Order().ToArray(),
+                    null,
+                    null);
+            currentBatch = await Api.CreateAdministrativeActionBatchAsync(new CreateAdministrativeActionBatchRequest(
+                targetWorkflowId,
+                flowExternalId!,
+                reason.Trim(),
+                variables,
+                selection,
+                draftIdempotencyKey));
+            draftIdempotencyKey = null;
+            batchItemPage = 1;
+            batchItemStatus = null;
+            await LoadBatchItemsAsync();
+            await LoadBatchListAsync();
+            success = $"Batch #{currentBatch.Summary.Id} was frozen and queued for asynchronous preparation.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            batchOperation = false;
+        }
+    }
+
+    private async Task OpenBatchAsync(long batchId)
+    {
+        try
+        {
+            error = null;
+            currentBatch = await Api.GetAdministrativeActionBatchAsync(batchId)
+                ?? throw new InvalidOperationException($"Administrative batch #{batchId} was not found.");
+            batchItemPage = 1;
+            batchItemStatus = null;
+            cancellationReason = null;
+            await LoadBatchItemsAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task RefreshCurrentBatchAsync()
+    {
+        if (currentBatch is null || refreshingBatch) return;
+        try
+        {
+            refreshingBatch = true;
+            var refreshed = await Api.GetAdministrativeActionBatchAsync(currentBatch.Summary.Id);
+            if (refreshed is not null) currentBatch = refreshed;
+            await LoadBatchItemsAsync();
+            await LoadBatchListAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            refreshingBatch = false;
+        }
+    }
+
+    private async Task ConfirmCurrentBatchAsync()
+    {
+        if (!CanConfirmCurrentBatch || currentBatch is null) return;
+        try
+        {
+            batchOperation = true;
+            error = null;
+            var expected = currentBatch.Summary;
+            currentBatch = await Api.ConfirmAdministrativeActionBatchAsync(expected.Id,
+                new ConfirmAdministrativeActionBatchRequest(expected.EligibleItemCount, expected.UpdatedAt));
+            success = $"Batch #{expected.Id} was confirmed. Eligible items are queued for independent execution.";
+            await LoadBatchItemsAsync();
+            await LoadBatchListAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            batchOperation = false;
+        }
+    }
+
+    private async Task CancelCurrentBatchAsync()
+    {
+        if (!CanCancelCurrentBatch || currentBatch is null) return;
+        try
+        {
+            batchOperation = true;
+            error = null;
+            var id = currentBatch.Summary.Id;
+            currentBatch = await Api.CancelAdministrativeActionBatchAsync(id,
+                new CancelAdministrativeActionBatchRequest(string.IsNullOrWhiteSpace(cancellationReason) ? null : cancellationReason.Trim()));
+            success = $"Batch #{id} was cancelled. Completed actions were not reversed.";
+            await LoadBatchItemsAsync();
+            await LoadBatchListAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            batchOperation = false;
+        }
+    }
+
+    private async Task LoadBatchItemsAsync()
+    {
+        if (currentBatch is null) return;
+        batchItems = await Api.GetAdministrativeActionBatchItemsAsync(
+            currentBatch.Summary.Id, batchItemStatus, batchItemPage, BatchItemPageSize);
+    }
+
+    private async Task OnBatchItemStatusChangedAsync(ChangeEventArgs args)
+    {
+        batchItemStatus = args.Value?.ToString();
+        batchItemPage = 1;
+        await LoadBatchItemsAsync();
+    }
+
+    private async Task PreviousBatchItemPageAsync()
+    {
+        batchItemPage = Math.Max(1, batchItemPage - 1);
+        await LoadBatchItemsAsync();
+    }
+
+    private async Task NextBatchItemPageAsync()
+    {
+        batchItemPage = Math.Min(BatchItemTotalPages, batchItemPage + 1);
+        await LoadBatchItemsAsync();
+    }
+
+    private async Task LoadBatchListAsync()
+    {
+        try
+        {
+            loadingBatches = true;
+            batchList = await Api.GetAdministrativeActionBatchesAsync(new AdministrativeActionBatchSearchRequest
+            {
+                Status = string.IsNullOrWhiteSpace(batchListStatus) ? null : batchListStatus,
+                Page = batchListPage,
+                PageSize = BatchListPageSize
+            });
+        }
+        finally
+        {
+            loadingBatches = false;
+        }
+    }
+
+    private async Task OnBatchListStatusChangedAsync(ChangeEventArgs args)
+    {
+        batchListStatus = args.Value?.ToString();
+        batchListPage = 1;
+        await LoadBatchListAsync();
+    }
+
+    private async Task PreviousBatchListPageAsync()
+    {
+        batchListPage = Math.Max(1, batchListPage - 1);
+        await LoadBatchListAsync();
+    }
+
+    private async Task NextBatchListPageAsync()
+    {
+        batchListPage = Math.Min(BatchListTotalPages, batchListPage + 1);
+        await LoadBatchListAsync();
+    }
+
+    private async Task PollCurrentBatchAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (currentBatch is null || !IsLive(currentBatch.Summary) || refreshingBatch) continue;
+                await InvokeAsync(RefreshCurrentBatchAsync);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        if (Token.HasToken) await LoadInitialAsync();
+        else
+        {
+            workflowFamilies = null;
+            currentBatch = null;
+            batchList = null;
+        }
+        StateHasChanged();
+    });
+
+    private void ResetCandidateResults()
+    {
+        candidates = null;
+        appliedCandidateSearch = null;
+        candidatePage = 1;
+        candidateFiltersDirty = false;
+        ClearSelection();
+    }
+
+    private static bool TryParseOptionalJson(string? value, out JsonElement? result, out string? parseError)
+    {
+        result = null;
+        parseError = null;
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        try
+        {
+            using var document = JsonDocument.Parse(value);
+            result = document.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            parseError = $"Variable filter JSON is invalid: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool TryParseVariables(string? value, out Dictionary<string, JsonElement> variables, out string? parseError)
+    {
+        variables = [];
+        parseError = null;
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(value) ? "{}" : value);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                parseError = "Common variables must be a JSON object.";
+                return false;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                variables[property.Name] = property.Value.Clone();
+            }
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            parseError = $"Common variables JSON is invalid: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static string ActionLabel(AdministrativeActionSummaryDto action) =>
+        $"{(string.IsNullOrWhiteSpace(action.Name) ? action.FlowExternalId : action.Name)} · {action.SourceNodeName} → {action.TargetNodeName}";
+    private static string FormatJson(JsonElement? value) => value is null ? string.Empty : JsonSerializer.Serialize(value.Value, JsonOptions);
+    private static int TotalPages(long totalCount, int pageSize) => totalCount == 0 ? 1 : (int)Math.Ceiling(totalCount / (double)pageSize);
+    private static bool IsCancellable(string status) => status.Equals("preparing", StringComparison.OrdinalIgnoreCase)
+        || status.Equals("ready", StringComparison.OrdinalIgnoreCase)
+        || status.Equals("queued", StringComparison.OrdinalIgnoreCase)
+        || status.Equals("running", StringComparison.OrdinalIgnoreCase);
+    private static bool IsLive(AdministrativeActionBatchSummaryDto summary) =>
+        summary.Status.Equals("preparing", StringComparison.OrdinalIgnoreCase)
+        || summary.Status.Equals("queued", StringComparison.OrdinalIgnoreCase)
+        || summary.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
+        || (summary.Status.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+            && summary.CompletedAt is null);
+
+    public async ValueTask DisposeAsync()
+    {
+        Token.Changed -= OnTokenChanged;
+        await pollCancellation.CancelAsync();
+        if (pollTask is not null)
+        {
+            try { await pollTask; }
+            catch (OperationCanceledException) { }
+        }
+        pollCancellation.Dispose();
+    }
+}

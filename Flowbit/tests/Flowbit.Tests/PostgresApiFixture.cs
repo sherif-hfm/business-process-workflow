@@ -54,6 +54,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         SetEnvironment("Jwt__Key", ApiTestAuth.Key);
         SetEnvironment("WorkflowContext__Config__taskDistributionClientId", "config-distributor");
         SetEnvironment("WorkflowContext__Config__taskDistributionClientSecret", "config-distributor-secret");
+        SetEnvironment("WorkflowContext__AllowedClaims__0", "department");
 
         // Program reads the process-latched actor identity setting during startup,
         // so the schema must exist before WebApplicationFactory starts the host.
@@ -211,6 +212,18 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             {
                 claims.Add(new Claim(ClaimTypes.Role, role));
                 claims.Add(new Claim("role", role));
+            }
+            const string testClaimPrefix = "X-Test-Claim-";
+            foreach (var header in Request.Headers.Where(header =>
+                         header.Key.StartsWith(testClaimPrefix, StringComparison.OrdinalIgnoreCase)))
+            {
+                var claimType = header.Key[testClaimPrefix.Length..];
+                var claimValue = header.Value.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(claimType)
+                    && !string.IsNullOrWhiteSpace(claimValue))
+                {
+                    claims.Add(new Claim(claimType, claimValue));
+                }
             }
             var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
             return Task.FromResult(AuthenticateResult.Success(

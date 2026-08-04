@@ -31,6 +31,10 @@ public sealed class UserTaskEntity
     public List<string>? CompletedByRoles { get; set; }
     public string? CompletedActingFor { get; set; }
     public long? CompletionDelegationId { get; set; }
+    public string? CompletionKind { get; set; }
+    public string? CompletionReason { get; set; }
+    public long? AdministrativeActionBatchId { get; set; }
+    public AdministrativeActionBatchEntity? AdministrativeActionBatch { get; set; }
     public NodeExecutionEntity? NodeExecution { get; set; }
 }
 

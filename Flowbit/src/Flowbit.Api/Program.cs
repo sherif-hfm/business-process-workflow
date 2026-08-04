@@ -367,6 +367,7 @@ try
     app.MapWorkflowDefinitionEndpoints();
     app.MapWorkflowInstanceEndpoints();
     app.MapUserTaskEndpoints();
+    app.MapAdministrativeActionEndpoints();
     app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
     app.MapNodeExecutionEndpoints();

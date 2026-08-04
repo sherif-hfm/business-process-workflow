@@ -1078,7 +1078,7 @@ public sealed partial class WorkflowEngineService(
 
         var roles = NormalizeRoles(executionActor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable && !f.IsDefault
+            .Where(f => f.IsSelectable && !f.IsDefault && !f.IsAdministrative
                         && RoleAllowed(f.Roles, roles)
                         && (!task.RequiresClaim
                             || string.Equals(task.ClaimedBy, EffectiveUser(executionActor), StringComparison.OrdinalIgnoreCase)
@@ -1735,7 +1735,7 @@ public sealed partial class WorkflowEngineService(
         var context = WithContext(stored, actor, instance, workflow.Definition, node);
         AddMultiInstanceExecutionContext(context, execution);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(f => f.IsSelectable && !f.IsDefault
+            .Where(f => f.IsSelectable && !f.IsDefault && !f.IsAdministrative
                         && f.CancelRemainingInstances
                         && RoleAllowed(f.Roles, roles)
                         && (string.IsNullOrWhiteSpace(f.Condition)
@@ -1776,7 +1776,7 @@ public sealed partial class WorkflowEngineService(
 
         var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this multi-instance execution.");
-        if (!flow.IsSelectable || flow.IsDefault || !flow.CancelRemainingInstances)
+        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative || !flow.CancelRemainingInstances)
             throw new WorkflowDomainException("Only selectable interrupting flows can be taken at the multi-instance execution level.");
 
         EnsureRoleAllowed(node, actor);
@@ -1900,7 +1900,7 @@ public sealed partial class WorkflowEngineService(
         }
         var flow = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).SingleOrDefault(f => f.Id == flowId)
             ?? throw new WorkflowDomainException("The requested flow is not an action of this user task.");
-        if (!flow.IsSelectable || flow.IsDefault)
+        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative)
             throw new WorkflowDomainException("The requested flow is an engine-only/default route and cannot be selected by a user.");
         EnsureUserTaskActor(task, node, executionActor, requireActive: true);
         var actorRoles = NormalizeRoles(executionActor.Roles);
@@ -2322,9 +2322,12 @@ public sealed partial class WorkflowEngineService(
                 flowId, id, node.Id, node.Type);
             throw new WorkflowDomainException("The requested sequence flow is not available from the current node.");
         }
-        if (!flow.IsSelectable || flow.IsDefault)
+        if (!flow.IsSelectable || flow.IsDefault || flow.IsAdministrative)
         {
-            throw new WorkflowDomainException("The requested sequence flow is an engine-only/default route and cannot be selected by a user.");
+            throw new WorkflowDomainException(
+                flow.IsAdministrative
+                    ? "Administrative sequence flows must be taken through the dedicated administrative-action endpoint."
+                    : "The requested sequence flow is an engine-only/default route and cannot be selected by a user.");
         }
 
         if (task.InstanceId != instance.Id
@@ -6813,7 +6816,8 @@ public sealed partial class WorkflowEngineService(
             "scopedInterruptSkipped" or
             "boundary" or
             "error" or
-            "message");
+            "message" or
+            "administrativeAction");
 
     private SequenceFlowModel SelectPassThroughFlow(
         long definitionId,
@@ -8034,7 +8038,9 @@ public sealed partial class WorkflowEngineService(
                 h.PerformedAt)
             {
                 ActingFor = h.ActingFor,
-                DelegationId = h.DelegationId
+                DelegationId = h.DelegationId,
+                Reason = h.Reason,
+                AdministrativeActionBatchId = h.AdministrativeActionBatchId
             }).ToList(),
             multiProgress,
             userTasks,
@@ -8582,7 +8588,10 @@ public sealed partial class WorkflowEngineService(
             CompletedDelegatedAccess = task.CompletionDelegationId is long completionDelegationId
                                        && !string.IsNullOrWhiteSpace(task.CompletedActingFor)
                 ? new DelegatedTaskAccessDto(completionDelegationId, task.CompletedActingFor)
-                : null
+                : null,
+            CompletionKind = task.CompletionKind,
+            CompletionReason = task.CompletionReason,
+            AdministrativeActionBatchId = task.AdministrativeActionBatchId
         };
 
     private async Task<UserTaskCapabilitiesDto> BuildUserTaskCapabilitiesAsync(
@@ -8711,7 +8720,7 @@ public sealed partial class WorkflowEngineService(
         if (execution is not null) AddMultiInstanceContext(context, task, execution);
         var roles = NormalizeRoles(actor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
-            .Where(flow => flow.IsSelectable && !flow.IsDefault
+            .Where(flow => flow.IsSelectable && !flow.IsDefault && !flow.IsAdministrative
                            && RoleAllowed(flow.Roles, roles)
                            && (string.IsNullOrWhiteSpace(flow.Condition)
                                || SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context)))
@@ -8818,7 +8827,8 @@ public sealed partial class WorkflowEngineService(
             summary.SoleAssignee)
         {
             NormalTaskCount = summary.NormalTaskCount,
-            MultiInstanceTaskCount = summary.MultiInstanceTaskCount
+            MultiInstanceTaskCount = summary.MultiInstanceTaskCount,
+            SoleUserTaskId = summary.SoleUserTaskId
         };
 
     private sealed record MultiInstanceParentInterruptResult(

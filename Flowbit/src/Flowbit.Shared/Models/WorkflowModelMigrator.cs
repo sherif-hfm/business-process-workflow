@@ -34,6 +34,11 @@ public static class WorkflowModelMigrator
             flow.Roles = NormalizeRoles(flow.Roles);
             flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
             flow.Variables ??= [];
+            if ((flow.IsAdministrative || flow.IsBatchable)
+                && !string.IsNullOrWhiteSpace(flow.ExternalId))
+            {
+                flow.ExternalId = flow.ExternalId.Trim();
+            }
 
             if (!flow.CanActWithoutClaim)
             {
