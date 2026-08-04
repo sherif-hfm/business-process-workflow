@@ -197,7 +197,7 @@
                             </td>
                             <td>
                                 <a class="data-title" href="@($"instances/{execution.InstanceId}")">@execution.WorkflowName</a>
-                                <span class="data-subtitle">@execution.WorkflowKey · v@execution.WorkflowVersion · Instance #@execution.InstanceId</span>
+                                <span class="data-subtitle">@execution.WorkflowKey · v@(execution.WorkflowVersion) · Instance #@execution.InstanceId</span>
                                 @if (!string.IsNullOrWhiteSpace(execution.BusinessKey))
                                 {
                                     <span class="data-subtitle">@execution.BusinessKey</span>

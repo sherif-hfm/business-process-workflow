@@ -70,7 +70,7 @@ else if (execution is not null)
         <div class="summary-grid">
             <div class="summary-item"><span>Execution</span><strong>#@execution.Id · @execution.ExecutionKind</strong></div>
             <div class="summary-item"><span>Instance</span><strong>#@execution.InstanceId · @execution.InstanceStatus</strong></div>
-            <div class="summary-item"><span>Workflow</span><strong>@execution.WorkflowKey · v@execution.WorkflowVersion</strong></div>
+            <div class="summary-item"><span>Workflow</span><strong>@execution.WorkflowKey · v@(execution.WorkflowVersion)</strong></div>
             <div class="summary-item"><span>Workflow version ID</span><strong>#@execution.WorkflowId</strong></div>
             <div class="summary-item"><span>Node</span><strong>#@execution.NodeId · @execution.NodeType</strong></div>
             <div class="summary-item"><span>External node ID</span><strong>@(execution.NodeExternalId ?? "—")</strong></div>

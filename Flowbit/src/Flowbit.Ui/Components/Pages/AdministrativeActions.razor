@@ -97,7 +97,7 @@ else
                                                @onchange="_ => ToggleWorkflowVersion(version.Id)" />
                                     </td>
                                     <td>
-                                        <strong>v@version.Version</strong>
+                                        <strong>v@(version.Version)</strong>
                                         <span class="data-subtitle">Definition #@version.Id@(version.IsDefault ? " · default" : string.Empty)@(version.IsPublished ? string.Empty : " · immutable")</span>
                                     </td>
                                     <td>
@@ -218,7 +218,7 @@ else
                                 <td><input class="form-check-input" type="checkbox" aria-label="Select task @candidate.UserTaskId" checked="@IsCandidateSelected(candidate.UserTaskId)" @onchange="_ => ToggleCandidate(candidate.UserTaskId)" /></td>
                                 <td><span class="data-title">Task #@candidate.UserTaskId</span><span class="data-subtitle"><a href="@($"instances/{candidate.InstanceId}")">Instance #@candidate.InstanceId</a> · @(candidate.BusinessKey ?? candidate.WorkflowKey)</span></td>
                                 <td>@candidate.NodeName<span class="data-subtitle">Node #@candidate.NodeId@(string.IsNullOrWhiteSpace(candidate.NodeExternalId) ? string.Empty : $" · {candidate.NodeExternalId}")</span></td>
-                                <td>v@candidate.WorkflowVersion · #@candidate.WorkflowDefinitionId<span class="data-subtitle">@candidate.FlowName · flow #@candidate.FlowId</span></td>
+                                <td>v@(candidate.WorkflowVersion) · #@candidate.WorkflowDefinitionId<span class="data-subtitle">@candidate.FlowName · flow #@candidate.FlowId</span></td>
                                 <td>
                                     <StatusBadge Status="@(candidate.Eligible ? "ready" : "warning")" Text="@(candidate.Eligible ? "Eligible precheck" : "Review blockers")" />
                                     @if (candidate.Issues.Count > 0)
@@ -312,7 +312,7 @@ else
                         <ul class="list-unstyled mb-0">
                             @foreach (var mapping in currentBatch.FlowMappings.OrderBy(mapping => mapping.WorkflowVersion))
                             {
-                                <li>v@mapping.WorkflowVersion / definition #@mapping.WorkflowDefinitionId: @mapping.Name (flow #@mapping.FlowId)</li>
+                                <li>v@(mapping.WorkflowVersion) / definition #@mapping.WorkflowDefinitionId: @mapping.Name (flow #@mapping.FlowId)</li>
                             }
                         </ul>
                     </dd>
