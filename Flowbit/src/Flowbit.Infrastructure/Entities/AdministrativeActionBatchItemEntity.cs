@@ -15,13 +15,21 @@ public sealed class AdministrativeActionBatchItemEntity
 
     public WorkflowInstanceEntity? Instance { get; set; }
 
-    public long UserTaskId { get; set; }
+    public string PositionKind { get; set; } = string.Empty;
+
+    public long? UserTaskId { get; set; }
 
     public UserTaskEntity? UserTask { get; set; }
+
+    public long? MultiInstanceExecutionId { get; set; }
+
+    public MultiInstanceExecutionEntity? MultiInstanceExecution { get; set; }
 
     public long TokenId { get; set; }
 
     public ExecutionTokenEntity? Token { get; set; }
+
+    public Guid TokenActivationId { get; set; }
 
     public long WorkflowDefinitionId { get; set; }
 
@@ -29,9 +37,23 @@ public sealed class AdministrativeActionBatchItemEntity
 
     public int FlowId { get; set; }
 
-    public DateTimeOffset CapturedInstanceUpdatedAt { get; set; }
+    public int SourceNodeId { get; set; }
 
-    public DateTimeOffset CapturedUserTaskUpdatedAt { get; set; }
+    public DateTimeOffset CapturedPositionUpdatedAt { get; set; }
+
+    public long? TimerSubscriptionId { get; set; }
+
+    public TimerSubscriptionEntity? TimerSubscription { get; set; }
+
+    public long? TimerJobId { get; set; }
+
+    public long? CapturedTimerOccurrence { get; set; }
+
+    public string? CapturedTimerStatus { get; set; }
+
+    public DateTimeOffset? CapturedTimerSubscriptionUpdatedAt { get; set; }
+
+    public int AffectedTaskCount { get; set; }
 
     public string Status { get; set; } = AdministrativeActionBatchItemStatuses.Preparing;
 
@@ -42,10 +64,6 @@ public sealed class AdministrativeActionBatchItemEntity
     public string? ErrorCode { get; set; }
 
     public string? ErrorDescription { get; set; }
-
-    public long? NewUserTaskId { get; set; }
-
-    public UserTaskEntity? NewUserTask { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
 

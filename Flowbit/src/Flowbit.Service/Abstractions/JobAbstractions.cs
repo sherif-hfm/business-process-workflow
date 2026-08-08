@@ -180,6 +180,10 @@ public interface ITimerSubscriptionRepository
         TimerSubscriptionCreateRecord create,
         CancellationToken cancellationToken);
 
+    Task<TimerSubscriptionRecord?> GetAsync(
+        long subscriptionId,
+        CancellationToken cancellationToken);
+
     Task<TimerSubscriptionRecord?> GetForUpdateAsync(
         long subscriptionId,
         CancellationToken cancellationToken);
@@ -205,6 +209,19 @@ public interface ITimerSubscriptionRepository
     Task<bool> PauseAsync(
         long subscriptionId,
         long expectedOccurrence,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Atomically consumes the exact active or paused occurrence selected by an
+    /// administrative timer-boundary override. The timestamp and status fences
+    /// prevent a natural fire, pause/resume, or reschedule from being consumed
+    /// as if it were the frozen occurrence.
+    /// </summary>
+    Task<bool> CompleteAdministrativeOverrideAsync(
+        long subscriptionId,
+        long expectedOccurrence,
+        string expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
         CancellationToken cancellationToken);
 
     Task<int> CancelByInstanceAsync(

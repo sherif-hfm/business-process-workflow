@@ -1,8 +1,9 @@
 - attributes for events task and flows 
  - chnage instances vesrion in batch 
+ 
 - receive task
 - Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
-
+- in editor add view tool only so not change item by mistake
  - add Event-Based Gateway
 - add Workflow runner simulator
 
@@ -16,6 +17,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- batch action by administrator (done)
 - async flow asyncAfter/asyncBefore and  Timers events (done)
 - add Inclusive Gateway (done)
 - add Complex Gateway (done)

@@ -16,7 +16,7 @@ public interface IAdministrativeActionCandidateRepository
     /// </summary>
     Task<IReadOnlyList<AdministrativeActionCandidateRecord>> MaterializeAsync(
         AdministrativeActionCandidateQuery query,
-        IReadOnlyCollection<long> excludedUserTaskIds,
+        IReadOnlyCollection<AdministrativeActionPositionKey> excludedPositions,
         int limit,
         CancellationToken cancellationToken);
 }
@@ -27,8 +27,14 @@ public interface IAdministrativeActionBatchService
         ActorContext actor,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<AdministrativeActionSourceNodeDto>> ListSourceNodesAsync(
+        long workflowDefinitionId,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<AdministrativeActionSummaryDto>> ListActionsAsync(
-        long workflowId,
+        long workflowDefinitionId,
+        int sourceNodeId,
         ActorContext actor,
         CancellationToken cancellationToken);
 

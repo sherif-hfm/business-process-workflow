@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
@@ -31,7 +32,8 @@ public sealed partial class WorkflowEngineService
         IReadOnlyDictionary<string, string> Claims,
         string? ActingFor,
         long? DelegationId,
-        int? SelectedFlowId = null);
+        int? SelectedFlowId = null,
+        AdministrativeActionRequest? AdministrativeAction = null);
 
     private sealed record StagedServiceInvocation(
         string Method,
@@ -90,7 +92,8 @@ public sealed partial class WorkflowEngineService
         CancellationToken cancellationToken,
         int? selectedFlowId = null,
         long? multiInstanceExecutionId = null,
-        long? userTaskId = null)
+        long? userTaskId = null,
+        AdministrativeBatchFlowContext? administrativeBatch = null)
     {
         if (token.WaitState == ExecutionTokenWaitStates.AsyncAfter
             && token.WaitingJobId is not null)
@@ -105,7 +108,9 @@ public sealed partial class WorkflowEngineService
                 token.ActivationId,
                 new NodeExecutionCompletionRecord(
                     NodeExecutionRecordStatuses.Completed,
-                    NodeExecutionCompletionReasons.Normal,
+                    administrativeBatch is null
+                        ? NodeExecutionCompletionReasons.Normal
+                        : NodeExecutionCompletionReasons.AdministrativeAction,
                     selectedFlowId,
                     null,
                     token.GatewayBranchId,
@@ -127,7 +132,8 @@ public sealed partial class WorkflowEngineService
                 dueAt: timeProvider.GetUtcNow(),
                 selectedFlowId: selectedFlowId,
                 multiInstanceExecutionId: multiInstanceExecutionId,
-                userTaskId: userTaskId),
+                userTaskId: userTaskId,
+                administrativeBatch: administrativeBatch),
             cancellationToken,
             token,
             // A plain task can author asyncAfter without a durable entry job.
@@ -308,7 +314,8 @@ public sealed partial class WorkflowEngineService
         DateTimeOffset dueAt,
         int? selectedFlowId = null,
         long? multiInstanceExecutionId = null,
-        long? userTaskId = null)
+        long? userTaskId = null,
+        AdministrativeBatchFlowContext? administrativeBatch = null)
     {
         var retryDelays = ResolveRetryDelays(node);
         return new WorkflowJobCreateRecord
@@ -341,11 +348,12 @@ public sealed partial class WorkflowEngineService
                     actor.User,
                     SnapshotRoles(actor.Roles),
                     new Dictionary<string, string>(
-                        actor.Claims,
-                        StringComparer.OrdinalIgnoreCase),
+                    actor.Claims,
+                    StringComparer.OrdinalIgnoreCase),
                     actor.ActingFor,
                     actor.DelegationId,
-                    selectedFlowId))
+                    selectedFlowId,
+                    administrativeBatch?.Request))
         };
     }
 
@@ -1209,9 +1217,10 @@ public sealed partial class WorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        var payload = ReadJobPayload(job);
         if (job.Kind == WorkflowJobKinds.AsyncAfter
             && BpmnFlowNodeTypes.IsUserTask(node.Type)
-            && ReadJobPayload(job)?.SelectedFlowId is int selectedFlowId)
+            && payload?.SelectedFlowId is int selectedFlowId)
         {
             await FinalizeUserTaskAsyncAfterAsync(
                 instance,
@@ -1402,24 +1411,36 @@ public sealed partial class WorkflowEngineService
         }
 
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
-        var flowInfo = await LoadSequenceFlowInfoAsync(instance.Id, definition, cancellationToken);
-        var historyNote = job.MultiInstanceExecutionId is null
-            ? "userTaskAsyncAfter"
-            : "multiInstanceAsyncAfter";
-        await RecordSequenceFlowOccurrenceAsync(
-            flowInfo,
+        var administrativeBatch = ReadJobPayload(job)?.AdministrativeAction is { } request
+            ? new AdministrativeBatchFlowContext(request)
+            : null;
+        var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id,
-            token.Id,
-            job.UserTaskId,
-            job.MultiInstanceExecutionId,
-            null,
-            flow,
-            historyNote,
-            isAction: false,
-            isTraversal: true,
-            actor: actor,
-            values: null,
-            cancellationToken: cancellationToken);
+            definition,
+            cancellationToken,
+            force: administrativeBatch is not null);
+        var historyNote = administrativeBatch is not null
+            ? NodeExecutionCompletionReasons.AdministrativeAction
+            : job.MultiInstanceExecutionId is null
+                ? "userTaskAsyncAfter"
+                : "multiInstanceAsyncAfter";
+        if (administrativeBatch is null)
+        {
+            await RecordSequenceFlowOccurrenceAsync(
+                flowInfo,
+                instance.Id,
+                token.Id,
+                job.UserTaskId,
+                job.MultiInstanceExecutionId,
+                null,
+                flow,
+                historyNote,
+                isAction: false,
+                isTraversal: true,
+                actor: actor,
+                values: null,
+                cancellationToken: cancellationToken);
+        }
         var queue = new Queue<long>();
         await AdvanceAutomaticTokenAsync(
             instance,
@@ -1433,7 +1454,11 @@ public sealed partial class WorkflowEngineService
             stored,
             flowInfo,
             queue,
-            cancellationToken);
+            cancellationToken,
+            administrativeUserTaskId: administrativeBatch is null ? null : job.UserTaskId,
+            administrativeMultiInstanceExecutionId:
+                administrativeBatch is null ? null : job.MultiInstanceExecutionId,
+            administrativeBatch: administrativeBatch);
         if (await IsInstanceRunningAsync(instance.Id, cancellationToken))
         {
             var resumed = await runtime.GetInstanceAsync(instance.Id, cancellationToken)
@@ -2356,6 +2381,24 @@ public sealed partial class WorkflowEngineService
             return;
         }
 
+        // Consume the exact interrupting occurrence before routing. Boundary
+        // traversal performs generic attached-timer cleanup on the host token;
+        // leaving this subscription active until after routing would let that
+        // cleanup cancel the very occurrence being fired. This update remains
+        // in the same instance transaction, so downstream failure rolls it back.
+        if (subscription.CancelActivity
+            && !await timerSubscriptions.AdvanceAsync(
+                subscription.Id,
+                subscription.Occurrence,
+                subscription.Occurrence + 1,
+                subscription.NextDueAt,
+                complete: true,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The interrupting timer subscription changed while it was firing.");
+        }
+
         var timerActor = TimerActor();
         long continuationTokenId;
         if (subscription.CancelActivity)
@@ -2459,21 +2502,7 @@ public sealed partial class WorkflowEngineService
             definition,
             cancellationToken);
 
-        if (subscription.CancelActivity)
-        {
-            if (!await timerSubscriptions.AdvanceAsync(
-                    subscription.Id,
-                    subscription.Occurrence,
-                    subscription.Occurrence + 1,
-                    subscription.NextDueAt,
-                    complete: true,
-                    cancellationToken))
-            {
-                throw new WorkflowConflictException(
-                    "The interrupting timer subscription changed while it was firing.");
-            }
-        }
-        else
+        if (!subscription.CancelActivity)
         {
             var currentHost = await runtime.GetExecutionTokenAsync(
                 hostToken.Id,

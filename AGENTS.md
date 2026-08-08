@@ -257,11 +257,16 @@ Storage follows the hybrid design:
   sequence flow's lifetime summary with NCalc `FlowInfo(flowId, 'path')`; both
   arguments must be literals and the flow id must exist. Canonical paths are
   `all`; `actions.count`; `actions.last.user`, `userRoles`, `occurredAt`, `kind`,
-  or `values`; and the equivalent `traversals.*` paths. `all` and JavaScript
+  `values`, or `administrativeAction`; and the equivalent `traversals.*` paths.
+  `all` and JavaScript
   `execution.getFlowInfo(flowId)` return
   `{ flowId, actions: { count, last }, traversals: { count, last } }`; each
-  non-null `last` contains `user`, `userRoles`, `occurredAt`, `kind`, and
-  flow-local `values`. Known unused flows return zero/null summaries.
+  non-null `last` contains `user`, `userRoles`, `occurredAt`, `kind`, flow-local
+  `values`, and an optional `administrativeAction` object. That object correlates
+  an administrative selection with its batch, exact workflow definition and
+  flow, direct/timer action kind, optional boundary/subscription and
+  multi-instance mode, and optional reason. Known unused flows return zero/null
+  summaries.
   `actions` are explicit actor selections, while `traversals` are token movement:
   a normal user-task action and parent MI interrupt are both; an MI child vote is
   action-only; the aggregate outcome/default is traversal-only; and automatic
@@ -273,11 +278,14 @@ Storage follows the hybrid design:
   validation expressions reject it. Existing `CountFlow`/`PercentFlow` semantics
   remain current-MI-execution scoped.
   For definitions using the feature, each event appends an audit occurrence and
-  upserts a fixed-size instance/flow summary in the locked transaction. Runtime
+  upserts a fixed-size instance/flow summary in the locked transaction.
+  Administrative actions force this evidence write even when the definition
+  does not otherwise reference `FlowInfo`, so their action/traversal audit is
+  never optimized away. Runtime
   evaluation loads summaries once rather than scanning detailed history, so its
   read cost does not grow with loops or MI fan-out. Definitions without a
-  `FlowInfo` reference skip the summary query and write no evidence rows. The
-  additive migration has no historical backfill: existing instances expose only
+  `FlowInfo` reference skip normal-event summary queries and writes. The additive
+  migration has no historical backfill: existing instances expose only
   post-deployment evidence.
 - Instance transitions run in a database transaction and lock the instance row
   with `SELECT ... FOR UPDATE`; there is no in-memory run engine state. Mutations
@@ -458,47 +466,58 @@ Storage follows the hybrid design:
   inherited user still passes the normal role check when they act.
   `ValidateDefinition` requires `requiresClaim` for a non-`fresh` mode and a valid
   `userTask` reference for `fromNode`.
-- **Administrative action batches over normal flows.** Send-back/rework remains
-  an ordinary authored sequence flow: manual discovery and execution use the
-  normal task roles, assignment, claim, condition, variable, audit, and
-  ownership rules. There are no `isAdministrative` or `isBatchable` flow
-  properties. Batch execution is a privileged invocation mode over an existing
-  selectable, non-default, role-protected flow directly connecting synchronous,
-  non-multi-instance `userTask` nodes. Runtime execution requires exactly one
-  active token and one active ordinary task. The operator must match both
-  `WorkflowBatchActions.RequiredRole` and a role on every mapped flow; only
-  batch mode bypasses the source node's roles, assignment, and claim ownership.
-  Conditions, variables, flow roles, topology, and active-state checks remain.
-  A batch supplies an explicit `{ workflowDefinitionId, flowId }` mapping for
-  each included immutable version, frozen task/token/version/timestamp identity,
-  a 1-1,000-character reason, and one shared variable payload. Mapped flows must
-  expose the same variable contract. The engine never changes an instance's
-  workflow version and never infers flow equivalence from names, numeric IDs in
-  another version, or optional `externalId` values. Audit rows, FlowInfo action
-  and traversal evidence, the completed task/node execution, and the batch item
-  are correlated with kind `administrativeAction` in the same transaction.
-  Such completions are excluded from both claim and assignment inheritance, so
-  the operator cannot become the returned task's owner merely by sending it back.
-  Batch drafts freeze either explicit task IDs or an `allMatching` search plus
-  exclusions, capped by `WorkflowBatchActions.MaxItems` (default and hard cap
-  10,000). Durable `administrativeBatchPrepare` and
-  `administrativeBatchExecute` activity jobs page items through fresh scopes.
-  Batch creation idempotency keys are serialized transactionally, and a replay
-  must match the original frozen request. Preparation records
-  eligible/ineligible items; confirmation is optimistic and idempotent and
-  queues only eligible rows. Allowlisted actor claims needed by authored
-  expressions are snapshotted into each durable phase job. Every queued item revalidates its
-  frozen identity and permissions and commits independently; stale items are
-  skipped, retries resume nonterminal rows, cancellation stops unstarted rows,
-  and prior successes are never reversed. Exhaustion of a final worker lease
-  atomically incidents the job and terminally reconciles outstanding rows while
-  preserving committed successes and already-ready batches. The API exposes an
-  administrative workflow-version catalog, exact-version action discovery,
-  candidate search, and batch create/list/detail/item/confirm/cancel operations;
-  there is no privileged single-task execution endpoint. The Blazor UI provides
-  the dedicated `/administrative-actions` workspace, including per-version flow
-  mappings plus the frozen reason, variables, selection, and operator-role
-  snapshots. Individual actions continue through the ordinary task UI.
+- **Position-first administrative action batches.** There are no
+  `isAdministrative` or `isBatchable` flow properties. An authenticated operator
+  selects one exact immutable workflow definition and an ordinary or
+  multi-instance `userTask`, searches its active execution positions, freezes an
+  explicit selection or an `allMatching` result with exclusions, and then chooses
+  one authored action. Actions are either a selectable, non-default sequence flow
+  from the task or the sole outgoing flow of an attached `timerBoundaryEvent`.
+  Discovery and batch execution deliberately ignore node/flow roles, assignment,
+  claim ownership, and the selected direct flow's condition. Direct-flow inputs
+  still obey their declared required/type/array/validation contracts, downstream
+  gateway conditions and automatic routing behave normally, and no workflow
+  version is changed. A direct flow may reach any valid authored target. Parallel
+  branches remain eligible and only the selected execution position moves unless
+  the authored continuation has broader cancellation semantics.
+  Multi-instance candidates represent the parent execution rather than individual
+  child work items. `forceParent` cancels unfinished children without fabricating
+  votes and traverses the selected flow once; `completeAllChildren` records an
+  administrative completion and selected-flow count for every unfinished child,
+  suppresses aggregate routing until they are closed, and then traverses the
+  selected flow once. Timer-boundary actions require the activation's exact
+  `active` or `paused` subscription fence and ignore its due time. They always
+  interrupt the host, even when authored with `cancelActivity=false`: the host
+  task or unfinished multi-instance children and sibling timer jobs are cancelled,
+  paused-job incidents are resolved, the existing token enters the boundary, and
+  its unconditional, variable-free flow continues through normal routing. A
+  concurrent natural timer wins exactly once and makes the administrative item
+  stale rather than creating a duplicate traversal.
+  A batch stores the exact definition, source node, action/flow/boundary, optional
+  multi-instance mode, common payload, optional 1-1,000-character reason, actor
+  snapshot, and frozen task/token/activation/timestamp/subscription identities.
+  The `WorkflowBatchActions.MaxAffectedTasks` setting defaults to 10,000 and
+  counts each ordinary task plus every multi-instance child the selection would
+  complete or cancel; both freezing and preparation enforce the combined limit.
+  Durable `administrativeBatchPrepare` and `administrativeBatchExecute` activity
+  jobs process bounded pages with a fresh scope and transaction per item.
+  Preparation exposes eligible/ineligible rows, confirmation is optimistic and
+  idempotent, execution revalidates every fence, cancellation stops only unstarted
+  rows, and committed successes are never reversed. Stale or newly incompatible
+  positions become `skipped`; a deterministic failure after downstream routing
+  begins rolls the item transaction back and becomes `failed`. A successful
+  item's generic result snapshots the actual post-route instance status,
+  zero/one/many execution positions, and completion rather than merely echoing
+  the authored target. Transition state, that result, history, node-execution
+  metadata, and FlowInfo action and traversal evidence commit together as
+  `administrativeAction`, correlated by batch and exact action identity.
+  `asyncAfter` jobs retain the administrative context so their later traversal
+  evidence and history remain correlated. Administrative operators are excluded from
+  claim and assignment inheritance. The dedicated `/administrative-actions` UI
+  groups direct and timer actions, displays ignored authorization/condition and
+  forced-interruption warnings, reviews affected-task counts and blockers, and
+  monitors paged results. Individual task actions continue through the ordinary
+  task UI with their normal authorization and behavior.
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.

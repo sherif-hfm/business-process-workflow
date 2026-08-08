@@ -158,12 +158,25 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
                ?? [];
     }
 
-    public async Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetWorkflowAdministrativeActionsAsync(
-        long workflowId,
+    public async Task<IReadOnlyList<AdministrativeActionSourceNodeDto>> GetWorkflowAdministrativeActionNodesAsync(
+        long workflowDefinitionId,
         CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.GetAsync(
-            $"/api/workflows/{workflowId}/administrative-actions",
+            $"/api/workflows/{workflowDefinitionId}/administrative-actions/nodes",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<AdministrativeActionSourceNodeDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<IReadOnlyList<AdministrativeActionSummaryDto>> GetWorkflowAdministrativeActionsAsync(
+        long workflowDefinitionId,
+        int sourceNodeId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/workflows/{workflowDefinitionId}/nodes/{sourceNodeId}/administrative-actions",
             cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<IReadOnlyList<AdministrativeActionSummaryDto>>(cancellationToken)
@@ -205,6 +218,10 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             $"pageSize={request.PageSize ?? 50}"
         };
         AddQueryValue(parameters, "workflowKey", request.WorkflowKey);
+        if (request.WorkflowDefinitionId is long workflowDefinitionId)
+        {
+            parameters.Add($"workflowDefinitionId={workflowDefinitionId}");
+        }
         AddQueryValue(parameters, "status", request.Status);
         AddQueryValue(parameters, "preparedBy", request.PreparedBy);
 

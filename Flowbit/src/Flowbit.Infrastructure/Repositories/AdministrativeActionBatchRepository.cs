@@ -20,7 +20,13 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         var entity = new AdministrativeActionBatchEntity
         {
             WorkflowKey = batch.WorkflowKey,
-            FlowMappingsJson = ToDocument(batch.FlowMappings),
+            WorkflowDefinitionId = batch.WorkflowDefinitionId,
+            SourceNodeId = batch.SourceNodeId,
+            ActionKind = batch.ActionKind,
+            FlowId = batch.FlowId,
+            BoundaryNodeId = batch.BoundaryNodeId,
+            MultiInstanceMode = batch.MultiInstanceMode,
+            ActionSnapshotJson = ToDocument(batch.Action),
             Reason = batch.Reason,
             CommonVariablesJson = ToDocument(batch.CommonVariables),
             SelectionJson = JsonMapping.ToJsonDocument(batch.Selection),
@@ -49,13 +55,22 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         var entities = items.Select(item => new AdministrativeActionBatchItemEntity
         {
             BatchId = batchId,
+            PositionKind = item.PositionKind,
             InstanceId = item.InstanceId,
             UserTaskId = item.UserTaskId,
+            MultiInstanceExecutionId = item.MultiInstanceExecutionId,
             TokenId = item.TokenId,
+            TokenActivationId = item.TokenActivationId,
             WorkflowDefinitionId = item.WorkflowDefinitionId,
+            SourceNodeId = item.SourceNodeId,
             FlowId = item.FlowId,
-            CapturedInstanceUpdatedAt = item.CapturedInstanceUpdatedAt,
-            CapturedUserTaskUpdatedAt = item.CapturedUserTaskUpdatedAt,
+            CapturedPositionUpdatedAt = item.CapturedPositionUpdatedAt,
+            TimerSubscriptionId = item.TimerSubscriptionId,
+            TimerJobId = item.TimerJobId,
+            CapturedTimerOccurrence = item.CapturedTimerOccurrence,
+            CapturedTimerStatus = item.CapturedTimerStatus,
+            CapturedTimerSubscriptionUpdatedAt = item.CapturedTimerSubscriptionUpdatedAt,
+            AffectedTaskCount = item.AffectedTaskCount,
             Status = AdministrativeActionBatchItemStatuses.Preparing,
             CreatedAt = item.CreatedAt,
             UpdatedAt = item.CreatedAt
@@ -108,45 +123,18 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
 
     public async Task<PagedResult<AdministrativeActionBatchRecord>> ListAsync(
         AdministrativeActionBatchSearch search,
-        AdministrativeActionBatchListAuthorization authorization,
         CancellationToken cancellationToken)
     {
-        var lowerActorRoles = authorization.LowerActorRoles
-            .Where(role => !string.IsNullOrWhiteSpace(role))
-            .Select(role => role.Trim().ToLowerInvariant())
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        IQueryable<AdministrativeActionBatchEntity> query = lowerActorRoles.Length == 0
-            ? dbContext.AdministrativeActionBatches
-                .AsNoTracking()
-                .Where(_ => false)
-            : dbContext.AdministrativeActionBatches
-                .FromSqlInterpolated($"""
-                    SELECT batch.*
-                    FROM flowbit.administrative_action_batches AS batch
-                    WHERE jsonb_typeof(batch."FlowMappingsJson") = 'array'
-                      AND jsonb_array_length(batch."FlowMappingsJson") > 0
-                      AND NOT EXISTS
-                      (
-                          SELECT 1
-                          FROM jsonb_array_elements(batch."FlowMappingsJson") AS mapping(value)
-                          WHERE NOT EXISTS
-                            (
-                                SELECT 1
-                                FROM jsonb_array_elements_text(
-                                    CASE
-                                        WHEN jsonb_typeof(mapping.value -> 'roles') = 'array'
-                                        THEN mapping.value -> 'roles'
-                                        ELSE '[]'::jsonb
-                                    END) AS flow_role(value)
-                                WHERE lower(btrim(flow_role.value)) = ANY ({lowerActorRoles})
-                            )
-                      )
-                    """)
-                .AsNoTracking();
+        IQueryable<AdministrativeActionBatchEntity> query =
+            dbContext.AdministrativeActionBatches.AsNoTracking();
         if (search.WorkflowKey is not null)
         {
             query = query.Where(batch => batch.WorkflowKey == search.WorkflowKey);
+        }
+        if (search.WorkflowDefinitionId is long workflowDefinitionId)
+        {
+            query = query.Where(batch =>
+                batch.WorkflowDefinitionId == workflowDefinitionId);
         }
         if (search.Status is not null)
         {
@@ -245,6 +233,21 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             .Select(group => new { Status = group.Key, Count = group.Count() })
             .ToDictionaryAsync(row => row.Status, row => row.Count, cancellationToken);
 
+    public async Task<int> SumAffectedTaskCountAsync(
+        long batchId,
+        IReadOnlyCollection<string>? statuses,
+        CancellationToken cancellationToken)
+    {
+        var query = dbContext.AdministrativeActionBatchItems
+            .AsNoTracking()
+            .Where(item => item.BatchId == batchId);
+        if (statuses is { Count: > 0 })
+        {
+            query = query.Where(item => statuses.Contains(item.Status));
+        }
+        return await query.SumAsync(item => item.AffectedTaskCount, cancellationToken);
+    }
+
     public Task<int> TransitionItemsAsync(
         long batchId,
         IReadOnlyCollection<string> fromStatuses,
@@ -290,6 +293,7 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             ? null
             : JsonMapping.ToJsonDocument(update.ConfirmedByRoles);
         entity.TotalItemCount = update.TotalItemCount;
+        entity.TotalAffectedTaskCount = update.TotalAffectedTaskCount;
         entity.EligibleItemCount = update.EligibleItemCount;
         entity.IneligibleItemCount = update.IneligibleItemCount;
         entity.QueuedItemCount = update.QueuedItemCount;
@@ -321,11 +325,11 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             ?? await dbContext.AdministrativeActionBatchItems
                 .SingleAsync(item => item.Id == update.Id, cancellationToken);
         entity.Status = update.Status;
+        entity.AffectedTaskCount = update.AffectedTaskCount;
         entity.IssuesJson = CloneDocument(update.Issues);
         entity.ResultJson = CloneDocument(update.Result);
         entity.ErrorCode = update.ErrorCode;
         entity.ErrorDescription = update.ErrorDescription;
-        entity.NewUserTaskId = update.NewUserTaskId;
         entity.UpdatedAt = update.UpdatedAt;
         entity.PreparedAt = update.PreparedAt;
         entity.StartedAt = update.StartedAt;
@@ -355,7 +359,13 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         new(
             entity.Id,
             entity.WorkflowKey,
-            ToFlowMappings(entity.FlowMappingsJson),
+            entity.WorkflowDefinitionId,
+            entity.SourceNodeId,
+            entity.ActionKind,
+            entity.FlowId,
+            entity.BoundaryNodeId,
+            entity.MultiInstanceMode,
+            ToAction(entity.ActionSnapshotJson),
             entity.Reason,
             JsonMapping.ToDictionary(entity.CommonVariablesJson)
                 ?? new Dictionary<string, JsonElement>(),
@@ -366,6 +376,7 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
             entity.ConfirmedBy,
             JsonMapping.ToStringList(entity.ConfirmedByRolesJson),
             entity.TotalItemCount,
+            entity.TotalAffectedTaskCount,
             entity.EligibleItemCount,
             entity.IneligibleItemCount,
             entity.QueuedItemCount,
@@ -392,19 +403,30 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         new(
             entity.Id,
             entity.BatchId,
+            entity.PositionKind,
+            entity.UserTaskId ?? entity.MultiInstanceExecutionId
+                ?? throw new InvalidOperationException(
+                    "A persisted administrative batch item has no position identity."),
             entity.InstanceId,
             entity.UserTaskId,
+            entity.MultiInstanceExecutionId,
             entity.TokenId,
+            entity.TokenActivationId,
             entity.WorkflowDefinitionId,
+            entity.SourceNodeId,
             entity.FlowId,
-            entity.CapturedInstanceUpdatedAt,
-            entity.CapturedUserTaskUpdatedAt,
+            entity.CapturedPositionUpdatedAt,
+            entity.TimerSubscriptionId,
+            entity.TimerJobId,
+            entity.CapturedTimerOccurrence,
+            entity.CapturedTimerStatus,
+            entity.CapturedTimerSubscriptionUpdatedAt,
+            entity.AffectedTaskCount,
             entity.Status,
             CloneElement(entity.IssuesJson),
             CloneElement(entity.ResultJson),
             entity.ErrorCode,
             entity.ErrorDescription,
-            entity.NewUserTaskId,
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.PreparedAt,
@@ -415,15 +437,15 @@ public sealed class AdministrativeActionBatchRepository(AppDbContext dbContext)
         IReadOnlyDictionary<string, JsonElement> values) =>
         JsonDocument.Parse(JsonSerializer.Serialize(values, JsonOptions));
 
-    private static JsonDocument ToDocument(
-        IReadOnlyList<AdministrativeActionFlowMappingRecord> mappings) =>
-        JsonDocument.Parse(JsonSerializer.Serialize(mappings, JsonOptions));
+    private static JsonDocument ToDocument(AdministrativeActionSnapshotRecord action) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(action, JsonOptions));
 
-    private static IReadOnlyList<AdministrativeActionFlowMappingRecord> ToFlowMappings(
+    private static AdministrativeActionSnapshotRecord ToAction(
         JsonDocument document) =>
-        JsonSerializer.Deserialize<List<AdministrativeActionFlowMappingRecord>>(
+        JsonSerializer.Deserialize<AdministrativeActionSnapshotRecord>(
             document.RootElement.GetRawText(),
-            JsonOptions) ?? [];
+            JsonOptions) ?? throw new InvalidOperationException(
+                "A persisted administrative batch has no action snapshot.");
 
     private static JsonDocument? CloneDocument(JsonElement? value) =>
         value is null ? null : JsonDocument.Parse(value.Value.GetRawText());

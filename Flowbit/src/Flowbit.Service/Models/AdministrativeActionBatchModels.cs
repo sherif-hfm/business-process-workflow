@@ -38,38 +38,27 @@ public static class AdministrativeActionBatchItemStatuses
 public static class AdministrativeActionConstraints
 {
     public const int MaxReasonLength = 1000;
-    public const int MaxBatchItems = 10_000;
+    public const int MaxAffectedTasks = 10_000;
+    public const int MaxBatchItems = MaxAffectedTasks;
     public const int MaxActorNameLength = 300;
     public const int MaxWorkflowKeyLength = 300;
     public const int MaxIdempotencyKeyLength = 300;
     public const int MaxErrorCodeLength = 100;
     public const int MaxErrorDescriptionLength = 1000;
 
-    public const string BatchRequiredRoleSetting =
-        "WorkflowBatchActions.RequiredRole";
-    public const string BatchMaxItemsSetting =
-        "WorkflowBatchActions.MaxItems";
-    public const string DefaultRequiredRole = "admin";
+    public const string BatchMaxAffectedTasksSetting =
+        "WorkflowBatchActions.MaxAffectedTasks";
 }
 
 public sealed record AdministrativeActionBatchJobPayload(long BatchId)
 {
-    /// <summary>
-    /// Snapshot of only the deployment-allowlisted claims needed to reproduce
-    /// sys.claim.* evaluation in the durable worker.
-    /// </summary>
     public IReadOnlyDictionary<string, string>? ActorClaims { get; init; }
 }
 
-/// <summary>
-/// Immutable authoring snapshot for the exact normal sequence flow selected in
-/// one workflow version. Batch execution uses the numeric definition/flow pair;
-/// the remaining fields preserve review and audit evidence even if authoring
-/// metadata changes in a later version.
-/// </summary>
-public sealed record AdministrativeActionFlowMappingRecord(
+public sealed record AdministrativeActionSnapshotRecord(
     long WorkflowDefinitionId,
     int WorkflowVersion,
+    string ActionKind,
     int FlowId,
     string? FlowExternalId,
     string FlowName,
@@ -77,14 +66,26 @@ public sealed record AdministrativeActionFlowMappingRecord(
     string SourceNodeName,
     int TargetNodeId,
     string TargetNodeName,
+    string TargetNodeType,
+    string? Condition,
     IReadOnlyList<string> Roles,
-    IReadOnlyList<VariableModel> Variables);
+    IReadOnlyList<VariableModel> Variables,
+    int? BoundaryNodeId,
+    string? BoundaryNodeName,
+    TimerDefinitionModel? Timer,
+    bool? AuthoredCancelActivity);
 
 public sealed record AdministrativeActionBatchRecord(
     long Id,
     string WorkflowKey,
-    IReadOnlyList<AdministrativeActionFlowMappingRecord> FlowMappings,
-    string Reason,
+    long WorkflowDefinitionId,
+    int SourceNodeId,
+    string ActionKind,
+    int FlowId,
+    int? BoundaryNodeId,
+    string? MultiInstanceMode,
+    AdministrativeActionSnapshotRecord Action,
+    string? Reason,
     IReadOnlyDictionary<string, JsonElement> CommonVariables,
     JsonElement Selection,
     string Status,
@@ -93,6 +94,7 @@ public sealed record AdministrativeActionBatchRecord(
     string? ConfirmedBy,
     IReadOnlyList<string>? ConfirmedByRoles,
     int TotalItemCount,
+    int TotalAffectedTaskCount,
     int EligibleItemCount,
     int IneligibleItemCount,
     int QueuedItemCount,
@@ -116,8 +118,14 @@ public sealed record AdministrativeActionBatchRecord(
 
 public sealed record NewAdministrativeActionBatchRecord(
     string WorkflowKey,
-    IReadOnlyList<AdministrativeActionFlowMappingRecord> FlowMappings,
-    string Reason,
+    long WorkflowDefinitionId,
+    int SourceNodeId,
+    string ActionKind,
+    int FlowId,
+    int? BoundaryNodeId,
+    string? MultiInstanceMode,
+    AdministrativeActionSnapshotRecord Action,
+    string? Reason,
     IReadOnlyDictionary<string, JsonElement> CommonVariables,
     JsonElement Selection,
     string PreparedBy,
@@ -128,19 +136,28 @@ public sealed record NewAdministrativeActionBatchRecord(
 public sealed record AdministrativeActionBatchItemRecord(
     long Id,
     long BatchId,
+    string PositionKind,
+    long PositionId,
     long InstanceId,
-    long UserTaskId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
     long TokenId,
+    Guid TokenActivationId,
     long WorkflowDefinitionId,
+    int SourceNodeId,
     int FlowId,
-    DateTimeOffset CapturedInstanceUpdatedAt,
-    DateTimeOffset CapturedUserTaskUpdatedAt,
+    DateTimeOffset CapturedPositionUpdatedAt,
+    long? TimerSubscriptionId,
+    long? TimerJobId,
+    long? CapturedTimerOccurrence,
+    string? CapturedTimerStatus,
+    DateTimeOffset? CapturedTimerSubscriptionUpdatedAt,
+    int AffectedTaskCount,
     string Status,
     JsonElement? Issues,
     JsonElement? Result,
     string? ErrorCode,
     string? ErrorDescription,
-    long? NewUserTaskId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? PreparedAt,
@@ -148,24 +165,32 @@ public sealed record AdministrativeActionBatchItemRecord(
     DateTimeOffset? CompletedAt);
 
 public sealed record NewAdministrativeActionBatchItemRecord(
+    string PositionKind,
+    long PositionId,
     long InstanceId,
-    long UserTaskId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
     long TokenId,
+    Guid TokenActivationId,
     long WorkflowDefinitionId,
+    int SourceNodeId,
     int FlowId,
-    DateTimeOffset CapturedInstanceUpdatedAt,
-    DateTimeOffset CapturedUserTaskUpdatedAt,
+    DateTimeOffset CapturedPositionUpdatedAt,
+    long? TimerSubscriptionId,
+    long? TimerJobId,
+    long? CapturedTimerOccurrence,
+    string? CapturedTimerStatus,
+    DateTimeOffset? CapturedTimerSubscriptionUpdatedAt,
+    int AffectedTaskCount,
     DateTimeOffset CreatedAt);
 
 public sealed record AdministrativeActionBatchSearch(
     string? WorkflowKey,
+    long? WorkflowDefinitionId,
     string? Status,
     string? PreparedBy,
     int Page,
     int PageSize);
-
-public sealed record AdministrativeActionBatchListAuthorization(
-    IReadOnlyList<string> LowerActorRoles);
 
 public sealed record AdministrativeActionBatchUpdateRecord(
     long Id,
@@ -173,6 +198,7 @@ public sealed record AdministrativeActionBatchUpdateRecord(
     string? ConfirmedBy,
     IReadOnlyList<string>? ConfirmedByRoles,
     int TotalItemCount,
+    int TotalAffectedTaskCount,
     int EligibleItemCount,
     int IneligibleItemCount,
     int QueuedItemCount,
@@ -195,11 +221,11 @@ public sealed record AdministrativeActionBatchUpdateRecord(
 public sealed record AdministrativeActionBatchItemUpdateRecord(
     long Id,
     string Status,
+    int AffectedTaskCount,
     JsonElement? Issues,
     JsonElement? Result,
     string? ErrorCode,
     string? ErrorDescription,
-    long? NewUserTaskId,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? PreparedAt,
     DateTimeOffset? StartedAt,

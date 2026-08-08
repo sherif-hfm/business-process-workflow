@@ -11,7 +11,6 @@ public sealed class AdministrativeActionBatchService(
     IAdministrativeActionCandidateRepository candidates,
     IAdministrativeActionBatchRepository batches,
     IWorkflowJobRepository jobs,
-    IWorkflowEngineService engine,
     IEngineSettingsRepository engineSettings,
     IUnitOfWork unitOfWork,
     WorkflowContextOptions contextOptions,
@@ -24,47 +23,68 @@ public sealed class AdministrativeActionBatchService(
         TimeSpan.FromMinutes(5)
     ];
 
-    private sealed record ResolvedFlowMapping(
+    private sealed record ResolvedAction(
         WorkflowDefinitionRecord Workflow,
-        AdministrativeActionSummaryDto Action,
-        SequenceFlowModel Flow);
+        FlowNodeModel Source,
+        SequenceFlowModel Flow,
+        FlowNodeModel? Boundary,
+        AdministrativeActionSummaryDto Summary);
 
     public async Task<IReadOnlyList<WorkflowSummaryDto>> ListWorkflowCatalogAsync(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        await AuthorizeGlobalAsync(actor, cancellationToken);
-        var latestByFamily = await definitions.ListLatestAsync(cancellationToken);
-        var authorized = new List<WorkflowSummaryDto>();
-        foreach (var workflowKey in latestByFamily
-                     .Select(item => item.WorkflowKey)
-                     .Distinct(StringComparer.Ordinal))
+        RequireActor(actor);
+        var latest = await definitions.ListLatestAsync(cancellationToken);
+        var result = new List<WorkflowSummaryDto>();
+        foreach (var key in latest.Select(item => item.WorkflowKey).Distinct(StringComparer.Ordinal))
         {
-            var versions = await definitions.ListVersionsByKeyAsync(
-                workflowKey,
-                cancellationToken);
-            authorized.AddRange(versions
-                .Where(version => ResolveActions(version, actor).Count > 0)
+            var versions = await definitions.ListVersionsByKeyAsync(key, cancellationToken);
+            result.AddRange(versions
+                .Where(version => version.Definition.FlowNodes
+                    .Where(node => BpmnFlowNodeTypes.IsUserTask(node.Type))
+                    .Any(node => ResolveActions(version, node.Id).Count > 0))
                 .Select(WorkflowDefinitionService.ToSummary));
         }
-        return authorized
-            .OrderBy(version => version.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(version => version.WorkflowKey, StringComparer.Ordinal)
-            .ThenByDescending(version => version.Version)
+        return result
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.WorkflowKey, StringComparer.Ordinal)
+            .ThenByDescending(item => item.Version)
+            .ToArray();
+    }
+
+    public async Task<IReadOnlyList<AdministrativeActionSourceNodeDto>> ListSourceNodesAsync(
+        long workflowDefinitionId,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        RequireActor(actor);
+        var workflow = await GetWorkflowAsync(workflowDefinitionId, cancellationToken);
+        return workflow.Definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsUserTask(node.Type))
+            .Where(node => ResolveActions(workflow, node.Id).Count > 0)
+            .OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(node => node.Id)
+            .Select(node => new AdministrativeActionSourceNodeDto(
+                workflow.Id,
+                workflow.Version,
+                node.Id,
+                node.Name,
+                node.ExternalId,
+                node.MultiInstance is not null))
             .ToArray();
     }
 
     public async Task<IReadOnlyList<AdministrativeActionSummaryDto>> ListActionsAsync(
-        long workflowId,
+        long workflowDefinitionId,
+        int sourceNodeId,
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        EnsurePositive(workflowId, "Workflow definition id");
-        await AuthorizeGlobalAsync(actor, cancellationToken);
-        var workflow = await definitions.GetAsync(workflowId, cancellationToken)
-            ?? throw new WorkflowDomainException(
-                $"Workflow definition #{workflowId} does not exist.");
-        return ResolveActions(workflow, actor);
+        RequireActor(actor);
+        var workflow = await GetWorkflowAsync(workflowDefinitionId, cancellationToken);
+        RequireSourceNode(workflow, sourceNodeId);
+        return ResolveActions(workflow, sourceNodeId);
     }
 
     public async Task<PagedResult<AdministrativeActionCandidateDto>> SearchCandidatesAsync(
@@ -73,32 +93,13 @@ public sealed class AdministrativeActionBatchService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var resolved = await ResolveAuthorizedMappingsAsync(
-            request.FlowMappings,
-            actor,
-            cancellationToken);
-        var query = BuildCandidateQuery(request, resolved);
+        RequireActor(actor);
+        var workflow = await GetWorkflowAsync(request.WorkflowDefinitionId, cancellationToken);
+        RequireSourceNode(workflow, request.SourceNodeId);
+        var query = BuildCandidateQuery(request);
         var page = await candidates.SearchAsync(query, cancellationToken);
-        var byPair = resolved.ToDictionary(
-            mapping => (mapping.Workflow.Id, mapping.Action.FlowId));
-        var result = new List<AdministrativeActionCandidateDto>(page.Items.Count);
-        foreach (var candidate in page.Items)
-        {
-            if (!byPair.TryGetValue(
-                    (candidate.WorkflowDefinitionId, candidate.FlowId),
-                    out var mapping))
-            {
-                continue;
-            }
-            var issues = await InspectCandidateAsync(
-                candidate,
-                actor,
-                variables: null,
-                cancellationToken);
-            result.Add(ToCandidateDto(candidate, mapping, issues));
-        }
         return new PagedResult<AdministrativeActionCandidateDto>(
-            result,
+            page.Items.Select(item => ToCandidateDto(item, workflow.Version)).ToArray(),
             page.Page,
             page.PageSize,
             page.TotalCount);
@@ -111,7 +112,7 @@ public sealed class AdministrativeActionBatchService(
     {
         ArgumentNullException.ThrowIfNull(request);
         var user = RequireActor(actor);
-        var reason = NormalizeReason(request.Reason);
+        var reason = NormalizeOptionalReason(request.Reason, "Reason");
         var idempotencyKey = NormalizeIdempotencyKey(request.IdempotencyKey);
         var selection = request.Selection
             ?? throw new WorkflowDomainException("A batch selection is required.");
@@ -119,85 +120,55 @@ public sealed class AdministrativeActionBatchService(
 
         if (idempotencyKey is not null)
         {
-            var existing = await batches.FindByIdempotencyKeyAsync(
-                user,
-                idempotencyKey,
-                cancellationToken);
+            var existing = await batches.FindByIdempotencyKeyAsync(user, idempotencyKey, cancellationToken);
             if (existing is not null)
             {
                 EnsureIdempotentReplayMatches(existing, request, reason, selection);
-                await AuthorizeBatchRecordAsync(existing, actor, cancellationToken);
                 return ToDetail(existing);
             }
         }
 
-        var resolved = await ResolveAuthorizedMappingsAsync(
-            request.FlowMappings,
-            actor,
-            cancellationToken);
-        ValidateCommonVariables(resolved[0].Action, request.Variables);
-        var maxItems = await ResolveMaxItemsAsync(cancellationToken);
-        var query = BuildSelectionQuery(selection, resolved);
-        var excluded = selection.ExcludedUserTaskIds?
-            .Where(id => id > 0)
-            .Distinct()
-            .ToArray() ?? [];
+        var resolved = await ResolveActionAsync(request, cancellationToken);
+        ValidateCommonVariables(resolved.Summary, request.Variables);
+        ValidateMultiInstanceMode(resolved, request.MultiInstanceMode);
+        var maxAffectedTasks = await ResolveMaxAffectedTasksAsync(cancellationToken);
+        var (query, excluded, expectedExplicit) = BuildSelectionQuery(selection, request);
         var frozen = await candidates.MaterializeAsync(
             query,
             excluded,
-            maxItems,
+            maxAffectedTasks,
             cancellationToken);
-        if (string.Equals(
-                selection.Mode?.Trim(),
-                AdministrativeActionBatchSelectionModes.Explicit,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            var excludedSet = excluded.ToHashSet();
-            var expectedCount = selection.UserTaskIds!
-                .Where(id => !excludedSet.Contains(id))
-                .Distinct()
-                .Count();
-            if (expectedCount > maxItems)
-            {
-                throw new WorkflowDomainException(
-                    $"The frozen selection exceeds the configured maximum of {maxItems:N0} tasks.");
-            }
-            if (frozen.Count != expectedCount)
-            {
-                throw new WorkflowDomainException(
-                    "One or more explicitly selected tasks do not match an exact selected workflow-version flow mapping.");
-            }
-        }
-        if (frozen.Count > maxItems)
+
+        if (expectedExplicit is not null && frozen.Count != expectedExplicit.Value)
         {
             throw new WorkflowDomainException(
-                $"The frozen selection exceeds the configured maximum of {maxItems:N0} tasks.");
+                "One or more explicitly selected execution positions no longer match the exact workflow version and source node.");
         }
         if (frozen.Count == 0)
         {
+            throw new WorkflowDomainException("The frozen selection contains no active execution positions.");
+        }
+        var affectedTaskCount = frozen.Sum(item => Math.Max(0, item.AffectedTaskCount));
+        if (affectedTaskCount > maxAffectedTasks)
+        {
             throw new WorkflowDomainException(
-                "The frozen selection contains no active candidate tasks.");
+                $"The frozen selection affects {affectedTaskCount:N0} tasks and exceeds the configured maximum of {maxAffectedTasks:N0}.");
         }
 
-        var now = timeProvider.GetUtcNow();
-        var mappingSnapshots = resolved
-            .Select(ToFlowMappingRecord)
-            .ToArray();
+        var snapshot = ToActionSnapshot(resolved);
         var selectionSnapshot = JsonSerializer.SerializeToElement(selection);
+        var commonVariables = CloneVariables(request.Variables);
+        var now = timeProvider.GetUtcNow();
         AdministrativeActionBatchRecord batch;
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
         {
             if (idempotencyKey is not null)
             {
                 await batches.LockIdempotencyKeyAsync(user, idempotencyKey, cancellationToken);
-                var winner = await batches.FindByIdempotencyKeyAsync(
-                    user,
-                    idempotencyKey,
-                    cancellationToken);
+                var winner = await batches.FindByIdempotencyKeyAsync(user, idempotencyKey, cancellationToken);
                 if (winner is not null)
                 {
                     EnsureIdempotentReplayMatches(winner, request, reason, selection);
-                    await AuthorizeBatchRecordAsync(winner, actor, cancellationToken);
                     await transaction.CommitAsync(cancellationToken);
                     return ToDetail(winner);
                 }
@@ -205,31 +176,30 @@ public sealed class AdministrativeActionBatchService(
 
             batch = await batches.AddAsync(
                 new NewAdministrativeActionBatchRecord(
-                    resolved[0].Workflow.WorkflowKey,
-                    mappingSnapshots,
+                    resolved.Workflow.WorkflowKey,
+                    resolved.Workflow.Id,
+                    resolved.Source.Id,
+                    resolved.Summary.ActionKind,
+                    resolved.Flow.Id,
+                    resolved.Boundary?.Id,
+                    NormalizeOptional(request.MultiInstanceMode),
+                    snapshot,
                     reason,
-                    CloneVariables(request.Variables),
+                    commonVariables,
                     selectionSnapshot,
                     user,
                     SnapshotRoles(actor.Roles),
                     idempotencyKey,
                     now),
                 cancellationToken);
+
             await batches.AddItemsAsync(
                 batch.Id,
-                frozen.Select(candidate => new NewAdministrativeActionBatchItemRecord(
-                    candidate.InstanceId,
-                    candidate.UserTaskId,
-                    candidate.TokenId,
-                    candidate.WorkflowDefinitionId,
-                    candidate.FlowId,
-                    candidate.InstanceUpdatedAt,
-                    candidate.UserTaskUpdatedAt,
-                    now)).ToArray(),
+                frozen.Select(candidate => ToNewItem(candidate, resolved, now)).ToArray(),
                 cancellationToken);
             var job = await EnqueueBatchJobAsync(
                 batch.Id,
-                resolved[0],
+                resolved,
                 WorkflowJobKinds.AdministrativeBatchPrepare,
                 "prepare",
                 SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
@@ -239,6 +209,7 @@ public sealed class AdministrativeActionBatchService(
                 ToUpdate(batch) with
                 {
                     TotalItemCount = frozen.Count,
+                    TotalAffectedTaskCount = affectedTaskCount,
                     PreparationJobId = job.Id,
                     UpdatedAt = now
                 },
@@ -254,33 +225,28 @@ public sealed class AdministrativeActionBatchService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        await AuthorizeGlobalAsync(actor, cancellationToken);
+        RequireActor(actor);
+        var status = NormalizeOptional(request.Status);
+        if (status is not null && !AdministrativeActionBatchStatuses.IsKnown(status))
+        {
+            throw new WorkflowDomainException($"Unknown administrative batch status '{status}'.");
+        }
         var page = Math.Max(1, request.Page ?? 1);
         var pageSize = Math.Clamp(request.PageSize ?? 50, 1, 200);
-        if (!string.IsNullOrWhiteSpace(request.Status)
-            && !AdministrativeActionBatchStatuses.IsKnown(request.Status.Trim()))
-        {
-            throw new WorkflowDomainException($"Unknown batch status '{request.Status}'.");
-        }
-        var records = await batches.ListAsync(
+        var result = await batches.ListAsync(
             new AdministrativeActionBatchSearch(
                 NormalizeOptional(request.WorkflowKey),
-                NormalizeOptional(request.Status),
+                PositiveOrNull(request.WorkflowDefinitionId, "Workflow definition id"),
+                status,
                 NormalizeOptional(request.PreparedBy),
                 page,
                 pageSize),
-            new AdministrativeActionBatchListAuthorization(
-                actor.Roles
-                    .Where(role => !string.IsNullOrWhiteSpace(role))
-                    .Select(role => role.Trim().ToLowerInvariant())
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray()),
             cancellationToken);
         return new PagedResult<AdministrativeActionBatchSummaryDto>(
-            records.Items.Select(ToSummary).ToArray(),
-            records.Page,
-            records.PageSize,
-            records.TotalCount);
+            result.Items.Select(ToSummary).ToArray(),
+            result.Page,
+            result.PageSize,
+            result.TotalCount);
     }
 
     public async Task<AdministrativeActionBatchDetailDto?> GetAsync(
@@ -288,14 +254,10 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        RequireActor(actor);
         EnsurePositive(batchId, "Batch id");
         var batch = await batches.GetAsync(batchId, false, cancellationToken);
-        if (batch is null)
-        {
-            return null;
-        }
-        await AuthorizeBatchRecordAsync(batch, actor, cancellationToken);
-        return ToDetail(batch);
+        return batch is null ? null : ToDetail(batch);
     }
 
     public async Task<PagedResult<AdministrativeActionBatchItemDto>?> ListItemsAsync(
@@ -306,18 +268,17 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        RequireActor(actor);
         EnsurePositive(batchId, "Batch id");
-        var batch = await batches.GetAsync(batchId, false, cancellationToken);
-        if (batch is null)
-        {
-            return null;
-        }
-        await AuthorizeBatchRecordAsync(batch, actor, cancellationToken);
         var normalizedStatus = NormalizeOptional(status);
         if (normalizedStatus is not null
             && !AdministrativeActionBatchItemStatuses.IsKnown(normalizedStatus))
         {
-            throw new WorkflowDomainException($"Unknown batch item status '{status}'.");
+            throw new WorkflowDomainException($"Unknown administrative batch item status '{normalizedStatus}'.");
+        }
+        if (await batches.GetAsync(batchId, false, cancellationToken) is null)
+        {
+            return null;
         }
         var result = await batches.ListItemsAsync(
             batchId,
@@ -343,13 +304,12 @@ public sealed class AdministrativeActionBatchService(
         AdministrativeActionBatchRecord batch;
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
         {
-            batch = await batches.GetAsync(batchId, true, cancellationToken)
-                ?? null!;
+            batch = await batches.GetAsync(batchId, true, cancellationToken) ?? null!;
             if (batch is null)
             {
                 return null;
             }
-            await AuthorizeBatchRecordAsync(batch, actor, cancellationToken);
+            RequireActor(actor);
             if (batch.Status is AdministrativeActionBatchStatuses.Queued
                 or AdministrativeActionBatchStatuses.Running
                 or AdministrativeActionBatchStatuses.Completed
@@ -363,10 +323,11 @@ public sealed class AdministrativeActionBatchService(
                     $"Only a ready batch can be confirmed; batch #{batch.Id} is '{batch.Status}'.");
             }
             if (request.ExpectedEligibleItemCount != batch.EligibleItemCount
+                || request.ExpectedAffectedTaskCount != batch.TotalAffectedTaskCount
                 || request.ExpectedBatchUpdatedAt != batch.UpdatedAt)
             {
                 throw new WorkflowConflictException(
-                    "The prepared batch changed; refresh its eligibility summary before confirming.");
+                    "The prepared batch changed; refresh its eligibility and affected-task summary before confirming.");
             }
 
             var now = timeProvider.GetUtcNow();
@@ -379,13 +340,16 @@ public sealed class AdministrativeActionBatchService(
             WorkflowJobRecord? job = null;
             if (queued > 0)
             {
-                var first = await ResolveStoredMappingAsync(
-                    batch.FlowMappings[0],
-                    actor,
-                    cancellationToken);
+                var workflow = await GetWorkflowAsync(batch.WorkflowDefinitionId, cancellationToken);
+                var resolved = ResolveAction(
+                    workflow,
+                    batch.SourceNodeId,
+                    batch.ActionKind,
+                    batch.FlowId,
+                    batch.BoundaryNodeId);
                 job = await EnqueueBatchJobAsync(
                     batch.Id,
-                    first,
+                    resolved,
                     WorkflowJobKinds.AdministrativeBatchExecute,
                     "execute",
                     SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
@@ -421,17 +385,15 @@ public sealed class AdministrativeActionBatchService(
     {
         ArgumentNullException.ThrowIfNull(request);
         EnsurePositive(batchId, "Batch id");
-        var cancellationReason = NormalizeOptionalReason(request.Reason);
+        var cancellationReason = NormalizeOptionalReason(request.Reason, "Cancellation reason");
         AdministrativeActionBatchRecord batch;
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
         {
-            batch = await batches.GetAsync(batchId, true, cancellationToken)
-                ?? null!;
+            batch = await batches.GetAsync(batchId, true, cancellationToken) ?? null!;
             if (batch is null)
             {
                 return null;
             }
-            await AuthorizeBatchRecordAsync(batch, actor, cancellationToken);
             if (batch.Status == AdministrativeActionBatchStatuses.Cancelled)
             {
                 return ToDetail(batch);
@@ -440,8 +402,7 @@ public sealed class AdministrativeActionBatchService(
                 or AdministrativeActionBatchStatuses.CompletedWithIssues
                 or AdministrativeActionBatchStatuses.Failed)
             {
-                throw new WorkflowConflictException(
-                    $"Terminal batch #{batch.Id} cannot be cancelled.");
+                throw new WorkflowConflictException($"Terminal batch #{batch.Id} cannot be cancelled.");
             }
             var now = timeProvider.GetUtcNow();
             await batches.CancelUnstartedItemsAsync(batch.Id, now, cancellationToken);
@@ -464,279 +425,294 @@ public sealed class AdministrativeActionBatchService(
         return ToDetail(batch);
     }
 
-    private async Task<IReadOnlyList<ResolvedFlowMapping>> ResolveAuthorizedMappingsAsync(
-        IReadOnlyList<AdministrativeActionFlowMappingDto>? mappings,
-        ActorContext actor,
+    private async Task<ResolvedAction> ResolveActionAsync(
+        CreateAdministrativeActionBatchRequest request,
         CancellationToken cancellationToken)
     {
-        await AuthorizeGlobalAsync(actor, cancellationToken);
-        if (mappings is null || mappings.Count == 0)
-        {
-            throw new WorkflowDomainException(
-                "At least one exact workflow-definition flow mapping is required.");
-        }
-        if (mappings.Any(mapping => mapping.WorkflowDefinitionId <= 0 || mapping.FlowId <= 0))
-        {
-            throw new WorkflowDomainException(
-                "Every flow mapping requires a positive workflowDefinitionId and flowId.");
-        }
-        var duplicateVersion = mappings
-            .GroupBy(mapping => mapping.WorkflowDefinitionId)
-            .FirstOrDefault(group => group.Count() > 1);
-        if (duplicateVersion is not null)
-        {
-            throw new WorkflowDomainException(
-                $"Workflow definition #{duplicateVersion.Key} has more than one selected flow mapping.");
-        }
-
-        var resolved = new List<ResolvedFlowMapping>(mappings.Count);
-        string? workflowKey = null;
-        foreach (var mapping in mappings.OrderBy(item => item.WorkflowDefinitionId))
-        {
-            var workflow = await definitions.GetAsync(
-                    mapping.WorkflowDefinitionId,
-                    cancellationToken)
-                ?? throw new WorkflowDomainException(
-                    $"Workflow definition #{mapping.WorkflowDefinitionId} does not exist.");
-            if (workflowKey is null)
-            {
-                workflowKey = workflow.WorkflowKey;
-            }
-            else if (!string.Equals(workflowKey, workflow.WorkflowKey, StringComparison.Ordinal))
-            {
-                throw new WorkflowDomainException(
-                    "Every selected workflow definition must belong to the same workflow family.");
-            }
-            var action = ResolveAction(workflow, mapping.FlowId);
-            var flow = workflow.Definition.SequenceFlows.Single(item => item.Id == action.FlowId);
-            if (!HasRole(actor.Roles, flow.Roles))
-            {
-                throw new WorkflowForbiddenException(
-                    $"The operator does not have a role permitted for flow #{flow.Id} in workflow definition #{workflow.Id}.");
-            }
-            resolved.Add(new ResolvedFlowMapping(workflow, action, flow));
-        }
-        EnsureCompatibleVariableContracts(resolved);
-        return resolved;
+        var workflow = await GetWorkflowAsync(request.WorkflowDefinitionId, cancellationToken);
+        return ResolveAction(
+            workflow,
+            request.SourceNodeId,
+            request.ActionKind,
+            request.FlowId,
+            request.BoundaryNodeId);
     }
 
-    private async Task<ResolvedFlowMapping> ResolveStoredMappingAsync(
-        AdministrativeActionFlowMappingRecord stored,
-        ActorContext actor,
-        CancellationToken cancellationToken)
+    private static ResolvedAction ResolveAction(
+        WorkflowDefinitionRecord workflow,
+        int sourceNodeId,
+        string? actionKind,
+        int flowId,
+        int? boundaryNodeId)
     {
-        var resolved = await ResolveAuthorizedMappingsAsync(
-            [new AdministrativeActionFlowMappingDto(stored.WorkflowDefinitionId, stored.FlowId)],
-            actor,
-            cancellationToken);
-        return resolved[0];
-    }
-
-    private async Task AuthorizeBatchRecordAsync(
-        AdministrativeActionBatchRecord batch,
-        ActorContext actor,
-        CancellationToken cancellationToken)
-    {
-        await AuthorizeGlobalAsync(actor, cancellationToken);
-        if (batch.FlowMappings.Count == 0
-            || batch.FlowMappings.Any(mapping => !HasRole(actor.Roles, mapping.Roles)))
+        var source = RequireSourceNode(workflow, sourceNodeId);
+        var normalizedKind = actionKind?.Trim();
+        if (!AdministrativeActionKinds.IsKnown(normalizedKind))
         {
-            throw new WorkflowForbiddenException(
-                "The operator must match a flow role for every version mapping in this batch.");
+            throw new WorkflowDomainException($"Unknown administrative action kind '{actionKind}'.");
         }
-    }
-
-    private async Task AuthorizeGlobalAsync(
-        ActorContext actor,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(actor);
-        var setting = await engineSettings.GetByKeyAsync(
-            AdministrativeActionConstraints.BatchRequiredRoleSetting,
-            cancellationToken);
-        if (!HasRole(actor.Roles, WorkflowJobOperationsService.ParseRoles(setting?.Value)))
-        {
-            throw new WorkflowForbiddenException(
-                $"A {AdministrativeActionConstraints.BatchRequiredRoleSetting} role is required.");
-        }
+        var action = ResolveActions(workflow, sourceNodeId).SingleOrDefault(candidate =>
+            string.Equals(candidate.ActionKind, normalizedKind, StringComparison.Ordinal)
+            && candidate.FlowId == flowId
+            && candidate.BoundaryNodeId == boundaryNodeId)
+            ?? throw new WorkflowDomainException(
+                "The selected authored action does not exist on the exact workflow version and source node.");
+        var flow = workflow.Definition.SequenceFlows.Single(item => item.Id == flowId);
+        var boundary = boundaryNodeId is int id
+            ? workflow.Definition.FlowNodes.Single(item => item.Id == id)
+            : null;
+        return new ResolvedAction(workflow, source, flow, boundary, action);
     }
 
     private static IReadOnlyList<AdministrativeActionSummaryDto> ResolveActions(
         WorkflowDefinitionRecord workflow,
-        ActorContext actor)
+        int sourceNodeId)
     {
-        var nodes = workflow.Definition.FlowNodes.ToDictionary(node => node.Id);
-        return workflow.Definition.SequenceFlows
-            .Where(flow => flow.IsSelectable
-                           && !flow.IsDefault
-                           && flow.Roles.Any(role => !string.IsNullOrWhiteSpace(role))
-                           && nodes.TryGetValue(flow.SourceRef, out var source)
-                           && BpmnFlowNodeTypes.IsUserTask(source.Type)
-                           && source.MultiInstance is null
-                           && !source.AsyncAfter
-                           && nodes.TryGetValue(flow.TargetRef, out var target)
-                           && BpmnFlowNodeTypes.IsUserTask(target.Type)
-                           && target.MultiInstance is null
-                           && !target.AsyncBefore
-                           && HasRole(actor.Roles, flow.Roles))
-            .Select(flow => new AdministrativeActionSummaryDto(
-                workflow.Id,
-                workflow.Version,
-                flow.Id,
-                string.IsNullOrWhiteSpace(flow.ExternalId) ? null : flow.ExternalId.Trim(),
-                flow.Name,
-                flow.SourceRef,
-                nodes[flow.SourceRef].Name,
-                flow.TargetRef,
-                nodes[flow.TargetRef].Name,
-                flow.Variables))
-            .OrderBy(action => action.SourceNodeName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(action => action.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(action => action.FlowId)
-            .ToArray();
+        var source = workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == sourceNodeId);
+        if (source is null || !BpmnFlowNodeTypes.IsUserTask(source.Type))
+        {
+            return [];
+        }
+        var result = new List<AdministrativeActionSummaryDto>();
+        foreach (var flow in workflow.Definition.SequenceFlows
+                     .Where(flow => flow.SourceRef == source.Id && flow.IsSelectable && !flow.IsDefault)
+                     .OrderBy(flow => flow.Id))
+        {
+            var target = workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == flow.TargetRef);
+            if (target is null)
+            {
+                continue;
+            }
+            result.Add(ToActionSummary(
+                workflow,
+                source,
+                flow,
+                target,
+                AdministrativeActionKinds.DirectFlow,
+                null));
+        }
+        foreach (var boundary in workflow.Definition.FlowNodes
+                     .Where(node => BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                                    && node.AttachedToRef == source.Id)
+                     .OrderBy(node => node.Id))
+        {
+            var flow = workflow.Definition.SequenceFlows.SingleOrDefault(item => item.SourceRef == boundary.Id);
+            var target = flow is null
+                ? null
+                : workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == flow.TargetRef);
+            if (flow is null || target is null)
+            {
+                continue;
+            }
+            result.Add(ToActionSummary(
+                workflow,
+                source,
+                flow,
+                target,
+                AdministrativeActionKinds.TimerBoundary,
+                boundary));
+        }
+        return result;
     }
 
-    private static AdministrativeActionSummaryDto ResolveAction(
+    private static AdministrativeActionSummaryDto ToActionSummary(
         WorkflowDefinitionRecord workflow,
-        int flowId) =>
-        ResolveActions(
-                workflow,
-                new ActorContext(
-                    null,
-                    workflow.Definition.SequenceFlows.SelectMany(flow => flow.Roles).ToArray(),
-                    new Dictionary<string, string>()))
-            .SingleOrDefault(action => action.FlowId == flowId)
-        ?? throw new WorkflowDomainException(
-            $"Flow #{flowId} is not eligible for administrative batch execution in workflow definition #{workflow.Id}.");
+        FlowNodeModel source,
+        SequenceFlowModel flow,
+        FlowNodeModel target,
+        string actionKind,
+        FlowNodeModel? boundary) =>
+        new(
+            workflow.Id,
+            workflow.Version,
+            actionKind,
+            flow.Id,
+            flow.ExternalId,
+            string.IsNullOrWhiteSpace(flow.Name)
+                ? boundary is null
+                    ? $"Flow #{flow.Id}"
+                    : string.IsNullOrWhiteSpace(boundary.Name)
+                        ? $"Timer boundary #{boundary.Id}"
+                        : boundary.Name
+                : flow.Name,
+            source.Id,
+            source.Name,
+            target.Id,
+            target.Name,
+            target.Type,
+            flow.Variables)
+        {
+            Condition = flow.Condition,
+            Roles = SnapshotRoles(flow.Roles),
+            BoundaryNodeId = boundary?.Id,
+            BoundaryNodeName = boundary?.Name,
+            Timer = boundary?.Timer,
+            AuthoredCancelActivity = boundary?.CancelActivity
+        };
 
     private static AdministrativeActionCandidateQuery BuildCandidateQuery(
-        AdministrativeActionCandidateSearchRequest request,
-        IReadOnlyList<ResolvedFlowMapping> mappings) =>
-        new()
+        AdministrativeActionCandidateSearchRequest request)
+    {
+        EnsurePositive(request.WorkflowDefinitionId, "Workflow definition id");
+        EnsurePositive(request.SourceNodeId, "Source node id");
+        if (request.PositionKind is not null
+            && !AdministrativeActionPositionKinds.IsKnown(request.PositionKind))
         {
-            Targets = mappings.Select(mapping => new AdministrativeActionFlowTarget(
-                mapping.Workflow.Id,
-                mapping.Action.FlowId,
-                mapping.Action.SourceNodeId)).ToArray(),
-            UserTaskId = PositiveOrNull(request.UserTaskId, "UserTaskId"),
-            InstanceId = PositiveOrNull(request.InstanceId, "InstanceId"),
+            throw new WorkflowDomainException($"Unknown position kind '{request.PositionKind}'.");
+        }
+        return new AdministrativeActionCandidateQuery
+        {
+            WorkflowDefinitionId = request.WorkflowDefinitionId,
+            SourceNodeId = request.SourceNodeId,
+            PositionKind = request.PositionKind,
+            PositionId = PositiveOrNull(request.PositionId, "Position id"),
+            InstanceId = PositiveOrNull(request.InstanceId, "Instance id"),
             BusinessKey = NormalizeOptional(request.BusinessKey),
+            ExcludedPositions = NormalizePositionReferences(request.ExcludedPositions),
             VariableFilter = VariableFilterParser.Parse(request.VariableFilter),
             IncludeVariables = request.IncludeVariables ?? false,
             Page = Math.Max(1, request.Page ?? 1),
             PageSize = Math.Clamp(request.PageSize ?? 50, 1, 200)
         };
+    }
 
-    private static AdministrativeActionCandidateQuery BuildSelectionQuery(
+    private static (AdministrativeActionCandidateQuery Query,
+        IReadOnlyList<AdministrativeActionPositionKey> Excluded,
+        int? ExpectedExplicit) BuildSelectionQuery(
         AdministrativeActionBatchSelectionDto selection,
-        IReadOnlyList<ResolvedFlowMapping> mappings)
+        CreateAdministrativeActionBatchRequest request)
     {
-        var targets = mappings.Select(mapping => new AdministrativeActionFlowTarget(
-            mapping.Workflow.Id,
-            mapping.Action.FlowId,
-            mapping.Action.SourceNodeId)).ToArray();
+        var excluded = NormalizePositionReferences(selection.ExcludedPositions);
         var mode = selection.Mode?.Trim();
-        if (string.Equals(
-                mode,
-                AdministrativeActionBatchSelectionModes.Explicit,
-                StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(mode, AdministrativeActionBatchSelectionModes.Explicit, StringComparison.OrdinalIgnoreCase))
         {
-            var ids = selection.UserTaskIds?.Distinct().ToArray() ?? [];
-            if (ids.Length == 0 || ids.Any(id => id <= 0))
+            var positions = NormalizePositionReferences(selection.Positions);
+            if (positions.Count == 0)
             {
-                throw new WorkflowDomainException(
-                    "Explicit selection requires at least one positive userTaskId.");
+                throw new WorkflowDomainException("Explicit selection requires at least one execution position.");
             }
-            return new AdministrativeActionCandidateQuery
+            var excludedSet = excluded.ToHashSet();
+            var expected = positions.Count(position => !excludedSet.Contains(position));
+            return (new AdministrativeActionCandidateQuery
             {
-                Targets = targets,
-                UserTaskIds = ids,
+                WorkflowDefinitionId = request.WorkflowDefinitionId,
+                SourceNodeId = request.SourceNodeId,
+                Positions = positions,
                 Page = 1,
-                PageSize = 200
-            };
+                PageSize = Math.Min(positions.Count, AdministrativeActionConstraints.MaxAffectedTasks + 1)
+            }, excluded, expected);
         }
-        if (!string.Equals(
-                mode,
-                AdministrativeActionBatchSelectionModes.AllMatching,
-                StringComparison.OrdinalIgnoreCase)
+        if (!string.Equals(mode, AdministrativeActionBatchSelectionModes.AllMatching, StringComparison.OrdinalIgnoreCase)
             || selection.AllMatching is null)
         {
-            throw new WorkflowDomainException(
-                "Selection mode must be 'explicit' or 'allMatching'.");
+            throw new WorkflowDomainException("Selection mode must be 'explicit' or 'allMatching'.");
         }
-        var expectedMappings = mappings
-            .Select(mapping => new AdministrativeActionFlowMappingDto(
-                mapping.Workflow.Id,
-                mapping.Action.FlowId))
-            .ToArray();
-        if (!MappingSetsEqual(selection.AllMatching.FlowMappings, expectedMappings))
+        if (selection.AllMatching.WorkflowDefinitionId != request.WorkflowDefinitionId
+            || selection.AllMatching.SourceNodeId != request.SourceNodeId)
         {
             throw new WorkflowDomainException(
-                "The allMatching filter must use the batch's exact version/flow mappings.");
+                "The all-matching filter must use the batch's exact workflow definition and source node.");
         }
-        return BuildCandidateQuery(selection.AllMatching, mappings) with
+        return (BuildCandidateQuery(selection.AllMatching) with
         {
-            IncludeVariables = false,
             Page = 1,
-            PageSize = 200
-        };
+            PageSize = AdministrativeActionConstraints.MaxAffectedTasks + 1,
+            IncludeVariables = false
+        }, excluded, null);
     }
 
-    private async Task<IReadOnlyList<AdministrativeActionIssueDto>> InspectCandidateAsync(
-        AdministrativeActionCandidateRecord candidate,
-        ActorContext actor,
-        Dictionary<string, JsonElement>? variables,
-        CancellationToken cancellationToken)
+    private static IReadOnlyList<AdministrativeActionPositionKey> NormalizePositionReferences(
+        IReadOnlyList<AdministrativeActionPositionReferenceDto>? values)
     {
-        try
+        if (values is null)
         {
-            var eligibility = await engine.PreviewAdministrativeBatchFlowAsync(
-                candidate.UserTaskId,
-                new AdministrativeActionRequest(
-                    candidate.WorkflowDefinitionId,
-                    candidate.FlowId,
-                    candidate.InstanceUpdatedAt,
-                    "Administrative batch eligibility preview",
-                    variables)
-                {
-                    ExpectedTokenId = candidate.TokenId,
-                    ExpectedUserTaskUpdatedAt = candidate.UserTaskUpdatedAt
-                },
-                actor,
-                cancellationToken);
-            return variables is null
-                ? eligibility.Issues
-                    .Where(issue => !string.Equals(
-                        issue.Code,
-                        "invalidVariables",
-                        StringComparison.Ordinal))
-                    .ToArray()
-                : eligibility.Issues;
+            return [];
         }
-        catch (WorkflowForbiddenException)
+        var result = new HashSet<AdministrativeActionPositionKey>();
+        foreach (var value in values)
         {
-            throw;
+            if (value is null
+                || !AdministrativeActionPositionKinds.IsKnown(value.PositionKind)
+                || value.PositionId <= 0)
+            {
+                throw new WorkflowDomainException("Every position reference requires a known kind and positive id.");
+            }
+            result.Add(new AdministrativeActionPositionKey(value.PositionKind, value.PositionId));
         }
-        catch (Exception exception) when (exception is
-            WorkflowDomainException or WorkflowConflictException)
+        return result.OrderBy(item => item.PositionKind, StringComparer.Ordinal)
+            .ThenBy(item => item.PositionId)
+            .ToArray();
+    }
+
+    private static NewAdministrativeActionBatchItemRecord ToNewItem(
+        AdministrativeActionCandidateRecord candidate,
+        ResolvedAction resolved,
+        DateTimeOffset now)
+    {
+        var timer = resolved.Boundary is null
+            ? null
+            : candidate.TimerBoundaries.SingleOrDefault(item =>
+                item.BoundaryNodeId == resolved.Boundary.Id);
+        return new NewAdministrativeActionBatchItemRecord(
+            candidate.PositionKind,
+            candidate.PositionId,
+            candidate.InstanceId,
+            candidate.UserTaskId,
+            candidate.MultiInstanceExecutionId,
+            candidate.TokenId,
+            candidate.TokenActivationId,
+            candidate.WorkflowDefinitionId,
+            candidate.NodeId,
+            resolved.Flow.Id,
+            candidate.PositionUpdatedAt,
+            timer?.TimerSubscriptionId,
+            timer?.TimerJobId,
+            timer?.Occurrence,
+            timer?.Status,
+            timer?.UpdatedAt,
+            candidate.AffectedTaskCount,
+            now);
+    }
+
+    private static void ValidateMultiInstanceMode(ResolvedAction resolved, string? mode)
+    {
+        var normalized = NormalizeOptional(mode);
+        if (resolved.Boundary is not null)
         {
-            return [Issue("administrative_action_unavailable", exception.Message)];
+            if (normalized is not null)
+            {
+                throw new WorkflowDomainException("Timer-boundary actions do not accept a multi-instance mode.");
+            }
+            return;
+        }
+        if (resolved.Source.MultiInstance is null)
+        {
+            if (normalized is not null)
+            {
+                throw new WorkflowDomainException("Ordinary user-task actions do not accept a multi-instance mode.");
+            }
+            return;
+        }
+        if (!AdministrativeActionMultiInstanceModes.IsKnown(normalized))
+        {
+            throw new WorkflowDomainException(
+                "A direct multi-instance action requires mode 'forceParent' or 'completeAllChildren'.");
         }
     }
 
-    private async Task<int> ResolveMaxItemsAsync(CancellationToken cancellationToken)
+    private async Task<int> ResolveMaxAffectedTasksAsync(CancellationToken cancellationToken)
     {
         var setting = await engineSettings.GetByKeyAsync(
-            AdministrativeActionConstraints.BatchMaxItemsSetting,
+            AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
             cancellationToken);
-        return int.TryParse(setting?.Value, out var configured) && configured > 0
-            ? Math.Min(configured, AdministrativeActionConstraints.MaxBatchItems)
-            : AdministrativeActionConstraints.MaxBatchItems;
+        return int.TryParse(setting?.Value, out var value) && value > 0
+            ? Math.Min(value, AdministrativeActionConstraints.MaxAffectedTasks)
+            : AdministrativeActionConstraints.MaxAffectedTasks;
     }
 
     private async Task<WorkflowJobRecord> EnqueueBatchJobAsync(
         long batchId,
-        ResolvedFlowMapping mapping,
+        ResolvedAction action,
         string kind,
         string phase,
         IReadOnlyDictionary<string, string> actorClaims,
@@ -745,12 +721,12 @@ public sealed class AdministrativeActionBatchService(
         await jobs.EnqueueAsync(
             new WorkflowJobCreateRecord
             {
-                WorkflowDefinitionId = mapping.Workflow.Id,
-                WorkflowKey = mapping.Workflow.WorkflowKey,
+                WorkflowDefinitionId = action.Workflow.Id,
+                WorkflowKey = action.Workflow.WorkflowKey,
                 ActivationId = Guid.NewGuid(),
-                NodeId = mapping.Action.SourceNodeId,
-                NodeName = mapping.Action.SourceNodeName,
-                NodeType = BpmnFlowNodeTypes.UserTask,
+                NodeId = action.Source.Id,
+                NodeName = action.Source.Name,
+                NodeType = action.Source.Type,
                 Kind = kind,
                 QueueClass = WorkflowJobClasses.Activity,
                 Phase = phase,
@@ -766,103 +742,101 @@ public sealed class AdministrativeActionBatchService(
             },
             cancellationToken);
 
-    private static IReadOnlyDictionary<string, string> SnapshotAllowedClaims(
-        IReadOnlyDictionary<string, string> actorClaims,
-        IEnumerable<string> allowedClaims)
+    private async Task<WorkflowDefinitionRecord> GetWorkflowAsync(
+        long workflowDefinitionId,
+        CancellationToken cancellationToken)
     {
-        var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var configured in allowedClaims)
-        {
-            var allowed = configured?.Trim();
-            if (string.IsNullOrEmpty(allowed)
-                || !TryResolveClaim(actorClaims, allowed, out var value))
-            {
-                continue;
-            }
-            snapshot.TryAdd(allowed, value);
-        }
-        return snapshot;
+        EnsurePositive(workflowDefinitionId, "Workflow definition id");
+        return await definitions.GetAsync(workflowDefinitionId, cancellationToken)
+            ?? throw new WorkflowDomainException(
+                $"Workflow definition #{workflowDefinitionId} does not exist.");
     }
 
-    private static bool TryResolveClaim(
-        IReadOnlyDictionary<string, string> claims,
-        string name,
-        out string value)
+    private static FlowNodeModel RequireSourceNode(WorkflowDefinitionRecord workflow, int sourceNodeId)
     {
-        if (claims.TryGetValue(name, out var direct))
+        EnsurePositive(sourceNodeId, "Source node id");
+        var source = workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == sourceNodeId);
+        if (source is null || !BpmnFlowNodeTypes.IsUserTask(source.Type))
         {
-            value = direct;
-            return true;
+            throw new WorkflowDomainException(
+                $"Node #{sourceNodeId} is not a user task in workflow definition #{workflow.Id}.");
         }
-        foreach (var pair in claims)
-        {
-            var slash = pair.Key.LastIndexOf('/');
-            if (slash >= 0
-                && slash < pair.Key.Length - 1
-                && string.Equals(
-                    pair.Key[(slash + 1)..],
-                    name,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                value = pair.Value;
-                return true;
-            }
-        }
-        value = string.Empty;
-        return false;
+        return source;
     }
+
+    private static AdministrativeActionSnapshotRecord ToActionSnapshot(ResolvedAction action) =>
+        new(
+            action.Workflow.Id,
+            action.Workflow.Version,
+            action.Summary.ActionKind,
+            action.Flow.Id,
+            action.Flow.ExternalId,
+            action.Summary.Name,
+            action.Source.Id,
+            action.Source.Name,
+            action.Summary.TargetNodeId,
+            action.Summary.TargetNodeName,
+            action.Summary.TargetNodeType,
+            action.Flow.Condition,
+            SnapshotRoles(action.Flow.Roles),
+            action.Flow.Variables,
+            action.Boundary?.Id,
+            action.Boundary?.Name,
+            action.Boundary?.Timer,
+            action.Boundary?.CancelActivity);
 
     private static AdministrativeActionCandidateDto ToCandidateDto(
         AdministrativeActionCandidateRecord record,
-        ResolvedFlowMapping mapping,
-        IReadOnlyList<AdministrativeActionIssueDto> issues) =>
+        int workflowVersion) =>
         new(
+            record.PositionKind,
+            record.PositionId,
             record.UserTaskId,
+            record.MultiInstanceExecutionId,
             record.InstanceId,
             record.TokenId,
+            record.TokenActivationId,
             record.WorkflowDefinitionId,
-            mapping.Workflow.Version,
-            record.FlowId,
-            mapping.Action.Name,
+            workflowVersion,
             record.WorkflowKey,
             record.BusinessKey,
             record.NodeId,
             record.NodeName,
             record.NodeExternalId,
-            record.InstanceUpdatedAt,
-            record.UserTaskUpdatedAt,
-            issues.Count == 0,
-            issues)
+            record.PositionUpdatedAt,
+            record.AffectedTaskCount,
+            record.TimerBoundaries.Select(timer => new AdministrativeTimerBoundaryStateDto(
+                timer.BoundaryNodeId,
+                timer.TimerSubscriptionId,
+                timer.TimerJobId,
+                timer.Status,
+                timer.NextDueAt,
+                timer.Occurrence,
+                timer.UpdatedAt,
+                timer.Status is TimerSubscriptionStatuses.Active or TimerSubscriptionStatuses.Paused)).ToArray())
         {
             Variables = record.Variables
         };
-
-    private static AdministrativeActionFlowMappingRecord ToFlowMappingRecord(
-        ResolvedFlowMapping mapping) =>
-        new(
-            mapping.Workflow.Id,
-            mapping.Workflow.Version,
-            mapping.Action.FlowId,
-            mapping.Action.FlowExternalId,
-            mapping.Action.Name,
-            mapping.Action.SourceNodeId,
-            mapping.Action.SourceNodeName,
-            mapping.Action.TargetNodeId,
-            mapping.Action.TargetNodeName,
-            SnapshotRoles(mapping.Flow.Roles),
-            mapping.Action.Variables);
 
     internal static AdministrativeActionBatchSummaryDto ToSummary(
         AdministrativeActionBatchRecord record) =>
         new(
             record.Id,
             record.WorkflowKey,
-            record.FlowMappings.Count,
+            record.WorkflowDefinitionId,
+            record.Action.WorkflowVersion,
+            record.SourceNodeId,
+            record.Action.SourceNodeName,
+            record.ActionKind,
+            record.FlowId,
+            record.BoundaryNodeId,
+            record.MultiInstanceMode,
             record.Reason,
             record.Status,
             record.PreparedBy,
             record.ConfirmedBy,
             record.TotalItemCount,
+            record.TotalAffectedTaskCount,
             record.EligibleItemCount,
             record.IneligibleItemCount,
             record.QueuedItemCount,
@@ -878,19 +852,27 @@ public sealed class AdministrativeActionBatchService(
         AdministrativeActionBatchRecord record) =>
         new(
             ToSummary(record),
-            record.FlowMappings.Select(mapping =>
-                new AdministrativeActionFlowMappingSnapshotDto(
-                    mapping.WorkflowDefinitionId,
-                    mapping.WorkflowVersion,
-                    mapping.FlowId,
-                    mapping.FlowExternalId,
-                    mapping.FlowName,
-                    mapping.SourceNodeId,
-                    mapping.SourceNodeName,
-                    mapping.TargetNodeId,
-                    mapping.TargetNodeName,
-                    mapping.Roles,
-                    mapping.Variables)).ToArray(),
+            new AdministrativeActionSummaryDto(
+                record.Action.WorkflowDefinitionId,
+                record.Action.WorkflowVersion,
+                record.Action.ActionKind,
+                record.Action.FlowId,
+                record.Action.FlowExternalId,
+                record.Action.FlowName,
+                record.Action.SourceNodeId,
+                record.Action.SourceNodeName,
+                record.Action.TargetNodeId,
+                record.Action.TargetNodeName,
+                record.Action.TargetNodeType,
+                record.Action.Variables)
+            {
+                Condition = record.Action.Condition,
+                Roles = record.Action.Roles,
+                BoundaryNodeId = record.Action.BoundaryNodeId,
+                BoundaryNodeName = record.Action.BoundaryNodeName,
+                Timer = record.Action.Timer,
+                AuthoredCancelActivity = record.Action.AuthoredCancelActivity
+            },
             record.CommonVariables,
             record.Selection,
             record.PreparedByRoles,
@@ -910,19 +892,28 @@ public sealed class AdministrativeActionBatchService(
         new(
             record.Id,
             record.BatchId,
+            record.PositionKind,
+            record.PositionId,
             record.InstanceId,
             record.UserTaskId,
+            record.MultiInstanceExecutionId,
             record.TokenId,
+            record.TokenActivationId,
             record.WorkflowDefinitionId,
+            record.SourceNodeId,
             record.FlowId,
-            record.CapturedInstanceUpdatedAt,
-            record.CapturedUserTaskUpdatedAt,
+            record.CapturedPositionUpdatedAt,
+            record.TimerSubscriptionId,
+            record.TimerJobId,
+            record.CapturedTimerOccurrence,
+            record.CapturedTimerStatus,
+            record.CapturedTimerSubscriptionUpdatedAt,
+            record.AffectedTaskCount,
             record.Status,
             record.Issues,
             record.Result,
             record.ErrorCode,
             record.ErrorDescription,
-            record.NewUserTaskId,
             record.CreatedAt,
             record.UpdatedAt,
             record.PreparedAt,
@@ -937,6 +928,7 @@ public sealed class AdministrativeActionBatchService(
             record.ConfirmedBy,
             record.ConfirmedByRoles,
             record.TotalItemCount,
+            record.TotalAffectedTaskCount,
             record.EligibleItemCount,
             record.IneligibleItemCount,
             record.QueuedItemCount,
@@ -976,61 +968,43 @@ public sealed class AdministrativeActionBatchService(
         new(
             record.Id,
             record.Status,
+            record.AffectedTaskCount,
             record.Issues,
             record.Result,
             record.ErrorCode,
             record.ErrorDescription,
-            record.NewUserTaskId,
             record.UpdatedAt,
             record.PreparedAt,
             record.StartedAt,
             record.CompletedAt);
 
-    internal static AdministrativeActionIssueDto Issue(
-        string code,
-        string message) =>
+    internal static AdministrativeActionIssueDto Issue(string code, string message) =>
         new(code, Limit(message));
 
     internal static JsonElement SerializeIssues(
         IReadOnlyCollection<AdministrativeActionIssueDto> issues) =>
         JsonSerializer.SerializeToElement(issues);
 
-    private static void EnsureCompatibleVariableContracts(
-        IReadOnlyList<ResolvedFlowMapping> mappings)
-    {
-        var expected = VariableContract(mappings[0].Action.Variables);
-        foreach (var mapping in mappings.Skip(1))
-        {
-            if (!expected.SequenceEqual(
-                    VariableContract(mapping.Action.Variables),
-                    StringComparer.OrdinalIgnoreCase))
-            {
-                throw new WorkflowDomainException(
-                    "Every mapped flow must declare the same variable names, types, array flags, and required flags.");
-            }
-        }
-    }
-
-    private static string[] VariableContract(IReadOnlyList<VariableModel> variables) =>
-        variables
-            .Select(variable => string.Join(
-                "|",
-                variable.Name.Trim(),
-                variable.DataType.Trim(),
-                variable.IsArray,
-                variable.Required))
-            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
     private static void ValidateCommonVariables(
         AdministrativeActionSummaryDto action,
         IReadOnlyDictionary<string, JsonElement>? values)
     {
-        var suppliedNames = ValidateVariableNameUniqueness(values);
+        var supplied = ValidateVariableNameUniqueness(values);
+        if (action.ActionKind == AdministrativeActionKinds.TimerBoundary
+            && supplied is { Count: > 0 })
+        {
+            throw new WorkflowDomainException("Timer-boundary actions do not accept submitted variables.");
+        }
+        var declared = action.Variables.Select(variable => variable.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = supplied?.Where(name => !declared.Contains(name)).ToArray() ?? [];
+        if (unknown.Length > 0)
+        {
+            throw new WorkflowDomainException(
+                $"Unknown administrative-action variable(s): {string.Join(", ", unknown)}.");
+        }
         var missing = action.Variables
-            .Where(variable => variable.Required
-                               && (suppliedNames is null
-                                   || !suppliedNames.Contains(variable.Name)))
+            .Where(variable => variable.Required && (supplied is null || !supplied.Contains(variable.Name)))
             .Select(variable => variable.Name)
             .ToArray();
         if (missing.Length > 0)
@@ -1047,83 +1021,78 @@ public sealed class AdministrativeActionBatchService(
         {
             return null;
         }
-        var suppliedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var name in values.Keys)
         {
-            if (!suppliedNames.Add(name))
+            if (string.IsNullOrWhiteSpace(name) || !result.Add(name.Trim()))
             {
                 throw new WorkflowDomainException(
-                    $"Administrative-action variables contain duplicate name '{name}' (names are case-insensitive).");
+                    $"Administrative-action variables contain a blank or duplicate name '{name}'.");
             }
         }
-        return suppliedNames;
+        return result;
     }
 
     private static void EnsureIdempotentReplayMatches(
         AdministrativeActionBatchRecord existing,
         CreateAdministrativeActionBatchRequest request,
-        string normalizedReason,
+        string? reason,
         AdministrativeActionBatchSelectionDto selection)
     {
         var variables = request.Variables ?? new Dictionary<string, JsonElement>();
         var variablesMatch = existing.CommonVariables.Count == variables.Count
-                             && variables.All(pair => existing.CommonVariables
-                                 .Any(stored => string.Equals(
-                                                    stored.Key,
-                                                    pair.Key,
-                                                    StringComparison.OrdinalIgnoreCase)
-                                                && JsonElement.DeepEquals(
-                                                    stored.Value,
-                                                    pair.Value)));
-        var selectionElement = JsonSerializer.SerializeToElement(selection);
-        var storedMappings = existing.FlowMappings.Select(mapping =>
-            new AdministrativeActionFlowMappingDto(
-                mapping.WorkflowDefinitionId,
-                mapping.FlowId)).ToArray();
-        if (!MappingSetsEqual(storedMappings, request.FlowMappings)
-            || !string.Equals(existing.Reason, normalizedReason, StringComparison.Ordinal)
+            && variables.All(pair => existing.CommonVariables.Any(stored =>
+                string.Equals(stored.Key, pair.Key, StringComparison.OrdinalIgnoreCase)
+                && JsonElement.DeepEquals(stored.Value, pair.Value)));
+        if (existing.WorkflowDefinitionId != request.WorkflowDefinitionId
+            || existing.SourceNodeId != request.SourceNodeId
+            || existing.FlowId != request.FlowId
+            || existing.BoundaryNodeId != request.BoundaryNodeId
+            || !string.Equals(existing.ActionKind, request.ActionKind, StringComparison.Ordinal)
+            || !string.Equals(existing.MultiInstanceMode, NormalizeOptional(request.MultiInstanceMode), StringComparison.Ordinal)
+            || !string.Equals(existing.Reason, reason, StringComparison.Ordinal)
             || !variablesMatch
-            || !JsonElement.DeepEquals(existing.Selection, selectionElement))
+            || !JsonElement.DeepEquals(existing.Selection, JsonSerializer.SerializeToElement(selection)))
         {
             throw new WorkflowConflictException(
-                "The IdempotencyKey is already associated with a different administrative batch request.");
+                "IdempotencyKey was already used for a different administrative batch request.");
         }
-    }
-
-    private static bool MappingSetsEqual(
-        IReadOnlyList<AdministrativeActionFlowMappingDto>? left,
-        IReadOnlyList<AdministrativeActionFlowMappingDto>? right)
-    {
-        if (left is null || right is null || left.Count != right.Count)
-        {
-            return false;
-        }
-        return left
-            .OrderBy(mapping => mapping.WorkflowDefinitionId)
-            .ThenBy(mapping => mapping.FlowId)
-            .SequenceEqual(right
-                .OrderBy(mapping => mapping.WorkflowDefinitionId)
-                .ThenBy(mapping => mapping.FlowId));
     }
 
     private static Dictionary<string, JsonElement> CloneVariables(
         IReadOnlyDictionary<string, JsonElement>? values) =>
-        values?.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.Clone(),
-            StringComparer.OrdinalIgnoreCase)
-        ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        values is null
+            ? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            : values.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase);
 
-    private static bool HasRole(
-        IReadOnlyCollection<string> actorRoles,
-        IReadOnlyCollection<string> allowedRoles)
+    private static IReadOnlyDictionary<string, string> SnapshotAllowedClaims(
+        IReadOnlyDictionary<string, string> actorClaims,
+        IEnumerable<string> allowedClaims)
     {
-        var normalized = actorRoles
-            .Where(role => !string.IsNullOrWhiteSpace(role))
-            .Select(role => role.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return allowedRoles.Any(role => !string.IsNullOrWhiteSpace(role)
-                                        && normalized.Contains(role.Trim()));
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var configured in allowedClaims)
+        {
+            var allowed = configured?.Trim();
+            if (string.IsNullOrEmpty(allowed))
+            {
+                continue;
+            }
+            if (actorClaims.TryGetValue(allowed, out var direct))
+            {
+                result.TryAdd(allowed, direct);
+                continue;
+            }
+            var pair = actorClaims.FirstOrDefault(candidate =>
+                candidate.Key.EndsWith('/' + allowed, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(pair.Key))
+            {
+                result.TryAdd(allowed, pair.Value);
+            }
+        }
+        return result;
     }
 
     private static IReadOnlyList<string> SnapshotRoles(IReadOnlyCollection<string> roles) =>
@@ -1138,37 +1107,23 @@ public sealed class AdministrativeActionBatchService(
         var user = actor.User?.Trim();
         if (string.IsNullOrWhiteSpace(user))
         {
-            throw new WorkflowUnauthorizedException(
-                "An authenticated administrative operator is required.");
+            throw new WorkflowUnauthorizedException("An authenticated administrative operator is required.");
         }
         if (user.Length > AdministrativeActionConstraints.MaxActorNameLength)
         {
-            throw new WorkflowDomainException(
-                "The administrative operator name is too long.");
+            throw new WorkflowDomainException("The administrative operator name is too long.");
         }
         return user;
     }
 
-    private static string NormalizeReason(string? reason)
+    private static string? NormalizeOptionalReason(string? value, string label)
     {
-        var normalized = reason?.Trim() ?? string.Empty;
-        if (normalized.Length == 0
-            || normalized.EnumerateRunes().Count() > AdministrativeActionConstraints.MaxReasonLength)
-        {
-            throw new WorkflowDomainException(
-                $"Reason must contain 1 to {AdministrativeActionConstraints.MaxReasonLength} characters.");
-        }
-        return normalized;
-    }
-
-    private static string? NormalizeOptionalReason(string? reason)
-    {
-        var normalized = NormalizeOptional(reason);
+        var normalized = NormalizeOptional(value);
         if (normalized is not null
             && normalized.EnumerateRunes().Count() > AdministrativeActionConstraints.MaxReasonLength)
         {
             throw new WorkflowDomainException(
-                $"Cancellation reason cannot exceed {AdministrativeActionConstraints.MaxReasonLength} characters.");
+                $"{label} cannot exceed {AdministrativeActionConstraints.MaxReasonLength} characters.");
         }
         return normalized;
     }
@@ -1212,8 +1167,7 @@ public sealed class AdministrativeActionBatchService(
         var normalized = string.IsNullOrWhiteSpace(value)
             ? "Administrative batch processing failed."
             : value.Trim();
-        return normalized.EnumerateRunes().Count()
-               <= AdministrativeActionConstraints.MaxErrorDescriptionLength
+        return normalized.EnumerateRunes().Count() <= AdministrativeActionConstraints.MaxErrorDescriptionLength
             ? normalized
             : string.Concat(normalized.EnumerateRunes()
                 .Take(AdministrativeActionConstraints.MaxErrorDescriptionLength)

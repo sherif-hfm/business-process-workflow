@@ -9,9 +9,23 @@ public sealed class AdministrativeActionBatchEntity
 
     public string WorkflowKey { get; set; } = string.Empty;
 
-    public JsonDocument FlowMappingsJson { get; set; } = JsonDocument.Parse("[]");
+    public long WorkflowDefinitionId { get; set; }
 
-    public string Reason { get; set; } = string.Empty;
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
+
+    public int SourceNodeId { get; set; }
+
+    public string ActionKind { get; set; } = string.Empty;
+
+    public int FlowId { get; set; }
+
+    public int? BoundaryNodeId { get; set; }
+
+    public string? MultiInstanceMode { get; set; }
+
+    public JsonDocument ActionSnapshotJson { get; set; } = JsonDocument.Parse("{}");
+
+    public string? Reason { get; set; }
 
     public JsonDocument CommonVariablesJson { get; set; } = JsonDocument.Parse("{}");
 
@@ -42,6 +56,8 @@ public sealed class AdministrativeActionBatchEntity
     public int FailedItemCount { get; set; }
 
     public int CancelledItemCount { get; set; }
+
+    public int TotalAffectedTaskCount { get; set; }
 
     public JsonDocument? IssuesJson { get; set; }
 

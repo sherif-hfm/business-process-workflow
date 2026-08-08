@@ -30,52 +30,71 @@ public sealed class WorkflowApiClientAdministrativeActionTests
     }
 
     [Fact]
-    public async Task AdministrativeWorkflowCatalog_UsesBatchCatalogRoute()
+    public async Task AdministrativeWorkflowCatalogUsesAuthenticatedCatalogRoute()
     {
         var version = new WorkflowSummaryDto(
-            8,
-            "Purchase request",
-            "purchase-request",
-            3,
-            true,
-            true,
+            8, "Purchase request", "purchase-request", 3, true, true,
             DateTimeOffset.Parse("2026-08-04T09:00:00Z"));
-        using var handler = new RecordingHandler(
-            Response(HttpStatusCode.OK, new[] { version }));
+        using var handler = new RecordingHandler(Response(HttpStatusCode.OK, new[] { version }));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
         var client = new WorkflowApiClient(http);
 
         var result = await client.GetAdministrativeActionWorkflowCatalogAsync();
 
         Assert.Equal(8, Assert.Single(result).Id);
-        Assert.Equal(
-            "/api/administrative-actions/workflows",
-            Assert.Single(handler.Requests).Path);
+        Assert.Equal("/api/administrative-actions/workflows", Assert.Single(handler.Requests).Path);
     }
 
     [Fact]
-    public async Task FlowDiscoveryAndCandidateSearch_UseExactVersionFlowMappings()
+    public async Task NodeActionDiscoveryAndCandidateSearchUseExactDefinitionNodeAndPosition()
     {
         var now = DateTimeOffset.Parse("2026-08-04T10:00:00Z");
+        var activationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var node = new AdministrativeActionSourceNodeDto(8, 3, 7, "Approval", "TASK_APPROVAL", true);
         var action = new AdministrativeActionSummaryDto(
-            8, 3, 14, "SEND_BACK_REVIEW", "Send back", 7, "Approval", 3, "Review", []);
+            8, 3, AdministrativeActionKinds.TimerBoundary, 27, null, "Escalate now",
+            7, "Approval", 9, "Escalation", BpmnFlowNodeTypes.UserTask, [])
+        {
+            BoundaryNodeId = 8,
+            BoundaryNodeName = "Approval timeout",
+            Timer = new TimerDefinitionModel { TimeDuration = "PT4H" },
+            AuthoredCancelActivity = false,
+            Condition = "amount > 1000",
+            Roles = ["supervisor"]
+        };
         var candidate = new AdministrativeActionCandidateDto(
-            91, 41, 12, 8, 3, 14, "Send back", "purchase-request", "PR-41",
-            7, "Approval", "TASK_APPROVAL", now, now, true, []);
+            AdministrativeActionPositionKinds.MultiInstanceExecution,
+            73,
+            null,
+            73,
+            41,
+            12,
+            activationId,
+            8,
+            3,
+            "purchase-request",
+            "PR-41",
+            7,
+            "Approval",
+            "TASK_APPROVAL",
+            now,
+            6,
+            [new AdministrativeTimerBoundaryStateDto(8, 501, 601, "paused", now.AddHours(2), 1, now, true)]);
         using var handler = new RecordingHandler(
+            Response(HttpStatusCode.OK, new[] { node }),
             Response(HttpStatusCode.OK, new[] { action }),
             Response(HttpStatusCode.OK, new PagedResult<AdministrativeActionCandidateDto>([candidate], 2, 25, 1)));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
         var client = new WorkflowApiClient(http);
 
-        var actions = await client.GetWorkflowAdministrativeActionsAsync(8);
+        var nodes = await client.GetWorkflowAdministrativeActionNodesAsync(8);
+        var actions = await client.GetWorkflowAdministrativeActionsAsync(8, 7);
         var result = await client.SearchAdministrativeActionCandidatesAsync(new AdministrativeActionCandidateSearchRequest
         {
-            FlowMappings =
-            [
-                new AdministrativeActionFlowMappingDto(8, 14),
-                new AdministrativeActionFlowMappingDto(5, 31)
-            ],
+            WorkflowDefinitionId = 8,
+            SourceNodeId = 7,
+            PositionKind = AdministrativeActionPositionKinds.MultiInstanceExecution,
+            PositionId = 73,
             InstanceId = 41,
             BusinessKey = "PR-41",
             IncludeVariables = true,
@@ -83,64 +102,57 @@ public sealed class WorkflowApiClientAdministrativeActionTests
             PageSize = 25
         });
 
-        var listedAction = Assert.Single(actions);
-        Assert.Equal(8, listedAction.WorkflowDefinitionId);
-        Assert.Equal(action.FlowId, listedAction.FlowId);
-        var listedCandidate = Assert.Single(result.Items);
-        Assert.Equal(candidate.UserTaskId, listedCandidate.UserTaskId);
-        Assert.Equal(8, listedCandidate.WorkflowDefinitionId);
-        Assert.Equal(14, listedCandidate.FlowId);
+        Assert.True(Assert.Single(nodes).IsMultiInstance);
+        Assert.Equal(8, Assert.Single(actions).BoundaryNodeId);
+        Assert.Equal(73, Assert.Single(result.Items).PositionId);
         Assert.Collection(
             handler.Requests,
-            request => Assert.Equal("/api/workflows/8/administrative-actions", request.Path),
+            request => Assert.Equal("/api/workflows/8/administrative-actions/nodes", request.Path),
+            request => Assert.Equal("/api/workflows/8/nodes/7/administrative-actions", request.Path),
             request =>
             {
                 Assert.Equal(HttpMethod.Post, request.Method);
                 Assert.Equal("/api/administrative-actions/candidates/search", request.Path);
                 using var body = JsonDocument.Parse(request.Body!);
-                Assert.False(body.RootElement.TryGetProperty("targetWorkflowId", out _));
-                Assert.False(body.RootElement.TryGetProperty("flowExternalId", out _));
-                var mappings = body.RootElement.GetProperty("flowMappings");
-                Assert.Equal(2, mappings.GetArrayLength());
-                Assert.Equal(8, mappings[0].GetProperty("workflowDefinitionId").GetInt64());
-                Assert.Equal(14, mappings[0].GetProperty("flowId").GetInt32());
-                Assert.Equal(5, mappings[1].GetProperty("workflowDefinitionId").GetInt64());
-                Assert.Equal(31, mappings[1].GetProperty("flowId").GetInt32());
-                Assert.Equal(41, body.RootElement.GetProperty("instanceId").GetInt64());
-                Assert.True(body.RootElement.GetProperty("includeVariables").GetBoolean());
+                Assert.Equal(8, body.RootElement.GetProperty("workflowDefinitionId").GetInt64());
+                Assert.Equal(7, body.RootElement.GetProperty("sourceNodeId").GetInt32());
+                Assert.Equal("multiInstanceExecution", body.RootElement.GetProperty("positionKind").GetString());
+                Assert.Equal(73, body.RootElement.GetProperty("positionId").GetInt64());
+                Assert.False(body.RootElement.TryGetProperty("flowMappings", out _));
             });
     }
 
     [Fact]
-    public async Task CreateBatch_SerializesMappingsFrozenSelectionAndAuditInput()
+    public async Task CreateBatchSerializesActionCompositePositionsModeAndOptionalAuditInput()
     {
         var detail = BatchDetail(37, "preparing");
         using var handler = new RecordingHandler(Response(HttpStatusCode.Accepted, detail));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
         var client = new WorkflowApiClient(http);
         var variable = JsonDocument.Parse("125").RootElement.Clone();
-        AdministrativeActionFlowMappingDto[] mappings =
-        [
-            new(8, 14),
-            new(5, 31)
-        ];
         var selectionSearch = new AdministrativeActionCandidateSearchRequest
         {
-            FlowMappings = mappings,
+            WorkflowDefinitionId = 8,
+            SourceNodeId = 7,
             BusinessKey = "PR",
             Page = null,
             PageSize = null
         };
 
         var result = await client.CreateAdministrativeActionBatchAsync(new CreateAdministrativeActionBatchRequest(
-            mappings,
-            "Policy correction",
+            8,
+            7,
+            AdministrativeActionKinds.DirectFlow,
+            14,
+            null,
+            AdministrativeActionMultiInstanceModes.CompleteAllChildren,
+            null,
             new Dictionary<string, JsonElement> { ["amount"] = variable },
             new AdministrativeActionBatchSelectionDto(
                 AdministrativeActionBatchSelectionModes.AllMatching,
                 null,
                 selectionSearch,
-                [91, 92]),
+                [new AdministrativeActionPositionReferenceDto(AdministrativeActionPositionKinds.UserTask, 91)]),
             "ui-retry-key"));
 
         Assert.Equal(37, result.Summary.Id);
@@ -149,30 +161,30 @@ public sealed class WorkflowApiClientAdministrativeActionTests
         Assert.Equal("/api/administrative-action-batches", request.Path);
         using var body = JsonDocument.Parse(request.Body!);
         var root = body.RootElement;
-        Assert.False(root.TryGetProperty("targetWorkflowId", out _));
-        Assert.False(root.TryGetProperty("flowExternalId", out _));
-        Assert.Equal(2, root.GetProperty("flowMappings").GetArrayLength());
-        Assert.Equal(14, root.GetProperty("flowMappings")[0].GetProperty("flowId").GetInt32());
-        Assert.Equal("Policy correction", root.GetProperty("reason").GetString());
+        Assert.Equal(8, root.GetProperty("workflowDefinitionId").GetInt64());
+        Assert.Equal(7, root.GetProperty("sourceNodeId").GetInt32());
+        Assert.Equal("directFlow", root.GetProperty("actionKind").GetString());
+        Assert.Equal(14, root.GetProperty("flowId").GetInt32());
+        Assert.Equal("completeAllChildren", root.GetProperty("multiInstanceMode").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("reason").ValueKind);
         Assert.Equal(125, root.GetProperty("variables").GetProperty("amount").GetInt32());
         Assert.Equal("allMatching", root.GetProperty("selection").GetProperty("mode").GetString());
-        Assert.Equal(2, root.GetProperty("selection").GetProperty("excludedUserTaskIds").GetArrayLength());
-        Assert.Equal(
-            5,
-            root.GetProperty("selection").GetProperty("allMatching")
-                .GetProperty("flowMappings")[1].GetProperty("workflowDefinitionId").GetInt64());
+        var excluded = Assert.Single(root.GetProperty("selection").GetProperty("excludedPositions").EnumerateArray());
+        Assert.Equal("userTask", excluded.GetProperty("positionKind").GetString());
+        Assert.Equal(91, excluded.GetProperty("positionId").GetInt64());
         Assert.Equal("ui-retry-key", root.GetProperty("idempotencyKey").GetString());
     }
 
     [Fact]
-    public async Task MonitorConfirmAndCancel_UseOptimisticBatchTimestampAndPagedRoutes()
+    public async Task MonitorConfirmCancelAndListUseAffectedCountTimestampAndPagedRoutes()
     {
-        var ready = BatchDetail(37, "ready", eligible: 4);
-        var queued = BatchDetail(37, "queued", eligible: 4);
-        var cancelled = BatchDetail(37, "cancelled", eligible: 4);
+        var ready = BatchDetail(37, "ready", eligible: 4, affected: 19);
+        var queued = BatchDetail(37, "queued", eligible: 4, affected: 19);
+        var cancelled = BatchDetail(37, "cancelled", eligible: 4, affected: 19);
         using var handler = new RecordingHandler(
             Response(HttpStatusCode.OK, ready),
             Response(HttpStatusCode.OK, new PagedResult<AdministrativeActionBatchItemDto>([], 3, 50, 111)),
+            Response(HttpStatusCode.OK, new PagedResult<AdministrativeActionBatchSummaryDto>([], 1, 25, 0)),
             Response(HttpStatusCode.OK, queued),
             Response(HttpStatusCode.OK, cancelled));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
@@ -180,8 +192,14 @@ public sealed class WorkflowApiClientAdministrativeActionTests
 
         var loaded = await client.GetAdministrativeActionBatchAsync(37);
         var items = await client.GetAdministrativeActionBatchItemsAsync(37, "ineligible", 3, 50);
+        await client.GetAdministrativeActionBatchesAsync(new AdministrativeActionBatchSearchRequest
+        {
+            WorkflowDefinitionId = 8,
+            Page = 1,
+            PageSize = 25
+        });
         await client.ConfirmAdministrativeActionBatchAsync(37,
-            new ConfirmAdministrativeActionBatchRequest(4, ready.Summary.UpdatedAt));
+            new ConfirmAdministrativeActionBatchRequest(4, 19, ready.Summary.UpdatedAt));
         await client.CancelAdministrativeActionBatchAsync(37,
             new CancelAdministrativeActionBatchRequest("Stop remaining work"));
 
@@ -191,11 +209,13 @@ public sealed class WorkflowApiClientAdministrativeActionTests
             handler.Requests,
             request => Assert.Equal("/api/administrative-action-batches/37", request.Path),
             request => Assert.Equal("/api/administrative-action-batches/37/items?page=3&pageSize=50&status=ineligible", request.Path),
+            request => Assert.Equal("/api/administrative-action-batches?page=1&pageSize=25&workflowDefinitionId=8", request.Path),
             request =>
             {
                 Assert.Equal("/api/administrative-action-batches/37/confirm", request.Path);
                 using var body = JsonDocument.Parse(request.Body!);
                 Assert.Equal(4, body.RootElement.GetProperty("expectedEligibleItemCount").GetInt32());
+                Assert.Equal(19, body.RootElement.GetProperty("expectedAffectedTaskCount").GetInt32());
                 Assert.Equal(ready.Summary.UpdatedAt, body.RootElement.GetProperty("expectedBatchUpdatedAt").GetDateTimeOffset());
             },
             request =>
@@ -206,23 +226,49 @@ public sealed class WorkflowApiClientAdministrativeActionTests
             });
     }
 
-    private static AdministrativeActionBatchDetailDto BatchDetail(long id, string status, int eligible = 0)
+    private static AdministrativeActionBatchDetailDto BatchDetail(
+        long id,
+        string status,
+        int eligible = 0,
+        int affected = 5)
     {
         var now = DateTimeOffset.Parse("2026-08-04T12:00:00Z");
         var summary = new AdministrativeActionBatchSummaryDto(
-            id, "purchase-request", 2, "Policy correction", status,
-            "admin-user", null, 5, eligible, 5 - eligible, 0, 0, 0, 0, 0, now, now, null);
+            id,
+            "purchase-request",
+            8,
+            3,
+            7,
+            "Approval",
+            AdministrativeActionKinds.DirectFlow,
+            14,
+            null,
+            AdministrativeActionMultiInstanceModes.ForceParent,
+            null,
+            status,
+            "operator",
+            null,
+            5,
+            affected,
+            eligible,
+            5 - eligible,
+            0,
+            0,
+            0,
+            0,
+            0,
+            now,
+            now,
+            null);
+        var action = new AdministrativeActionSummaryDto(
+            8, 3, AdministrativeActionKinds.DirectFlow, 14, "SEND_BACK_REVIEW", "Send back",
+            7, "Approval", 3, "Review", BpmnFlowNodeTypes.UserTask, []);
         return new AdministrativeActionBatchDetailDto(
             summary,
-            [
-                new AdministrativeActionFlowMappingSnapshotDto(
-                    5, 2, 31, null, "Return", 7, "Approval", 3, "Review", ["admin"], []),
-                new AdministrativeActionFlowMappingSnapshotDto(
-                    8, 3, 14, "SEND_BACK_REVIEW", "Send back", 7, "Approval", 3, "Review", ["admin"], [])
-            ],
+            action,
             new Dictionary<string, JsonElement>(),
             JsonDocument.Parse("{}").RootElement.Clone(),
-            ["admin"],
+            [],
             null,
             null,
             null,

@@ -65,6 +65,18 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
         return Map(entity);
     }
 
+    public async Task<TimerSubscriptionRecord?> GetAsync(
+        long subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        var entity = await dbContext.TimerSubscriptions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                subscription => subscription.Id == subscriptionId,
+                cancellationToken);
+        return entity is null ? null : Map(entity);
+    }
+
     public async Task<TimerSubscriptionRecord?> GetForUpdateAsync(
         long subscriptionId,
         CancellationToken cancellationToken)
@@ -175,6 +187,36 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
                 && subscription.Occurrence == expectedOccurrence)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(subscription => subscription.Status, TimerSubscriptionStatuses.Paused)
+                .SetProperty(subscription => subscription.UpdatedAt, now),
+                cancellationToken);
+        return affected == 1;
+    }
+
+    public async Task<bool> CompleteAdministrativeOverrideAsync(
+        long subscriptionId,
+        long expectedOccurrence,
+        string expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (expectedStatus is not (TimerSubscriptionStatuses.Active
+            or TimerSubscriptionStatuses.Paused))
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var affected = await dbContext.TimerSubscriptions
+            .Where(subscription =>
+                subscription.Id == subscriptionId
+                && subscription.Status == expectedStatus
+                && subscription.Occurrence == expectedOccurrence
+                && subscription.UpdatedAt == expectedUpdatedAt)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    subscription => subscription.Status,
+                    TimerSubscriptionStatuses.Completed)
+                .SetProperty(subscription => subscription.CompletedAt, now)
                 .SetProperty(subscription => subscription.UpdatedAt, now),
                 cancellationToken);
         return affected == 1;

@@ -60,6 +60,7 @@ public static class SequenceFlowConditionEvaluator
         "actions.last.occurredAt",
         "actions.last.kind",
         "actions.last.values",
+        "actions.last.administrativeAction",
         "traversals.count",
         "traversals.last.user",
         "traversals.last.userRoles",
@@ -68,6 +69,7 @@ public static class SequenceFlowConditionEvaluator
         "traversals.last.occurredAt",
         "traversals.last.kind",
         "traversals.last.values",
+        "traversals.last.administrativeAction",
         "all"
     };
 
@@ -417,6 +419,12 @@ public static class SequenceFlowConditionEvaluator
         }
         if (path.EndsWith(".kind", StringComparison.OrdinalIgnoreCase)) return last.Kind;
         if (path.EndsWith(".values", StringComparison.OrdinalIgnoreCase)) return last.Values?.Clone();
+        if (path.EndsWith(".administrativeAction", StringComparison.OrdinalIgnoreCase))
+        {
+            return last.AdministrativeAction is null
+                ? null
+                : JsonSerializer.SerializeToElement(last.AdministrativeAction);
+        }
 
         return null;
     }

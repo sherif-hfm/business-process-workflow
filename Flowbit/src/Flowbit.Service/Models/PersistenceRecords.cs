@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Models;
@@ -516,7 +517,20 @@ public sealed record SequenceFlowOccurrenceWriteRecord(
     Dictionary<string, JsonElement>? Values,
     DateTimeOffset OccurredAt,
     string? ActingFor = null,
-    long? DelegationId = null);
+    long? DelegationId = null)
+{
+    public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
+}
+
+public sealed record SequenceFlowAdministrativeActionRecord(
+    [property: JsonPropertyName("batchId")] long BatchId,
+    [property: JsonPropertyName("workflowDefinitionId")] long WorkflowDefinitionId,
+    [property: JsonPropertyName("actionKind")] string ActionKind,
+    [property: JsonPropertyName("flowId")] int FlowId,
+    [property: JsonPropertyName("boundaryNodeId")] int? BoundaryNodeId,
+    [property: JsonPropertyName("timerSubscriptionId")] long? TimerSubscriptionId,
+    [property: JsonPropertyName("multiInstanceMode")] string? MultiInstanceMode,
+    [property: JsonPropertyName("reason")] string? Reason);
 
 public sealed record ObservedSequenceFlowRecord(
     int FlowId,
@@ -530,7 +544,10 @@ public sealed record SequenceFlowEvidenceRecord(
     string Kind,
     Dictionary<string, JsonElement>? Values,
     string? ActingFor = null,
-    long? DelegationId = null);
+    long? DelegationId = null)
+{
+    public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
+}
 
 public sealed record SequenceFlowSummaryRecord(
     long InstanceId,

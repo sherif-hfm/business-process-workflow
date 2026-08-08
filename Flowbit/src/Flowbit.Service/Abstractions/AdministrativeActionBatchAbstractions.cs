@@ -31,7 +31,6 @@ public interface IAdministrativeActionBatchRepository
 
     Task<PagedResult<AdministrativeActionBatchRecord>> ListAsync(
         AdministrativeActionBatchSearch search,
-        AdministrativeActionBatchListAuthorization authorization,
         CancellationToken cancellationToken);
 
     Task<AdministrativeActionBatchItemRecord?> GetItemAsync(
@@ -54,6 +53,11 @@ public interface IAdministrativeActionBatchRepository
 
     Task<IReadOnlyDictionary<string, int>> CountItemsByStatusAsync(
         long batchId,
+        CancellationToken cancellationToken);
+
+    Task<int> SumAffectedTaskCountAsync(
+        long batchId,
+        IReadOnlyCollection<string>? statuses,
         CancellationToken cancellationToken);
 
     Task<int> TransitionItemsAsync(

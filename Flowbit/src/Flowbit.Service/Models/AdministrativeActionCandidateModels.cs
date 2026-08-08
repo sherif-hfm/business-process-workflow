@@ -2,35 +2,50 @@ using System.Text.Json;
 
 namespace Flowbit.Service.Models;
 
+public sealed record AdministrativeActionPositionKey(
+    string PositionKind,
+    long PositionId);
+
 public sealed record AdministrativeActionCandidateQuery
 {
-    public required IReadOnlyList<AdministrativeActionFlowTarget> Targets { get; init; }
-    public long? UserTaskId { get; init; }
+    public required long WorkflowDefinitionId { get; init; }
+    public required int SourceNodeId { get; init; }
+    public string? PositionKind { get; init; }
+    public long? PositionId { get; init; }
     public long? InstanceId { get; init; }
     public string? BusinessKey { get; init; }
-    public IReadOnlyCollection<long>? UserTaskIds { get; init; }
+    public IReadOnlyCollection<AdministrativeActionPositionKey>? Positions { get; init; }
+    public IReadOnlyCollection<AdministrativeActionPositionKey>? ExcludedPositions { get; init; }
     public VariableFilterExpression? VariableFilter { get; init; }
     public bool IncludeVariables { get; init; }
     public int Page { get; init; } = 1;
     public int PageSize { get; init; } = 50;
 }
 
-public sealed record AdministrativeActionFlowTarget(
-    long WorkflowDefinitionId,
-    int FlowId,
-    int SourceNodeId);
+public sealed record AdministrativeTimerBoundaryStateRecord(
+    int BoundaryNodeId,
+    long? TimerSubscriptionId,
+    long? TimerJobId,
+    string? Status,
+    DateTimeOffset? NextDueAt,
+    long? Occurrence,
+    DateTimeOffset? UpdatedAt);
 
 public sealed record AdministrativeActionCandidateRecord(
-    long UserTaskId,
+    string PositionKind,
+    long PositionId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
     long InstanceId,
     long TokenId,
+    Guid TokenActivationId,
     long WorkflowDefinitionId,
-    int FlowId,
     string WorkflowKey,
     string? BusinessKey,
     int NodeId,
     string NodeName,
     string? NodeExternalId,
-    DateTimeOffset InstanceUpdatedAt,
-    DateTimeOffset UserTaskUpdatedAt,
+    DateTimeOffset PositionUpdatedAt,
+    int AffectedTaskCount,
+    IReadOnlyList<AdministrativeTimerBoundaryStateRecord> TimerBoundaries,
     IReadOnlyDictionary<string, JsonElement>? Variables);

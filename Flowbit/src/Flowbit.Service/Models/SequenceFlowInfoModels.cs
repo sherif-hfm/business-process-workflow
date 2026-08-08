@@ -47,6 +47,10 @@ public sealed record SequenceFlowLastOccurrence(
     [JsonPropertyName("delegationId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? DelegationId { get; init; }
+
+    [JsonPropertyName("administrativeAction")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
 }
 
 /// <summary>

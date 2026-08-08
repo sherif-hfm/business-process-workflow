@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Flowbit.Service.Models;
 
 namespace Flowbit.Infrastructure.Repositories;
 
@@ -26,6 +27,17 @@ internal static class JsonMapping
         return JsonDocument.Parse(json);
     }
 
+    public static JsonDocument? ToJsonDocument(
+        SequenceFlowAdministrativeActionRecord? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        return JsonDocument.Parse(JsonSerializer.Serialize(value, Options));
+    }
+
     public static Dictionary<string, JsonElement>? ToDictionary(JsonDocument? document)
     {
         if (document is null || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -45,5 +57,19 @@ internal static class JsonMapping
         }
 
         return JsonSerializer.Deserialize<List<string>>(document.RootElement.GetRawText(), Options) ?? [];
+    }
+
+    public static SequenceFlowAdministrativeActionRecord? ToAdministrativeAction(
+        JsonDocument? document)
+    {
+        if (document is null
+            || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<SequenceFlowAdministrativeActionRecord>(
+            document.RootElement.GetRawText(),
+            Options);
     }
 }

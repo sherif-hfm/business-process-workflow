@@ -2,6 +2,7 @@ using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Xunit;
 
@@ -12,13 +13,13 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
     PostgresApiFixture fixture)
 {
     [Fact]
-    public async Task ListAppliesFlowRoleVisibilityBeforeCountOrderAndPage()
+    public async Task ListDoesNotApplyFrozenFlowRolesAndPagesByExactDefinition()
     {
         var suffix = Guid.NewGuid().ToString("N");
         var workflowKey = $"batch-list-auth-{suffix}";
-        var visibleRole = $"batch-reviewer-{suffix}";
-        long firstVisibleId;
-        long secondVisibleId;
+        long definitionId;
+        long newestId;
+        long oldestId;
 
         await using (var setup = fixture.CreateDbContext())
         {
@@ -28,156 +29,91 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
                 WorkflowKey = workflowKey,
                 Version = 1,
                 IsPublished = true,
-                Definition = new WorkflowModel
-                {
-                    Id = workflowKey,
-                    Name = workflowKey,
-                    SequenceFlows =
-                    [
-                        new SequenceFlowModel
-                        {
-                            Id = 101,
-                            Name = "Visible send-back",
-                            ExternalId = "VISIBLE_SEND_BACK",
-                            SourceRef = 2,
-                            TargetRef = 1,
-                            Roles = [visibleRole.ToUpperInvariant()]
-                        },
-                        new SequenceFlowModel
-                        {
-                            Id = 102,
-                            Name = "Hidden send-back",
-                            ExternalId = "HIDDEN_SEND_BACK",
-                            SourceRef = 2,
-                            TargetRef = 1,
-                            Roles = [$"other-role-{suffix}"]
-                        }
-                    ]
-                }
+                Definition = new WorkflowModel { Id = workflowKey, Name = workflowKey }
             };
             setup.WorkflowDefinitions.Add(definition);
             await setup.SaveChangesAsync();
+            definitionId = definition.Id;
 
             var now = DateTimeOffset.UtcNow;
-            var mixedNewest = Batch(
-                definition,
-                now.AddMinutes(5),
-                (101, "VISIBLE_SEND_BACK", visibleRole),
-                (102, "HIDDEN_SEND_BACK", $"other-role-{suffix}"));
-            var hiddenNewest = Batch(
-                definition,
-                102,
-                $"other-role-{suffix}",
-                now.AddMinutes(4));
-            var visibleFirst = Batch(
-                definition,
-                101,
-                visibleRole.ToUpperInvariant(),
-                now.AddMinutes(3));
-            var hiddenMiddle = Batch(
-                definition,
-                102,
-                $"other-role-{suffix}",
-                now.AddMinutes(2));
-            var visibleSecond = Batch(
-                definition,
-                101,
-                visibleRole.ToUpperInvariant(),
-                now.AddMinutes(1));
-            setup.AdministrativeActionBatches.AddRange(
-                mixedNewest,
-                hiddenNewest,
-                visibleFirst,
-                hiddenMiddle,
-                visibleSecond);
+            var oldest = Batch(definition, 101, "reviewer", now.AddMinutes(1));
+            var newest = Batch(definition, 102, "finance", now.AddMinutes(2));
+            setup.AdministrativeActionBatches.AddRange(oldest, newest);
             await setup.SaveChangesAsync();
-            firstVisibleId = visibleFirst.Id;
-            secondVisibleId = visibleSecond.Id;
+            newestId = newest.Id;
+            oldestId = oldest.Id;
 
-            // Batch audit visibility is tied to the frozen mapping role
-            // snapshot, not to whether that immutable version remains published.
+            // Audit visibility is authentication-only and does not depend on
+            // publication state or the role snapshot of the selected action.
             definition.IsPublished = false;
             await setup.SaveChangesAsync();
         }
 
-        var authorization = new AdministrativeActionBatchListAuthorization(
-            [visibleRole.ToLowerInvariant()]);
         var search = new AdministrativeActionBatchSearch(
             workflowKey,
+            definitionId,
             null,
             null,
             1,
             1);
+        await using var context = fixture.CreateDbContext();
+        var repository = new AdministrativeActionBatchRepository(context);
 
-        await using var firstContext = fixture.CreateDbContext();
-        var firstRepository = new AdministrativeActionBatchRepository(firstContext);
-        var first = await firstRepository.ListAsync(
-            search,
-            authorization,
-            CancellationToken.None);
+        var first = await repository.ListAsync(search, CancellationToken.None);
         Assert.Equal(2, first.TotalCount);
-        Assert.Equal(firstVisibleId, Assert.Single(first.Items).Id);
+        Assert.Equal(newestId, Assert.Single(first.Items).Id);
+        Assert.Equal("finance", Assert.Single(first.Items[0].Action.Roles));
 
-        await using var secondContext = fixture.CreateDbContext();
-        var secondRepository = new AdministrativeActionBatchRepository(secondContext);
-        var second = await secondRepository.ListAsync(
+        var second = await repository.ListAsync(
             search with { Page = 2 },
-            authorization,
             CancellationToken.None);
         Assert.Equal(2, second.TotalCount);
-        Assert.Equal(secondVisibleId, Assert.Single(second.Items).Id);
-
-        await using var hiddenContext = fixture.CreateDbContext();
-        var hiddenRepository = new AdministrativeActionBatchRepository(hiddenContext);
-        var hidden = await hiddenRepository.ListAsync(
-            search,
-            new AdministrativeActionBatchListAuthorization([$"unknown-{suffix}"]),
-            CancellationToken.None);
-        Assert.Equal(0, hidden.TotalCount);
-        Assert.Empty(hidden.Items);
+        Assert.Equal(oldestId, Assert.Single(second.Items).Id);
+        Assert.Equal("reviewer", Assert.Single(second.Items[0].Action.Roles));
     }
 
     private static AdministrativeActionBatchEntity Batch(
         WorkflowDefinitionEntity definition,
         int flowId,
         string role,
-        DateTimeOffset updatedAt) =>
-        Batch(
-            definition,
-            updatedAt,
-            (flowId,
-                flowId == 101 ? "VISIBLE_SEND_BACK" : "HIDDEN_SEND_BACK",
-                role));
-
-    private static AdministrativeActionBatchEntity Batch(
-        WorkflowDefinitionEntity definition,
-        DateTimeOffset updatedAt,
-        params (int FlowId, string? ExternalId, string Role)[] mappings) =>
-        new()
+        DateTimeOffset updatedAt)
+    {
+        var action = new AdministrativeActionSnapshotRecord(
+            definition.Id,
+            definition.Version,
+            AdministrativeActionKinds.DirectFlow,
+            flowId,
+            null,
+            "Administrative action",
+            2,
+            "Second approval",
+            1,
+            "First approval",
+            BpmnFlowNodeTypes.UserTask,
+            null,
+            [role],
+            [],
+            null,
+            null,
+            null,
+            null);
+        return new AdministrativeActionBatchEntity
         {
             WorkflowKey = definition.WorkflowKey,
-            FlowMappingsJson = JsonDocument.Parse(JsonSerializer.Serialize(
-                mappings.Select(mapping =>
-                    new AdministrativeActionFlowMappingRecord(
-                        definition.Id,
-                        definition.Version,
-                        mapping.FlowId,
-                        mapping.ExternalId,
-                        "Send back",
-                        2,
-                        "Second approval",
-                        1,
-                        "First approval",
-                        [mapping.Role],
-                        [])).ToArray(),
+            WorkflowDefinitionId = definition.Id,
+            SourceNodeId = 2,
+            ActionKind = AdministrativeActionKinds.DirectFlow,
+            FlowId = flowId,
+            ActionSnapshotJson = JsonDocument.Parse(JsonSerializer.Serialize(
+                action,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web))),
-            Reason = "Authorization paging test",
             CommonVariablesJson = JsonDocument.Parse("{}"),
             SelectionJson = JsonDocument.Parse("{}"),
             Status = AdministrativeActionBatchStatuses.Ready,
             PreparedBy = "batch-list-test",
-            PreparedByRolesJson = JsonDocument.Parse("[\"admin\"]"),
+            PreparedByRolesJson = JsonDocument.Parse("[]"),
             CreatedAt = updatedAt,
             UpdatedAt = updatedAt
         };
+    }
 }

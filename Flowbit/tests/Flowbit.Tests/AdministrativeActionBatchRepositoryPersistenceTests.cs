@@ -12,7 +12,7 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
     PostgresApiFixture fixture)
 {
     [Fact]
-    public async Task RepositoryRoundTripsFrozenMappingsAndExactItemFlowIdentity()
+    public async Task RepositoryRoundTripsFrozenActionAndExactPositionIdentity()
     {
         var suffix = Guid.NewGuid().ToString("N");
         var workflowKey = $"batch-record-mappings-{suffix}";
@@ -79,9 +79,10 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
             taskId = task.Id;
         }
 
-        var mapping = new AdministrativeActionFlowMappingRecord(
+        var action = new AdministrativeActionSnapshotRecord(
             definitionId,
             4,
+            "directFlow",
             44,
             null,
             "Return for correction",
@@ -89,6 +90,8 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
             "Approval",
             10,
             "Correction",
+            BpmnFlowNodeTypes.UserTask,
+            "false",
             ["ADMIN", "workflow-operator"],
             [
                 new VariableModel
@@ -98,7 +101,11 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
                     DataType = WorkflowVariableTypes.String,
                     Required = true
                 }
-            ]);
+            ],
+            null,
+            null,
+            null,
+            null);
         long batchId;
 
         await using (var createContext = fixture.CreateDbContext())
@@ -108,8 +115,14 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
             var batch = await repository.AddAsync(
                 new NewAdministrativeActionBatchRecord(
                     workflowKey,
-                    [mapping],
-                    "Correct an operational mistake",
+                    definitionId,
+                    20,
+                    "directFlow",
+                    44,
+                    null,
+                    null,
+                    action,
+                    null,
                     new Dictionary<string, JsonElement>(),
                     selection.RootElement.Clone(),
                     "batch-admin",
@@ -119,29 +132,48 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
                 CancellationToken.None);
             batchId = batch.Id;
 
-            var persistedMapping = Assert.Single(batch.FlowMappings);
-            Assert.Equal(definitionId, persistedMapping.WorkflowDefinitionId);
-            Assert.Equal(44, persistedMapping.FlowId);
-            Assert.Null(persistedMapping.FlowExternalId);
-            Assert.Equal("comment", Assert.Single(persistedMapping.Variables).Name);
+            Assert.Equal(definitionId, batch.WorkflowDefinitionId);
+            Assert.Equal(44, batch.Action.FlowId);
+            Assert.Null(batch.Action.FlowExternalId);
+            Assert.Equal("comment", Assert.Single(batch.Action.Variables).Name);
+            Assert.Null(batch.Reason);
 
             var items = await repository.AddItemsAsync(
                 batch.Id,
                 [
                     new NewAdministrativeActionBatchItemRecord(
+                        "userTask",
+                        taskId,
                         instanceId,
                         taskId,
+                        null,
                         tokenId,
+                        (await createContext.ExecutionTokens.FindAsync(tokenId))!.ActivationId,
                         definitionId,
+                        20,
                         44,
                         now,
-                        now,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        1,
                         now)
                 ],
                 CancellationToken.None);
             var item = Assert.Single(items);
             Assert.Equal(definitionId, item.WorkflowDefinitionId);
             Assert.Equal(44, item.FlowId);
+            Assert.Equal("userTask", item.PositionKind);
+            Assert.Equal(taskId, item.PositionId);
+            Assert.Equal(1, item.AffectedTaskCount);
+            Assert.Equal(
+                1,
+                await repository.SumAffectedTaskCountAsync(
+                    batch.Id,
+                    null,
+                    CancellationToken.None));
         }
 
         await using (var readContext = fixture.CreateDbContext())
@@ -152,8 +184,7 @@ public sealed class AdministrativeActionBatchRepositoryPersistenceTests(
                 forUpdate: false,
                 CancellationToken.None);
             Assert.NotNull(batch);
-            var persistedMapping = Assert.Single(batch.FlowMappings);
-            Assert.Equal(["ADMIN", "workflow-operator"], persistedMapping.Roles);
+            Assert.Equal(["ADMIN", "workflow-operator"], batch.Action.Roles);
 
             var items = await repository.ListItemsAsync(
                 batchId,

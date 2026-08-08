@@ -1460,26 +1460,36 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
         WorkflowDefinitionEntity definition,
         string workflowKey,
         string status,
-        DateTimeOffset now) =>
-        new()
+        DateTimeOffset now)
+    {
+        var action = new AdministrativeActionSnapshotRecord(
+            definition.Id,
+            definition.Version,
+            "directFlow",
+            1,
+            "RETURN_FOR_REWORK",
+            "Return for rework",
+            1,
+            "Administrative task",
+            2,
+            "Rework task",
+            BpmnFlowNodeTypes.UserTask,
+            null,
+            ["admin"],
+            [],
+            null,
+            null,
+            null,
+            null);
+        return new()
         {
             WorkflowKey = workflowKey,
-            FlowMappingsJson = JsonDocument.Parse(JsonSerializer.Serialize(
-                new[]
-                {
-                    new AdministrativeActionFlowMappingRecord(
-                        definition.Id,
-                        definition.Version,
-                        1,
-                        "RETURN_FOR_REWORK",
-                        "Return for rework",
-                        1,
-                        "Administrative task",
-                        2,
-                        "Rework task",
-                        ["admin"],
-                        [])
-                },
+            WorkflowDefinitionId = definition.Id,
+            SourceNodeId = 1,
+            ActionKind = "directFlow",
+            FlowId = 1,
+            ActionSnapshotJson = JsonDocument.Parse(JsonSerializer.Serialize(
+                action,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web))),
             Reason = "Repository lease-exhaustion test",
             CommonVariablesJson = JsonDocument.Parse("{}"),
@@ -1490,6 +1500,7 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
             CreatedAt = now,
             UpdatedAt = now
         };
+    }
 
     private static AdministrativeActionBatchItemEntity NewAdministrativeBatchItem(
         AdministrativeActionBatchEntity batch,
@@ -1505,13 +1516,16 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
         new()
         {
             BatchId = batch.Id,
+            PositionKind = "userTask",
             InstanceId = instance.Id,
             UserTaskId = task.Id,
             TokenId = token.Id,
+            TokenActivationId = token.ActivationId,
             WorkflowDefinitionId = definition.Id,
+            SourceNodeId = task.NodeId,
             FlowId = 1,
-            CapturedInstanceUpdatedAt = instance.UpdatedAt,
-            CapturedUserTaskUpdatedAt = task.UpdatedAt,
+            CapturedPositionUpdatedAt = task.UpdatedAt,
+            AffectedTaskCount = 1,
             Status = status,
             IssuesJson = issues is null ? null : JsonDocument.Parse(issues),
             ResultJson = result is null ? null : JsonDocument.Parse(result),

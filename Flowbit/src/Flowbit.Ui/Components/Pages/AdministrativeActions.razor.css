@@ -11,6 +11,81 @@
     gap: .75rem;
 }
 
+.admin-definition-grid {
+    display: grid;
+    grid-template-columns: minmax(14rem, 1.35fr) minmax(13rem, .8fr) minmax(14rem, 1fr);
+    gap: 1rem;
+    align-items: end;
+}
+
+.admin-action-group > h3,
+.admin-mi-mode > legend {
+    margin-bottom: .65rem;
+    color: var(--fb-muted);
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.admin-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+}
+
+.admin-action-card {
+    display: flex;
+    align-items: flex-start;
+    gap: .7rem;
+    min-width: 0;
+    padding: .85rem;
+    cursor: pointer;
+    border: 1px solid var(--fb-border-strong);
+    border-radius: var(--fb-radius-sm);
+    background: var(--fb-surface-soft);
+    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+
+.admin-action-card:hover,
+.admin-action-card.is-selected {
+    border-color: var(--fb-primary);
+    background: var(--fb-surface);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--fb-primary) 13%, transparent);
+}
+
+.admin-action-card input { margin-top: .25rem; }
+.admin-action-copy,
+.admin-action-copy > span { display: block; min-width: 0; }
+.admin-action-copy { overflow-wrap: anywhere; }
+.admin-action-copy > strong { display: block; margin-bottom: .2rem; color: var(--fb-ink); }
+.admin-action-copy small,
+.admin-action-meta { color: var(--fb-muted); font-size: .76rem; }
+.admin-action-meta { margin-top: .22rem; }
+
+.admin-mi-mode {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+    margin: 0;
+    padding: .9rem;
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+}
+
+.admin-mi-mode > legend { grid-column: 1 / -1; float: none; width: auto; padding: 0; }
+
+.admin-timer-state-list {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .35rem;
+}
+
+.admin-timer-state,
+.admin-timer-state small { display: block; }
+.admin-timer-state small { margin-top: .12rem; color: var(--fb-muted); }
+
 .selection-mode-card {
     display: flex;
     align-items: flex-start;
@@ -28,9 +103,6 @@
 .selection-mode-card small { margin-top: .15rem; color: var(--fb-muted); }
 
 .admin-status-filter { width: min(15rem, 100%); }
-.admin-family-select { width: min(36rem, 100%); }
-.admin-mapping-table select { min-width: 22rem; }
-.admin-mapping-table td:nth-child(4) { min-width: 14rem; }
 .admin-cancellation-input { width: min(28rem, 100%); }
 .admin-result-cell { min-width: 15rem; max-width: 30rem; }
 .admin-json {
@@ -49,6 +121,9 @@
 }
 
 @media (max-width: 760px) {
-    .selection-mode-grid { grid-template-columns: 1fr; }
+    .selection-mode-grid,
+    .admin-definition-grid,
+    .admin-action-grid,
+    .admin-mi-mode { grid-template-columns: 1fr; }
     .admin-no-rollback-warning { position: static; }
 }

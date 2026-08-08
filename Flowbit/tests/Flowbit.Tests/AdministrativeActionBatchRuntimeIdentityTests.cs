@@ -3,6 +3,7 @@ using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -24,6 +25,8 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
         long instanceId;
         long taskId;
         long tokenId;
+        long batchItemId;
+        var activationId = Guid.NewGuid();
 
         await using (var setup = fixture.CreateDbContext())
         {
@@ -59,6 +62,7 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
                 NodeName = "Approval",
                 NodeType = BpmnFlowNodeTypes.UserTask,
                 Status = ExecutionTokenStatuses.Active,
+                ActivationId = activationId,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -86,9 +90,16 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
             var batch = await batches.AddAsync(
                 new NewAdministrativeActionBatchRecord(
                     workflowKey,
-                    [new AdministrativeActionFlowMappingRecord(
+                    definitionId,
+                    20,
+                    AdministrativeActionKinds.DirectFlow,
+                    44,
+                    null,
+                    null,
+                    new AdministrativeActionSnapshotRecord(
                         definitionId,
                         1,
+                        AdministrativeActionKinds.DirectFlow,
                         44,
                         null,
                         "Return",
@@ -96,8 +107,14 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
                         "Approval",
                         10,
                         "Correction",
+                        BpmnFlowNodeTypes.UserTask,
+                        null,
                         ["admin"],
-                        [])],
+                        [],
+                        null,
+                        null,
+                        null,
+                        null),
                     "Correct the item",
                     new Dictionary<string, JsonElement>(),
                     selection.RootElement.Clone(),
@@ -107,18 +124,29 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
                     now),
                 CancellationToken.None);
             batchId = batch.Id;
-            await batches.AddItemsAsync(
+            var items = await batches.AddItemsAsync(
                 batchId,
                 [new NewAdministrativeActionBatchItemRecord(
+                    AdministrativeActionPositionKinds.UserTask,
+                    task.Id,
                     instance.Id,
                     task.Id,
+                    null,
                     token.Id,
+                    activationId,
                     definitionId,
+                    20,
                     44,
                     now,
-                    now,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    1,
                     now)],
                 CancellationToken.None);
+            batchItemId = Assert.Single(items).Id;
             Assert.Equal(
                 1,
                 await batches.TransitionItemsAsync(
@@ -129,22 +157,27 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
                     CancellationToken.None));
         }
 
-        await AssertRejectedAsync(instanceId + 1, taskId, tokenId, definitionId, 44);
-        await AssertRejectedAsync(instanceId, taskId, tokenId + 1, definitionId, 44);
-        await AssertRejectedAsync(instanceId, taskId, tokenId, definitionId + 1, 44);
-        await AssertRejectedAsync(instanceId, taskId, tokenId, definitionId, 45);
+        await AssertRejectedAsync(instanceId + 1, taskId, tokenId, activationId, definitionId, 20, 44);
+        await AssertRejectedAsync(instanceId, taskId, tokenId + 1, activationId, definitionId, 20, 44);
+        await AssertRejectedAsync(instanceId, taskId, tokenId, Guid.NewGuid(), definitionId, 20, 44);
+        await AssertRejectedAsync(instanceId, taskId, tokenId, activationId, definitionId + 1, 20, 44);
+        await AssertRejectedAsync(instanceId, taskId, tokenId, activationId, definitionId, 20, 45);
 
         await using (var complete = fixture.CreateDbContext())
         {
             var runtime = new WorkflowRuntimeRepository(complete);
             await runtime.CompleteAdministrativeActionBatchItemAsync(
+                batchItemId,
                 batchId,
                 instanceId,
+                AdministrativeActionPositionKinds.UserTask,
                 taskId,
                 tokenId,
+                activationId,
                 definitionId,
+                20,
                 44,
-                null,
+                1,
                 JsonSerializer.SerializeToElement(new { flowId = 44 }),
                 now.AddSeconds(1),
                 CancellationToken.None);
@@ -163,25 +196,31 @@ public sealed class AdministrativeActionBatchRuntimeIdentityTests(
             long suppliedInstanceId,
             long suppliedTaskId,
             long suppliedTokenId,
+            Guid suppliedActivationId,
             long suppliedDefinitionId,
+            int suppliedSourceNodeId,
             int suppliedFlowId)
         {
             await using var attempt = fixture.CreateDbContext();
             var runtime = new WorkflowRuntimeRepository(attempt);
             var exception = await Assert.ThrowsAsync<WorkflowConflictException>(() =>
                 runtime.CompleteAdministrativeActionBatchItemAsync(
+                    batchItemId,
                     batchId,
                     suppliedInstanceId,
+                    AdministrativeActionPositionKinds.UserTask,
                     suppliedTaskId,
                     suppliedTokenId,
+                    suppliedActivationId,
                     suppliedDefinitionId,
+                    suppliedSourceNodeId,
                     suppliedFlowId,
-                    null,
+                    1,
                     null,
                     now,
                     CancellationToken.None));
             Assert.Contains(
-                "frozen instance, task, token, workflow-definition, and flow identity",
+                "frozen position, token activation, workflow, flow, and affected-task count",
                 exception.Message);
 
             var unchanged = await attempt.AdministrativeActionBatchItems

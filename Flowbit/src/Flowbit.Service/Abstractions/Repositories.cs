@@ -395,7 +395,10 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyCollection<long> tokenIds,
         string completionReason,
         NodeExecutionActorRecord actor,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? completionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null);
 
     Task CancelActiveMultiInstancesForTokensAsync(
         IReadOnlyCollection<long> tokenIds,
@@ -505,7 +508,10 @@ public interface IWorkflowRuntimeRepository
         Dictionary<string, JsonElement> result,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        string? completionKind = null,
+        string? completionReason = null,
+        long? administrativeActionBatchId = null);
 
     Task CompleteUserTaskAsync(
         long taskId,
@@ -521,13 +527,17 @@ public interface IWorkflowRuntimeRepository
         long? administrativeActionBatchId = null);
 
     Task CompleteAdministrativeActionBatchItemAsync(
+        long batchItemId,
         long batchId,
         long instanceId,
-        long sourceUserTaskId,
+        string positionKind,
+        long positionId,
         long tokenId,
+        Guid tokenActivationId,
         long workflowDefinitionId,
+        int sourceNodeId,
         int flowId,
-        long? newUserTaskId,
+        int affectedTaskCount,
         JsonElement? result,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken);
@@ -542,7 +552,10 @@ public interface IWorkflowRuntimeRepository
         int winningFlowId,
         string completionReason,
         NodeExecutionActorRecord actor,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? cancelledTaskCompletionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null);
 
     Task<DateTimeOffset> UpdateUserTaskClaimAsync(long taskId, string? claimedBy, CancellationToken cancellationToken);
 
@@ -606,7 +619,9 @@ public interface IWorkflowRuntimeRepository
         string? note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        string? reason = null,
+        long? administrativeActionBatchId = null);
 
     Task AddMultiInstanceHistoryAsync(
         long instanceId,
@@ -622,7 +637,9 @@ public interface IWorkflowRuntimeRepository
         string note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        string? reason = null,
+        long? administrativeActionBatchId = null);
 
     Task AddUserTaskActionHistoryAsync(
         long instanceId,

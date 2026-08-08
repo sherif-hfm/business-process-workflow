@@ -8,6 +8,7 @@
     {
       "id": 1,
       "name": "start",
+      "externalId": null,
       "type": "startEvent",
       "laneId": null,
       "x": 100,
@@ -26,10 +27,13 @@
     {
       "id": 2,
       "name": "approval1",
+      "externalId": null,
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": null,
       "x": 374,
-      "y": 110,
+      "y": 300,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
@@ -39,16 +43,20 @@
       "inheritAssignmentFromNodeId": null,
       "variables": [],
       "assignee": null,
-      "asyncBefore": false,
-      "asyncAfter": false
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 3,
       "name": "approval2",
+      "externalId": null,
       "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
       "laneId": null,
-      "x": 814,
-      "y": 113,
+      "x": 810,
+      "y": 128,
       "roles": [],
       "requiresClaim": false,
       "claimMode": "fresh",
@@ -58,12 +66,14 @@
       "inheritAssignmentFromNodeId": null,
       "variables": [],
       "assignee": null,
-      "asyncBefore": false,
-      "asyncAfter": false
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
     },
     {
       "id": 4,
       "name": "end",
+      "externalId": null,
       "type": "endEvent",
       "laneId": null,
       "x": 1214,
@@ -78,12 +88,39 @@
       "variables": [],
       "assignee": null,
       "assignments": []
+    },
+    {
+      "id": 5,
+      "name": "approval2 timer",
+      "externalId": null,
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 814,
+      "y": 113,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "attachedToRef": 3,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "PT1M",
+        "timeCycle": null
+      },
+      "assignments": []
     }
   ],
   "sequenceFlows": [
     {
       "id": 101,
       "name": "",
+      "externalId": null,
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -101,6 +138,7 @@
     {
       "id": 102,
       "name": "approval",
+      "externalId": null,
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -118,6 +156,7 @@
     {
       "id": 103,
       "name": "approval",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -135,11 +174,29 @@
     {
       "id": 104,
       "name": "back",
+      "externalId": null,
       "sourceRef": 3,
       "targetRef": 2,
       "roles": [
         "admin"
       ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 105,
+      "name": "auto-back",
+      "sourceRef": 5,
+      "targetRef": 2,
+      "roles": [],
       "variables": [],
       "condition": null,
       "conditionPriority": null,

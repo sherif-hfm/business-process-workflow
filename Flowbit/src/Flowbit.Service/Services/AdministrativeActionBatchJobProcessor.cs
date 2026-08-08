@@ -10,6 +10,7 @@ namespace Flowbit.Service.Services;
 public sealed class AdministrativeActionBatchJobProcessor(
     IServiceScopeFactory scopeFactory,
     IWorkflowJobRepository jobs,
+    IEngineSettingsRepository engineSettings,
     TimeProvider timeProvider,
     ILogger<AdministrativeActionBatchJobProcessor> logger)
     : IAdministrativeActionBatchJobProcessor
@@ -122,12 +123,46 @@ public sealed class AdministrativeActionBatchJobProcessor(
         }
         var counts = await batches.CountItemsByStatusAsync(batchId, cancellationToken);
         var now = timeProvider.GetUtcNow();
+        var affectedTaskCount = await batches.SumAffectedTaskCountAsync(
+            batchId,
+            null,
+            cancellationToken);
+        var maxAffectedTasks = await ResolveMaxAffectedTasksAsync(cancellationToken);
+        if (affectedTaskCount > maxAffectedTasks)
+        {
+            await batches.TransitionItemsAsync(
+                batchId,
+                [AdministrativeActionBatchItemStatuses.Eligible],
+                AdministrativeActionBatchItemStatuses.Failed,
+                now,
+                cancellationToken);
+            counts = await batches.CountItemsByStatusAsync(batchId, cancellationToken);
+            await batches.UpdateAsync(
+                AdministrativeActionBatchService.ApplyCounts(
+                    AdministrativeActionBatchService.ToUpdate(current),
+                    counts) with
+                {
+                    Status = AdministrativeActionBatchStatuses.Failed,
+                    TotalAffectedTaskCount = affectedTaskCount,
+                    Issues = AdministrativeActionBatchService.SerializeIssues(
+                        [AdministrativeActionBatchService.Issue(
+                            "affected_task_limit_exceeded",
+                            $"Preparation found {affectedTaskCount:N0} affected tasks, exceeding the configured maximum of {maxAffectedTasks:N0}.")]),
+                    PreparedAt = now,
+                    CompletedAt = now,
+                    UpdatedAt = now
+                },
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
         await batches.UpdateAsync(
             AdministrativeActionBatchService.ApplyCounts(
                 AdministrativeActionBatchService.ToUpdate(current),
                 counts) with
             {
                 Status = AdministrativeActionBatchStatuses.Ready,
+                TotalAffectedTaskCount = affectedTaskCount,
                 PreparedAt = now,
                 UpdatedAt = now
             },
@@ -189,26 +224,10 @@ public sealed class AdministrativeActionBatchJobProcessor(
         AdministrativeActionEligibilityDto eligibility;
         try
         {
-            var actions = await batchService.ListActionsAsync(
-                item.WorkflowDefinitionId,
+            eligibility = await engine.PreviewAdministrativeBatchActionAsync(
+                BuildRequest(batch, item),
                 actor,
                 cancellationToken);
-            if (!actions.Any(action => action.FlowId == item.FlowId))
-            {
-                eligibility = new AdministrativeActionEligibilityDto(
-                    false,
-                    [AdministrativeActionBatchService.Issue(
-                        "administrative_action_unavailable",
-                        "The mapped flow is no longer available to the preparing operator.")]);
-            }
-            else
-            {
-                eligibility = await engine.PreviewAdministrativeBatchFlowAsync(
-                    item.UserTaskId,
-                    BuildRequest(batch, item),
-                    actor,
-                    cancellationToken);
-            }
         }
         catch (Exception exception) when (exception is
             WorkflowDomainException or WorkflowConflictException
@@ -216,6 +235,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
         {
             eligibility = new AdministrativeActionEligibilityDto(
                 false,
+                item.AffectedTaskCount,
                 [AdministrativeActionBatchService.Issue(
                     "administrative_action_unavailable",
                     exception.Message)]);
@@ -230,6 +250,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
                 Issues = eligibility.Issues.Count == 0
                     ? null
                     : AdministrativeActionBatchService.SerializeIssues(eligibility.Issues),
+                AffectedTaskCount = eligibility.AffectedTaskCount,
                 UpdatedAt = now,
                 PreparedAt = now,
                 CompletedAt = eligibility.Eligible ? null : now
@@ -415,64 +436,42 @@ public sealed class AdministrativeActionBatchJobProcessor(
         }
 
         AdministrativeActionResultDto? result = null;
-        string? skippedCode = null;
-        string? skippedDescription = null;
+        var terminalStatus = AdministrativeActionBatchItemStatuses.Skipped;
+        string? terminalCode = null;
+        string? terminalDescription = null;
         await using (var actionScope = scopeFactory.CreateAsyncScope())
         {
             var engine = actionScope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
-            var batchService = actionScope.ServiceProvider.GetRequiredService<IAdministrativeActionBatchService>();
-            var runtime = actionScope.ServiceProvider.GetRequiredService<IWorkflowRuntimeRepository>();
             var actor = ConfirmedActor(batch, actorClaims);
             try
             {
-                var actions = await batchService.ListActionsAsync(
-                    item.WorkflowDefinitionId,
-                    actor,
-                    cancellationToken);
-                if (!actions.Any(action => action.FlowId == item.FlowId))
-                {
-                    throw new WorkflowForbiddenException(
-                        "The confirmer no longer has the required batch and mapped-flow roles.");
-                }
-                result = await engine.ExecuteAdministrativeBatchFlowAsync(
-                    item.UserTaskId,
+                result = await engine.ExecuteAdministrativeBatchActionAsync(
                     BuildRequest(batch, item),
                     actor,
-                    batch.Id,
                     cancellationToken);
                 if (result is null)
                 {
-                    result = await ReconcileSucceededAsync(
-                        runtime,
-                        batch,
-                        item,
-                        cancellationToken);
-                    if (result is null)
-                    {
-                        skippedCode = "task_not_found";
-                        skippedDescription = "The selected task no longer exists.";
-                    }
+                    terminalCode = "position_not_found";
+                    terminalDescription = "The selected execution position no longer exists.";
                 }
+            }
+            catch (AdministrativeActionExecutionException exception)
+            {
+                terminalStatus = AdministrativeActionBatchItemStatuses.Failed;
+                terminalCode = "downstream_execution_failed";
+                terminalDescription = exception.Message;
             }
             catch (Exception exception) when (exception is
                 WorkflowConflictException or WorkflowDomainException
                 or WorkflowForbiddenException or WorkflowUnauthorizedException)
             {
-                result = await ReconcileSucceededAsync(
-                    runtime,
-                    batch,
-                    item,
-                    cancellationToken);
-                if (result is null)
+                terminalCode = exception switch
                 {
-                    skippedCode = exception switch
-                    {
-                        WorkflowConflictException => "stale",
-                        WorkflowForbiddenException or WorkflowUnauthorizedException => "authorization_changed",
-                        _ => "ineligible"
-                    };
-                    skippedDescription = exception.Message;
-                }
+                    WorkflowConflictException => "stale",
+                    WorkflowForbiddenException or WorkflowUnauthorizedException => "authentication_changed",
+                    _ => "ineligible"
+                };
+                terminalDescription = exception.Message;
             }
         }
 
@@ -499,58 +498,17 @@ public sealed class AdministrativeActionBatchJobProcessor(
             await resultRepository.UpdateItemAsync(
                 AdministrativeActionBatchService.ToItemUpdate(current) with
                 {
-                    Status = AdministrativeActionBatchItemStatuses.Skipped,
-                    ErrorCode = skippedCode,
-                    ErrorDescription = Limit(skippedDescription),
+                    Status = terminalStatus,
+                    ErrorCode = terminalCode,
+                    ErrorDescription = Limit(terminalDescription),
                     Issues = AdministrativeActionBatchService.SerializeIssues(
                         [AdministrativeActionBatchService.Issue(
-                            skippedCode ?? "skipped",
-                            skippedDescription ?? "The item was skipped during revalidation.")]),
+                            terminalCode ?? "skipped",
+                            terminalDescription ?? "The item was skipped during revalidation.")]),
                     UpdatedAt = completedAt,
                     CompletedAt = completedAt
                 },
                 cancellationToken);
-        }
-    }
-
-    private async Task<AdministrativeActionResultDto?> ReconcileSucceededAsync(
-        IWorkflowRuntimeRepository runtime,
-        AdministrativeActionBatchRecord batch,
-        AdministrativeActionBatchItemRecord item,
-        CancellationToken cancellationToken)
-    {
-        var task = await runtime.GetUserTaskAsync(item.UserTaskId, false, cancellationToken);
-        if (task?.AdministrativeActionBatchId != batch.Id
-            || task.InstanceId != item.InstanceId
-            || task.TokenId != item.TokenId
-            || !string.Equals(task.CompletionKind, "administrativeAction", StringComparison.Ordinal)
-            || task.SelectedFlowId != item.FlowId
-            || task.Status != UserTaskRecordStatuses.Completed)
-        {
-            return null;
-        }
-        var instance = await engineDetailAsync(item.InstanceId, cancellationToken);
-        if (instance is null)
-        {
-            return null;
-        }
-        if (instance.Workflow.Id != item.WorkflowDefinitionId)
-        {
-            return null;
-        }
-        return new AdministrativeActionResultDto(
-            instance,
-            item.UserTaskId,
-            null,
-            batch.Id);
-
-        async Task<InstanceDetailDto?> engineDetailAsync(
-            long instanceId,
-            CancellationToken token)
-        {
-            await using var detailScope = scopeFactory.CreateAsyncScope();
-            var detailEngine = detailScope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
-            return await detailEngine.GetInstanceAsync(instanceId, token);
         }
     }
 
@@ -691,18 +649,33 @@ public sealed class AdministrativeActionBatchJobProcessor(
     private static AdministrativeActionRequest BuildRequest(
         AdministrativeActionBatchRecord batch,
         AdministrativeActionBatchItemRecord item) =>
-        new(
-            item.WorkflowDefinitionId,
-            item.FlowId,
-            item.CapturedInstanceUpdatedAt,
-            batch.Reason,
-            batch.CommonVariables.ToDictionary(
+        new()
+        {
+            BatchId = batch.Id,
+            BatchItemId = item.Id,
+            ExpectedWorkflowDefinitionId = item.WorkflowDefinitionId,
+            SourceNodeId = item.SourceNodeId,
+            ActionKind = batch.ActionKind,
+            FlowId = item.FlowId,
+            BoundaryNodeId = batch.BoundaryNodeId,
+            MultiInstanceMode = batch.MultiInstanceMode,
+            PositionKind = item.PositionKind,
+            PositionId = item.PositionId,
+            UserTaskId = item.UserTaskId,
+            MultiInstanceExecutionId = item.MultiInstanceExecutionId,
+            ExpectedTokenId = item.TokenId,
+            ExpectedTokenActivationId = item.TokenActivationId,
+            ExpectedPositionUpdatedAt = item.CapturedPositionUpdatedAt,
+            ExpectedTimerSubscriptionId = item.TimerSubscriptionId,
+            ExpectedTimerJobId = item.TimerJobId,
+            ExpectedTimerOccurrence = item.CapturedTimerOccurrence,
+            ExpectedTimerStatus = item.CapturedTimerStatus,
+            ExpectedTimerSubscriptionUpdatedAt = item.CapturedTimerSubscriptionUpdatedAt,
+            Reason = batch.Reason,
+            Variables = batch.CommonVariables.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value.Clone(),
-                StringComparer.OrdinalIgnoreCase))
-        {
-            ExpectedTokenId = item.TokenId,
-            ExpectedUserTaskUpdatedAt = item.CapturedUserTaskUpdatedAt
+                StringComparer.OrdinalIgnoreCase)
         };
 
     private static ActorContext PreparedActor(
@@ -741,6 +714,16 @@ public sealed class AdministrativeActionBatchJobProcessor(
 
     private static int Count(IReadOnlyDictionary<string, int> counts, string status) =>
         counts.TryGetValue(status, out var value) ? value : 0;
+
+    private async Task<int> ResolveMaxAffectedTasksAsync(CancellationToken cancellationToken)
+    {
+        var setting = await engineSettings.GetByKeyAsync(
+            AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
+            cancellationToken);
+        return int.TryParse(setting?.Value, out var value) && value > 0
+            ? Math.Min(value, AdministrativeActionConstraints.MaxAffectedTasks)
+            : AdministrativeActionConstraints.MaxAffectedTasks;
+    }
 
     private static string? Limit(string? value) =>
         value is null || value.Length <= AdministrativeActionConstraints.MaxErrorDescriptionLength

@@ -2758,7 +2758,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<long> tokenIds,
         string completionReason,
         NodeExecutionActorRecord actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? completionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null)
     {
         if (tokenIds.Count == 0) return;
         var distinctTokenIds = tokenIds.Distinct().ToArray();
@@ -2786,12 +2789,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     completionReason,
                     actor,
                     now,
-                    cancellationToken);
+                    cancellationToken,
+                    completionKind,
+                    administrativeReason,
+                    administrativeActionBatchId);
             AcceptBulkCancelledMultiInstanceTasks(
                 cancelledMultiInstanceTaskIds,
                 completionReason,
                 actor,
-                now);
+                now,
+                completionKind,
+                administrativeReason,
+                administrativeActionBatchId);
 
             var persistedTasks = await dbContext.UserTasks
                 .Include(task => task.Token)
@@ -2815,6 +2824,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 if (task.Status is UserTaskStatuses.Active or UserTaskStatuses.Pending)
                 {
                     CompleteTask(task, true, now);
+                    task.CompletionKind = completionKind;
+                    task.CompletionReason = administrativeReason;
+                    task.AdministrativeActionBatchId = administrativeActionBatchId;
                     await CompleteUserTaskNodeExecutionAsync(
                         task,
                         new NodeExecutionCompletionRecord(
@@ -4105,14 +4117,33 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         Dictionary<string, System.Text.Json.JsonElement> result,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        string? completionKind = null,
+        string? completionReason = null,
+        long? administrativeActionBatchId = null)
     {
         var task = dbContext.UserTasks.Local.Single(t => t.Id == taskId);
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == task.MultiInstanceExecutionId);
         var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == task.TokenId)
             ?? await dbContext.ExecutionTokens.SingleAsync(entity => entity.Id == task.TokenId, cancellationToken);
-        var counter = await dbContext.MultiInstanceFlowCounts
-            .SingleOrDefaultAsync(c => c.ExecutionId == execution.Id && c.FlowId == selectedFlowId, cancellationToken);
+        var counter = dbContext.MultiInstanceFlowCounts.Local.SingleOrDefault(c =>
+                c.ExecutionId == execution.Id && c.FlowId == selectedFlowId)
+            ?? await dbContext.MultiInstanceFlowCounts.SingleOrDefaultAsync(c =>
+                c.ExecutionId == execution.Id && c.FlowId == selectedFlowId,
+                cancellationToken);
+        if (counter is null
+            && string.Equals(
+                completionKind,
+                NodeExecutionCompletionReasons.AdministrativeAction,
+                StringComparison.Ordinal))
+        {
+            counter = new MultiInstanceFlowCountEntity
+            {
+                ExecutionId = execution.Id,
+                FlowId = selectedFlowId
+            };
+            dbContext.MultiInstanceFlowCounts.Add(counter);
+        }
         var now = DateTimeOffset.UtcNow;
         task.Status = UserTaskStatuses.Completed;
         task.SelectedFlowId = selectedFlowId;
@@ -4121,6 +4152,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         task.CompletedByRoles = completedByRoles.ToList();
         task.CompletedActingFor = actingFor;
         task.CompletionDelegationId = delegationId;
+        task.CompletionKind = completionKind;
+        task.CompletionReason = completionReason;
+        task.AdministrativeActionBatchId = administrativeActionBatchId;
         task.CompletedAt = now;
         task.UpdatedAt = now;
         execution.CompletedCount++;
@@ -4130,7 +4164,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             task,
             new NodeExecutionCompletionRecord(
                 NodeExecutionRecordStatuses.Completed,
-                NodeExecutionCompletionReasons.MultiInstanceItem,
+                completionKind ?? NodeExecutionCompletionReasons.MultiInstanceItem,
                 selectedFlowId,
                 null,
                 token.GatewayBranchId,
@@ -4191,13 +4225,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     }
 
     public async Task CompleteAdministrativeActionBatchItemAsync(
+        long batchItemId,
         long batchId,
         long instanceId,
-        long sourceUserTaskId,
+        string positionKind,
+        long positionId,
         long tokenId,
+        Guid tokenActivationId,
         long workflowDefinitionId,
+        int sourceNodeId,
         int flowId,
-        long? newUserTaskId,
+        int affectedTaskCount,
         JsonElement? result,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken)
@@ -4206,8 +4244,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .FromSqlInterpolated($"""
                 SELECT *
                 FROM flowbit.administrative_action_batch_items
-                WHERE "BatchId" = {batchId}
-                  AND "UserTaskId" = {sourceUserTaskId}
+                WHERE "Id" = {batchItemId}
                 FOR UPDATE
                 """)
             .SingleOrDefaultAsync(cancellationToken)
@@ -4218,18 +4255,26 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             throw new WorkflowConflictException(
                 "The administrative action batch item is no longer queued for execution.");
         }
+        var storedPositionId = item.PositionKind
+            == AdministrativeActionPositionKinds.UserTask
+                ? item.UserTaskId
+                : item.MultiInstanceExecutionId;
         if (item.InstanceId != instanceId
-            || item.UserTaskId != sourceUserTaskId
+            || item.BatchId != batchId
+            || item.PositionKind != positionKind
+            || storedPositionId != positionId
             || item.TokenId != tokenId
+            || item.TokenActivationId != tokenActivationId
             || item.WorkflowDefinitionId != workflowDefinitionId
-            || item.FlowId != flowId)
+            || item.SourceNodeId != sourceNodeId
+            || item.FlowId != flowId
+            || item.AffectedTaskCount != affectedTaskCount)
         {
             throw new WorkflowConflictException(
-                "The administrative action does not match the batch item's frozen instance, task, token, workflow-definition, and flow identity.");
+                "The administrative action does not match the batch item's frozen position, token activation, workflow, flow, and affected-task count.");
         }
 
         item.Status = AdministrativeActionBatchItemStatuses.Succeeded;
-        item.NewUserTaskId = newUserTaskId;
         item.ResultJson = result is null
             ? null
             : JsonMapping.ToJsonDocument(result.Value);
@@ -4279,7 +4324,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int winningFlowId,
         string completionReason,
         NodeExecutionActorRecord actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? cancelledTaskCompletionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null)
     {
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == executionId);
         var now = DateTimeOffset.UtcNow;
@@ -4308,12 +4356,18 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 nodeCompletionReason,
                 actor,
                 now,
-                cancellationToken);
+                cancellationToken,
+                cancelledTaskCompletionKind,
+                administrativeReason,
+                administrativeActionBatchId);
             AcceptBulkCancelledMultiInstanceTasks(
                 cancelledTaskIds,
                 nodeCompletionReason,
                 actor,
-                now);
+                now,
+                cancelledTaskCompletionKind,
+                administrativeReason,
+                administrativeActionBatchId);
 
             execution.CancelledCount += cancelledTaskIds.Count;
             execution.WinningFlowId = winningFlowId;
@@ -4347,7 +4401,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string nodeExecutionCompletionReason,
         NodeExecutionActorRecord actor,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? completionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null)
     {
         var transaction = (NpgsqlTransaction)(dbContext.Database.CurrentTransaction
             ?? throw new InvalidOperationException(
@@ -4384,6 +4441,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     "ResultJson" = NULL,
                     "CompletedBy" = NULL,
                     "CompletedByRoles" = NULL,
+                    "CompletionKind" = @task_completion_kind,
+                    "CompletionReason" = @administrative_reason,
+                    "AdministrativeActionBatchId" = @administrative_batch_id,
                     "CompletedAt" = @now,
                     "UpdatedAt" = @now
                 FROM remaining
@@ -4449,6 +4509,24 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             Value = (object?)actor.DelegationId ?? DBNull.Value
         });
+        command.Parameters.Add(new NpgsqlParameter(
+            "task_completion_kind",
+            NpgsqlDbType.Text)
+        {
+            Value = (object?)completionKind ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter(
+            "administrative_reason",
+            NpgsqlDbType.Text)
+        {
+            Value = (object?)administrativeReason ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter(
+            "administrative_batch_id",
+            NpgsqlDbType.Bigint)
+        {
+            Value = (object?)administrativeActionBatchId ?? DBNull.Value
+        });
         command.Parameters.AddWithValue("now", now);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -4462,7 +4540,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         IReadOnlyCollection<long> taskIds,
         string completionReason,
         NodeExecutionActorRecord actor,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        string? completionKind = null,
+        string? administrativeReason = null,
+        long? administrativeActionBatchId = null)
     {
         if (taskIds.Count == 0)
         {
@@ -4470,9 +4551,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
         var ids = taskIds.ToHashSet();
-        foreach (var task in dbContext.UserTasks.Local.Where(task => ids.Contains(task.Id)))
+        foreach (var task in dbContext.UserTasks.Local
+                     .Where(task => ids.Contains(task.Id))
+                     .ToArray())
         {
             CompleteTask(task, true, now);
+            task.CompletionKind = completionKind;
+            task.CompletionReason = administrativeReason;
+            task.AdministrativeActionBatchId = administrativeActionBatchId;
             var entry = dbContext.Entry(task);
             entry.OriginalValues.SetValues(entry.CurrentValues);
             entry.State = EntityState.Unchanged;
@@ -4486,9 +4572,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             null,
             actor);
         foreach (var nodeExecution in dbContext.NodeExecutions.Local.Where(
-                     execution =>
-                         execution.UserTaskId is long userTaskId
-                         && ids.Contains(userTaskId)))
+                         execution =>
+                             execution.UserTaskId is long userTaskId
+                             && ids.Contains(userTaskId))
+                     .ToArray())
         {
             CompleteNodeExecution(nodeExecution, completion, now);
             var entry = dbContext.Entry(nodeExecution);
@@ -4733,8 +4820,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             InstanceId = instanceId,
             SourceWorkflowDefinitionId = instance.WorkflowDefinitionId,
             TargetWorkflowDefinitionId = targetWorkflowDefinitionId,
-            ChangedBy = string.IsNullOrWhiteSpace(actor.User) ? null : actor.User.Trim(),
-            ChangedByRolesJson = JsonMapping.ToJsonDocument(normalizedRoles),
+            ChangedBy = string.IsNullOrWhiteSpace(actor.User) ? null : actor.User!.Trim(),
+            ChangedByRolesJson = JsonMapping.ToJsonDocument((IReadOnlyList<string>)normalizedRoles),
             Reason = reason,
             ChangedAt = now
         };
@@ -4826,7 +4913,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        string? reason = null,
+        long? administrativeActionBatchId = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -4845,6 +4934,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
+            Reason = reason,
+            AdministrativeActionBatchId = administrativeActionBatchId,
             PerformedAt = DateTimeOffset.UtcNow
         });
     }
@@ -4860,7 +4951,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        string? reason = null,
+        long? administrativeActionBatchId = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -4876,6 +4969,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
             Note = note,
+            Reason = reason,
+            AdministrativeActionBatchId = administrativeActionBatchId,
             PerformedAt = DateTimeOffset.UtcNow
         });
     }
@@ -5181,6 +5276,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ActingFor = occurrence.ActingFor,
             DelegationId = occurrence.DelegationId,
             ValuesJson = JsonMapping.ToJsonDocument(occurrence.Values),
+            AdministrativeActionJson = JsonMapping.ToJsonDocument(occurrence.AdministrativeAction),
             OccurredAt = occurrence.OccurredAt
         });
 
@@ -5213,6 +5309,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             summary.LastActionOccurredAt = occurrence.OccurredAt;
             summary.LastActionKind = occurrence.Kind;
             summary.LastActionValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+            summary.LastActionAdministrativeActionJson =
+                JsonMapping.ToJsonDocument(occurrence.AdministrativeAction);
         }
 
         if (occurrence.IsTraversal)
@@ -5225,6 +5323,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             summary.LastTraversalOccurredAt = occurrence.OccurredAt;
             summary.LastTraversalKind = occurrence.Kind;
             summary.LastTraversalValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+            summary.LastTraversalAdministrativeActionJson =
+                JsonMapping.ToJsonDocument(occurrence.AdministrativeAction);
         }
 
         return ToRecord(summary);
@@ -5879,7 +5979,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 entity.LastActionKind,
                 entity.LastActionValuesJson,
                 entity.LastActionActingFor,
-                entity.LastActionDelegationId),
+                entity.LastActionDelegationId,
+                entity.LastActionAdministrativeActionJson),
             entity.TraversalCount,
             ToEvidence(
                 entity.LastTraversalUser,
@@ -5888,7 +5989,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 entity.LastTraversalKind,
                 entity.LastTraversalValuesJson,
                 entity.LastTraversalActingFor,
-                entity.LastTraversalDelegationId));
+                entity.LastTraversalDelegationId,
+                entity.LastTraversalAdministrativeActionJson));
 
     private static SequenceFlowEvidenceRecord? ToEvidence(
         string? user,
@@ -5897,7 +5999,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? kind,
         JsonDocument? valuesJson,
         string? actingFor,
-        long? delegationId) =>
+        long? delegationId,
+        JsonDocument? administrativeActionJson) =>
         occurredAt is null || kind is null
             ? null
             : new SequenceFlowEvidenceRecord(
@@ -5907,5 +6010,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                 kind,
                 JsonMapping.ToDictionary(valuesJson),
                 actingFor,
-                delegationId);
+                delegationId)
+            {
+                AdministrativeAction =
+                    JsonMapping.ToAdministrativeAction(administrativeActionJson)
+            };
 }

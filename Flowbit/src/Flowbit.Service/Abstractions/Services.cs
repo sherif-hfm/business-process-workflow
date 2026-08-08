@@ -210,16 +210,13 @@ public interface IWorkflowEngineService
 
     Task<UserTaskDto?> GetUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
-    Task<AdministrativeActionEligibilityDto> PreviewAdministrativeBatchFlowAsync(
-        long taskId,
+    Task<AdministrativeActionEligibilityDto> PreviewAdministrativeBatchActionAsync(
         AdministrativeActionRequest request,
         ActorContext actor,
         CancellationToken cancellationToken);
-    Task<AdministrativeActionResultDto?> ExecuteAdministrativeBatchFlowAsync(
-        long taskId,
+    Task<AdministrativeActionResultDto?> ExecuteAdministrativeBatchActionAsync(
         AdministrativeActionRequest request,
         ActorContext actor,
-        long administrativeActionBatchId,
         CancellationToken cancellationToken);
     Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);

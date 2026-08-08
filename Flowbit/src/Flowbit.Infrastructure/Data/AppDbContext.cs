@@ -620,9 +620,34 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<SequenceFlowOccurrenceEntity>(entity =>
         {
             entity.ToTable("sequence_flow_occurrences", table =>
+            {
                 table.HasCheckConstraint(
                     "CK_sequence_flow_occurrences_action_or_traversal",
-                    "\"IsAction\" OR \"IsTraversal\""));
+                    "\"IsAction\" OR \"IsTraversal\"");
+                table.HasCheckConstraint(
+                    "CK_sequence_flow_occurrences_administrative_action",
+                    "COALESCE(((\"Kind\" <> 'administrativeAction' AND \"AdministrativeActionJson\" IS NULL) OR "
+                    + "(\"Kind\" = 'administrativeAction' "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\") = 'object' "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\" -> 'batchId') = 'number' "
+                    + "AND (\"AdministrativeActionJson\" ->> 'batchId')::bigint > 0 "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\" -> 'workflowDefinitionId') = 'number' "
+                    + "AND (\"AdministrativeActionJson\" ->> 'workflowDefinitionId')::bigint = \"WorkflowDefinitionId\" "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\" -> 'flowId') = 'number' "
+                    + "AND (\"AdministrativeActionJson\" ->> 'flowId')::integer = \"SequenceFlowId\" "
+                    + "AND ((\"AdministrativeActionJson\" ->> 'actionKind' = 'directFlow' "
+                    + "AND \"AdministrativeActionJson\" ->> 'boundaryNodeId' IS NULL "
+                    + "AND \"AdministrativeActionJson\" ->> 'timerSubscriptionId' IS NULL "
+                    + "AND (\"AdministrativeActionJson\" ->> 'multiInstanceMode' IS NULL "
+                    + "OR \"AdministrativeActionJson\" ->> 'multiInstanceMode' IN ('forceParent', 'completeAllChildren'))) "
+                    + "OR (\"AdministrativeActionJson\" ->> 'actionKind' = 'timerBoundary' "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\" -> 'boundaryNodeId') = 'number' "
+                    + "AND (\"AdministrativeActionJson\" ->> 'boundaryNodeId')::integer > 0 "
+                    + "AND jsonb_typeof(\"AdministrativeActionJson\" -> 'timerSubscriptionId') = 'number' "
+                    + "AND (\"AdministrativeActionJson\" ->> 'timerSubscriptionId')::bigint > 0 "
+                    + "AND \"AdministrativeActionJson\" ->> 'multiInstanceMode' IS NULL))))"
+                    + ", FALSE)");
+            });
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
@@ -630,6 +655,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.AdministrativeActionJson).HasColumnType("jsonb");
             entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId, e.Id })
                 .IsDescending(false, false, true);
@@ -655,11 +681,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.LastActionActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastActionKind).HasMaxLength(32);
             entity.Property(e => e.LastActionValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastActionAdministrativeActionJson).HasColumnType("jsonb");
             entity.Property(e => e.LastTraversalUser).HasMaxLength(300);
             entity.Property(e => e.LastTraversalUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.LastTraversalActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastTraversalKind).HasMaxLength(32);
             entity.Property(e => e.LastTraversalValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastTraversalAdministrativeActionJson).HasColumnType("jsonb");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId }).IsUnique();
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.SequenceFlowSummaries)
@@ -778,22 +806,36 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 "
                     + "AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 "
                     + "AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 "
-                    + "AND \"CancelledItemCount\" >= 0");
+                    + "AND \"CancelledItemCount\" >= 0 "
+                    + "AND \"TotalAffectedTaskCount\" >= 0");
                 table.HasCheckConstraint(
-                    "CK_administrative_action_batches_flow_mappings",
-                    "jsonb_typeof(\"FlowMappingsJson\") = 'array' "
-                    + "AND jsonb_array_length(\"FlowMappingsJson\") > 0");
+                    "CK_administrative_action_batches_action",
+                    "\"WorkflowDefinitionId\" > 0 AND \"SourceNodeId\" > 0 "
+                    + "AND \"FlowId\" > 0 "
+                    + "AND ((\"ActionKind\" = 'directFlow' AND \"BoundaryNodeId\" IS NULL) "
+                    + "OR (\"ActionKind\" = 'timerBoundary' AND \"BoundaryNodeId\" > 0 "
+                    + "AND \"MultiInstanceMode\" IS NULL)) "
+                    + "AND (\"MultiInstanceMode\" IS NULL OR \"MultiInstanceMode\" IN "
+                    + "('forceParent', 'completeAllChildren'))");
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batches_action_snapshot",
+                    "jsonb_typeof(\"ActionSnapshotJson\") = 'object'");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey)
                 .HasMaxLength(AdministrativeActionConstraints.MaxWorkflowKeyLength)
                 .IsRequired();
-            entity.Property(e => e.FlowMappingsJson)
+            entity.Property(e => e.ActionKind)
+                .HasMaxLength(32)
+                .IsRequired();
+            entity.Property(e => e.MultiInstanceMode)
+                .HasMaxLength(32);
+            entity.Property(e => e.ActionSnapshotJson)
                 .HasColumnType("jsonb")
-                .IsRequired();
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::jsonb");
             entity.Property(e => e.Reason)
-                .HasMaxLength(AdministrativeActionConstraints.MaxReasonLength)
-                .IsRequired();
+                .HasMaxLength(AdministrativeActionConstraints.MaxReasonLength);
             entity.Property(e => e.CommonVariablesJson)
                 .HasColumnType("jsonb")
                 .IsRequired()
@@ -822,6 +864,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.WorkflowKey, e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new
+            {
+                e.WorkflowDefinitionId,
+                e.SourceNodeId,
+                e.ActionKind,
+                e.FlowId,
+                e.UpdatedAt,
+                e.Id
+            });
             entity.HasIndex(e => new { e.PreparedBy, e.IdempotencyKey })
                 .IsUnique()
                 .HasFilter("\"IdempotencyKey\" IS NOT NULL");
@@ -839,6 +890,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.ExecutionJobId)
                 .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AdministrativeActionBatchItemEntity>(entity =>
@@ -849,9 +904,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_administrative_action_batch_items_status",
                     "\"Status\" IN ('preparing', 'eligible', 'ineligible', 'queued', "
                     + "'succeeded', 'skipped', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batch_items_position",
+                    "((\"PositionKind\" = 'userTask' AND \"UserTaskId\" IS NOT NULL "
+                    + "AND \"MultiInstanceExecutionId\" IS NULL) OR "
+                    + "(\"PositionKind\" = 'multiInstanceExecution' "
+                    + "AND \"UserTaskId\" IS NULL "
+                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL)) "
+                    + "AND \"SourceNodeId\" > 0 AND \"FlowId\" > 0 "
+                    + "AND \"AffectedTaskCount\" >= 0 "
+                    + "AND \"AffectedTaskCount\" <= 10000");
+                table.HasCheckConstraint(
+                    "CK_administrative_action_batch_items_timer_fence",
+                    "((\"TimerSubscriptionId\" IS NULL AND \"TimerJobId\" IS NULL "
+                    + "AND \"CapturedTimerOccurrence\" IS NULL "
+                    + "AND \"CapturedTimerStatus\" IS NULL "
+                    + "AND \"CapturedTimerSubscriptionUpdatedAt\" IS NULL) OR "
+                    + "(\"TimerSubscriptionId\" IS NOT NULL "
+                    + "AND \"CapturedTimerOccurrence\" IS NOT NULL "
+                    + "AND \"CapturedTimerStatus\" IN "
+                    + "('active', 'paused', 'completed', 'cancelled') "
+                    + "AND \"CapturedTimerSubscriptionUpdatedAt\" IS NOT NULL))");
             });
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.PositionKind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CapturedTimerStatus).HasMaxLength(32);
             entity.Property(e => e.IssuesJson).HasColumnType("jsonb");
             entity.Property(e => e.ResultJson).HasColumnType("jsonb");
             entity.Property(e => e.ErrorCode)
@@ -860,7 +938,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .HasMaxLength(AdministrativeActionConstraints.MaxErrorDescriptionLength);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => new { e.BatchId, e.UserTaskId }).IsUnique();
+            entity.HasIndex(e => new { e.BatchId, e.UserTaskId })
+                .IsUnique()
+                .HasFilter("\"UserTaskId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.BatchId, e.MultiInstanceExecutionId })
+                .IsUnique()
+                .HasFilter("\"MultiInstanceExecutionId\" IS NOT NULL");
             entity.HasIndex(e => new { e.BatchId, e.Status, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasIndex(e => new { e.WorkflowDefinitionId, e.FlowId });
@@ -876,6 +959,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.UserTaskId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.MultiInstanceExecution)
+                .WithMany()
+                .HasForeignKey(e => e.MultiInstanceExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Token)
                 .WithMany()
                 .HasForeignKey(e => e.TokenId)
@@ -884,9 +971,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.AdministrativeActionBatchItems)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
                 .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.NewUserTask)
+            entity.HasOne(e => e.TimerSubscription)
                 .WithMany()
-                .HasForeignKey(e => e.NewUserTaskId)
+                .HasForeignKey(e => e.TimerSubscriptionId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

@@ -44,5 +44,7 @@ public sealed class SequenceFlowOccurrenceEntity
 
     public JsonDocument? ValuesJson { get; set; }
 
+    public JsonDocument? AdministrativeActionJson { get; set; }
+
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
 }
