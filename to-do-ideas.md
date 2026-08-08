@@ -1,6 +1,6 @@
 - attributes for events task and flows 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
- 
+ - add update instances variables single or in batch 
 - receive task
 - Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
 - in editor add view tool only so not change item by mistake
