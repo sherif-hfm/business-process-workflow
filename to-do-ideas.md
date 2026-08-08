@@ -1,5 +1,5 @@
 - attributes for events task and flows 
- 
+- add login option UI project like user/pass or integration with identity providers, also add  role management  
  
 - receive task
 - Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
