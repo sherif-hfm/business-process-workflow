@@ -18,6 +18,14 @@ public sealed class WorkflowInstanceVersionChangeEntity
 
     public WorkflowDefinitionEntity? TargetWorkflowDefinition { get; set; }
 
+    public long? BatchId { get; set; }
+
+    public WorkflowInstanceVersionChangeBatchEntity? Batch { get; set; }
+
+    public long? BatchItemId { get; set; }
+
+    public WorkflowInstanceVersionChangeBatchItemEntity? BatchItem { get; set; }
+
     public string? ChangedBy { get; set; }
 
     public JsonDocument ChangedByRolesJson { get; set; } = JsonDocument.Parse("[]");

@@ -22,7 +22,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(31, mappedTables.Length);
+        Assert.Equal(33, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "instance_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
@@ -39,6 +39,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Contains(mappedTables, table => table.Name == "workflow_incidents");
         Assert.Contains(mappedTables, table => table.Name == "timer_subscriptions");
         Assert.Contains(mappedTables, table => table.Name == "workflow_instance_version_changes");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_instance_version_change_batches");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_instance_version_change_batch_items");
         Assert.Contains(mappedTables, table => table.Name == "administrative_action_batches");
         Assert.Contains(mappedTables, table => table.Name == "administrative_action_batch_items");
 
@@ -98,5 +100,38 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         }
 
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public async Task InstanceVersionChangeBatchClassificationCountsAreApplied()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT pg_get_constraintdef(constraint_row.oid)
+            FROM pg_catalog.pg_constraint AS constraint_row
+            WHERE constraint_row.connamespace = 'flowbit'::regnamespace
+              AND constraint_row.conrelid =
+                  'flowbit.workflow_instance_version_change_batches'::regclass
+              AND constraint_row.conname =
+                  'CK_workflow_instance_version_change_batches_counts'
+              AND EXISTS (
+                  SELECT 1
+                  FROM information_schema.columns AS column_row
+                  WHERE column_row.table_schema = 'flowbit'
+                    AND column_row.table_name =
+                        'workflow_instance_version_change_batches'
+                    AND column_row.column_name = 'BlockedItemCount')
+            """,
+            connection);
+        var definition = Assert.IsType<string>(await command.ExecuteScalarAsync());
+        Assert.Contains(
+            "\"BlockedItemCount\" <= \"IneligibleItemCount\"",
+            definition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "\"StaleItemCount\" <= (\"IneligibleItemCount\" + \"SkippedItemCount\")",
+            definition,
+            StringComparison.Ordinal);
     }
 }

@@ -56,5 +56,7 @@ public sealed class WorkflowInstanceEntity
 
     public List<WorkflowInstanceVersionChangeEntity> VersionChanges { get; set; } = [];
 
+    public List<WorkflowInstanceVersionChangeBatchItemEntity> VersionChangeBatchItems { get; set; } = [];
+
     public List<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems { get; set; } = [];
 }

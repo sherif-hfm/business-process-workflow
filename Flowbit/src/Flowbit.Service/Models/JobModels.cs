@@ -37,6 +37,8 @@ public static class WorkflowJobKinds
     public const string TimerBoundary = "timerBoundary";
     public const string AdministrativeBatchPrepare = "administrativeBatchPrepare";
     public const string AdministrativeBatchExecute = "administrativeBatchExecute";
+    public const string InstanceVersionChangeBatchPrepare = "instanceVersionChangeBatchPrepare";
+    public const string InstanceVersionChangeBatchExecute = "instanceVersionChangeBatchExecute";
 }
 
 public static class WorkflowJobFailureHandling

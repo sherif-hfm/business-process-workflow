@@ -377,6 +377,11 @@ public sealed class WorkflowJobRepository(
             transaction,
             ids,
             cancellationToken);
+        await ReconcileExhaustedInstanceVersionChangeBatchesAsync(
+            connection,
+            transaction,
+            ids,
+            cancellationToken);
 
         await using (var attempts = new NpgsqlCommand(
             """
@@ -525,6 +530,141 @@ public sealed class WorkflowJobRepository(
                 "TotalItemCount" = counts."TotalItemCount",
                 "EligibleItemCount" = counts."EligibleItemCount",
                 "IneligibleItemCount" = counts."IneligibleItemCount",
+                "QueuedItemCount" = counts."QueuedItemCount",
+                "SucceededItemCount" = counts."SucceededItemCount",
+                "SkippedItemCount" = counts."SkippedItemCount",
+                "FailedItemCount" = counts."FailedItemCount",
+                "CancelledItemCount" = counts."CancelledItemCount",
+                "IssuesJson" = jsonb_build_array(jsonb_build_object(
+                    'Code', 'lease_exhausted',
+                    'Message', 'The final permitted worker attempt lost its lease.')),
+                "UpdatedAt" = clock_timestamp(),
+                "CompletedAt" = CASE
+                    WHEN batch."Status" = 'cancelled'
+                        THEN COALESCE(batch."CompletedAt", clock_timestamp())
+                    ELSE clock_timestamp()
+                END
+            FROM counts
+            WHERE batch."Id" = counts."BatchId"
+            """,
+            connection,
+            transaction);
+        parents.Parameters.AddWithValue("batchIds", batchIds.ToArray());
+        await parents.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task ReconcileExhaustedInstanceVersionChangeBatchesAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyCollection<long> exhaustedJobIds,
+        CancellationToken cancellationToken)
+    {
+        var batchIds = new List<long>();
+        await using (var batches = new NpgsqlCommand(
+            """
+            SELECT batch."Id"
+            FROM flowbit.workflow_instance_version_change_batches AS batch
+            WHERE (batch."PreparationJobId" = ANY(@jobIds)
+                   AND batch."Status" = 'preparing')
+               OR (batch."ExecutionJobId" = ANY(@jobIds)
+                   AND (batch."Status" IN ('queued', 'running')
+                        OR (batch."Status" = 'cancelled'
+                            AND EXISTS (
+                                SELECT 1
+                                FROM flowbit.workflow_instance_version_change_batch_items AS item
+                                WHERE item."BatchId" = batch."Id"
+                                  AND item."Status" = 'queued'))))
+            ORDER BY batch."Id"
+            FOR UPDATE
+            """,
+            connection,
+            transaction))
+        {
+            batches.Parameters.AddWithValue("jobIds", exhaustedJobIds.ToArray());
+            await using var reader = await batches.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                batchIds.Add(reader.GetInt64(0));
+            }
+        }
+        if (batchIds.Count == 0)
+        {
+            return;
+        }
+
+        await using (var items = new NpgsqlCommand(
+            """
+            UPDATE flowbit.workflow_instance_version_change_batch_items
+            SET "Status" = 'failed',
+                "ErrorCode" = 'lease_exhausted',
+                "ErrorDescription" = 'The final permitted worker attempt lost its lease.',
+                "UpdatedAt" = clock_timestamp(),
+                "CompletedAt" = clock_timestamp()
+            WHERE "BatchId" = ANY(@batchIds)
+              AND "Status" IN ('preparing', 'eligible', 'queued')
+            """,
+            connection,
+            transaction))
+        {
+            items.Parameters.AddWithValue("batchIds", batchIds.ToArray());
+            await items.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var parents = new NpgsqlCommand(
+            """
+            WITH counts AS (
+                SELECT selected."BatchId",
+                       COUNT(item."Id")::integer AS "TotalItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'eligible')::integer
+                           AS "EligibleItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'ineligible')::integer
+                           AS "IneligibleItemCount",
+                       COUNT(*) FILTER (
+                           WHERE item."Status" = 'ineligible'
+                             AND (item."ErrorCode" IS NULL
+                                  OR item."ErrorCode" NOT IN (
+                                      'stale_since_selection',
+                                      'stale_since_preparation',
+                                      'stale')))::integer
+                           AS "BlockedItemCount",
+                       COUNT(*) FILTER (
+                           WHERE item."WarningsJson" IS NOT NULL
+                             AND jsonb_typeof(item."WarningsJson") = 'array'
+                             AND jsonb_array_length(item."WarningsJson") > 0)::integer
+                           AS "WarningItemCount",
+                       COUNT(*) FILTER (
+                           WHERE item."Status" IN ('ineligible', 'skipped')
+                             AND item."ErrorCode" IN (
+                                 'stale_since_selection',
+                                 'stale_since_preparation',
+                                 'stale'))::integer
+                           AS "StaleItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'queued')::integer
+                           AS "QueuedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'succeeded')::integer
+                           AS "SucceededItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'skipped')::integer
+                           AS "SkippedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'failed')::integer
+                           AS "FailedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'cancelled')::integer
+                           AS "CancelledItemCount"
+                FROM unnest(@batchIds::bigint[]) AS selected("BatchId")
+                LEFT JOIN flowbit.workflow_instance_version_change_batch_items AS item
+                    ON item."BatchId" = selected."BatchId"
+                GROUP BY selected."BatchId"
+            )
+            UPDATE flowbit.workflow_instance_version_change_batches AS batch
+            SET "Status" = CASE
+                    WHEN batch."Status" = 'cancelled' THEN 'cancelled'
+                    ELSE 'failed'
+                END,
+                "TotalItemCount" = counts."TotalItemCount",
+                "EligibleItemCount" = counts."EligibleItemCount",
+                "IneligibleItemCount" = counts."IneligibleItemCount",
+                "BlockedItemCount" = counts."BlockedItemCount",
+                "WarningItemCount" = counts."WarningItemCount",
+                "StaleItemCount" = counts."StaleItemCount",
                 "QueuedItemCount" = counts."QueuedItemCount",
                 "SucceededItemCount" = counts."SucceededItemCount",
                 "SkippedItemCount" = counts."SkippedItemCount",

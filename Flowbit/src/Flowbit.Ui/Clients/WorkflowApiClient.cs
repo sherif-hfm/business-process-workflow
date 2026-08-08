@@ -291,6 +291,112 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("The API returned an empty administrative action batch.");
     }
 
+    public async Task<PagedResult<InstanceVersionChangeCandidateDto>> SearchInstanceVersionChangeCandidatesAsync(
+        InstanceVersionChangeCandidateSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instance-version-change-batches/candidates/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVersionChangeCandidateDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVersionChangeCandidateDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<InstanceVersionChangeBatchDetailDto> CreateInstanceVersionChangeBatchAsync(
+        CreateInstanceVersionChangeBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instance-version-change-batches", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVersionChangeBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance version-change batch.");
+    }
+
+    public async Task<PagedResult<InstanceVersionChangeBatchSummaryDto>> GetInstanceVersionChangeBatchesAsync(
+        InstanceVersionChangeBatchSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var parameters = new List<string>
+        {
+            $"page={request.Page ?? 1}",
+            $"pageSize={request.PageSize ?? 50}"
+        };
+        AddQueryValue(parameters, "workflowKey", request.WorkflowKey);
+        AddQueryValue(parameters, "sourceWorkflowId", request.SourceWorkflowId);
+        AddQueryValue(parameters, "targetWorkflowId", request.TargetWorkflowId);
+        AddQueryValue(parameters, "status", request.Status);
+        AddQueryValue(parameters, "preparedBy", request.PreparedBy);
+
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-version-change-batches?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVersionChangeBatchSummaryDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVersionChangeBatchSummaryDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<InstanceVersionChangeBatchDetailDto?> GetInstanceVersionChangeBatchAsync(
+        long batchId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-version-change-batches/{batchId}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVersionChangeBatchDetailDto>(cancellationToken);
+    }
+
+    public async Task<PagedResult<InstanceVersionChangeBatchItemDto>> GetInstanceVersionChangeBatchItemsAsync(
+        long batchId,
+        string? status = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        AddQueryValue(parameters, "status", status);
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-version-change-batches/{batchId}/items?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVersionChangeBatchItemDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVersionChangeBatchItemDto>([], page, pageSize, 0);
+    }
+
+    public async Task<InstanceVersionChangeBatchDetailDto> ConfirmInstanceVersionChangeBatchAsync(
+        long batchId,
+        ConfirmInstanceVersionChangeBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instance-version-change-batches/{batchId}/confirm", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVersionChangeBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance version-change batch.");
+    }
+
+    public async Task<InstanceVersionChangeBatchDetailDto> CancelInstanceVersionChangeBatchAsync(
+        long batchId,
+        CancelInstanceVersionChangeBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instance-version-change-batches/{batchId}/cancel", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVersionChangeBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance version-change batch.");
+    }
+
     public async Task PublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsync($"/api/workflows/{id}/publish", null, cancellationToken);

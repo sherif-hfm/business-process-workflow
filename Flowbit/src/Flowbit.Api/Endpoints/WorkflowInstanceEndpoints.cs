@@ -1,15 +1,13 @@
 using System.Security.Claims;
 using System.Text.Json;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.DependencyInjection;
-using Serilog;
 using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
+using Serilog;
 
 namespace Flowbit.Api.Endpoints;
 
@@ -79,23 +77,23 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
-        RequireWorkflowAdministrator(
-            group.MapPost("/{id:long}/version-change/preview", PreviewInstanceVersionChange)
+        group.MapPost("/{id:long}/version-change/preview", PreviewInstanceVersionChange)
                 .Produces<InstanceVersionChangePreviewDto>(StatusCodes.Status200OK)
                 .Produces(StatusCodes.Status400BadRequest)
                 .Produces(StatusCodes.Status401Unauthorized)
                 .Produces(StatusCodes.Status403Forbidden)
                 .Produces(StatusCodes.Status404NotFound)
-                .Produces(StatusCodes.Status409Conflict));
+                .Produces(StatusCodes.Status409Conflict)
+                .RequireWorkflowAdministrator();
 
-        RequireWorkflowAdministrator(
-            group.MapPost("/{id:long}/version-change", ChangeInstanceVersion)
+        group.MapPost("/{id:long}/version-change", ChangeInstanceVersion)
                 .Produces<ChangeInstanceVersionResultDto>(StatusCodes.Status200OK)
                 .Produces(StatusCodes.Status400BadRequest)
                 .Produces(StatusCodes.Status401Unauthorized)
                 .Produces(StatusCodes.Status403Forbidden)
                 .Produces(StatusCodes.Status404NotFound)
-                .Produces(StatusCodes.Status409Conflict));
+                .Produces(StatusCodes.Status409Conflict)
+                .RequireWorkflowAdministrator();
 
         group.MapGet("/{id:long}/user-tasks", ListUserTasks)
             .Produces<PagedResult<UserTaskDto>>(StatusCodes.Status200OK);
@@ -142,55 +140,6 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status415UnsupportedMediaType);
 
         return app;
-    }
-
-    private static RouteHandlerBuilder RequireWorkflowAdministrator(RouteHandlerBuilder endpoint)
-    {
-        endpoint.AddEndpointFilter(async (invocationContext, next) =>
-        {
-            var httpContext = invocationContext.HttpContext;
-            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is not null)
-            {
-                return await next(invocationContext);
-            }
-
-            var actorResolver = httpContext.RequestServices.GetRequiredService<IActorContextResolver>();
-            var actor = actorResolver.Resolve(httpContext.User);
-            var settings = httpContext.RequestServices.GetRequiredService<IEngineSettingsService>();
-            var setting = await settings.GetByKeyAsync(
-                "Workflow.RequiredRole",
-                httpContext.RequestAborted);
-            var requiredRolesText = !string.IsNullOrWhiteSpace(setting?.Value)
-                ? setting.Value
-                : "admin";
-            var requiredRoles = requiredRolesText.Split(
-                ',',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (requiredRoles.Length == 0)
-            {
-                requiredRoles = ["admin"];
-                requiredRolesText = "admin";
-            }
-
-            // Authorize with the same normalized actor-role source that the
-            // service snapshots into the immutable version-change audit.
-            var userRoles = actor.Roles
-                .Where(role => !string.IsNullOrWhiteSpace(role))
-                .Select(role => role.Trim())
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!requiredRoles.Any(userRoles.Contains))
-            {
-                Log.Warning(
-                    "User '{User}' with roles [{Roles}] is forbidden from changing an instance workflow version. Required role(s): '{RequiredRole}'",
-                    actor.User ?? "anonymous",
-                    string.Join(", ", userRoles),
-                    requiredRolesText);
-                return Results.Forbid();
-            }
-
-            return await next(invocationContext);
-        });
-        return endpoint;
     }
 
     /// <summary>

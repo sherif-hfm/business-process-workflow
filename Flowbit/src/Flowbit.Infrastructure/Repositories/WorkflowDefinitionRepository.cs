@@ -486,6 +486,15 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                     change.SourceWorkflowDefinitionId == id
                     || change.TargetWorkflowDefinitionId == id,
                     cancellationToken)
+            || await dbContext.WorkflowInstanceVersionChangeBatches.AsNoTracking()
+                .AnyAsync(batch =>
+                    batch.SourceWorkflowDefinitionId == id
+                    || batch.TargetWorkflowDefinitionId == id,
+                    cancellationToken)
+            || await dbContext.WorkflowInstanceVersionChangeBatchItems.AsNoTracking()
+                .AnyAsync(item =>
+                    item.CapturedSourceWorkflowDefinitionId == id,
+                    cancellationToken)
             || await dbContext.WorkflowJobs.AsNoTracking()
                 .AnyAsync(job =>
                     job.InstanceId != null && job.WorkflowDefinitionId == id,

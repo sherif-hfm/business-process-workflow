@@ -14,6 +14,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkflowInstanceVersionChangeEntity> WorkflowInstanceVersionChanges =>
         Set<WorkflowInstanceVersionChangeEntity>();
 
+    public DbSet<WorkflowInstanceVersionChangeBatchEntity> WorkflowInstanceVersionChangeBatches =>
+        Set<WorkflowInstanceVersionChangeBatchEntity>();
+
+    public DbSet<WorkflowInstanceVersionChangeBatchItemEntity> WorkflowInstanceVersionChangeBatchItems =>
+        Set<WorkflowInstanceVersionChangeBatchItemEntity>();
+
     public DbSet<AdministrativeActionBatchEntity> AdministrativeActionBatches =>
         Set<AdministrativeActionBatchEntity>();
 
@@ -766,7 +772,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<WorkflowInstanceVersionChangeEntity>(entity =>
         {
-            entity.ToTable("workflow_instance_version_changes");
+            entity.ToTable("workflow_instance_version_changes", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_changes_batch_correlation",
+                    "(\"BatchId\" IS NULL AND \"BatchItemId\" IS NULL) OR "
+                    + "(\"BatchId\" IS NOT NULL AND \"BatchItemId\" IS NOT NULL)");
+            });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ChangedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ChangedByRolesJson)
@@ -778,6 +790,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.InstanceId, e.ChangedAt, e.Id });
             entity.HasIndex(e => e.SourceWorkflowDefinitionId);
             entity.HasIndex(e => e.TargetWorkflowDefinitionId);
+            entity.HasIndex(e => e.BatchId);
+            entity.HasIndex(e => e.BatchItemId)
+                .IsUnique()
+                .HasFilter("\"BatchItemId\" IS NOT NULL");
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.VersionChanges)
                 .HasForeignKey(e => e.InstanceId)
@@ -789,6 +805,158 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.TargetWorkflowDefinition)
                 .WithMany(e => e.TargetVersionChanges)
                 .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.VersionChanges)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.BatchItem)
+                .WithOne(e => e.VersionChange)
+                .HasForeignKey<WorkflowInstanceVersionChangeEntity>(e => e.BatchItemId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowInstanceVersionChangeBatchEntity>(entity =>
+        {
+            entity.ToTable("workflow_instance_version_change_batches", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batches_status",
+                    "\"Status\" IN ('preparing', 'ready', 'queued', 'running', "
+                    + "'completed', 'completedWithIssues', 'cancelled', 'failed')");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batches_counts",
+                    "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 "
+                    + "AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 "
+                    + "AND \"BlockedItemCount\" >= 0 "
+                    + "AND \"BlockedItemCount\" <= \"IneligibleItemCount\" "
+                    + "AND \"WarningItemCount\" >= 0 AND \"StaleItemCount\" >= 0 "
+                    + "AND \"StaleItemCount\" <= \"IneligibleItemCount\" + \"SkippedItemCount\" "
+                    + "AND \"QueuedItemCount\" >= 0 "
+                    + "AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 "
+                    + "AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batches_definitions",
+                    "\"SourceWorkflowDefinitionId\" > 0 "
+                    + "AND \"TargetWorkflowDefinitionId\" > 0 "
+                    + "AND \"SourceWorkflowDefinitionId\" <> \"TargetWorkflowDefinitionId\"");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batches_reason",
+                    "char_length(btrim(\"Reason\")) BETWEEN 1 AND 1000");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batches_selection",
+                    "jsonb_typeof(\"SelectionJson\") = 'object'");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxWorkflowKeyLength)
+                .IsRequired();
+            entity.Property(e => e.Reason)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxReasonLength)
+                .IsRequired();
+            entity.Property(e => e.SelectionJson)
+                .HasColumnType("jsonb")
+                .IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.PreparedBy)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.PreparedByRolesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'[]'::jsonb");
+            entity.Property(e => e.ConfirmedBy)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxActorNameLength);
+            entity.Property(e => e.ConfirmedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IssuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxIdempotencyKeyLength)
+                .UseCollation("C");
+            entity.Property(e => e.CancelledBy)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxActorNameLength);
+            entity.Property(e => e.CancellationReason)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxReasonLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.WorkflowKey, e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new
+            {
+                e.SourceWorkflowDefinitionId,
+                e.TargetWorkflowDefinitionId,
+                e.UpdatedAt,
+                e.Id
+            });
+            entity.HasIndex(e => new { e.PreparedBy, e.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            entity.HasIndex(e => e.PreparationJobId)
+                .IsUnique()
+                .HasFilter("\"PreparationJobId\" IS NOT NULL");
+            entity.HasIndex(e => e.ExecutionJobId)
+                .IsUnique()
+                .HasFilter("\"ExecutionJobId\" IS NOT NULL");
+            entity.HasOne(e => e.PreparationJob)
+                .WithMany()
+                .HasForeignKey(e => e.PreparationJobId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.ExecutionJob)
+                .WithMany()
+                .HasForeignKey(e => e.ExecutionJobId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.SourceWorkflowDefinition)
+                .WithMany(e => e.SourceVersionChangeBatches)
+                .HasForeignKey(e => e.SourceWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.TargetWorkflowDefinition)
+                .WithMany(e => e.TargetVersionChangeBatches)
+                .HasForeignKey(e => e.TargetWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowInstanceVersionChangeBatchItemEntity>(entity =>
+        {
+            entity.ToTable("workflow_instance_version_change_batch_items", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batch_items_status",
+                    "\"Status\" IN ('preparing', 'eligible', 'ineligible', 'queued', "
+                    + "'succeeded', 'skipped', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batch_items_identity",
+                    "\"BatchId\" > 0 AND \"InstanceId\" > 0 "
+                    + "AND \"CapturedSourceWorkflowDefinitionId\" > 0");
+                table.HasCheckConstraint(
+                    "CK_workflow_instance_version_change_batch_items_issues",
+                    "(\"BlockersJson\" IS NULL OR jsonb_typeof(\"BlockersJson\") = 'array') "
+                    + "AND (\"WarningsJson\" IS NULL OR jsonb_typeof(\"WarningsJson\") = 'array')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.BlockersJson).HasColumnType("jsonb");
+            entity.Property(e => e.WarningsJson).HasColumnType("jsonb");
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorCode)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxErrorCodeLength);
+            entity.Property(e => e.ErrorDescription)
+                .HasMaxLength(InstanceVersionChangeBatchConstraints.MaxErrorDescriptionLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.BatchId, e.InstanceId }).IsUnique();
+            entity.HasIndex(e => new { e.BatchId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
+            entity.HasIndex(e => e.CapturedSourceWorkflowDefinitionId);
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.Items)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.VersionChangeBatchItems)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.CapturedSourceWorkflowDefinition)
+                .WithMany(e => e.VersionChangeBatchItems)
+                .HasForeignKey(e => e.CapturedSourceWorkflowDefinitionId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

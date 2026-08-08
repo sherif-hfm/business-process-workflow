@@ -1,5 +1,5 @@
 - attributes for events task and flows 
- - chnage instances vesrion in batch 
+ 
  
 - receive task
 - Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
@@ -17,6 +17,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- chnage instances vesrion in batch (done)
 - batch action by administrator (done)
 - async flow asyncAfter/asyncBefore and  Timers events (done)
 - add Inclusive Gateway (done)

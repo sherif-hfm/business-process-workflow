@@ -472,6 +472,7 @@ else
                             <th scope="col">To</th>
                             <th scope="col">Actor</th>
                             <th scope="col">Reason</th>
+                            <th scope="col">Batch</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -487,6 +488,20 @@ else
                                     <span class="data-subtitle">@(change.ChangedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", change.ChangedByRoles))</span>
                                 </td>
                                 <td class="text-break">@change.Reason</td>
+                                <td>
+                                    @if (change.BatchId is long batchId)
+                                    {
+                                        <a href="@($"instance-version-changes?batchId={batchId}")">Batch #@batchId</a>
+                                        @if (change.BatchItemId is long batchItemId)
+                                        {
+                                            <span class="data-subtitle">Item #@batchItemId</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span>&mdash;</span>
+                                    }
+                                </td>
                             </tr>
                         }
                     </tbody>

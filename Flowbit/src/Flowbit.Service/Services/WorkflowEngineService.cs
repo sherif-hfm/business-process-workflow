@@ -27,7 +27,8 @@ public sealed partial class WorkflowEngineService(
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger)
-    : IWorkflowEngineService, IWorkflowJobProcessor
+    : IWorkflowEngineService, IWorkflowJobProcessor,
+      IInstanceVersionChangeBatchExecutor
 {
     private const string InstanceListRequiredRoleSettingKey =
         "WorkflowInstances.RequiredRole";

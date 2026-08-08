@@ -518,6 +518,49 @@ Storage follows the hybrid design:
   forced-interruption warnings, reviews affected-task counts and blockers, and
   monitors paged results. Individual task actions continue through the ordinary
   task UI with their normal authorization and behavior.
+- **Batch instance version changes.** The dedicated
+  `/instance-version-changes` management page and
+  `/api/instance-version-change-batches` API move a frozen population of running
+  instances from one exact immutable source definition to one distinct published
+  target definition in the same workflow family. Candidate search supports
+  instance id, business key, active node, and the shared advanced current-variable
+  filter. A selection is either explicit instance ids or an `allMatching` filter
+  snapshot with exclusions. Creation materializes that selection once, rejects an
+  explicit id that is no longer running on the exact source, and reads at most
+  `WorkflowVersionChanges.MaxBatchInstances + 1`; the setting defaults to and is
+  hard-capped at 10,000, so overflow is rejected rather than truncated. The
+  trimmed audit reason is required and contains 1-1,000 Unicode characters.
+
+  Creation only queues durable `instanceVersionChangeBatchPrepare` work. Its
+  per-instance compatibility preview uses the same evaluator as a direct version
+  change and mutates no instance. Warnings remain eligible; blockers and a changed
+  source/timestamp fence become ineligible and stay visible on the frozen item.
+  Confirmation requires the displayed eligible, ineligible, and warning counts
+  plus the batch `UpdatedAt` fence, rechecks the dynamic
+  `Workflow.RequiredRole` administrator policy and target publication, snapshots
+  the confirmer's identity, roles, and allowed claims, and queues only eligible
+  rows. The prepare and execute jobs have four attempts with delays of 10 seconds,
+  one minute, and five minutes.
+
+  `instanceVersionChangeBatchExecute` processes items independently. Under the
+  normal workflow-family and instance locks it rechecks running status, exact
+  source and timestamp, target publication/family, and full compatibility using
+  the confirmer snapshot. Business drift is `skipped`; unexpected processing or
+  exhausted-retry failures are `failed`. The durable stale count is an overlapping
+  classification covering both preparation-time stale/ineligible items and
+  execution-time `stale_since_preparation` skips; the separate blocked count is
+  limited to non-stale preparation blockers. A success atomically changes the
+  instance definition, updates target-owned open runtime snapshots, writes the
+  immutable `workflow_instance_version_changes` audit with its nullable batch and
+  batch-item correlation, and marks the item successful. There is no cross-item
+  transaction or rollback of earlier successes. Paged item detail exposes the
+  stored blockers, warnings, error, execution-result JSON, and correlated audit.
+  Cancellation marks only unstarted
+  preparing/eligible/queued items; an already-started item settles normally. The
+  parent batch is reconciled from durable item counts after normal completion,
+  cancellation, an expired final lease, or retry exhaustion. Successful audit
+  entries link back to their originating batch; legacy and direct-change audits
+  keep null batch correlations.
 - Required `variables` are validated when starting an instance (chosen start
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.

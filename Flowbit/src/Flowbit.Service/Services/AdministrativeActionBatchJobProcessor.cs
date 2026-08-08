@@ -733,14 +733,21 @@ public sealed class AdministrativeActionBatchJobProcessor(
 
 public sealed class WorkflowJobProcessorRouter(
     WorkflowEngineService engine,
-    IAdministrativeActionBatchJobProcessor administrativeBatches)
+    IAdministrativeActionBatchJobProcessor administrativeBatches,
+    IInstanceVersionChangeBatchJobProcessor instanceVersionChangeBatches)
     : IWorkflowJobProcessor
 {
     public Task ProcessAsync(
         WorkflowJobLeaseRecord lease,
         CancellationToken cancellationToken) =>
-        lease.Job.Kind is WorkflowJobKinds.AdministrativeBatchPrepare
-            or WorkflowJobKinds.AdministrativeBatchExecute
-            ? administrativeBatches.ProcessAsync(lease, cancellationToken)
-            : engine.ProcessAsync(lease, cancellationToken);
+        lease.Job.Kind switch
+        {
+            WorkflowJobKinds.AdministrativeBatchPrepare
+                or WorkflowJobKinds.AdministrativeBatchExecute =>
+                administrativeBatches.ProcessAsync(lease, cancellationToken),
+            WorkflowJobKinds.InstanceVersionChangeBatchPrepare
+                or WorkflowJobKinds.InstanceVersionChangeBatchExecute =>
+                instanceVersionChangeBatches.ProcessAsync(lease, cancellationToken),
+            _ => engine.ProcessAsync(lease, cancellationToken)
+        };
 }

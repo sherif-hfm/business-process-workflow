@@ -236,6 +236,145 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
         Assert.False(harness.Transaction.Committed);
     }
 
+    [Fact]
+    public async Task BatchExecute_UsesTheFrozenFenceAndCorrelatesTheAtomicAudit()
+    {
+        var harness = new Harness(sourceVersion: 1, targetVersion: 4);
+        var request = harness.BatchRequest(
+            batchId: 301,
+            batchItemId: 907,
+            reason: "  approved batch correction  ");
+
+        var outcome = await harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+            request,
+            Admin,
+            CancellationToken.None);
+
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(901, outcome.VersionChangeId);
+        Assert.Null(outcome.Code);
+        Assert.Empty(outcome.Blockers);
+        Assert.Equal(1, harness.BatchChangeCalls);
+        Assert.Equal(0, harness.DirectChangeCalls);
+        Assert.Equal(1, harness.SaveCalls);
+        Assert.True(harness.Transaction.Committed);
+        Assert.Equal(301, harness.LastBatchId);
+        Assert.Equal(907, harness.LastBatchItemId);
+        Assert.Equal(harness.Source.Id, harness.LastExpectedSourceWorkflowId);
+        Assert.Equal(request.ExpectedUpdatedAt, harness.LastExpectedUpdatedAt);
+        Assert.Equal(harness.Target.Id, harness.LastTargetWorkflowId);
+        Assert.Equal("approved batch correction", harness.LastReason);
+        Assert.Equal("workflow-admin", harness.LastActor?.User);
+        Assert.Equal(["admin", "operations"], harness.LastActor?.Roles);
+
+        var audit = Assert.Single(harness.Audits);
+        Assert.Equal(301, audit.BatchId);
+        Assert.Equal(907, audit.BatchItemId);
+    }
+
+    [Fact]
+    public async Task BatchExecute_RevalidatesFenceAfterTheInstanceLock()
+    {
+        var harness = new Harness(sourceVersion: 1, targetVersion: 2);
+        var request = harness.BatchRequest();
+        harness.LockedInstanceOverride = harness.Instance with
+        {
+            UpdatedAt = harness.Instance.UpdatedAt.AddSeconds(1)
+        };
+
+        var outcome = await harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+            request,
+            Admin,
+            CancellationToken.None);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal("stale_since_preparation", outcome.Code);
+        Assert.Equal(0, harness.BatchChangeCalls);
+        Assert.Equal(0, harness.SaveCalls);
+        Assert.False(harness.Transaction.Committed);
+    }
+
+    [Fact]
+    public async Task BatchExecute_RevalidatesTargetPublicationAfterTheFamilyLock()
+    {
+        var harness = new Harness(sourceVersion: 1, targetVersion: 2);
+        harness.PublishedTargetAvailable = false;
+
+        var outcome = await harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+            harness.BatchRequest(),
+            Admin,
+            CancellationToken.None);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal(WorkflowVersionCompatibilityCodes.TargetNotPublished, outcome.Code);
+        Assert.Equal(0, harness.BatchChangeCalls);
+        Assert.Equal(0, harness.SaveCalls);
+        Assert.False(harness.Transaction.Committed);
+    }
+
+    [Fact]
+    public async Task BatchExecute_RevalidatesFullCompatibilityUnderRuntimeLocks()
+    {
+        var harness = new Harness(
+            sourceVersion: 1,
+            targetVersion: 2,
+            targetNodeType: BpmnFlowNodeTypes.ServiceTask);
+
+        var outcome = await harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+            harness.BatchRequest(),
+            Admin,
+            CancellationToken.None);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal("incompatible", outcome.Code);
+        Assert.Contains(
+            outcome.Blockers,
+            issue => issue.Code == WorkflowVersionCompatibilityCodes.ActiveNodeTypeChanged);
+        Assert.Equal(0, harness.BatchChangeCalls);
+        Assert.Equal(0, harness.SaveCalls);
+        Assert.False(harness.Transaction.Committed);
+    }
+
+    [Fact]
+    public async Task BatchExecute_DoesNotCommitWhenAtomicMutationFails()
+    {
+        var harness = new Harness(sourceVersion: 1, targetVersion: 2)
+        {
+            BatchMutationException = new InvalidOperationException("database write failed")
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+                harness.BatchRequest(),
+                Admin,
+                CancellationToken.None));
+
+        Assert.Equal("database write failed", exception.Message);
+        Assert.Equal(1, harness.BatchChangeCalls);
+        Assert.Equal(0, harness.SaveCalls);
+        Assert.False(harness.Transaction.Committed);
+    }
+
+    [Fact]
+    public async Task BatchExecute_DoesNotCommitWhenTheFinalSaveFails()
+    {
+        var harness = new Harness(sourceVersion: 1, targetVersion: 2)
+        {
+            SaveException = new InvalidOperationException("save failed")
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.ExecuteInstanceVersionChangeBatchItemAsync(
+                harness.BatchRequest(),
+                Admin,
+                CancellationToken.None));
+
+        Assert.Equal("save failed", exception.Message);
+        Assert.Equal(1, harness.BatchChangeCalls);
+        Assert.Equal(1, harness.SaveCalls);
+        Assert.False(harness.Transaction.Committed);
+    }
+
     private sealed class Harness
     {
         private readonly Dictionary<long, WorkflowDefinitionRecord> definitions;
@@ -326,7 +465,21 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
         public WorkflowInstanceRecord Instance { get; private set; }
         public TestTransaction Transaction { get; }
         public int ChangeCalls { get; private set; }
+        public int DirectChangeCalls { get; private set; }
+        public int BatchChangeCalls { get; private set; }
         public int SaveCalls { get; private set; }
+        public IReadOnlyList<WorkflowInstanceVersionChangeRecord> Audits => audits;
+        public WorkflowInstanceRecord? LockedInstanceOverride { get; set; }
+        public bool PublishedTargetAvailable { get; set; } = true;
+        public Exception? BatchMutationException { get; set; }
+        public Exception? SaveException { get; set; }
+        public long? LastBatchId { get; private set; }
+        public long? LastBatchItemId { get; private set; }
+        public long? LastExpectedSourceWorkflowId { get; private set; }
+        public DateTimeOffset? LastExpectedUpdatedAt { get; private set; }
+        public long? LastTargetWorkflowId { get; private set; }
+        public string? LastReason { get; private set; }
+        public NodeExecutionActorRecord? LastActor { get; private set; }
 
         public Task<ChangeInstanceVersionResultDto?> ChangeAsync() =>
             Service.ChangeInstanceVersionAsync(
@@ -339,12 +492,26 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
                 Admin,
                 CancellationToken.None);
 
+        public InstanceVersionChangeBatchExecutionRequest BatchRequest(
+            long batchId = 301,
+            long batchItemId = 907,
+            string reason = "approved batch correction") =>
+            new(
+                batchId,
+                batchItemId,
+                Instance.Id,
+                Source.Id,
+                Instance.UpdatedAt,
+                Target.Id,
+                reason);
+
         private object? DefinitionCall(MethodInfo method, object?[] arguments) => method.Name switch
         {
             nameof(IWorkflowDefinitionRepository.GetAsync) => Task.FromResult(
                 definitions.GetValueOrDefault((long)arguments[0]!) as WorkflowDefinitionRecord),
             nameof(IWorkflowDefinitionRepository.GetPublishedAsync) => Task.FromResult(
-                definitions.GetValueOrDefault((long)arguments[0]!) is { IsPublished: true } found
+                PublishedTargetAvailable
+                    && definitions.GetValueOrDefault((long)arguments[0]!) is { IsPublished: true } found
                     ? found
                     : null),
             nameof(IWorkflowDefinitionRepository.GetManyAsync) => Task.FromResult<IReadOnlyDictionary<long, WorkflowDefinitionRecord>>(
@@ -360,7 +527,7 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
             nameof(IWorkflowRuntimeRepository.GetInstanceAsync) =>
                 Task.FromResult<WorkflowInstanceRecord?>(Instance),
             nameof(IWorkflowRuntimeRepository.GetInstanceForUpdateAsync) =>
-                Task.FromResult<WorkflowInstanceRecord?>(Instance),
+                Task.FromResult<WorkflowInstanceRecord?>(LockedInstanceOverride ?? Instance),
             nameof(IWorkflowRuntimeRepository.ListExecutionTokensAsync) =>
                 Task.FromResult(tokens),
             nameof(IWorkflowRuntimeRepository.ListUserTasksAsync) =>
@@ -381,7 +548,9 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
                 Task.FromResult<IReadOnlyDictionary<int, SequenceFlowSummaryRecord>>(
                     new Dictionary<int, SequenceFlowSummaryRecord>()),
             nameof(IWorkflowRuntimeRepository.ChangeInstanceWorkflowVersionAsync) =>
-                ChangeVersion(arguments),
+                ChangeVersion(arguments, isBatch: false),
+            nameof(IWorkflowRuntimeRepository.ChangeInstanceWorkflowVersionForBatchAsync) =>
+                ChangeVersion(arguments, isBatch: true),
             nameof(IWorkflowRuntimeRepository.ListVariablesAsync) =>
                 Task.FromResult<IReadOnlyList<InstanceVariableRecord>>([]),
             nameof(IWorkflowRuntimeRepository.ListHistoryAsync) =>
@@ -397,12 +566,34 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
             _ => Unexpected(method, arguments)
         };
 
-        private Task<WorkflowInstanceVersionChangeRecord> ChangeVersion(object?[] arguments)
+        private Task<WorkflowInstanceVersionChangeRecord> ChangeVersion(
+            object?[] arguments,
+            bool isBatch)
         {
             ChangeCalls++;
+            if (isBatch)
+            {
+                BatchChangeCalls++;
+                LastBatchId = (long)arguments[7]!;
+                LastBatchItemId = (long)arguments[8]!;
+                if (BatchMutationException is not null)
+                {
+                    return Task.FromException<WorkflowInstanceVersionChangeRecord>(
+                        BatchMutationException);
+                }
+            }
+            else
+            {
+                DirectChangeCalls++;
+            }
+            LastExpectedSourceWorkflowId = (long)arguments[1]!;
+            LastExpectedUpdatedAt = (DateTimeOffset)arguments[2]!;
             var targetId = (long)arguments[3]!;
             var actor = (NodeExecutionActorRecord)arguments[5]!;
             var reason = (string)arguments[6]!;
+            LastTargetWorkflowId = targetId;
+            LastActor = actor;
+            LastReason = reason;
             var changedAt = Instance.UpdatedAt.AddMinutes(1);
             var audit = new WorkflowInstanceVersionChangeRecord(
                 900 + ChangeCalls,
@@ -412,7 +603,9 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
                 actor.User,
                 actor.Roles,
                 reason,
-                changedAt);
+                changedAt,
+                isBatch ? LastBatchId : null,
+                isBatch ? LastBatchItemId : null);
             audits.Add(audit);
             Instance = Instance with
             {
@@ -449,7 +642,9 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
         private Task SaveChanges()
         {
             SaveCalls++;
-            return Task.CompletedTask;
+            return SaveException is null
+                ? Task.CompletedTask
+                : Task.FromException(SaveException);
         }
 
         private static object? SettingsCall(MethodInfo method, object?[] arguments) => method.Name switch

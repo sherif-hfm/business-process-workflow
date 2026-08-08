@@ -1,0 +1,67 @@
+.version-change-warning {
+    position: sticky;
+    z-index: 3;
+    top: .75rem;
+    box-shadow: 0 8px 22px rgba(146, 64, 14, .08);
+}
+
+.version-definition-grid {
+    display: grid;
+    grid-template-columns: minmax(14rem, 1.35fr) repeat(2, minmax(13rem, 1fr));
+    gap: 1rem;
+    align-items: end;
+}
+
+.version-selection-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+}
+
+.version-selection-mode-card {
+    display: flex;
+    align-items: flex-start;
+    gap: .65rem;
+    padding: .8rem;
+    cursor: pointer;
+    border: 1px solid var(--fb-border-strong);
+    border-radius: var(--fb-radius-sm);
+    background: var(--fb-surface-soft);
+}
+
+.version-selection-mode-card input { margin-top: .25rem; }
+.version-selection-mode-card span,
+.version-selection-mode-card small { display: block; }
+.version-selection-mode-card strong { color: var(--fb-ink); }
+.version-selection-mode-card small { margin-top: .15rem; color: var(--fb-muted); }
+
+.version-status-filter { width: min(15rem, 100%); }
+.version-cancellation-input { width: min(28rem, 100%); }
+.version-result-cell { min-width: 16rem; max-width: 34rem; }
+
+.version-change-json {
+    max-width: 38rem;
+    max-height: 16rem;
+    margin-bottom: 0;
+    padding: .65rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--fb-text);
+    background: var(--fb-surface-soft);
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+    font-size: .7rem;
+}
+
+.version-issue-list {
+    margin: .45rem 0 .65rem;
+    padding-left: 1.2rem;
+    font-size: .74rem;
+}
+
+@media (max-width: 760px) {
+    .version-definition-grid,
+    .version-selection-mode-grid { grid-template-columns: 1fr; }
+    .version-change-warning { position: static; }
+}

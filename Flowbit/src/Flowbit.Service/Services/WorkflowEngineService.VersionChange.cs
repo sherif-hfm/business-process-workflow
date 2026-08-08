@@ -448,7 +448,9 @@ public sealed partial class WorkflowEngineService
             record.ChangedBy,
             record.ChangedByRoles,
             record.Reason,
-            record.ChangedAt);
+            record.ChangedAt,
+            record.BatchId,
+            record.BatchItemId);
 
     private static WorkflowSummaryDto ToVersionSummary(
         WorkflowDefinitionRecord workflow) =>

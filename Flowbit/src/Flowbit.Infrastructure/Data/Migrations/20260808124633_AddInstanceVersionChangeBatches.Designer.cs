@@ -6,6 +6,7 @@ using Flowbit.Infrastructure.Data;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -14,9 +15,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Flowbit.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260808124633_AddInstanceVersionChangeBatches")]
+    partial class AddInstanceVersionChangeBatches
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2146,9 +2149,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
-                    b.Property<int>("BlockedItemCount")
-                        .HasColumnType("integer");
-
                     b.Property<string>("CancellationReason")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
@@ -2293,7 +2293,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.ToTable("workflow_instance_version_change_batches", "flowbit", t =>
                         {
-                            t.HasCheckConstraint("CK_workflow_instance_version_change_batches_counts", "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 AND \"BlockedItemCount\" >= 0 AND \"BlockedItemCount\" <= \"IneligibleItemCount\" AND \"WarningItemCount\" >= 0 AND \"StaleItemCount\" >= 0 AND \"StaleItemCount\" <= \"IneligibleItemCount\" + \"SkippedItemCount\" AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
+                            t.HasCheckConstraint("CK_workflow_instance_version_change_batches_counts", "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 AND \"WarningItemCount\" >= 0 AND \"StaleItemCount\" >= 0 AND \"StaleItemCount\" <= \"IneligibleItemCount\" AND \"QueuedItemCount\" >= 0 AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
 
                             t.HasCheckConstraint("CK_workflow_instance_version_change_batches_definitions", "\"SourceWorkflowDefinitionId\" > 0 AND \"TargetWorkflowDefinitionId\" > 0 AND \"SourceWorkflowDefinitionId\" <> \"TargetWorkflowDefinitionId\"");
 

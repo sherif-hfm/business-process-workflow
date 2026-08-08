@@ -97,7 +97,9 @@ public sealed record InstanceVersionChangeAuditDto(
     string? ChangedBy,
     IReadOnlyList<string> ChangedByRoles,
     string Reason,
-    DateTimeOffset ChangedAt);
+    DateTimeOffset ChangedAt,
+    long? BatchId = null,
+    long? BatchItemId = null);
 
 /// <summary>
 /// Request payload for creating a new workflow definition.

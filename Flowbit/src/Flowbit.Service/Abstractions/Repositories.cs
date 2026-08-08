@@ -581,6 +581,18 @@ public interface IWorkflowRuntimeRepository
         string reason,
         CancellationToken cancellationToken);
 
+    Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionForBatchAsync(
+        long instanceId,
+        long expectedSourceWorkflowDefinitionId,
+        DateTimeOffset expectedUpdatedAt,
+        long targetWorkflowDefinitionId,
+        WorkflowModel targetDefinition,
+        NodeExecutionActorRecord actor,
+        string reason,
+        long batchId,
+        long batchItemId,
+        CancellationToken cancellationToken);
+
     Task AddVariableAsync(
         long instanceId,
         string variableName,

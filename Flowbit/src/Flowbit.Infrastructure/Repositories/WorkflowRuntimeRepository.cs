@@ -124,8 +124,16 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         AppendWorkflowIdFilter(where, args, workflowId);
         AppendWorkflowKeyFilter(where, args, workflowKey);
         AppendBusinessKeyFilter(where, args, businessKey);
-        AppendNodeIdFilter(where, args, nodeId);
-        AppendNodeExternalIdFilter(where, args, nodeExternalId);
+        var activeNodeOnly = string.Equals(
+            status,
+            WorkflowInstanceStatuses.Running,
+            StringComparison.OrdinalIgnoreCase);
+        AppendNodeIdFilter(where, args, nodeId, activeNodeOnly: activeNodeOnly);
+        AppendNodeExternalIdFilter(
+            where,
+            args,
+            nodeExternalId,
+            activeNodeOnly: activeNodeOnly);
         VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         var totalCount = await dbContext.Database
@@ -793,7 +801,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         StringBuilder where,
         List<(string Name, object Value)> args,
         int? nodeId,
-        bool useUserTaskProjection = false)
+        bool useUserTaskProjection = false,
+        bool activeNodeOnly = false)
     {
         if (nodeId is null)
         {
@@ -803,7 +812,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         args.Add(("nodeId", nodeId.Value));
         where.Append(useUserTaskProjection
             ? " AND ut.\"NodeId\" = @nodeId"
-            : """
+            : activeNodeOnly
+                ? """
+               AND EXISTS (
+                    SELECT 1
+                    FROM flowbit.execution_tokens position
+                    WHERE position."InstanceId" = w."Id"
+                      AND position."Status" = 'active'
+                      AND position."NodeId" = @nodeId
+                  )
+              """
+                : """
                AND EXISTS (
                     SELECT 1
                     FROM flowbit.execution_tokens position
@@ -820,7 +839,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         StringBuilder where,
         List<(string Name, object Value)> args,
         string? nodeExternalId,
-        bool useUserTaskProjection = false)
+        bool useUserTaskProjection = false,
+        bool activeNodeOnly = false)
     {
         if (string.IsNullOrWhiteSpace(nodeExternalId))
         {
@@ -830,7 +850,17 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         args.Add(("nodeExternalId", nodeExternalId.Trim()));
         where.Append(useUserTaskProjection
             ? " AND lower(ut.\"NodeExternalId\") = lower(@nodeExternalId)"
-            : """
+            : activeNodeOnly
+                ? """
+               AND EXISTS (
+                    SELECT 1
+                    FROM flowbit.execution_tokens position
+                    WHERE position."InstanceId" = w."Id"
+                      AND position."Status" = 'active'
+                      AND lower(position."NodeExternalId") = lower(@nodeExternalId)
+                  )
+              """
+                : """
                AND EXISTS (
                     SELECT 1
                     FROM flowbit.execution_tokens position
@@ -4650,7 +4680,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return entities.Select(ToRecord).ToList();
     }
 
-    public async Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionAsync(
+    public Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionAsync(
         long instanceId,
         long expectedSourceWorkflowDefinitionId,
         DateTimeOffset expectedUpdatedAt,
@@ -4658,6 +4688,60 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         WorkflowModel targetDefinition,
         NodeExecutionActorRecord actor,
         string reason,
+        CancellationToken cancellationToken) =>
+        ChangeInstanceWorkflowVersionCoreAsync(
+            instanceId,
+            expectedSourceWorkflowDefinitionId,
+            expectedUpdatedAt,
+            targetWorkflowDefinitionId,
+            targetDefinition,
+            actor,
+            reason,
+            batchId: null,
+            batchItemId: null,
+            cancellationToken);
+
+    public Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionForBatchAsync(
+        long instanceId,
+        long expectedSourceWorkflowDefinitionId,
+        DateTimeOffset expectedUpdatedAt,
+        long targetWorkflowDefinitionId,
+        WorkflowModel targetDefinition,
+        NodeExecutionActorRecord actor,
+        string reason,
+        long batchId,
+        long batchItemId,
+        CancellationToken cancellationToken)
+    {
+        if (batchId <= 0 || batchItemId <= 0)
+        {
+            throw new WorkflowDomainException(
+                "BatchId and BatchItemId must be greater than zero.");
+        }
+
+        return ChangeInstanceWorkflowVersionCoreAsync(
+            instanceId,
+            expectedSourceWorkflowDefinitionId,
+            expectedUpdatedAt,
+            targetWorkflowDefinitionId,
+            targetDefinition,
+            actor,
+            reason,
+            batchId,
+            batchItemId,
+            cancellationToken);
+    }
+
+    private async Task<WorkflowInstanceVersionChangeRecord> ChangeInstanceWorkflowVersionCoreAsync(
+        long instanceId,
+        long expectedSourceWorkflowDefinitionId,
+        DateTimeOffset expectedUpdatedAt,
+        long targetWorkflowDefinitionId,
+        WorkflowModel targetDefinition,
+        NodeExecutionActorRecord actor,
+        string reason,
+        long? batchId,
+        long? batchItemId,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetDefinition);
@@ -4690,6 +4774,57 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         {
             throw new WorkflowConflictException(
                 "The workflow instance changed after the version preview; refresh and try again.");
+        }
+
+        WorkflowInstanceVersionChangeBatchItemEntity? batchItem = null;
+        if (batchItemId is long concreteBatchItemId
+            && batchId is long concreteBatchId)
+        {
+            batchItem = dbContext.Set<WorkflowInstanceVersionChangeBatchItemEntity>()
+                    .Local.SingleOrDefault(item => item.Id == concreteBatchItemId)
+                ?? await dbContext.Set<WorkflowInstanceVersionChangeBatchItemEntity>()
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM flowbit.workflow_instance_version_change_batch_items WHERE \"Id\" = {concreteBatchItemId} FOR UPDATE")
+                    .SingleOrDefaultAsync(cancellationToken)
+                ?? throw new WorkflowConflictException(
+                    "The instance version-change batch item no longer exists.");
+            var batch = await dbContext.Set<WorkflowInstanceVersionChangeBatchEntity>()
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    entity => entity.Id == concreteBatchId,
+                    cancellationToken)
+                ?? throw new WorkflowConflictException(
+                    "The instance version-change batch no longer exists.");
+            if (batchItem.BatchId != concreteBatchId
+                || batchItem.InstanceId != instanceId
+                || batchItem.CapturedSourceWorkflowDefinitionId
+                    != expectedSourceWorkflowDefinitionId
+                || batchItem.CapturedInstanceUpdatedAt != expectedUpdatedAt
+                || batch.SourceWorkflowDefinitionId
+                    != expectedSourceWorkflowDefinitionId
+                || batch.TargetWorkflowDefinitionId != targetWorkflowDefinitionId)
+            {
+                throw new WorkflowConflictException(
+                    "The batch item does not match the frozen version-change request.");
+            }
+            if (batchItem.Status != InstanceVersionChangeBatchItemStatuses.Queued)
+            {
+                throw new WorkflowConflictException(
+                    $"Only a queued version-change batch item can execute; item #{batchItem.Id} is '{batchItem.Status}'.");
+            }
+            if (batch.Status is not (
+                    InstanceVersionChangeBatchStatuses.Running
+                    or InstanceVersionChangeBatchStatuses.Cancelled))
+            {
+                throw new WorkflowConflictException(
+                    $"Version-change batch #{batch.Id} is not executable while '{batch.Status}'.");
+            }
+            if (batch.Status == InstanceVersionChangeBatchStatuses.Cancelled
+                && batchItem.StartedAt is null)
+            {
+                throw new WorkflowConflictException(
+                    "The unstarted version-change batch item was cancelled.");
+            }
         }
 
         var target = await dbContext.WorkflowDefinitions
@@ -4820,6 +4955,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             InstanceId = instanceId,
             SourceWorkflowDefinitionId = instance.WorkflowDefinitionId,
             TargetWorkflowDefinitionId = targetWorkflowDefinitionId,
+            BatchId = batchId,
+            BatchItemId = batchItemId,
             ChangedBy = string.IsNullOrWhiteSpace(actor.User) ? null : actor.User!.Trim(),
             ChangedByRolesJson = JsonMapping.ToJsonDocument((IReadOnlyList<string>)normalizedRoles),
             Reason = reason,
@@ -4829,7 +4966,29 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         instance.WorkflowDefinitionId = targetWorkflowDefinitionId;
         instance.UpdatedAt = now;
 
+        if (batchItem is not null)
+        {
+            batchItem.Status = InstanceVersionChangeBatchItemStatuses.Succeeded;
+            batchItem.ErrorCode = null;
+            batchItem.ErrorDescription = null;
+            batchItem.UpdatedAt = now;
+            batchItem.CompletedAt = now;
+        }
+
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (batchItem is not null)
+        {
+            batchItem.ResultJson = JsonSerializer.SerializeToDocument(
+                new
+                {
+                    versionChangeAuditId = audit.Id,
+                    sourceWorkflowId = audit.SourceWorkflowDefinitionId,
+                    targetWorkflowId = audit.TargetWorkflowDefinitionId,
+                    changedAt = audit.ChangedAt
+                },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
         return ToRecord(audit);
     }
 
@@ -5480,7 +5639,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.ChangedBy,
             JsonMapping.ToStringList(entity.ChangedByRolesJson) ?? [],
             entity.Reason,
-            entity.ChangedAt);
+            entity.ChangedAt,
+            entity.BatchId,
+            entity.BatchItemId);
 
     private static ExecutionTokenEntity? SelectRepresentativeToken(
         string instanceStatus,

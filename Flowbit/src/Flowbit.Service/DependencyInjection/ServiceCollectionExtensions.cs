@@ -19,6 +19,10 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IAdministrativeActionBatchService, AdministrativeActionBatchService>();
         services.AddScoped<IAdministrativeActionBatchJobProcessor, AdministrativeActionBatchJobProcessor>();
+        services.AddScoped<IInstanceVersionChangeBatchService, InstanceVersionChangeBatchService>();
+        services.AddScoped<IInstanceVersionChangeBatchJobProcessor, InstanceVersionChangeBatchJobProcessor>();
+        services.AddScoped<IInstanceVersionChangeBatchExecutor>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IWorkflowJobProcessor, WorkflowJobProcessorRouter>();
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();

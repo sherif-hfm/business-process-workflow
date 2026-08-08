@@ -36,5 +36,11 @@ public sealed class WorkflowDefinitionEntity
 
     public List<WorkflowInstanceVersionChangeEntity> TargetVersionChanges { get; set; } = [];
 
+    public List<WorkflowInstanceVersionChangeBatchEntity> SourceVersionChangeBatches { get; set; } = [];
+
+    public List<WorkflowInstanceVersionChangeBatchEntity> TargetVersionChangeBatches { get; set; } = [];
+
+    public List<WorkflowInstanceVersionChangeBatchItemEntity> VersionChangeBatchItems { get; set; } = [];
+
     public List<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems { get; set; } = [];
 }
