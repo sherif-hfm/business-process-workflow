@@ -413,6 +413,78 @@ public sealed class EditorNavigationTests
         Assert.DoesNotContain("model.searchQuery", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.labelPlacements", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.untracedOpacity", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("model.activeTool", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EditorMenus_ExposeAccessibleCompactFileAndToolChoices()
+    {
+        var html = ReadEditorSource();
+        var menuGroup = Regex.Match(
+            html,
+            @"<div(?=[^>]*\bclass=""[^""]*\btoolbar-menu-group\b[^""]*"")(?=[^>]*\baria-label=""Editor menus"")[^>]*>");
+        Assert.True(menuGroup.Success, "The compact editor menu group was not found.");
+
+        var fileMenu = Regex.Match(
+            html,
+            @"<details(?=[^>]*\bid=""fileMenu"")(?=[^>]*\bclass=""toolbar-menu"")(?<attributes>[^>]*)>(?<markup>[\s\S]*?)</details>");
+        Assert.True(fileMenu.Success, "The File toolbar menu was not found.");
+        Assert.DoesNotMatch(@"\bopen(?:\s*=|\s|$)", fileMenu.Groups["attributes"].Value);
+
+        var fileMarkup = fileMenu.Groups["markup"].Value;
+        Assert.Matches(
+            @"<summary(?=[^>]*\bid=""fileMenuSummary"")(?=[^>]*\baria-label=""File actions"")[^>]*>",
+            fileMarkup);
+        Assert.Equal(3, Regex.Matches(fileMarkup, @"<button\b").Count);
+        Assert.Matches(@"<button(?=[^>]*\bid=""newBtn"")(?=[^>]*\btype=""button"")[^>]*>", fileMarkup);
+        Assert.Matches(@"<button(?=[^>]*\bid=""loadBtn"")(?=[^>]*\btype=""button"")[^>]*>", fileMarkup);
+        Assert.Matches(@"<button(?=[^>]*\bid=""saveBtn"")(?=[^>]*\btype=""button"")[^>]*>", fileMarkup);
+
+        var toolMenu = Regex.Match(
+            html,
+            @"<details(?=[^>]*\bid=""toolMenu"")(?=[^>]*\bclass=""toolbar-menu"")(?<attributes>[^>]*)>(?<markup>[\s\S]*?)</details>");
+        Assert.True(toolMenu.Success, "The Tool toolbar menu was not found.");
+        Assert.DoesNotMatch(@"\bopen(?:\s*=|\s|$)", toolMenu.Groups["attributes"].Value);
+
+        var toolMarkup = toolMenu.Groups["markup"].Value;
+        Assert.Matches(
+            @"<summary(?=[^>]*\bid=""toolMenuSummary"")(?=[^>]*\bdata-active-tool=""select"")(?=[^>]*\baria-label=""Current editor tool: Select"")[^>]*>",
+            toolMarkup);
+        Assert.Contains("id=\"activeToolLabel\">Select</span>", toolMarkup, StringComparison.Ordinal);
+        Assert.Equal(2, Regex.Matches(toolMarkup, @"<button\b").Count);
+        Assert.Matches(
+            @"<button(?=[^>]*\bid=""selectToolBtn"")(?=[^>]*\btype=""button"")(?=[^>]*\baria-label=""Select and move workflow items"")(?=[^>]*\baria-pressed=""true"")[^>]*>",
+            toolMarkup);
+        Assert.Matches(
+            @"<button(?=[^>]*\bid=""panToolBtn"")(?=[^>]*\btype=""button"")(?=[^>]*\baria-label=""Pan workflow canvas"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
+            toolMarkup);
+        Assert.Matches(
+            @"<svg(?=[^>]*\bid=""svg"")(?=[^>]*\brole=""application"")(?=[^>]*\baria-label=""Workflow diagram canvas"")(?=[^>]*\bdata-active-tool=""select"")[^>]*>",
+            html);
+        Assert.Contains("let activeTool = \"select\";", html, StringComparison.Ordinal);
+        Assert.Contains("function setActiveTool(tool)", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "function closeToolbarMenus(except = null, restoreFocus = false)",
+            html,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            @"\.toolbar-menu-popover\s*\{[^}]*position:\s*absolute;",
+            html);
+        Assert.Matches(
+            @"\.toolbar-menu-popover\s+\.button-label\s*\{[^}]*display:\s*inline;",
+            html);
+        Assert.DoesNotMatch(
+            @"<div(?=[^>]*\bclass=""toolbar-group"")(?=[^>]*\baria-label=""File actions"")[^>]*>",
+            html);
+        Assert.DoesNotMatch(
+            @"<div(?=[^>]*\bclass=""toolbar-group"")(?=[^>]*\baria-label=""Editor tools"")[^>]*>",
+            html);
+        Assert.Matches(
+            @"\.toolbar-identity\s*\{[^}]*min-width:\s*min\(360px,\s*100%\);",
+            html);
+        Assert.Matches(
+            @"\.wf-name\s*\{[^}]*min-width:\s*0;",
+            html);
     }
 
     [Fact]

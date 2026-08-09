@@ -309,13 +309,78 @@
     z-index: 20;
   }
   .toolbar-identity, .toolbar-group { display: flex; align-items: center; gap: 8px; }
-  .toolbar-identity { min-width: 310px; flex: 1 1 360px; }
+  .toolbar-identity { min-width: min(360px, 100%); flex: 1 1 420px; }
   .toolbar-group {
     padding: 4px;
     border: 1px solid var(--toolbar-group-border);
     border-radius: 10px;
     background: var(--toolbar-group-bg);
   }
+  .toolbar-menu-group { flex: 0 0 auto; gap: 4px; }
+  .toolbar-menu { position: relative; }
+  .toolbar-menu > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 7px 10px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    list-style: none;
+    user-select: none;
+    white-space: nowrap;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .toolbar-menu > summary::-webkit-details-marker { display: none; }
+  .toolbar-menu > summary::marker { content: ""; }
+  .toolbar-menu > summary:hover,
+  .toolbar-menu[open] > summary {
+    background: var(--panel-3);
+    border-color: var(--control-border-strong);
+  }
+  .toolbar-menu-caret {
+    width: 10px;
+    height: 10px;
+    margin-left: 1px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    transition: transform .15s;
+  }
+  .toolbar-menu[open] .toolbar-menu-caret { transform: rotate(180deg); }
+  .toolbar-menu-popover {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 190px;
+    max-width: calc(100vw - 32px);
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid var(--control-border-strong);
+    border-radius: 10px;
+    box-shadow: var(--floating-shadow);
+  }
+  .toolbar-menu-popover button {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .toolbar-menu-popover .button-label { display: inline; }
+  .toolbar-menu-popover .button-icon { margin-right: 5px; }
+  .tool-menu-summary[data-active-tool="select"] .tool-summary-pan,
+  .tool-menu-summary[data-active-tool="pan"] .tool-summary-select { display: none; }
   .app-mark {
     width: 34px;
     height: 34px;
@@ -342,7 +407,7 @@
     padding: 6px 10px;
     border-radius: 8px;
     font-size: 13px;
-    min-width: 180px;
+    min-width: 0;
     flex: 1 1 220px;
     height: 36px;
   }
@@ -365,7 +430,8 @@
   button.primary:hover { background: var(--primary-hover-bg); border-color: var(--primary-hover-border); }
   button.danger { color: var(--on-strong); background: var(--danger-bg); border-color: var(--danger-border); }
   button.active { background: var(--active-bg); border-color: var(--active-border); color: var(--on-strong); }
-  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .resizer:focus-visible {
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+  .toolbar-menu > summary:focus-visible, .resizer:focus-visible {
     outline: 2px solid var(--accent-2);
     outline-offset: 2px;
   }
@@ -428,7 +494,12 @@
 
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
   #svg { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: default; touch-action: none; }
-  #svg.canvas-panning, body.is-space-panning #svg { cursor: grabbing; }
+  #svg[data-active-tool="pan"],
+  #svg[data-active-tool="pan"] * { cursor: grab !important; }
+  #svg.canvas-panning,
+  #svg.canvas-panning *,
+  body.is-space-panning #svg,
+  body.is-space-panning #svg * { cursor: grabbing !important; }
 
   .hint {
     position: absolute;
@@ -1233,6 +1304,7 @@
     header { gap: 8px; }
     .toolbar-identity { flex-basis: 100%; }
     .toolbar-group { flex: 1 1 auto; }
+    .toolbar-menu-group { flex: 0 0 auto; }
     main { --sidebar-width: 310px; }
     .diagram-tools { width: min(520px, calc(100% - 24px)); }
     .duration-input-row, .timer-cycle-controls { grid-template-columns: 1fr; }
@@ -1264,6 +1336,60 @@
     </div>
     <h1>Flowbit — Workflow Editor</h1>
     <input id="wfName" class="wf-name" placeholder="Workflow name" aria-label="Workflow name" />
+  </div>
+  <div class="toolbar-group toolbar-menu-group" role="group" aria-label="Editor menus">
+    <details id="fileMenu" class="toolbar-menu">
+      <summary id="fileMenuSummary" title="File actions" aria-label="File actions">
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5h6l2 2h8v12H4z"/>
+        </svg>
+        <span class="button-label">File</span>
+        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
+      </summary>
+      <div class="toolbar-menu-popover" role="group" aria-label="File actions">
+        <button id="newBtn" type="button" title="Create a new workflow">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg>
+          <span class="button-label">New workflow</span>
+        </button>
+        <button id="loadBtn" type="button" title="Load workflow JSON">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16V8h-8l-2-3H4z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg>
+          <span class="button-label">Load JSON</span>
+        </button>
+        <button id="saveBtn" type="button" title="Save workflow JSON">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg>
+          <span class="button-label">Save JSON</span>
+        </button>
+      </div>
+    </details>
+    <details id="toolMenu" class="toolbar-menu">
+      <summary id="toolMenuSummary" class="tool-menu-summary" data-active-tool="select"
+               title="Current editor tool: Select" aria-label="Current editor tool: Select">
+        <svg class="button-icon tool-summary-select" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
+        </svg>
+        <svg class="button-icon tool-summary-pan" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
+        </svg>
+        <span class="button-label">Tool: <span id="activeToolLabel">Select</span></span>
+        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
+      </summary>
+      <div class="toolbar-menu-popover" role="group" aria-label="Choose editor tool">
+        <button id="selectToolBtn" class="active" type="button"
+                title="Select and move workflow items (V)" aria-label="Select and move workflow items"
+                aria-pressed="true">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
+          </svg><span class="button-label">Select and move items</span>
+        </button>
+        <button id="panToolBtn" type="button"
+                title="Pan the workflow canvas without moving items (H)" aria-label="Pan workflow canvas"
+                aria-pressed="false">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
+          </svg><span class="button-label">Pan canvas only</span>
+        </button>
+      </div>
+    </details>
   </div>
   <div class="toolbar-group" aria-label="Authoring actions">
     <button id="addStepBtn" class="primary" title="Add a workflow node"><svg class="button-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="button-label">Add Node</span></button>
@@ -1302,17 +1428,12 @@
       <span id="themeToggleLabel" class="button-label">Light</span>
     </button>
   </div>
-  <div class="toolbar-group" aria-label="File actions">
-    <button id="newBtn" title="Create a new workflow"><svg class="button-icon" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg><span class="button-label">New</span></button>
-    <button id="loadBtn" title="Load workflow JSON"><svg class="button-icon" viewBox="0 0 24 24"><path d="M4 19h16V8h-8l-2-3H4z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg><span class="button-label">Load JSON</span></button>
-    <button id="saveBtn" title="Save workflow JSON"><svg class="button-icon" viewBox="0 0 24 24"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg><span class="button-label">Save JSON</span></button>
-  </div>
   <input id="fileInput" type="file" accept="application/json,.json" hidden />
 </header>
 
 <main>
   <div class="canvas-wrap">
-    <svg id="svg" role="application" aria-label="Workflow diagram canvas">
+    <svg id="svg" role="application" aria-label="Workflow diagram canvas" data-active-tool="select">
       <defs>
         <pattern id="gridPattern" width="24" height="24" patternUnits="userSpaceOnUse">
           <circle cx="1" cy="1" r="1" fill="var(--grid-dot)" />
@@ -2169,12 +2290,13 @@ function materializeMessageStartVariables(node) {
 }
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
+let activeTool = "select";    // viewport-only editor mode: "select" | "pan"
 let connectMode = false;
 let connectSource = null;     // node id when picking target
 let connectionDrag = null;    // {pointerId, sourceId, side, start, current, hoverTargetId, invalidTargetId, moved}
-let drag = null;              // {id, dx, dy}
-let laneDrag = null;          // {id, dx, dy, nodeOffsets}
-let laneResize = null;        // {id, dx, dy}
+let drag = null;              // {pointerId, id, dx, dy}
+let laneDrag = null;          // {pointerId, id, dx, dy, nodeOffsets}
+let laneResize = null;        // {pointerId, id, dx, dy}
 let traceMode = "local";
 let labelMode = "smart";
 let untracedOpacity = 1;
@@ -2197,6 +2319,14 @@ const inspectorPin = document.getElementById('inspectorPin');
 const hintEl = document.getElementById('hint');
 const wfNameInput = document.getElementById('wfName');
 const resizer = document.getElementById('sidebar-resizer');
+const fileMenu = document.getElementById('fileMenu');
+const fileMenuSummary = document.getElementById('fileMenuSummary');
+const toolMenu = document.getElementById('toolMenu');
+const toolMenuSummary = document.getElementById('toolMenuSummary');
+const activeToolLabel = document.getElementById('activeToolLabel');
+const toolbarMenus = [fileMenu, toolMenu];
+const selectToolBtn = document.getElementById('selectToolBtn');
+const panToolBtn = document.getElementById('panToolBtn');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
 const zoomResetBtn = document.getElementById('zoomResetBtn');
 const zoomInBtn = document.getElementById('zoomInBtn');
@@ -4236,6 +4366,9 @@ function renderHint() {
         : "";
       hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
     }
+  } else if (activeTool === "pan") {
+    hintEl.hidden = false;
+    hintEl.innerHTML = "<b>Pan tool:</b> drag anywhere to move the workflow view without moving items. Press <b>V</b> to select items.";
   } else {
     hintEl.hidden = true;
     hintEl.innerHTML = "";
@@ -7509,6 +7642,65 @@ function finishCanvasPan(e) {
   return true;
 }
 
+function updateEditorToolControls() {
+  const selectActive = activeTool === "select";
+  const activeLabel = selectActive ? "Select" : "Pan";
+  selectToolBtn.classList.toggle("active", selectActive);
+  selectToolBtn.setAttribute("aria-pressed", String(selectActive));
+  panToolBtn.classList.toggle("active", !selectActive);
+  panToolBtn.setAttribute("aria-pressed", String(!selectActive));
+  activeToolLabel.textContent = activeLabel;
+  toolMenuSummary.dataset.activeTool = activeTool;
+  toolMenuSummary.title = `Current editor tool: ${activeLabel}`;
+  toolMenuSummary.setAttribute("aria-label", `Current editor tool: ${activeLabel}`);
+  svg.dataset.activeTool = activeTool;
+}
+
+function closeToolbarMenus(except = null, restoreFocus = false) {
+  let closed = false;
+  toolbarMenus.forEach(menu => {
+    if (menu !== except && menu.open) {
+      const shouldRestoreFocus = restoreFocus && menu.contains(document.activeElement);
+      menu.open = false;
+      if (shouldRestoreFocus) {
+        (menu === fileMenu ? fileMenuSummary : toolMenuSummary).focus();
+      }
+      closed = true;
+    }
+  });
+  return closed;
+}
+
+function finishItemGestureForToolSwitch() {
+  const activeGestures = [drag, laneDrag, laneResize].filter(Boolean);
+  if (!activeGestures.length) return;
+  if (drag) assignNodeLane(drag.id);
+  activeGestures.forEach(gesture => {
+    try { svg.releasePointerCapture(gesture.pointerId); } catch (err) {}
+  });
+  drag = null;
+  laneDrag = null;
+  laneResize = null;
+  commitHistory();
+  renderInspector();
+}
+
+function setActiveTool(tool) {
+  const nextTool = tool === "pan" ? "pan" : "select";
+  if (nextTool !== activeTool) {
+    if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId });
+    if (connectionDrag) clearConnectionGesture();
+    finishItemGestureForToolSwitch();
+  }
+  if (nextTool === "pan") {
+    if (connectMode) setConnectMode(false);
+  }
+  activeTool = nextTool;
+  updateEditorToolControls();
+  closeToolbarMenus(null, true);
+  renderHint();
+}
+
 /* ---------- Selection ---------- */
 function isSel(kind, id) {
   if (!selected || selected.kind !== kind) return false;
@@ -7726,6 +7918,7 @@ function clearConnectionGesture() {
 
 function onConnectionHandlePointerDown(event, node, side) {
   if (event.button !== 0) return;
+  if (activeTool === "pan") return;
   event.preventDefault();
   event.stopPropagation();
   if (connectMode && connectSource != null) {
@@ -7807,6 +8000,7 @@ function finishConnectionGesture(event) {
 
 function onNodePointerDown(e, node) {
   if (e.button !== 0) return;
+  if (activeTool === "pan") return;
   if (connectMode) {
     e.stopPropagation();
     handleConnectClick(node);
@@ -7815,17 +8009,19 @@ function onNodePointerDown(e, node) {
   e.stopPropagation();
   select('node', node.id);
   const pt = svgPoint(e);
-  drag = { id: node.id, dx: pt.x - node.x, dy: pt.y - node.y };
+  drag = { pointerId: e.pointerId, id: node.id, dx: pt.x - node.x, dy: pt.y - node.y };
   svg.setPointerCapture(e.pointerId);
 }
 
 function onLanePointerDown(e, lane) {
   if (e.button !== 0) return;
+  if (activeTool === "pan") return;
   if (connectMode) return;
   e.stopPropagation();
   select('lane', lane.id);
   const pt = svgPoint(e);
   laneDrag = {
+    pointerId: e.pointerId,
     id: lane.id,
     dx: pt.x - lane.x,
     dy: pt.y - lane.y,
@@ -7838,11 +8034,17 @@ function onLanePointerDown(e, lane) {
 
 function onLaneResizePointerDown(e, lane) {
   if (e.button !== 0) return;
+  if (activeTool === "pan") return;
   if (connectMode) return;
   e.stopPropagation();
   select('lane', lane.id);
   const pt = svgPoint(e);
-  laneResize = { id: lane.id, dx: lane.x + lane.w - pt.x, dy: lane.y + lane.h - pt.y };
+  laneResize = {
+    pointerId: e.pointerId,
+    id: lane.id,
+    dx: lane.x + lane.w - pt.x,
+    dy: lane.y + lane.h - pt.y
+  };
   svg.setPointerCapture(e.pointerId);
 }
 
@@ -7899,7 +8101,8 @@ svg.addEventListener("pointercancel", (e) => {
   laneResize = null;
 });
 svg.addEventListener("pointerdown", (e) => {
-  if ((spacePressed && e.button === 0) || e.button === 1) {
+  if ((activeTool === "pan" && e.button === 0) ||
+      (spacePressed && e.button === 0) || e.button === 1) {
     startCanvasPan(e, false);
     e.stopPropagation();
   }
@@ -7910,7 +8113,7 @@ svg.addEventListener("pointerdown", (e) => {
   }
 });
 svg.addEventListener("click", (e) => {
-  if (!suppressCanvasClick) return;
+  if (activeTool !== "pan" && !suppressCanvasClick) return;
   suppressCanvasClick = false;
   e.preventDefault();
   e.stopPropagation();
@@ -7980,6 +8183,7 @@ function handleConnectClick(node) {
   }
 }
 function setConnectMode(on, sourceId = null) {
+  if (on && activeTool !== "select") setActiveTool("select");
   connectMode = on;
   connectSource = on ? sourceId : null;
   document.getElementById("connectBtn").classList.toggle("active", on);
@@ -10404,6 +10608,19 @@ setInspectorPinned(readUiPreference("flowbit.inspectorPinned") === "true", false
 setDiagramToolsPinned(readUiPreference("flowbit.diagramToolsPinned") === "true", false);
 
 /* ---------- Wire up toolbar ---------- */
+toolbarMenus.forEach(menu => {
+  menu.addEventListener("toggle", () => {
+    if (menu.open) closeToolbarMenus(menu);
+  });
+});
+document.addEventListener("pointerdown", event => {
+  if (!toolbarMenus.some(menu => menu.contains(event.target))) closeToolbarMenus();
+}, true);
+selectToolBtn.onclick = () => {
+  if (connectMode) setConnectMode(false);
+  setActiveTool("select");
+};
+panToolBtn.onclick = () => setActiveTool("pan");
 document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addNode(); };
 document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
 document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
@@ -10411,7 +10628,10 @@ themeToggleBtn.onclick = () =>
   setTheme(nextTheme(document.documentElement.dataset.theme), true);
 undoBtn.onclick = undo;
 redoBtn.onclick = redo;
-document.getElementById("saveBtn").onclick = save;
+document.getElementById("saveBtn").onclick = () => {
+  closeToolbarMenus(null, true);
+  save();
+};
 zoomOutBtn.onclick = () => zoomTo(viewState.zoom / 1.2);
 zoomResetBtn.onclick = () => zoomTo(1);
 zoomInBtn.onclick = () => zoomTo(viewState.zoom * 1.2);
@@ -10484,6 +10704,7 @@ document.addEventListener("pointerdown", event => {
   if (!event.target.closest(".diagram-search")) closeDiagramSearchResults();
 });
 document.getElementById("newBtn").onclick = () => {
+  closeToolbarMenus(null, true);
   if (confirm("Start a new empty workflow? Unsaved changes will be lost.")) {
     model = newModel();
     diagramSearchInput.value = "";
@@ -10493,7 +10714,10 @@ document.getElementById("newBtn").onclick = () => {
     resetHistory();
   }
 };
-document.getElementById("loadBtn").onclick = () => document.getElementById("fileInput").click();
+document.getElementById("loadBtn").onclick = () => {
+  closeToolbarMenus(null, true);
+  document.getElementById("fileInput").click();
+};
 document.getElementById("fileInput").onchange = (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -10545,6 +10769,10 @@ window.addEventListener("keydown", (e) => {
     closeValidationErrors();
     return;
   }
+  if (e.key === "Escape" && closeToolbarMenus(null, true)) {
+    e.preventDefault();
+    return;
+  }
   const t = e.target;
   if (e.key === "/" && !(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
       || t.tagName === "SELECT" || t.tagName === "BUTTON"
@@ -10552,6 +10780,19 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     diagramSearchInput.focus();
     diagramSearchInput.select();
+    return;
+  }
+  const toolShortcut = e.key.toLowerCase();
+  if (!e.ctrlKey && !e.metaKey && !e.altKey &&
+      (toolShortcut === "v" || toolShortcut === "h") &&
+      !(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+              t.tagName === "SELECT" || t.isContentEditable))) {
+    e.preventDefault();
+    if (toolShortcut === "h") setActiveTool("pan");
+    else {
+      if (connectMode) setConnectMode(false);
+      setActiveTool("select");
+    }
     return;
   }
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
@@ -10566,6 +10807,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (connectionDrag) { clearConnectionGesture(); renderHint(); }
     else if (connectMode) setConnectMode(false);
+    else if (activeTool === "pan") setActiveTool("select");
     else clearSelection();
     return;
   }
@@ -10655,6 +10897,7 @@ if (typeof ResizeObserver !== "undefined") {
 }
 
 /* ---------- Init ---------- */
+setActiveTool("select");
 resetViewport();
 render();
 resetHistory();

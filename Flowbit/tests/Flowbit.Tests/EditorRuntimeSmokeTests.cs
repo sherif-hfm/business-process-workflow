@@ -8,6 +8,316 @@ namespace Flowbit.Tests;
 public sealed class EditorRuntimeSmokeTests
 {
     [Fact]
+    public void ToolbarMenusTrackTheActiveToolAndCloseWithoutChangingEditorState()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              selected = { kind: 'node', nodeId: 42 };
+              setActiveTool('select');
+
+              fileMenu.open = true;
+              toolMenu.open = true;
+              const helperClosedSibling = closeToolbarMenus(toolMenu);
+              const helperState = {
+                fileOpen: fileMenu.open,
+                toolOpen: toolMenu.open
+              };
+
+              fileMenu.open = true;
+              toolMenu.open = true;
+              fileMenu.dispatchEvent({ type: 'toggle', target: fileMenu, bubbles: false });
+              const toggleState = {
+                fileOpen: fileMenu.open,
+                toolOpen: toolMenu.open
+              };
+
+              toolMenu.open = true;
+              setActiveTool('pan');
+              const panState = {
+                activeTool,
+                activeLabel: activeToolLabel.textContent,
+                summaryTool: toolMenuSummary.dataset.activeTool,
+                summaryTitle: toolMenuSummary.title,
+                summaryLabel: toolMenuSummary.getAttribute('aria-label'),
+                selectPressed: selectToolBtn.getAttribute('aria-pressed'),
+                panPressed: panToolBtn.getAttribute('aria-pressed'),
+                toolOpen: toolMenu.open
+              };
+
+              let fileInputClicked = false;
+              document.getElementById('fileInput').click = () => {
+                fileInputClicked = true;
+              };
+              fileMenu.open = true;
+              document.getElementById('loadBtn').onclick();
+              const fileActionClosed = !fileMenu.open;
+
+              const insideTarget = document.getElementById('newBtn');
+              fileMenu.contains = target => target === insideTarget;
+              toolMenu.contains = () => false;
+              fileMenu.open = true;
+              document.dispatchEvent(fakePointerEvent(
+                'pointerdown', insideTarget, 301, 0, 0));
+              const insidePointerKeptMenuOpen = fileMenu.open;
+
+              document.dispatchEvent(fakePointerEvent(
+                'pointerdown', fakeElement('div'), 302, 0, 0));
+              const outsidePointerClosedMenus = !fileMenu.open && !toolMenu.open;
+
+              const focusedToolItem = document.getElementById('panToolBtn');
+              let toolSummaryFocused = false;
+              toolMenu.contains = target => target === focusedToolItem;
+              toolMenuSummary.focus = () => { toolSummaryFocused = true; };
+              document.activeElement = focusedToolItem;
+              toolMenu.open = true;
+              document.getElementById('validation-modal').style.display = 'none';
+              const escape = {
+                type: 'keydown',
+                key: 'Escape',
+                code: 'Escape',
+                target: svg,
+                ctrlKey: false,
+                metaKey: false,
+                altKey: false,
+                shiftKey: false,
+                defaultPrevented: false,
+                preventDefault() { this.defaultPrevented = true; }
+              };
+              window.dispatchEvent(escape);
+
+              return JSON.stringify({
+                helperClosedSibling,
+                helperState,
+                toggleState,
+                panState,
+                fileActionClosed,
+                fileInputClicked,
+                insidePointerKeptMenuOpen,
+                outsidePointerClosedMenus,
+                escapeClosedMenu: !toolMenu.open,
+                escapePrevented: escape.defaultPrevented,
+                toolSummaryFocused,
+                activeToolAfterEscape: activeTool,
+                selectedAfterEscape: selected
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("helperClosedSibling").GetBoolean());
+        Assert.False(root.GetProperty("helperState").GetProperty("fileOpen").GetBoolean());
+        Assert.True(root.GetProperty("helperState").GetProperty("toolOpen").GetBoolean());
+        Assert.True(root.GetProperty("toggleState").GetProperty("fileOpen").GetBoolean());
+        Assert.False(root.GetProperty("toggleState").GetProperty("toolOpen").GetBoolean());
+
+        var panState = root.GetProperty("panState");
+        Assert.Equal("pan", panState.GetProperty("activeTool").GetString());
+        Assert.Equal("Pan", panState.GetProperty("activeLabel").GetString());
+        Assert.Equal("pan", panState.GetProperty("summaryTool").GetString());
+        Assert.Equal("Current editor tool: Pan", panState.GetProperty("summaryTitle").GetString());
+        Assert.Equal("Current editor tool: Pan", panState.GetProperty("summaryLabel").GetString());
+        Assert.Equal("false", panState.GetProperty("selectPressed").GetString());
+        Assert.Equal("true", panState.GetProperty("panPressed").GetString());
+        Assert.False(panState.GetProperty("toolOpen").GetBoolean());
+
+        Assert.True(root.GetProperty("fileActionClosed").GetBoolean());
+        Assert.True(root.GetProperty("fileInputClicked").GetBoolean());
+        Assert.True(root.GetProperty("insidePointerKeptMenuOpen").GetBoolean());
+        Assert.True(root.GetProperty("outsidePointerClosedMenus").GetBoolean());
+        Assert.True(root.GetProperty("escapeClosedMenu").GetBoolean());
+        Assert.True(root.GetProperty("escapePrevented").GetBoolean());
+        Assert.True(root.GetProperty("toolSummaryFocused").GetBoolean());
+        Assert.Equal("pan", root.GetProperty("activeToolAfterEscape").GetString());
+        Assert.Equal(42, root.GetProperty("selectedAfterEscape").GetProperty("nodeId").GetInt32());
+    }
+
+    [Fact]
+    public void PanToolMovesOnlyTheViewportAndPreservesWorkflowInteractionState()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'pan-tool-smoke',
+                name: 'Pan tool smoke',
+                initialEventId: 1,
+                variables: [],
+                lanes: [{ id: 10, name: 'Operations', x: 40, y: 50, w: 700, h: 280 }],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Review',
+                  type: NODE_TYPE.USER_TASK,
+                  laneId: 10,
+                  x: 120,
+                  y: 130
+                }],
+                sequenceFlows: []
+              };
+              selected = { kind: 'node', nodeId: 1 };
+              connectMode = true;
+              connectSource = 1;
+              viewState = { x: 20, y: 30, zoom: 2 };
+              const before = JSON.parse(JSON.stringify({
+                lanes: model.lanes,
+                flowNodes: model.flowNodes,
+                selected
+              }));
+
+              setActiveTool('pan');
+              const target = fakeElement('g');
+              target.parentNode = svg;
+              let targetClickReached = false;
+              target.addEventListener('pointerdown', event => onNodePointerDown(event, model.flowNodes[0]));
+              target.addEventListener('click', () => { targetClickReached = true; });
+              target.dispatchEvent(fakePointerEvent('pointerdown', target, 101, 200, 160));
+              svg.dispatchEvent(fakePointerEvent('pointermove', svg, 101, 260, 200));
+              svg.dispatchEvent(fakePointerEvent('pointerup', svg, 101, 260, 200));
+              const click = fakePointerEvent('click', target, 101, 260, 200);
+              target.dispatchEvent(click);
+
+              return JSON.stringify({
+                before,
+                after: {
+                  lanes: model.lanes,
+                  flowNodes: model.flowNodes,
+                  selected
+                },
+                viewState,
+                activeTool,
+                svgActiveTool: svg.dataset.activeTool,
+                selectPressed: selectToolBtn.getAttribute('aria-pressed'),
+                panPressed: panToolBtn.getAttribute('aria-pressed'),
+                connectMode,
+                connectSource,
+                panFinished: canvasPan === null,
+                itemDragBlocked: drag === null,
+                clickPrevented: click.defaultPrevented,
+                targetClickReached
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("pan", root.GetProperty("activeTool").GetString());
+        Assert.Equal("pan", root.GetProperty("svgActiveTool").GetString());
+        Assert.Equal("false", root.GetProperty("selectPressed").GetString());
+        Assert.Equal("true", root.GetProperty("panPressed").GetString());
+        Assert.False(root.GetProperty("connectMode").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("connectSource").ValueKind);
+        Assert.True(root.GetProperty("panFinished").GetBoolean());
+        Assert.True(root.GetProperty("itemDragBlocked").GetBoolean());
+        Assert.True(root.GetProperty("clickPrevented").GetBoolean());
+        Assert.False(root.GetProperty("targetClickReached").GetBoolean());
+        Assert.Equal(
+            root.GetProperty("before").GetRawText(),
+            root.GetProperty("after").GetRawText());
+
+        var viewState = root.GetProperty("viewState");
+        Assert.Equal(-10, viewState.GetProperty("x").GetDouble());
+        Assert.Equal(10, viewState.GetProperty("y").GetDouble());
+        Assert.Equal(2, viewState.GetProperty("zoom").GetDouble());
+    }
+
+    [Fact]
+    public void SwitchingToolsFinishesItemAndCanvasGestures()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'pan-tool-switch-smoke',
+                name: 'Pan tool switch smoke',
+                initialEventId: 1,
+                variables: [],
+                lanes: [{ id: 10, name: 'Operations', x: 40, y: 50, w: 700, h: 280 }],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Review',
+                  type: NODE_TYPE.USER_TASK,
+                  laneId: 10,
+                  x: 120,
+                  y: 130
+                }],
+                sequenceFlows: []
+              };
+              let node = model.flowNodes[0];
+              let lane = model.lanes[0];
+              resetHistory();
+
+              setActiveTool('select');
+              onNodePointerDown(fakePointerEvent('pointerdown', fakeElement('g'), 201, 130, 140), node);
+              const nodeDragStarted = drag !== null;
+              svg.dispatchEvent(fakePointerEvent('pointermove', svg, 201, 180, 190));
+              const nodeWasMoved = node.x === 170 && node.y === 180;
+              setActiveTool('pan');
+              const nodeDragStopped = drag === null;
+              const itemMoveCommitted = undoHistory.length === 1;
+              undo();
+              const itemMoveUndoable = getNode(1).x === 120 && getNode(1).y === 130;
+              node = getNode(1);
+              lane = getLane(10);
+
+              setActiveTool('select');
+              onLanePointerDown(fakePointerEvent('pointerdown', fakeElement('g'), 202, 50, 60), lane);
+              const laneDragStarted = laneDrag !== null;
+              setActiveTool('pan');
+              const laneDragStopped = laneDrag === null;
+
+              setActiveTool('select');
+              onLaneResizePointerDown(fakePointerEvent('pointerdown', fakeElement('rect'), 203, 740, 330), lane);
+              const laneResizeStarted = laneResize !== null;
+              setActiveTool('pan');
+              const laneResizeStopped = laneResize === null;
+
+              viewState = { x: 0, y: 0, zoom: 1 };
+              const target = fakeElement('g');
+              svg.dispatchEvent(fakePointerEvent('pointerdown', target, 204, 200, 160));
+              svg.dispatchEvent(fakePointerEvent('pointermove', target, 204, 240, 190));
+              const viewBeforeSelect = JSON.parse(JSON.stringify(viewState));
+              setActiveTool('select');
+              const canvasPanStopped = canvasPan === null;
+              svg.dispatchEvent(fakePointerEvent('pointermove', target, 204, 300, 240));
+
+              return JSON.stringify({
+                nodeDragStarted,
+                nodeWasMoved,
+                nodeDragStopped,
+                itemMoveCommitted,
+                itemMoveUndoable,
+                laneDragStarted,
+                laneDragStopped,
+                laneResizeStarted,
+                laneResizeStopped,
+                canvasPanStopped,
+                viewBeforeSelect,
+                viewAfterSelect: viewState,
+                activeTool
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("nodeDragStarted").GetBoolean());
+        Assert.True(root.GetProperty("nodeWasMoved").GetBoolean());
+        Assert.True(root.GetProperty("nodeDragStopped").GetBoolean());
+        Assert.True(root.GetProperty("itemMoveCommitted").GetBoolean());
+        Assert.True(root.GetProperty("itemMoveUndoable").GetBoolean());
+        Assert.True(root.GetProperty("laneDragStarted").GetBoolean());
+        Assert.True(root.GetProperty("laneDragStopped").GetBoolean());
+        Assert.True(root.GetProperty("laneResizeStarted").GetBoolean());
+        Assert.True(root.GetProperty("laneResizeStopped").GetBoolean());
+        Assert.True(root.GetProperty("canvasPanStopped").GetBoolean());
+        Assert.Equal("select", root.GetProperty("activeTool").GetString());
+        Assert.Equal(
+            root.GetProperty("viewBeforeSelect").GetRawText(),
+            root.GetProperty("viewAfterSelect").GetRawText());
+    }
+
+    [Fact]
     public void UserTaskInspectorRendersWithoutLeakingTypeChangeCallbackState()
     {
         var engine = CreateEditorEngine();
@@ -859,6 +1169,7 @@ public sealed class EditorRuntimeSmokeTests
             classList: fakeClassList,
             children: [],
             attributes: {},
+            eventListeners: {},
             value: '',
             checked: false,
             disabled: false,
@@ -867,10 +1178,47 @@ public sealed class EditorRuntimeSmokeTests
             innerHTML: '',
             clientWidth: 1000,
             clientHeight: 700,
-            appendChild(child) { this.children.push(child); return child; },
-            replaceChildren(...children) { this.children = children; },
+            appendChild(child) {
+              this.children.push(child);
+              if (child) child.parentNode = this;
+              return child;
+            },
+            replaceChildren(...children) {
+              this.children = children;
+              children.forEach(child => { if (child) child.parentNode = this; });
+            },
             remove() {},
-            addEventListener() {},
+            addEventListener(type, listener, options) {
+              const capture = options === true || !!(options && options.capture);
+              (this.eventListeners[type] ||= []).push({ listener, capture });
+            },
+            dispatchEvent(event) {
+              event.target ||= this;
+              const path = [];
+              for (let element = this; element; element = element.parentNode) path.push(element);
+              const invoke = (element, capture) => {
+                event.currentTarget = element;
+                const listeners = element.eventListeners?.[event.type] || [];
+                for (const entry of listeners) {
+                  if (entry.capture !== capture) continue;
+                  entry.listener.call(element, event);
+                  if (event.immediatePropagationStopped) break;
+                }
+              };
+              for (let index = path.length - 1;
+                   index > 0 && !event.propagationStopped;
+                   index--) invoke(path[index], true);
+              if (!event.propagationStopped) {
+                invoke(path[0], true);
+                if (!event.immediatePropagationStopped) invoke(path[0], false);
+              }
+              if (event.bubbles !== false) {
+                for (let index = 1;
+                     index < path.length && !event.propagationStopped;
+                     index++) invoke(path[index], false);
+              }
+              return !event.defaultPrevented;
+            },
             setAttribute(key, value) { this.attributes[key] = String(value); },
             setAttributeNS(_namespace, key, value) { this.attributes[key] = String(value); },
             getAttribute(key) { return this.attributes[key] ?? null; },
@@ -905,7 +1253,28 @@ public sealed class EditorRuntimeSmokeTests
             }
           };
         }
+        function fakePointerEvent(type, target, pointerId, clientX, clientY, button = 0) {
+          return {
+            type,
+            target,
+            pointerId,
+            clientX,
+            clientY,
+            button,
+            bubbles: true,
+            defaultPrevented: false,
+            propagationStopped: false,
+            immediatePropagationStopped: false,
+            preventDefault() { this.defaultPrevented = true; },
+            stopPropagation() { this.propagationStopped = true; },
+            stopImmediatePropagation() {
+              this.immediatePropagationStopped = true;
+              this.propagationStopped = true;
+            }
+          };
+        }
         const fakeElements = new Map();
+        const documentEventListeners = {};
         const document = {
           documentElement: fakeElement('html'),
           body: fakeElement('body'),
@@ -929,7 +1298,21 @@ public sealed class EditorRuntimeSmokeTests
             node.textContent = String(text);
             return node;
           },
-          addEventListener() {}
+          addEventListener(type, listener, options) {
+            const capture = options === true || !!(options && options.capture);
+            (documentEventListeners[type] ||= []).push({ listener, capture });
+          },
+          dispatchEvent(event) {
+            event.target ||= this;
+            event.currentTarget = this;
+            const listeners = documentEventListeners[event.type] || [];
+            for (const capture of [true, false]) {
+              for (const entry of listeners) {
+                if (entry.capture === capture) entry.listener.call(this, event);
+              }
+            }
+            return !event.defaultPrevented;
+          }
         };
         const localStorage = {
           getItem() { return null; },
@@ -939,14 +1322,29 @@ public sealed class EditorRuntimeSmokeTests
           createObjectURL() { return 'blob:test'; },
           revokeObjectURL() {}
         };
+        const windowEventListeners = {};
         const window = {
           document,
           localStorage,
           URL: fakeUrl,
           innerWidth: 1400,
           innerHeight: 900,
-          addEventListener() {},
-          removeEventListener() {},
+          addEventListener(type, listener) {
+            (windowEventListeners[type] ||= []).push(listener);
+          },
+          removeEventListener(type, listener) {
+            const listeners = windowEventListeners[type] || [];
+            const index = listeners.indexOf(listener);
+            if (index >= 0) listeners.splice(index, 1);
+          },
+          dispatchEvent(event) {
+            event.target ||= this;
+            event.currentTarget = this;
+            for (const listener of windowEventListeners[event.type] || []) {
+              listener.call(this, event);
+            }
+            return !event.defaultPrevented;
+          },
           matchMedia() {
             return { matches: false, addEventListener() {} };
           },
