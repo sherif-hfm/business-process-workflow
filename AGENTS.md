@@ -67,6 +67,27 @@ The editor is dependency-free at runtime. Its save validator and selected editor
 helpers are covered by the `Flowbit/tests/Flowbit.Tests` test project; visual and
 pointer interactions still require manual in-browser validation.
 
+## Mandatory real-browser UI verification
+
+For every change affecting HTML, CSS, rendered layout, or pointer/keyboard
+interactions:
+
+1. Run the relevant automated tests.
+2. Serve the relevant application over localhost and open it in a real browser.
+3. Exercise the changed behavior with real clicks, typing, keyboard input, and
+   pointer drags, as applicable.
+4. Inspect the rendered layout at relevant viewport widths and check the browser
+   console for errors and warnings.
+5. Jint, jsdom, DOM stubs, simulated browser environments, and unit tests do not
+   count as real-browser verification.
+6. If real-browser testing is unavailable, do not claim that the UI is verified;
+   clearly report the limitation.
+7. In the final response, report separately:
+   - the automated test command and result;
+   - the browser and localhost URL, interactions exercised, viewport sizes, and
+     console result;
+   - a screenshot when the visual appearance changed.
+
 ---
 
 ## Runtime engine (`Flowbit/`)
