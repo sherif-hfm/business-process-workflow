@@ -318,6 +318,133 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void NodeDragSnapsToTheConfiguredGridOnlyWhenEnabled()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'grid-snap-smoke',
+                name: 'Grid snap smoke',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Review',
+                  type: NODE_TYPE.USER_TASK,
+                  laneId: null,
+                  x: 120,
+                  y: 130,
+                  attributes: [],
+                  roles: [],
+                  variables: []
+                }],
+                sequenceFlows: []
+              };
+
+              const moveFromOrigin = pointerId => {
+                const node = getNode(1);
+                node.x = 120;
+                node.y = 130;
+                onNodePointerDown(
+                  fakePointerEvent('pointerdown', fakeElement('g'), pointerId, 130, 140),
+                  node);
+                svg.dispatchEvent(
+                  fakePointerEvent('pointermove', svg, pointerId, 187, 203));
+                const position = { x: node.x, y: node.y };
+                svg.dispatchEvent(
+                  fakePointerEvent('pointerup', svg, pointerId, 187, 203));
+                return position;
+              };
+
+              snapToGridInput.checked = false;
+              snapToGridInput.dispatchEvent({
+                type: 'change', target: snapToGridInput, bubbles: false
+              });
+              const free = moveFromOrigin(401);
+
+              gridSizeInput.value = '20';
+              gridSizeInput.dispatchEvent({
+                type: 'change', target: gridSizeInput, bubbles: false
+              });
+              snapToGridInput.checked = true;
+              snapToGridInput.dispatchEvent({
+                type: 'change', target: snapToGridInput, bubbles: false
+              });
+              const snapped20 = moveFromOrigin(402);
+
+              gridSizeInput.value = '25';
+              gridSizeInput.dispatchEvent({
+                type: 'change', target: gridSizeInput, bubbles: false
+              });
+              const snapped25 = moveFromOrigin(403);
+
+              return JSON.stringify({
+                free,
+                snapped20,
+                snapped25,
+                snapEnabled: snapToGrid,
+                configuredSize: gridSize,
+                sizeInputValue: gridSizeInput.value,
+                patternWidth: gridPattern.getAttribute('width'),
+                patternHeight: gridPattern.getAttribute('height'),
+                storedSnap: localStorage.getItem('flowbit.snapToGrid'),
+                storedSize: localStorage.getItem('flowbit.gridSize'),
+                dragCleared: drag === null
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal(177, root.GetProperty("free").GetProperty("x").GetInt32());
+        Assert.Equal(193, root.GetProperty("free").GetProperty("y").GetInt32());
+        Assert.Equal(180, root.GetProperty("snapped20").GetProperty("x").GetInt32());
+        Assert.Equal(200, root.GetProperty("snapped20").GetProperty("y").GetInt32());
+        Assert.Equal(175, root.GetProperty("snapped25").GetProperty("x").GetInt32());
+        Assert.Equal(200, root.GetProperty("snapped25").GetProperty("y").GetInt32());
+        Assert.True(root.GetProperty("snapEnabled").GetBoolean());
+        Assert.Equal(25, root.GetProperty("configuredSize").GetInt32());
+        Assert.Equal("25", root.GetProperty("sizeInputValue").GetString());
+        Assert.Equal("25", root.GetProperty("patternWidth").GetString());
+        Assert.Equal("25", root.GetProperty("patternHeight").GetString());
+        Assert.Equal("true", root.GetProperty("storedSnap").GetString());
+        Assert.Equal("25", root.GetProperty("storedSize").GetString());
+        Assert.True(root.GetProperty("dragCleared").GetBoolean());
+    }
+
+    [Fact]
+    public void GridPreferencesRestoreOnEditorStartup()
+    {
+        var engine = CreateEditorEngine(
+            """
+            localStorage.setItem('flowbit.snapToGrid', 'true');
+            localStorage.setItem('flowbit.gridSize', '36');
+            """);
+
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            JSON.stringify({
+              snapToGrid,
+              gridSize,
+              checked: snapToGridInput.checked,
+              inputValue: gridSizeInput.value,
+              patternWidth: gridPattern.getAttribute('width'),
+              patternHeight: gridPattern.getAttribute('height')
+            })
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("snapToGrid").GetBoolean());
+        Assert.Equal(36, root.GetProperty("gridSize").GetInt32());
+        Assert.True(root.GetProperty("checked").GetBoolean());
+        Assert.Equal("36", root.GetProperty("inputValue").GetString());
+        Assert.Equal("36", root.GetProperty("patternWidth").GetString());
+        Assert.Equal("36", root.GetProperty("patternHeight").GetString());
+    }
+
+    [Fact]
     public void UserTaskInspectorRendersWithoutLeakingTypeChangeCallbackState()
     {
         var engine = CreateEditorEngine();
@@ -1139,7 +1266,7 @@ public sealed class EditorRuntimeSmokeTests
         Assert.StartsWith("example-", engine.Evaluate("model.id").AsString(), StringComparison.Ordinal);
     }
 
-    private static Engine CreateEditorEngine()
+    private static Engine CreateEditorEngine(string? beforeMainScript = null)
     {
         var html = ReadEditorSource();
         var scripts = Regex.Matches(
@@ -1149,6 +1276,7 @@ public sealed class EditorRuntimeSmokeTests
 
         var engine = new Engine();
         engine.Execute(DomStubs);
+        if (!string.IsNullOrWhiteSpace(beforeMainScript)) engine.Execute(beforeMainScript);
         engine.Execute(scripts[^1].Groups["code"].Value);
         return engine;
     }
@@ -1314,9 +1442,16 @@ public sealed class EditorRuntimeSmokeTests
             return !event.defaultPrevented;
           }
         };
+        const localStorageValues = new Map();
         const localStorage = {
-          getItem() { return null; },
-          setItem() {}
+          getItem(key) {
+            return localStorageValues.has(String(key))
+              ? localStorageValues.get(String(key))
+              : null;
+          },
+          setItem(key, value) {
+            localStorageValues.set(String(key), String(value));
+          }
         };
         const fakeUrl = {
           createObjectURL() { return 'blob:test'; },

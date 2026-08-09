@@ -478,6 +478,36 @@
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
+  .toolbar-grid-toggle,
+  .toolbar-grid-size {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .toolbar-grid-toggle { cursor: pointer; }
+  .toolbar-grid-toggle input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent-2);
+    cursor: pointer;
+  }
+  .toolbar-grid-size input {
+    width: 58px;
+    height: 28px;
+    padding: 4px 5px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 7px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
   .spacer { flex: 1; }
   input::placeholder, textarea::placeholder {
     color: var(--placeholder);
@@ -1409,6 +1439,18 @@
       <option value="all">Labels: Show</option>
       <option value="off">Labels: Hide</option>
     </select>
+    <label class="toolbar-grid-toggle" for="snapToGridInput"
+           title="Align nodes to the nearest grid point while dragging">
+      <input id="snapToGridInput" type="checkbox" />
+      <span>Snap</span>
+    </label>
+    <label class="toolbar-grid-size" for="gridSizeInput"
+           title="Grid spacing in workflow units">
+      <span>Grid</span>
+      <input id="gridSizeInput" type="number" min="4" max="200" step="1"
+             value="24" inputmode="numeric" aria-label="Grid size" />
+      <span aria-hidden="true">px</span>
+    </label>
     <label class="toolbar-opacity" for="traceOpacityInput"
            title="Opacity of nodes and flows outside the active path">
       <span>Others</span>
@@ -2288,6 +2330,28 @@ function materializeMessageStartVariables(node) {
     validation: mapping.validation ?? null
   }));
 }
+
+// BEGIN GRID HELPERS
+const DEFAULT_GRID_SIZE = 24;
+const MIN_GRID_SIZE = 4;
+const MAX_GRID_SIZE = 200;
+
+function normalizeGridSize(value, fallback = DEFAULT_GRID_SIZE) {
+  const numeric = value == null || (typeof value === "string" && value.trim() === "")
+    ? NaN
+    : Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(MAX_GRID_SIZE, Math.max(MIN_GRID_SIZE, Math.round(numeric)));
+}
+
+function snapCoordinateToGrid(value, size) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const normalizedSize = normalizeGridSize(size);
+  return Math.round(numeric / normalizedSize) * normalizedSize;
+}
+// END GRID HELPERS
+
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
 let activeTool = "select";    // viewport-only editor mode: "select" | "pan"
@@ -2303,10 +2367,13 @@ let untracedOpacity = 1;
 let activeTraceContext = null;
 let diagramSearchMatches = [];
 let diagramSearchIndex = -1;
+let snapToGrid = false;
+let gridSize = DEFAULT_GRID_SIZE;
 
 const svg = document.getElementById('svg');
 const mainEl = document.querySelector('main');
 const canvasWrap = document.querySelector('.canvas-wrap');
+const gridPattern = document.getElementById('gridPattern');
 const gridSurface = document.getElementById('gridSurface');
 const lanesG = document.getElementById('lanes');
 const nodesG = document.getElementById('nodes');
@@ -2334,6 +2401,8 @@ const fitViewBtn = document.getElementById('fitViewBtn');
 const fitSelectionBtn = document.getElementById('fitSelectionBtn');
 const fitLaneBtn = document.getElementById('fitLaneBtn');
 const labelModeSelect = document.getElementById('labelModeSelect');
+const snapToGridInput = document.getElementById('snapToGridInput');
+const gridSizeInput = document.getElementById('gridSizeInput');
 const traceOpacityInput = document.getElementById('traceOpacityInput');
 const traceOpacityValue = document.getElementById('traceOpacityValue');
 const themeToggleBtn = document.getElementById('themeToggleBtn');
@@ -8054,8 +8123,10 @@ svg.addEventListener("pointermove", (e) => {
   const pt = svgPoint(e);
   if (drag) {
     const node = getNode(drag.id);
-    node.x = Math.round(pt.x - drag.dx);
-    node.y = Math.round(pt.y - drag.dy);
+    const nextX = pt.x - drag.dx;
+    const nextY = pt.y - drag.dy;
+    node.x = snapToGrid ? snapCoordinateToGrid(nextX, gridSize) : Math.round(nextX);
+    node.y = snapToGrid ? snapCoordinateToGrid(nextY, gridSize) : Math.round(nextY);
     renderNodes(); renderEdges();
     return;
   }
@@ -10507,6 +10578,28 @@ function writeUiPreference(key, value) {
   } catch (err) {}
 }
 
+const SNAP_TO_GRID_STORAGE_KEY = "flowbit.snapToGrid";
+const GRID_SIZE_STORAGE_KEY = "flowbit.gridSize";
+
+function setSnapToGrid(enabled, persist = false) {
+  snapToGrid = enabled === true;
+  snapToGridInput.checked = snapToGrid;
+  if (persist) writeUiPreference(SNAP_TO_GRID_STORAGE_KEY, String(snapToGrid));
+  return snapToGrid;
+}
+
+function setGridSize(value, persist = false) {
+  gridSize = normalizeGridSize(value, gridSize);
+  gridSizeInput.value = String(gridSize);
+  gridPattern.setAttribute("width", String(gridSize));
+  gridPattern.setAttribute("height", String(gridSize));
+  if (persist) writeUiPreference(GRID_SIZE_STORAGE_KEY, String(gridSize));
+  return gridSize;
+}
+
+setSnapToGrid(readUiPreference(SNAP_TO_GRID_STORAGE_KEY) === "true", false);
+setGridSize(readUiPreference(GRID_SIZE_STORAGE_KEY), false);
+
 const THEME_STORAGE_KEY = "flowbit.theme";
 const themeMediaQuery = typeof window.matchMedia === "function"
   ? window.matchMedia("(prefers-color-scheme: dark)")
@@ -10663,6 +10756,12 @@ labelModeSelect.addEventListener("change", () => {
   applyViewBox();
   updateDiagramNavigation();
 });
+snapToGridInput.addEventListener("change", () => {
+  setSnapToGrid(snapToGridInput.checked, true);
+});
+gridSizeInput.addEventListener("change", () => {
+  setGridSize(gridSizeInput.value, true);
+});
 traceOpacityInput.addEventListener("input", () => {
   const percent = Number(traceOpacityInput.value);
   untracedOpacity = Number.isFinite(percent)
@@ -10740,12 +10839,16 @@ document.addEventListener("pointerdown", () => {
 }, true);
 document.addEventListener("input", event => {
   if (event.target === diagramSearchInput ||
+      event.target === gridSizeInput ||
       event.target === traceOpacityInput ||
       event.target.id === "js-editor-textarea") return;
   scheduleHistoryCommit();
 });
 document.addEventListener("change", event => {
-  if (event.target === labelModeSelect || event.target === traceOpacityInput) return;
+  if (event.target === labelModeSelect ||
+      event.target === snapToGridInput ||
+      event.target === gridSizeInput ||
+      event.target === traceOpacityInput) return;
   commitHistory();
 });
 document.addEventListener("pointerup", () => queueMicrotask(commitHistory));

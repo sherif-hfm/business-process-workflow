@@ -414,6 +414,63 @@ public sealed class EditorNavigationTests
         Assert.DoesNotContain("model.labelPlacements", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.untracedOpacity", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.activeTool", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("model.snapToGrid", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("model.gridSize", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GridControls_AreAccessibleAndPersistAsEditorPreferences()
+    {
+        var html = ReadEditorSource();
+
+        Assert.Matches(
+            @"<input(?=[^>]*\bid=""snapToGridInput"")(?=[^>]*\btype=""checkbox"")[^>]*>",
+            html);
+        Assert.Matches(
+            @"<input(?=[^>]*\bid=""gridSizeInput"")(?=[^>]*\btype=""number"")(?=[^>]*\bmin=""4"")(?=[^>]*\bmax=""200"")(?=[^>]*\bstep=""1"")(?=[^>]*\bvalue=""24"")(?=[^>]*\baria-label=""Grid size"")[^>]*>",
+            html);
+        Assert.Contains(
+            "title=\"Align nodes to the nearest grid point while dragging\"",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "const SNAP_TO_GRID_STORAGE_KEY = \"flowbit.snapToGrid\";",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "const GRID_SIZE_STORAGE_KEY = \"flowbit.gridSize\";",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "gridPattern.setAttribute(\"width\", String(gridSize));",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "gridPattern.setAttribute(\"height\", String(gridSize));",
+            html,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GridHelpers_ClampSizeAndSnapToNearestIntersection()
+    {
+        var html = ReadEditorSource();
+        var match = Regex.Match(
+            html,
+            @"// BEGIN GRID HELPERS(?<code>[\s\S]*?)// END GRID HELPERS");
+        Assert.True(match.Success, "The marked grid helper block was not found.");
+
+        var engine = new Engine();
+        engine.Execute(match.Groups["code"].Value);
+
+        Assert.Equal(24d, engine.Evaluate("normalizeGridSize(null)").AsNumber());
+        Assert.Equal(24d, engine.Evaluate("normalizeGridSize('')").AsNumber());
+        Assert.Equal(4d, engine.Evaluate("normalizeGridSize(1)").AsNumber());
+        Assert.Equal(200d, engine.Evaluate("normalizeGridSize(500)").AsNumber());
+        Assert.Equal(32d, engine.Evaluate("normalizeGridSize(31.6)").AsNumber());
+        Assert.Equal(180d, engine.Evaluate("snapCoordinateToGrid(177, 20)").AsNumber());
+        Assert.Equal(200d, engine.Evaluate("snapCoordinateToGrid(193, 20)").AsNumber());
+        Assert.Equal(-20d, engine.Evaluate("snapCoordinateToGrid(-17, 20)").AsNumber());
     }
 
     [Fact]
