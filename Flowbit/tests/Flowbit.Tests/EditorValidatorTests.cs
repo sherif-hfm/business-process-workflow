@@ -46,6 +46,131 @@ public sealed class EditorValidatorTests
     }
 
     [Fact]
+    public void Validator_AcceptsOrderedAttributesAtUnicodeLimits()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var nodes = candidate["flowNodes"]!.AsArray();
+        var flows = candidate["sequenceFlows"]!.AsArray();
+        nodes[0]!.AsObject()["attributes"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["key"] = string.Concat(Enumerable.Repeat("😀", 300)),
+                ["value"] = string.Concat(Enumerable.Repeat("🚀", 4000))
+            },
+            new JsonObject { ["key"] = "empty-value", ["value"] = string.Empty }
+        };
+        nodes[1]!.AsObject()["attributes"] = null;
+        flows[0]!.AsObject()["attributes"] = new JsonArray
+        {
+            new JsonObject { ["key"] = "route", ["value"] = "preserve exact text" }
+        };
+
+        Assert.Empty(ValidateJson(candidate.ToJsonString()));
+    }
+
+    [Fact]
+    public void Validator_MatchesDotNetTrimAndOrdinalIgnoreCaseForUnicodeKeys()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var node = candidate["flowNodes"]![0]!.AsObject();
+        var attributes = new JsonArray
+        {
+            new JsonObject { ["key"] = "K", ["value"] = "latin" },
+            new JsonObject { ["key"] = "K", ["value"] = "kelvin" },
+            new JsonObject { ["key"] = "ß", ["value"] = "sharp-s" },
+            new JsonObject { ["key"] = "ẞ", ["value"] = "capital sharp-s" },
+            new JsonObject { ["key"] = "ƛ", ["value"] = ".NET 10 keeps this scalar" },
+            new JsonObject { ["key"] = "Ƛ", ["value"] = "newer browser uppercase" },
+            new JsonObject { ["key"] = "key", ["value"] = "plain" },
+            new JsonObject { ["key"] = "\uFEFFkey\uFEFF", ["value"] = "BOM is not trimmed" }
+        };
+        node["attributes"] = attributes;
+
+        Assert.Empty(ValidateJson(candidate.ToJsonString()));
+
+        attributes.Add(new JsonObject { ["key"] = "É", ["value"] = "duplicate" });
+        attributes.Add(new JsonObject { ["key"] = "\u0085é\u0085", ["value"] = "trimmed duplicate" });
+        attributes.Add(new JsonObject { ["key"] = "µ", ["value"] = "micro sign" });
+        attributes.Add(new JsonObject { ["key"] = "Μ", ["value"] = "Greek capital mu" });
+        attributes.Add(new JsonObject { ["key"] = "σ", ["value"] = "sigma" });
+        attributes.Add(new JsonObject { ["key"] = "ς", ["value"] = "final sigma" });
+        attributes.Add(new JsonObject { ["key"] = "ᾀ", ["value"] = "Greek lower" });
+        attributes.Add(new JsonObject { ["key"] = "ᾈ", ["value"] = "Greek title" });
+        var errors = ValidateJson(candidate.ToJsonString());
+
+        Assert.Contains(errors, error => error.Contains(
+            "duplicate attribute key 'é'", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "duplicate attribute key 'Μ'", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "duplicate attribute key 'ς'", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "duplicate attribute key 'ᾈ'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validator_RejectsMalformedOversizedAndDuplicateAttributes()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var node = candidate["flowNodes"]![0]!.AsObject();
+        var flow = candidate["sequenceFlows"]![0]!.AsObject();
+        var attributes = new JsonArray();
+        for (var index = 0; index < 101; index++)
+        {
+            attributes.Add(new JsonObject
+            {
+                ["key"] = $"key-{index}",
+                ["value"] = "value"
+            });
+        }
+        attributes[0] = new JsonObject { ["key"] = " Duplicate ", ["value"] = "first" };
+        attributes[1] = new JsonObject { ["key"] = "duplicate", ["value"] = "second" };
+        attributes[2] = new JsonObject { ["key"] = "   ", ["value"] = "blank key" };
+        attributes[3] = new JsonObject
+        {
+            ["key"] = string.Concat(Enumerable.Repeat("😀", 301)),
+            ["value"] = "long key"
+        };
+        attributes[4] = new JsonObject { ["key"] = 5, ["value"] = "wrong key type" };
+        attributes[5] = new JsonObject { ["key"] = "null-value", ["value"] = null };
+        attributes[6] = new JsonObject { ["key"] = "wrong-value", ["value"] = 7 };
+        attributes[7] = new JsonObject
+        {
+            ["key"] = "long-value",
+            ["value"] = string.Concat(Enumerable.Repeat("🚀", 4001))
+        };
+        attributes[8] = null;
+        node["attributes"] = attributes;
+        flow["attributes"] = "not-an-array";
+
+        var errors = ValidateJson(candidate.ToJsonString());
+
+        Assert.Contains(errors, error => error.Contains(
+            "attributes cannot contain more than 100 entries", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "duplicate attribute key 'duplicate'", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "key must not be blank", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "key cannot exceed 300 Unicode characters", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "key must be a string", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "value must be a non-null string", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "value cannot exceed 4000 Unicode characters", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "attribute #9 must be an object", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains(
+            "Sequence flow #", StringComparison.Ordinal) &&
+            error.Contains("attributes must be an array", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void GatewayPriorityNormalization_DerivesOnlyAllMissingLegacyPriorities()
     {
         var html = ReadEditorSource();
@@ -1267,6 +1392,7 @@ public sealed class EditorValidatorTests
             let model = null;
             function normalizeVariable(value) { return value; }
             function normalizeRoles(value) { return Array.isArray(value) ? value : []; }
+            function normalizeAttributesForLoad(value) { return value == null ? [] : value; }
             function isServiceTaskType(type) { return type === 'serviceTask'; }
             function isScriptTaskType(type) { return type === 'scriptTask'; }
             function isErrorEndEventType(type) { return type === 'errorEndEvent'; }

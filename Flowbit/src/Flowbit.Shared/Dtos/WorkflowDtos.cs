@@ -317,6 +317,8 @@ public sealed record UserTaskDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AdministrativeActionBatchId { get; init; }
+
+    public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }
 
 public sealed record UserTaskActionAckDto(
@@ -390,7 +392,10 @@ public sealed record ManagedUserTaskDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyDictionary<string, JsonElement>? Variables);
+    IReadOnlyDictionary<string, JsonElement>? Variables)
+{
+    public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
+}
 
 public sealed record UserTaskAssignmentAckDto(
     long UserTaskId,
@@ -742,4 +747,6 @@ public sealed record InboxItemDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
+
+    public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }

@@ -1173,6 +1173,9 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "id": 1,
   "name": "Request Submitted",
   "externalId": "TASK_SUBMIT", // optional free-form integration key (nullable)
+  "attributes": [              // ordered, non-secret client metadata
+    { "key": "form", "value": "purchase-request" }
+  ],
   "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent | messageStartEvent
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
@@ -1333,6 +1336,9 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "id": 201,
   "name": "Approve",           // label; empty for start/auto flows
   "externalId": "FLOW_MGR_APPROVE", // optional free-form integration key (nullable)
+  "attributes": [              // ordered, non-secret client metadata
+    { "key": "result", "value": "approved" }
+  ],
   "sourceRef": 2,              // source node id
   "targetRef": 3,              // target node id
   "roles": [ "Manager" ],      // userTask flow: enforced at runtime (empty = anyone)
@@ -1343,6 +1349,25 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "isSelectable": true         // multi-instance user action; false = engine-only
 }
 ```
+
+### Attributes
+
+Every flow node and sequence flow carries an ordered `attributes` array of
+string `{ "key", "value" }` pairs. Attributes are informational, non-secret
+metadata for API clients; the engine does not evaluate, search, authorize, or
+route on them. Keys are trimmed, nonblank, unique using .NET ordinal
+case-insensitive comparison within the owning element, and limited to 300
+Unicode characters. Values preserve their
+exact text (including empty strings and whitespace) and are limited to 4,000
+Unicode characters. Each element may define at most 100 pairs. Missing or null
+arrays in older definitions normalize to `[]`.
+
+Full workflow/instance definitions expose node and flow attributes. Available
+flow endpoints expose flow attributes directly, while `UserTaskDto`,
+`InboxItemDto`, and `ManagedUserTaskDto` expose the current workflow version's
+node attributes. They are deliberately absent from slim acknowledgments,
+execution/history/job projections, and administrative-action DTOs. Attribute-only
+changes are descriptive and do not block an in-place workflow-version change.
 
 ### Variable
 Typed data attached to a start event (node) or a user-task sequence flow.
@@ -1751,6 +1776,10 @@ when extending the model so new features stay close to BPMN terminology.
 - **Roles**: nodes and flows carry a free-text `roles` string array (candidate
   roles), normalized by `normalizeRoles()` (a legacy singular `role` string is
   migrated into an array). Shown as small labels on nodes and edges.
+- **Attributes**: every node and flow carries an ordered, bounded `attributes`
+  list of non-secret string key/value pairs. Keys are canonicalized and unique
+  case-insensitively; values and row order round-trip exactly. Attributes are
+  client metadata only and never affect execution or version compatibility.
 - **Requires claim**: `userTask` nodes carry a boolean `requiresClaim`
   (enforced at runtime in `Flowbit/`). Hidden for other node types.
 - **Automatic task / start event flow**: `task` and `startEvent` each own one

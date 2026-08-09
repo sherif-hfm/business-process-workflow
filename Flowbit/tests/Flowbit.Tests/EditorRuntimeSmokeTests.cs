@@ -192,6 +192,303 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void LoaderPreservesOrderedAttributesAndCanonicalizesOnlyKeys()
+    {
+        var engine = CreateEditorEngine();
+        using var loaded = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'attribute-round-trip',
+                name: 'Attribute round trip',
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  {
+                    id: 1,
+                    name: 'Start',
+                    type: 'startEvent',
+                    attributes: [
+                      { key: '  Owner  ', value: '  Alice\nBob  ' },
+                      { key: 'Second', value: '' },
+                      { key: '\uFEFFkeep-bom\uFEFF', value: 'bom remains part of the key' },
+                      { key: '\u0085trim-nel\u0085', value: 'NEL is .NET whitespace' }
+                    ]
+                  },
+                  { id: 2, name: 'Review', type: 'userTask', attributes: null },
+                  { id: 3, name: 'End', type: 'endEvent' }
+                ],
+                sequenceFlows: [
+                  {
+                    id: 101,
+                    name: 'Continue',
+                    sourceRef: 1,
+                    targetRef: 2,
+                    attributes: [{ key: '  route  ', value: ' keep spaces ' }]
+                  },
+                  { id: 201, name: 'Finish', sourceRef: 2, targetRef: 3 }
+                ]
+              });
+              const before = JSON.parse(JSON.stringify({
+                node: model.flowNodes[0].attributes,
+                nullNode: model.flowNodes[1].attributes,
+                missingNode: model.flowNodes[2].attributes,
+                flow: model.sequenceFlows[0].attributes,
+                missingFlow: model.sequenceFlows[1].attributes
+              }));
+              model.flowNodes.forEach(canonicalizeAttributeKeys);
+              model.sequenceFlows.forEach(canonicalizeAttributeKeys);
+              model.flowNodes[1].type = 'exclusiveGateway';
+              applyTypeInvariants(model.flowNodes[1]);
+              return JSON.stringify({
+                before,
+                canonicalNode: model.flowNodes[0].attributes,
+                canonicalFlow: model.sequenceFlows[0].attributes,
+                afterTypeChange: model.flowNodes[1].attributes
+              });
+            })()
+            """).AsString());
+
+        var before = loaded.RootElement.GetProperty("before");
+        var nodeAttributes = before.GetProperty("node");
+        Assert.Equal("  Owner  ", nodeAttributes[0].GetProperty("key").GetString());
+        Assert.Equal("  Alice\nBob  ", nodeAttributes[0].GetProperty("value").GetString());
+        Assert.Equal("Second", nodeAttributes[1].GetProperty("key").GetString());
+        Assert.Equal(string.Empty, nodeAttributes[1].GetProperty("value").GetString());
+        Assert.Equal("\uFEFFkeep-bom\uFEFF", nodeAttributes[2].GetProperty("key").GetString());
+        Assert.Equal("\u0085trim-nel\u0085", nodeAttributes[3].GetProperty("key").GetString());
+        Assert.Empty(before.GetProperty("nullNode").EnumerateArray());
+        Assert.Empty(before.GetProperty("missingNode").EnumerateArray());
+        Assert.Empty(before.GetProperty("missingFlow").EnumerateArray());
+
+        Assert.Equal(
+            "Owner",
+            loaded.RootElement.GetProperty("canonicalNode")[0].GetProperty("key").GetString());
+        Assert.Equal(
+            "\uFEFFkeep-bom\uFEFF",
+            loaded.RootElement.GetProperty("canonicalNode")[2].GetProperty("key").GetString());
+        Assert.Equal(
+            "trim-nel",
+            loaded.RootElement.GetProperty("canonicalNode")[3].GetProperty("key").GetString());
+        Assert.Equal(
+            "  Alice\nBob  ",
+            loaded.RootElement.GetProperty("canonicalNode")[0].GetProperty("value").GetString());
+        Assert.Equal(
+            "route",
+            loaded.RootElement.GetProperty("canonicalFlow")[0].GetProperty("key").GetString());
+        Assert.Equal(
+            " keep spaces ",
+            loaded.RootElement.GetProperty("canonicalFlow")[0].GetProperty("value").GetString());
+        Assert.Empty(loaded.RootElement.GetProperty("afterTypeChange").EnumerateArray());
+    }
+
+    [Fact]
+    public void LegacyLoaderPreservesStepAndActionAttributes()
+    {
+        var engine = CreateEditorEngine();
+        using var loaded = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'legacy-attributes',
+                name: 'Legacy attributes',
+                initialStepId: 1,
+                phases: [],
+                steps: [
+                  {
+                    id: 1,
+                    name: 'Review',
+                    type: 'task',
+                    attributes: [{ key: 'node-key', value: 'node-value' }],
+                    actions: [{
+                      id: 201,
+                      name: 'Finish',
+                      toStepId: 2,
+                      attributes: [{ key: 'flow-key', value: 'flow-value' }]
+                    }]
+                  },
+                  { id: 2, name: 'End', type: 'end', attributes: null, actions: [] }
+                ]
+              });
+              return JSON.stringify({
+                node: model.flowNodes.find(node => node.id === 1).attributes,
+                end: model.flowNodes.find(node => node.id === 2).attributes,
+                flow: model.sequenceFlows.find(flow => flow.id === 201).attributes
+              });
+            })()
+            """).AsString());
+
+        Assert.Equal(
+            "node-value",
+            loaded.RootElement.GetProperty("node")[0].GetProperty("value").GetString());
+        Assert.Empty(loaded.RootElement.GetProperty("end").EnumerateArray());
+        Assert.Equal(
+            "flow-value",
+            loaded.RootElement.GetProperty("flow")[0].GetProperty("value").GetString());
+    }
+
+    [Fact]
+    public void MalformedImportedAttributesDoNotCrashInspectorsAndRemainInvalid()
+    {
+        var engine = CreateEditorEngine();
+        var exception = Record.Exception(() => engine.Execute(
+            """
+            loadFromObject({
+              id: 'malformed-attributes',
+              name: 'Malformed attributes',
+              initialEventId: 1,
+              variables: [],
+              lanes: [],
+              flowNodes: [
+                { id: 1, name: 'Start', type: 'startEvent', attributes: 'not-a-list' },
+                { id: 2, name: 'End', type: 'endEvent' }
+              ],
+              sequenceFlows: [{
+                id: 101,
+                name: '',
+                sourceRef: 1,
+                targetRef: 2,
+                attributes: [null, { key: 7, value: null }]
+              }]
+            });
+            selected = { kind: 'node', nodeId: 1 };
+            renderInspector();
+            selected = { kind: 'flow', flowId: 101 };
+            renderInspector();
+            """));
+
+        Assert.Null(exception);
+        using var errors = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(validateModelForSave(model));").AsString());
+        var messages = errors.RootElement.EnumerateArray()
+            .Select(error => error.GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Contains(messages, message =>
+            message.Contains("Flow node #1 attributes must be an array", StringComparison.Ordinal));
+        Assert.Contains(messages, message =>
+            message.Contains("Sequence flow #101 attribute #1 must be an object", StringComparison.Ordinal));
+        Assert.Contains(messages, message =>
+            message.Contains("Sequence flow #101 attribute #2 key must be a string", StringComparison.Ordinal));
+        Assert.Contains(messages, message =>
+            message.Contains("Sequence flow #101 attribute #2 value must be a non-null string", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NewNodesBoundariesAndFlowsStartWithEmptyAttributes()
+    {
+        var engine = CreateEditorEngine();
+        using var created = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = newModel();
+              addNode();
+              const host = model.flowNodes[0];
+              const flow = createFlow(host.id, host.id);
+              addTimerBoundary(host);
+              addErrorBoundary(host);
+              return JSON.stringify({
+                node: host.attributes,
+                flow: flow.attributes,
+                timerBoundary: model.flowNodes.find(node => node.type === 'timerBoundaryEvent').attributes,
+                errorBoundary: model.flowNodes.find(node => node.type === 'errorBoundaryEvent').attributes
+              });
+            })()
+            """).AsString());
+
+        Assert.All(created.RootElement.EnumerateObject(), property =>
+            Assert.Empty(property.Value.EnumerateArray()));
+    }
+
+    [Fact]
+    public void AttributeInspectorAddsEditsAndDeletesRowsInOrder()
+    {
+        var engine = CreateEditorEngine();
+        using var edited = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'attribute-editor',
+                name: 'Attribute editor',
+                variables: [],
+                lanes: [],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Task',
+                  type: 'userTask',
+                  attributes: [
+                    { key: 'first', value: 'one' },
+                    { key: 'second', value: 'two' }
+                  ]
+                }],
+                sequenceFlows: []
+              });
+              selected = { kind: 'node', nodeId: 1 };
+              renderInspector();
+
+              const descendants = root => {
+                const result = [root];
+                for (const child of root.children || []) result.push(...descendants(child));
+                return result;
+              };
+              const latest = predicate => descendants(inspector).filter(predicate).pop();
+              latest(element => element.textContent === '+ Add attribute').onclick();
+
+              const deleteButtons = descendants(inspector)
+                .filter(element => element.textContent === 'Delete attribute');
+              deleteButtons.slice(-3)[1].onclick();
+
+              const keyField = latest(element => element.innerHTML === '<label>Key</label>');
+              const valueField = latest(element => element.innerHTML === '<label>Value</label>');
+              keyField.children[0].value = 'third';
+              keyField.children[0].oninput();
+              valueField.children[0].value = 'three\nlines';
+              valueField.children[0].oninput();
+              return JSON.stringify(model.flowNodes[0].attributes);
+            })()
+            """).AsString());
+
+        Assert.Equal(2, edited.RootElement.GetArrayLength());
+        Assert.Equal("first", edited.RootElement[0].GetProperty("key").GetString());
+        Assert.Equal("one", edited.RootElement[0].GetProperty("value").GetString());
+        Assert.Equal("third", edited.RootElement[1].GetProperty("key").GetString());
+        Assert.Equal("three\nlines", edited.RootElement[1].GetProperty("value").GetString());
+    }
+
+    [Fact]
+    public void AttributeEditsRoundTripThroughUndoAndRedoHistory()
+    {
+        var engine = CreateEditorEngine();
+        using var history = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'attribute-history',
+                name: 'Attribute history',
+                variables: [],
+                lanes: [],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Task',
+                  type: 'userTask',
+                  attributes: [{ key: 'state', value: 'before' }]
+                }],
+                sequenceFlows: []
+              });
+              model.flowNodes[0].attributes[0].value = 'after';
+              commitHistory();
+              undo();
+              const undone = model.flowNodes[0].attributes[0].value;
+              redo();
+              const redone = model.flowNodes[0].attributes[0].value;
+              return JSON.stringify({ undone, redone });
+            })()
+            """).AsString());
+
+        Assert.Equal("before", history.RootElement.GetProperty("undone").GetString());
+        Assert.Equal("after", history.RootElement.GetProperty("redone").GetString());
+    }
+
+    [Fact]
     public void FriendlyDurationCycleAndLocalDateHelpersProduceCanonicalIsoValues()
     {
         var engine = CreateEditorEngine();

@@ -23,6 +23,7 @@
 else
 {
     var currentNode = CurrentNode;
+    var currentAttributeNodes = CurrentAttributeNodes;
     var completedMultiInstanceItems = CompletedMultiInstanceItems;
 
     <PageHeader Eyebrow="Workflow instance" Title="@($"Instance #{instance.Id}")"
@@ -72,6 +73,19 @@ else
                                LegacyNodeId="@instance.CurrentNodeId"
                                LegacyNodeName="@instance.CurrentNodeName"
                                LegacyNodeExternalId="@instance.CurrentNodeExternalId" />
+
+        @if (currentAttributeNodes.Count > 0)
+        {
+            <div class="d-grid gap-2 mt-3" aria-label="Current node attributes">
+                @foreach (var node in currentAttributeNodes)
+                {
+                    var nodeLabel = string.IsNullOrWhiteSpace(node.Name) ? $"Node #{node.Id}" : node.Name;
+                    <WorkflowAttributes Attributes="@node.Attributes"
+                                        Label="@(currentAttributeNodes.Count == 1 ? "Current node attributes" : $"{nodeLabel} attributes")"
+                                        Open="true" />
+                }
+            </div>
+        }
 
             @if (instance.Status == "running" && currentNode?.RequiresClaim == true && !HasMultiInstances)
             {
@@ -365,6 +379,9 @@ else
                             <div class="card-body">
                                 <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
                                 <p class="text-muted">Interrupts this execution and moves to node #@flow.TargetRef</p>
+                                <WorkflowAttributes Attributes="@flow.Attributes"
+                                                    Label="Interrupt action attributes"
+                                                    Open="true" />
                                 @foreach (var variable in flow.Variables)
                                 {
                                     <div class="mb-2">
@@ -426,6 +443,9 @@ else
                             <div class="card-body">
                                 <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
                                 <p class="text-muted">Moves to node #@flow.TargetRef</p>
+                                <WorkflowAttributes Attributes="@flow.Attributes"
+                                                    Label="Action attributes"
+                                                    Open="true" />
                                 @foreach (var variable in flow.Variables)
                                 {
                                     <div class="mb-2">
@@ -732,6 +752,44 @@ else
             return nodeId is null
                 ? null
                 : instance.Workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == nodeId);
+        }
+    }
+
+    private IReadOnlyList<FlowNodeModel> CurrentAttributeNodes
+    {
+        get
+        {
+            if (instance is null)
+            {
+                return [];
+            }
+
+            if (ExecutionPositions.Count == 0)
+            {
+                var legacyNode = CurrentNode;
+                return legacyNode is not null && legacyNode.Attributes.Count > 0
+                    ? [legacyNode]
+                    : [];
+            }
+
+            var nodes = new List<FlowNodeModel>();
+            var seenNodeIds = new HashSet<int>();
+            foreach (var position in ActivePositions)
+            {
+                if (!seenNodeIds.Add(position.NodeId))
+                {
+                    continue;
+                }
+
+                var node = instance.Workflow.Definition.FlowNodes
+                    .SingleOrDefault(candidate => candidate.Id == position.NodeId);
+                if (node is not null && node.Attributes.Count > 0)
+                {
+                    nodes.Add(node);
+                }
+            }
+
+            return nodes;
         }
     }
 

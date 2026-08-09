@@ -383,6 +383,40 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
     }
 
     [Fact]
+    public void Attribute_only_changes_do_not_change_durable_node_or_flow_contracts()
+    {
+        var sourceModel = BasicModel(BpmnFlowNodeTypes.ServiceTask);
+        var service = sourceModel.FlowNodes.Single(node => node.Id == 2);
+        service.AsyncBefore = true;
+        service.Service = new ServiceTaskModel
+        {
+            Type = ServiceConnectorTypes.Rest,
+            Method = "GET",
+            Url = "https://source.example/work"
+        };
+        var targetModel = Clone(sourceModel);
+        targetModel.FlowNodes.Single(node => node.Id == 2).Attributes =
+        [
+            new WorkflowAttributeModel { Key = "integration.owner", Value = "orders" }
+        ];
+        targetModel.SequenceFlows.Single(flow => flow.Id == 20).Attributes =
+        [
+            new WorkflowAttributeModel { Key = "integration.route", Value = "complete" }
+        ];
+        var source = Definition(11, 1, sourceModel);
+        var context = Context(source, Definition(12, 2, targetModel)) with
+        {
+            OpenJobs = [Job(source)]
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
     public void Open_timer_requires_same_schedule_and_persisted_descriptor()
     {
         var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateTimerCatchEvent);

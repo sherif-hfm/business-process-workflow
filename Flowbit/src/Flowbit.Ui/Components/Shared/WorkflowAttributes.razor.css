@@ -1,0 +1,67 @@
+.workflow-attributes {
+    min-width: 0;
+    max-width: 34rem;
+    margin: .65rem 0;
+    color: var(--fb-text);
+    font-size: .72rem;
+}
+
+.workflow-attributes summary {
+    color: var(--fb-primary);
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.attribute-count {
+    margin-inline-start: .35rem;
+    color: var(--fb-muted);
+    font-weight: 600;
+}
+
+.workflow-attributes dl {
+    display: grid;
+    gap: .35rem;
+    min-width: 0;
+    margin: .5rem 0 0;
+}
+
+.attribute-pair {
+    display: grid;
+    grid-template-columns: minmax(4.5rem, 35%) minmax(0, 1fr);
+    min-width: 0;
+    overflow: hidden;
+    background: #f8fafc;
+    border: 1px solid var(--fb-border);
+    border-radius: .5rem;
+}
+
+.attribute-pair dt,
+.attribute-pair dd {
+    min-width: 0;
+    padding: .42rem .5rem;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.attribute-pair dt {
+    color: #334155;
+    border-inline-end: 1px solid var(--fb-border);
+    font-weight: 700;
+}
+
+.attribute-pair dd {
+    margin: 0;
+    color: #1e293b;
+    unicode-bidi: plaintext;
+}
+
+@media (max-width: 575.98px) {
+    .attribute-pair {
+        grid-template-columns: 1fr;
+    }
+
+    .attribute-pair dt {
+        border-inline-end: 0;
+        border-bottom: 1px solid var(--fb-border);
+    }
+}

@@ -2397,6 +2397,21 @@ function normalizeRoles(roles) {
   if (typeof roles === "string" && roles.trim()) return [roles.trim()];
   return [];
 }
+function normalizeAttributesForLoad(attributes) {
+  // Missing/null is the backwards-compatible empty collection. Preserve every
+  // other imported shape verbatim so save validation can explain malformed
+  // entries instead of silently repairing or discarding them.
+  return attributes == null ? [] : attributes;
+}
+function canonicalizeAttributeKeys(owner) {
+  if (!owner || !Array.isArray(owner.attributes)) return;
+  owner.attributes.forEach(attribute => {
+    if (attribute && typeof attribute === "object" && !Array.isArray(attribute) &&
+        typeof attribute.key === "string") {
+      attribute.key = trimAttributeKey(attribute.key);
+    }
+  });
+}
 function roleSummary(roles, maxLength = 28) {
   const text = normalizeRoles(roles).join(", ");
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
@@ -2731,6 +2746,7 @@ function normalizeTimerDefinition(value) {
   };
 }
 function applyTypeInvariants(node) {
+  if (node.attributes == null) node.attributes = [];
   if (isAsyncCapableTaskType(node.type)) {
     if (node.asyncBefore === undefined) node.asyncBefore = false;
     if (node.asyncAfter === undefined) node.asyncAfter = false;
@@ -3060,6 +3076,7 @@ function migrateLegacyUserTaskDefaultFlows() {
       const fallback = {
         id: flowIdSeed++, name: "", externalId: null,
         sourceRef: legacyDefault.sourceRef, targetRef: legacyDefault.targetRef,
+        attributes: [],
         roles: [], variables: [], condition: null, conditionPriority: null,
         isDefault: true, isSelectable: false, canActWithoutClaim: false,
         canActWithoutClaimRoles: [],
@@ -3072,6 +3089,7 @@ function migrateLegacyUserTaskDefaultFlows() {
   }
 }
 function applyFlowInvariants(flow) {
+  if (flow.attributes == null) flow.attributes = [];
   const source = getNode(flow.sourceRef);
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   const gateway = source && isGatewayType(source.type);
@@ -4447,6 +4465,8 @@ function renderNodeInspector() {
     node.laneId = v ? +v : null;
     render();
   });
+
+  renderAttributesSection(node);
 
   if (isGatewayType(node.type)) {
     const topologyField = document.createElement("div");
@@ -6041,6 +6061,7 @@ function addTimerBoundary(hostNode) {
     laneId: hostNode.laneId ?? null,
     x: hostNode.x,
     y: hostNode.y,
+    attributes: [],
     roles: [],
     requiresClaim: false,
     claimMode: CLAIM_MODE.FRESH,
@@ -6074,6 +6095,7 @@ function addErrorBoundary(hostNode) {
     laneId: hostNode.laneId ?? null,
     x: hostNode.x,
     y: hostNode.y,
+    attributes: [],
     roles: [],
     requiresClaim: false,
     claimMode: CLAIM_MODE.FRESH,
@@ -6575,6 +6597,8 @@ function renderFlowInspector() {
   selectField("Goes to node", targetNodes.map(s => ({ value: s.id, label: `#${s.id} ${s.name}` })),
               flow.targetRef, v => { flow.targetRef = +v; renderDiagramLayers(); });
 
+  renderAttributesSection(flow);
+
   if (conditionalGateway) {
     inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
@@ -6828,6 +6852,121 @@ function selectField(label, options, value, onChange) {
   sel.onchange = () => onChange(sel.value);
   f.appendChild(sel);
   inspector.appendChild(f);
+}
+function renderAttributesSection(owner) {
+  const title = document.createElement("h2");
+  title.textContent = "Attributes";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  if (owner.attributes == null) owner.attributes = [];
+  if (!Array.isArray(owner.attributes)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "Imported attributes are malformed; expected an ordered list of key/value objects.";
+    inspector.appendChild(warning);
+
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Replace with an empty attribute list";
+    reset.onclick = () => { owner.attributes = []; renderInspector(); };
+    inspector.appendChild(reset);
+    return;
+  }
+
+  if (owner.attributes.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-note";
+    empty.textContent = "No attributes.";
+    inspector.appendChild(empty);
+  }
+
+  owner.attributes.forEach((attribute, index) => {
+    const box = document.createElement("div");
+    box.className = "field inspector-card";
+
+    const badge = document.createElement("div");
+    badge.className = "badge";
+    badge.textContent = `attribute ${index + 1}`;
+    box.appendChild(badge);
+
+    const isObject = !!attribute && typeof attribute === "object" && !Array.isArray(attribute);
+    if (!isObject) {
+      const warning = document.createElement("p");
+      warning.className = "empty-note";
+      warning.style.color = "var(--warning-text)";
+      warning.textContent = "Malformed imported entry; expected an object with string key and value fields.";
+      box.appendChild(warning);
+
+      const repair = document.createElement("button");
+      repair.type = "button";
+      repair.textContent = "Replace malformed entry";
+      repair.onclick = () => {
+        owner.attributes[index] = { key: "", value: "" };
+        renderInspector();
+      };
+      box.appendChild(repair);
+    } else {
+      const keyField = document.createElement("div");
+      keyField.className = "field";
+      keyField.style.marginTop = "8px";
+      keyField.innerHTML = "<label>Key</label>";
+      const keyInput = document.createElement("input");
+      keyInput.type = "text";
+      keyInput.value = typeof attribute.key === "string" ? attribute.key : "";
+      keyInput.oninput = () => { attribute.key = keyInput.value; };
+      keyField.appendChild(keyInput);
+      box.appendChild(keyField);
+
+      const valueField = document.createElement("div");
+      valueField.className = "field";
+      valueField.innerHTML = "<label>Value</label>";
+      const valueInput = document.createElement("textarea");
+      valueInput.rows = 3;
+      valueInput.value = typeof attribute.value === "string" ? attribute.value : "";
+      valueInput.oninput = () => { attribute.value = valueInput.value; };
+      valueField.appendChild(valueInput);
+      box.appendChild(valueField);
+
+      if (typeof attribute.key !== "string" || typeof attribute.value !== "string") {
+        const warning = document.createElement("p");
+        warning.className = "empty-note";
+        warning.style.color = "var(--warning-text)";
+        warning.textContent = "This imported entry has a missing or non-string key/value. Edit both fields to repair it.";
+        box.appendChild(warning);
+      }
+    }
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete attribute";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => { owner.attributes.splice(index, 1); renderInspector(); };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "+ Add attribute";
+  add.style.marginTop = "8px";
+  add.disabled = owner.attributes.length >= 100;
+  add.onclick = () => {
+    if (owner.attributes.length >= 100) return;
+    owner.attributes.push({ key: "", value: "" });
+    renderInspector();
+  };
+  inspector.appendChild(add);
+
+  if (owner.attributes.length >= 100) {
+    const limit = document.createElement("p");
+    limit.className = "empty-note";
+    limit.textContent = "Maximum 100 attributes.";
+    inspector.appendChild(limit);
+  }
 }
 function variableRow(owner, variable, hideRequired) {
   const box = document.createElement("div");
@@ -7796,7 +7935,7 @@ function assignNodeLane(nodeId) {
 /* ---------- Connect mode ---------- */
 function createFlow(sourceId, targetId) {
   const flow = { id: nextFlowId(), name: "", sourceRef: sourceId, targetRef: targetId,
-                 roles: [], variables: [], condition: null,
+                 attributes: [], roles: [], variables: [], condition: null,
                  conditionPriority: isExclusiveGatewayType(getNode(sourceId)?.type) &&
                    outgoingFlows(sourceId).length >= 1 ? nextConditionPriority(sourceId) : null,
                  isDefault: false, isSelectable: true, canActWithoutClaim: false,
@@ -7858,6 +7997,7 @@ function addNode() {
                  laneId: lane?.id ?? null,
                  x: lane ? lane.x + 30 : 100 + (model.flowNodes.length % 5) * 60,
                  y: lane ? lane.y + 60 : 120 + (model.flowNodes.length % 5) * 40,
+                 attributes: [],
                  roles: [],
                  requiresClaim: false,
                  claimMode: CLAIM_MODE.FRESH,
@@ -7907,6 +8047,62 @@ function defaultFileName() {
 }
 
 // BEGIN WORKFLOW SAVE VALIDATOR
+// Match .NET string.Trim(): Unicode White_Space characters plus U+0085, but
+// not ECMAScript's extra U+FEFF byte-order mark trimming.
+function trimAttributeKey(value) {
+  return value.replace(
+    /^[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+|[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/g,
+    "");
+}
+
+// Browser Unicode casing is newer and uses full mappings where .NET 10's
+// ordinal comparer uses a single-scalar invariant mapping. These compact
+// corrections keep the standalone editor byte-for-byte aligned with the
+// server's StringComparer.OrdinalIgnoreCase behavior.
+const DOTNET_ORDINAL_UPPER_OVERRIDES = new Map([
+  [0x00B5, 0x039C], [0x017F, 0x0053],
+  [0x01C5, 0x01C4], [0x01C8, 0x01C7], [0x01CB, 0x01CA], [0x01F2, 0x01F1],
+  [0x0345, 0x0399], [0x03C2, 0x03A3],
+  [0x03D0, 0x0392], [0x03D1, 0x0398], [0x03D5, 0x03A6], [0x03D6, 0x03A0],
+  [0x03F0, 0x039A], [0x03F1, 0x03A1], [0x03F5, 0x0395],
+  [0x1C80, 0x0412], [0x1C81, 0x0414], [0x1C82, 0x041E], [0x1C83, 0x0421],
+  [0x1C84, 0x0422], [0x1C85, 0x0422], [0x1C86, 0x042A], [0x1C87, 0x0462],
+  [0x1C88, 0xA64A], [0x1E9B, 0x1E60],
+  [0x1FB3, 0x1FBC], [0x1FBE, 0x0399], [0x1FC3, 0x1FCC], [0x1FF3, 0x1FFC]
+]);
+const DOTNET_ORDINAL_KEEP_SCALARS = new Set([
+  0x019B, 0x0264, 0x1C8A, 0x2C5F,
+  0xA7C1, 0xA7C8, 0xA7CA, 0xA7CD, 0xA7CF,
+  0xA7D1, 0xA7D3, 0xA7D5, 0xA7D7, 0xA7D9, 0xA7DB, 0xA7F6
+]);
+const DOTNET_ORDINAL_KEEP_RANGES = [
+  [0x10597, 0x105A1], [0x105A3, 0x105B1],
+  [0x105B3, 0x105B9], [0x105BB, 0x105BC],
+  [0x10D70, 0x10D85], [0x16EBB, 0x16ED3]
+];
+function ordinalIgnoreCaseAttributeKey(value) {
+  return Array.from(value, character => {
+    const codePoint = character.codePointAt(0);
+    if ((codePoint >= 0x1F80 && codePoint <= 0x1F87) ||
+        (codePoint >= 0x1F90 && codePoint <= 0x1F97) ||
+        (codePoint >= 0x1FA0 && codePoint <= 0x1FA7)) {
+      return String.fromCodePoint(codePoint + 8);
+    }
+    const override = DOTNET_ORDINAL_UPPER_OVERRIDES.get(codePoint);
+    if (override != null) return String.fromCodePoint(override);
+    if (DOTNET_ORDINAL_KEEP_SCALARS.has(codePoint) ||
+        DOTNET_ORDINAL_KEEP_RANGES.some(range =>
+          codePoint >= range[0] && codePoint <= range[1])) {
+      return character;
+    }
+    const upper = character.toUpperCase();
+    if (Array.from(upper).length !== 1) return character;
+    return character === upper || upper.toLowerCase() === character
+      ? upper
+      : character;
+  }).join("");
+}
+
 function validatorContainsDirectJavaScriptFlowInfoCall(script) {
   if (typeof script !== "string" || !script.trim()) return false;
   const isIdentifierStart = ch => /[A-Za-z_$]/.test(ch || "");
@@ -8093,6 +8289,53 @@ function validateModelForSave(candidate) {
   const nodeLabel = node => "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
   const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
+  const unicodeLength = value => Array.from(value).length;
+  const validateAttributes = (owner, label) => {
+    const attributes = owner && owner.attributes;
+    // Missing/null is the backwards-compatible empty collection.
+    if (attributes == null) return;
+    if (!Array.isArray(attributes)) {
+      errors.push(label + " attributes must be an array.");
+      return;
+    }
+    if (attributes.length > 100) {
+      errors.push(label + " attributes cannot contain more than 100 entries.");
+    }
+    const seenKeys = new Set();
+    attributes.forEach((attribute, index) => {
+      const entryLabel = label + " attribute #" + String(index + 1);
+      if (!attribute || typeof attribute !== "object" || Array.isArray(attribute)) {
+        errors.push(entryLabel + " must be an object with string key and value fields.");
+        return;
+      }
+
+      if (typeof attribute.key !== "string") {
+        errors.push(entryLabel + " key must be a string.");
+      } else {
+        const key = trimAttributeKey(attribute.key);
+        if (!key) {
+          errors.push(entryLabel + " key must not be blank.");
+        } else {
+          if (unicodeLength(key) > 300) {
+            errors.push(entryLabel + " key cannot exceed 300 Unicode characters.");
+          }
+          const duplicateKey = ordinalIgnoreCaseAttributeKey(key);
+          if (seenKeys.has(duplicateKey)) {
+            errors.push(label + " has duplicate attribute key '" + key +
+              "'; keys are compared case-insensitively after trimming.");
+          } else {
+            seenKeys.add(duplicateKey);
+          }
+        }
+      }
+
+      if (typeof attribute.value !== "string") {
+        errors.push(entryLabel + " value must be a non-null string.");
+      } else if (unicodeLength(attribute.value) > 4000) {
+        errors.push(entryLabel + " value cannot exceed 4000 Unicode characters.");
+      }
+    });
+  };
   const flowInfoPaths = new Set([
     "all",
     "actions.count",
@@ -8135,6 +8378,11 @@ function validateModelForSave(candidate) {
   }
   const incomingFor = nodeId => incomingByNode.get(nodeId) || [];
   const outgoingFor = nodeId => outgoingByNode.get(nodeId) || [];
+
+  nodes.filter(Boolean).forEach(node =>
+    validateAttributes(node, "Flow node #" + String(node.id)));
+  flows.filter(Boolean).forEach(flow =>
+    validateAttributes(flow, flowLabel(flow)));
 
   function splitFlowInfoArguments(source) {
     const args = [];
@@ -9684,6 +9932,7 @@ async function save() {
   // invariant helpers here: imported invalid source/flow settings must survive
   // long enough for validateModelForSave to report them.
   model.flowNodes.forEach(node => {
+    canonicalizeAttributeKeys(node);
     if (isErrorEndEventType(node.type)) {
       node.errorCode = typeof node.errorCode === "string" ? node.errorCode.trim() : "";
       node.errorDescription = typeof node.errorDescription === "string" && node.errorDescription.trim()
@@ -9735,6 +9984,7 @@ async function save() {
         node.multiInstance.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
     }
   });
+  model.sequenceFlows.forEach(canonicalizeAttributeKeys);
   const validationErrors = validateModelForSave(model);
   if (validationErrors.length > 0) {
     showValidationErrors(validationErrors);
@@ -9823,6 +10073,7 @@ function migrateLegacyToNew(obj) {
       id: a.id,
       name: a.name ?? a.label ?? "",
       toStepId: a.toStepId ?? a.next ?? null,
+      attributes: normalizeAttributesForLoad(a.attributes),
       roles: normalizeRoles(a.roles ?? a.role),
       variables: (a.variables || []).map(normalizeVariable)
     }));
@@ -9830,9 +10081,11 @@ function migrateLegacyToNew(obj) {
     if (isStartEventType(type)) {
       // start events are action-less: fold first action (or nextStepId) into one flow
       let target = s.nextStepId ?? null;
+      let flowAttributes = [];
       if (actions.length > 0) {
         const first = actions[0];
         if (target == null) target = first.toStepId;
+        flowAttributes = first.attributes;
         const existing = new Set(variables.map(v => v.name.toLowerCase()));
         for (const v of first.variables) {
           if (!existing.has(v.name.toLowerCase())) { variables.push(v); existing.add(v.name.toLowerCase()); }
@@ -9840,12 +10093,14 @@ function migrateLegacyToNew(obj) {
       }
       if (target != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: target,
+                             attributes: flowAttributes,
                              roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
     } else if (isAutomaticType(type)) {
       if (s.nextStepId != null) {
         sequenceFlows.push({ id: nextId(), name: "", sourceRef: s.id, targetRef: s.nextStepId,
+                             attributes: [],
                              roles: [], variables: [], condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
@@ -9853,6 +10108,7 @@ function migrateLegacyToNew(obj) {
       for (const a of actions) {
         if (a.toStepId == null) continue;
         sequenceFlows.push({ id: nextId(a.id), name: a.name, sourceRef: s.id, targetRef: a.toStepId,
+                             attributes: a.attributes,
                              roles: a.roles, variables: a.variables, condition: null, conditionPriority: null, isDefault: false, canActWithoutClaim: false,
                              canActWithoutClaimRoles: [] });
       }
@@ -9861,6 +10117,7 @@ function migrateLegacyToNew(obj) {
     flowNodes.push({
       id: s.id,
       name: s.name ?? s.label ?? `Node ${s.id}`,
+      attributes: normalizeAttributesForLoad(s.attributes),
       type,
       laneId: s.phaseId ?? null,
       x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
@@ -9911,6 +10168,7 @@ function loadFromObject(obj) {
         id: s.id,
         name: s.name ?? `Node ${s.id}`,
         externalId: s.externalId ?? null,
+        attributes: normalizeAttributesForLoad(s.attributes),
         type: s.type ?? NODE_TYPE.USER_TASK,
         asyncBefore: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type)
           ? (s.asyncBefore === undefined ? false : s.asyncBefore) : undefined,
@@ -9977,6 +10235,7 @@ function loadFromObject(obj) {
         id: f.id,
         name: f.name ?? "",
         externalId: f.externalId ?? null,
+        attributes: normalizeAttributesForLoad(f.attributes),
         sourceRef: f.sourceRef,
         targetRef: f.targetRef,
         roles: normalizeRoles(f.roles),

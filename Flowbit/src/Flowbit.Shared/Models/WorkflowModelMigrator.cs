@@ -31,6 +31,7 @@ public static class WorkflowModelMigrator
 
         foreach (var flow in model.SequenceFlows)
         {
+            flow.Attributes = NormalizeAttributes(flow.Attributes);
             flow.Roles = NormalizeRoles(flow.Roles);
             flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
             flow.Variables ??= [];
@@ -102,6 +103,7 @@ public static class WorkflowModelMigrator
             {
                 Id = step.Id,
                 Name = step.Name,
+                Attributes = step.Attributes ?? [],
                 Type = type,
                 LaneId = step.PhaseId,
                 X = step.X,
@@ -122,6 +124,7 @@ public static class WorkflowModelMigrator
                     {
                         Id = NextFlowId(ref nextFlowId, flows),
                         Name = string.Empty,
+                        Attributes = first.Attributes ?? [],
                         SourceRef = step.Id,
                         TargetRef = first.ToStepId
                     });
@@ -158,6 +161,7 @@ public static class WorkflowModelMigrator
                     {
                         Id = action.Id != 0 ? action.Id : NextFlowId(ref nextFlowId, flows),
                         Name = action.Name,
+                        Attributes = action.Attributes ?? [],
                         SourceRef = step.Id,
                         TargetRef = action.ToStepId,
                         Roles = action.Roles ?? [],
@@ -218,6 +222,21 @@ public static class WorkflowModelMigrator
         .Select(role => role.Trim())
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
+
+    private static List<WorkflowAttributeModel> NormalizeAttributes(
+        List<WorkflowAttributeModel>? attributes)
+    {
+        attributes ??= [];
+        foreach (var attribute in attributes)
+        {
+            if (attribute is not null && attribute.Key is not null)
+            {
+                attribute.Key = attribute.Key.Trim();
+            }
+        }
+
+        return attributes;
+    }
 
     /// <summary>
     /// Canonicalizes user-task defaults while preserving the behavior of older
@@ -340,6 +359,7 @@ public static class WorkflowModelMigrator
         FlowNodeModel node,
         IReadOnlyList<VariableModel> processVariables)
     {
+        node.Attributes = NormalizeAttributes(node.Attributes);
         node.Roles = NormalizeRoles(node.Roles);
         node.Variables ??= [];
         node.Assignments ??= [];

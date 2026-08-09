@@ -1,0 +1,31 @@
+@if (Attributes is { Count: > 0 })
+{
+    <details class="workflow-attributes" open="@Open">
+        <summary>
+            <span>@Label</span>
+            <span class="attribute-count">@Attributes.Count @PairLabel</span>
+        </summary>
+        <dl aria-label="@($"{Label} key-value pairs")">
+            @foreach (var item in Attributes)
+            {
+                <div class="attribute-pair">
+                    <dt>@item.Key</dt>
+                    <dd>@item.Value</dd>
+                </div>
+            }
+        </dl>
+    </details>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<WorkflowAttributeModel> Attributes { get; set; } = [];
+
+    [Parameter]
+    public string Label { get; set; } = "Attributes";
+
+    [Parameter]
+    public bool Open { get; set; }
+
+    private string PairLabel => Attributes.Count == 1 ? "pair" : "pairs";
+}

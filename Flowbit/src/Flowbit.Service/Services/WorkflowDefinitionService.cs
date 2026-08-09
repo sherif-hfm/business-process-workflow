@@ -268,6 +268,8 @@ public sealed class WorkflowDefinitionService(
 
         foreach (var flow in definition.SequenceFlows)
         {
+            ValidateAttributes(flow.Attributes, $"sequence flow #{flow.Id}");
+
             if (!nodeIds.Contains(flow.SourceRef))
             {
                 throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing sourceRef #{flow.SourceRef}.");
@@ -298,6 +300,8 @@ public sealed class WorkflowDefinitionService(
         var structuralTargetsBySource = BuildStructuralAdjacency(definition);
         foreach (var node in definition.FlowNodes)
         {
+            ValidateAttributes(node.Attributes, $"flow node #{node.Id}");
+
             if (string.IsNullOrWhiteSpace(node.Name))
             {
                 throw new WorkflowDomainException($"Flow node #{node.Id} name is required.");
@@ -2673,6 +2677,63 @@ public sealed class WorkflowDefinitionService(
         {
             throw new WorkflowDomainException(
                 $"The outgoing sequence flow from {kind.ToLowerInvariant()} #{entry.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateAttributes(
+        IReadOnlyList<WorkflowAttributeModel>? attributes,
+        string owner)
+    {
+        attributes ??= [];
+        if (attributes.Count > WorkflowAttributeConstraints.MaxCount)
+        {
+            throw new WorkflowDomainException(
+                $"{owner} cannot define more than {WorkflowAttributeConstraints.MaxCount} attributes.");
+        }
+
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < attributes.Count; index++)
+        {
+            var attribute = attributes[index];
+            if (attribute is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute #{index + 1} on {owner} must be an object with string key and value fields.");
+            }
+
+            if (string.IsNullOrWhiteSpace(attribute.Key))
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute #{index + 1} key is required on {owner}.");
+            }
+
+            if (attribute.Key.EnumerateRunes()
+                    .Take(WorkflowAttributeConstraints.MaxKeyLength + 1)
+                    .Count() > WorkflowAttributeConstraints.MaxKeyLength)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute key '{attribute.Key}' on {owner} must contain at most {WorkflowAttributeConstraints.MaxKeyLength} Unicode scalar values.");
+            }
+
+            if (!keys.Add(attribute.Key))
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute key '{attribute.Key}' is duplicated on {owner}; attribute keys are case-insensitive.");
+            }
+
+            if (attribute.Value is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute '{attribute.Key}' value is required on {owner}.");
+            }
+
+            if (attribute.Value.EnumerateRunes()
+                    .Take(WorkflowAttributeConstraints.MaxValueLength + 1)
+                    .Count() > WorkflowAttributeConstraints.MaxValueLength)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute '{attribute.Key}' value on {owner} must contain at most {WorkflowAttributeConstraints.MaxValueLength} Unicode scalar values.");
+            }
         }
     }
 

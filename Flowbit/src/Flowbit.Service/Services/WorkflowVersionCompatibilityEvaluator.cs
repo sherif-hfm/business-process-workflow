@@ -953,6 +953,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         json.Remove("laneId");
         json.Remove("x");
         json.Remove("y");
+        json.Remove("attributes");
         CanonicalizeStringSet(json, "roles");
         return json.ToJsonString();
     }
@@ -963,6 +964,7 @@ public static class WorkflowVersionCompatibilityEvaluator
             ?? throw new InvalidOperationException("A sequence flow did not serialize as an object.");
         json.Remove("name");
         json.Remove("externalId");
+        json.Remove("attributes");
         CanonicalizeStringSet(json, "roles");
         CanonicalizeStringSet(json, "canActWithoutClaimRoles");
         return json.ToJsonString();

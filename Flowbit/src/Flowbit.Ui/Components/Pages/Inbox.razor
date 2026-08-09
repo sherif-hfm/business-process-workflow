@@ -130,6 +130,7 @@ else
                                     {
                                         <ActingForBadge ActingFor="@item.DelegatedAccess.ActingFor" DelegationId="@item.DelegatedAccess.DelegationId" />
                                     }
+                                    <WorkflowAttributes Attributes="@item.Attributes" Label="Node attributes" />
                                 </td>
                                 <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? "No business key")</span></td>
                                 <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>

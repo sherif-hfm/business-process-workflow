@@ -34,6 +34,274 @@ public sealed class DefinitionValidationTests
             .CreateAsync(model, false, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task CreateAsync_NormalizesAttributeKeysAndPreservesValuesAndOrder()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        var action = model.SequenceFlows.Single(flow => flow.Id == 201);
+        model.FlowNodes.Single(node => node.Id == 1).Attributes = null!;
+        model.SequenceFlows.Single(flow => flow.Id == 101).Attributes = null!;
+        task.Attributes =
+        [
+            new WorkflowAttributeModel { Key = "  second  ", Value = "  keep surrounding whitespace  " },
+            new WorkflowAttributeModel { Key = "First", Value = string.Empty }
+        ];
+        action.Attributes =
+        [
+            new WorkflowAttributeModel { Key = "  integration.route  ", Value = "approval" }
+        ];
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition;
+        Assert.Empty(saved.FlowNodes.Single(node => node.Id == 1).Attributes);
+        Assert.Empty(saved.SequenceFlows.Single(flow => flow.Id == 101).Attributes);
+        Assert.Collection(
+            saved.FlowNodes.Single(node => node.Id == 2).Attributes,
+            attribute =>
+            {
+                Assert.Equal("second", attribute.Key);
+                Assert.Equal("  keep surrounding whitespace  ", attribute.Value);
+            },
+            attribute =>
+            {
+                Assert.Equal("First", attribute.Key);
+                Assert.Equal(string.Empty, attribute.Value);
+            });
+        var savedActionAttribute = Assert.Single(
+            saved.SequenceFlows.Single(flow => flow.Id == 201).Attributes);
+        Assert.Equal("integration.route", savedActionAttribute.Key);
+        Assert.Equal("approval", savedActionAttribute.Value);
+    }
+
+    [Fact]
+    public async Task CreateAsync_PreservesLegacyStepAndActionAttributesDuringConversion()
+    {
+        var model = new WorkflowModel
+        {
+            Id = "legacy-attributes",
+            Name = "Legacy attributes",
+            LegacyInitialStepId = 1,
+            LegacySteps =
+            [
+                new LegacyStepModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = "start",
+                    Attributes =
+                    [
+                        new WorkflowAttributeModel { Key = "  node.kind  ", Value = "entry" }
+                    ],
+                    Actions =
+                    [
+                        new LegacyActionModel
+                        {
+                            Id = 101,
+                            Name = "Begin",
+                            ToStepId = 2,
+                            Attributes =
+                            [
+                                new WorkflowAttributeModel { Key = "  route.kind  ", Value = "start-action" }
+                            ]
+                        }
+                    ]
+                },
+                new LegacyStepModel
+                {
+                    Id = 2,
+                    Name = "Review",
+                    Type = "userTask",
+                    Attributes =
+                    [
+                        new WorkflowAttributeModel { Key = "node.kind", Value = "human" }
+                    ],
+                    Actions =
+                    [
+                        new LegacyActionModel
+                        {
+                            Id = 201,
+                            Name = "Finish",
+                            ToStepId = 3,
+                            Attributes =
+                            [
+                                new WorkflowAttributeModel { Key = "route.kind", Value = "user-action" }
+                            ]
+                        }
+                    ]
+                },
+                new LegacyStepModel { Id = 3, Name = "End", Type = "end" }
+            ]
+        };
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition;
+        var startAttribute = Assert.Single(saved.FlowNodes.Single(node => node.Id == 1).Attributes);
+        Assert.Equal("node.kind", startAttribute.Key);
+        Assert.Equal("entry", startAttribute.Value);
+        var taskAttribute = Assert.Single(saved.FlowNodes.Single(node => node.Id == 2).Attributes);
+        Assert.Equal("node.kind", taskAttribute.Key);
+        Assert.Equal("human", taskAttribute.Value);
+        var startFlowAttribute = Assert.Single(
+            saved.SequenceFlows.Single(flow => flow.SourceRef == 1).Attributes);
+        Assert.Equal("route.kind", startFlowAttribute.Key);
+        Assert.Equal("start-action", startFlowAttribute.Value);
+        var actionAttribute = Assert.Single(saved.SequenceFlows.Single(flow => flow.Id == 201).Attributes);
+        Assert.Equal("route.kind", actionAttribute.Key);
+        Assert.Equal("user-action", actionAttribute.Value);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsAttributeCountAndUnicodeScalarLimits()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        var action = model.SequenceFlows.Single(flow => flow.Id == 201);
+        task.Attributes = Enumerable.Range(0, WorkflowAttributeConstraints.MaxCount)
+            .Select(index => new WorkflowAttributeModel
+            {
+                Key = $"node-{index}",
+                Value = $"value-{index}"
+            })
+            .ToList();
+        task.Attributes[0].Key = string.Concat(Enumerable.Repeat(
+            "😀", WorkflowAttributeConstraints.MaxKeyLength));
+        task.Attributes[0].Value = string.Concat(Enumerable.Repeat(
+            "😀", WorkflowAttributeConstraints.MaxValueLength));
+        action.Attributes = Enumerable.Range(0, WorkflowAttributeConstraints.MaxCount)
+            .Select(index => new WorkflowAttributeModel
+            {
+                Key = $"flow-{index}",
+                Value = $"value-{index}"
+            })
+            .ToList();
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_UsesOrdinalIgnoreCaseForDistinctUnicodeAttributeKeys()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => node.Id == 2).Attributes =
+        [
+            new WorkflowAttributeModel { Key = "K", Value = "latin" },
+            new WorkflowAttributeModel { Key = "\u212A", Value = "kelvin" },
+            new WorkflowAttributeModel { Key = "\u00DF", Value = "sharp-s" },
+            new WorkflowAttributeModel { Key = "\u1E9E", Value = "capital sharp-s" },
+            new WorkflowAttributeModel { Key = "\u019B", Value = ".NET 10 scalar" },
+            new WorkflowAttributeModel { Key = "\uA7DC", Value = "newer browser uppercase" }
+        ];
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("\u00E9", "\u00C9")]
+    [InlineData("\u00B5", "\u039C")]
+    [InlineData("\u03C3", "\u03C2")]
+    [InlineData("\u1F80", "\u1F88")]
+    public async Task CreateAsync_RejectsOrdinalIgnoreCaseUnicodeAttributeDuplicates(
+        string firstKey,
+        string secondKey)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => node.Id == 2).Attributes =
+        [
+            new WorkflowAttributeModel { Key = firstKey, Value = "first" },
+            new WorkflowAttributeModel { Key = secondKey, Value = "second" }
+        ];
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("is duplicated", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("tooMany")]
+    [InlineData("blankKey")]
+    [InlineData("duplicateKey")]
+    [InlineData("longKey")]
+    [InlineData("longValue")]
+    [InlineData("nullEntry")]
+    [InlineData("nullKey")]
+    [InlineData("missingValue")]
+    [InlineData("nullValue")]
+    public async Task CreateAsync_RejectsInvalidAttributes(string invalid)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        var action = model.SequenceFlows.Single(flow => flow.Id == 201);
+
+        switch (invalid)
+        {
+            case "tooMany":
+                task.Attributes = Enumerable.Range(0, WorkflowAttributeConstraints.MaxCount + 1)
+                    .Select(index => new WorkflowAttributeModel
+                    {
+                        Key = $"key-{index}",
+                        Value = "value"
+                    })
+                    .ToList();
+                break;
+            case "blankKey":
+                action.Attributes = [new WorkflowAttributeModel { Key = " \t ", Value = "value" }];
+                break;
+            case "duplicateKey":
+                task.Attributes =
+                [
+                    new WorkflowAttributeModel { Key = " Owner ", Value = "first" },
+                    new WorkflowAttributeModel { Key = "owner", Value = "second" }
+                ];
+                break;
+            case "longKey":
+                action.Attributes =
+                [
+                    new WorkflowAttributeModel
+                    {
+                        Key = string.Concat(Enumerable.Repeat(
+                            "😀", WorkflowAttributeConstraints.MaxKeyLength + 1)),
+                        Value = "value"
+                    }
+                ];
+                break;
+            case "longValue":
+                task.Attributes =
+                [
+                    new WorkflowAttributeModel
+                    {
+                        Key = "key",
+                        Value = string.Concat(Enumerable.Repeat(
+                            "😀", WorkflowAttributeConstraints.MaxValueLength + 1))
+                    }
+                ];
+                break;
+            case "nullEntry":
+                task.Attributes = [null!];
+                break;
+            case "nullKey":
+                action.Attributes = [new WorkflowAttributeModel { Key = null!, Value = "value" }];
+                break;
+            case "missingValue":
+                action.Attributes = JsonSerializer.Deserialize<List<WorkflowAttributeModel>>(
+                    """[{"key":"key"}]""")!;
+                break;
+            case "nullValue":
+                action.Attributes = [new WorkflowAttributeModel { Key = "key", Value = null! }];
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("attribute", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static IEnumerable<object[]> ValidTypedOutputDefaults()
     {
         var values = new (string Type, string Scalar, string Array)[]

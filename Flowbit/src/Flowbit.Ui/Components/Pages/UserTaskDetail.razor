@@ -48,6 +48,8 @@ else
             }
         </div>
 
+        <WorkflowAttributes Attributes="@task.Attributes" Label="Node attributes" Open="true" />
+
         @if (task.MultiInstance is not null)
         {
             var progress = task.MultiInstance;
@@ -93,6 +95,7 @@ else
                             <div><span class="page-eyebrow">Flow #@flow.Id</span><h3>@(string.IsNullOrWhiteSpace(flow.Name) ? $"Continue to node #{flow.TargetRef}" : flow.Name)</h3></div>
                             @if (flow.CancelRemainingInstances) { <StatusBadge Status="danger" Text="Interrupt" /> }
                         </div>
+                        <WorkflowAttributes Attributes="@flow.Attributes" Label="Flow attributes" Open="true" />
                         @foreach (var variable in flow.Variables)
                         {
                             var inputId = $"task-{TaskId}-flow-{flow.Id}-{variable.Name.Replace(" ", "-")}";

@@ -828,11 +828,13 @@ public sealed partial class WorkflowEngineService(
         var canActByTask = new Dictionary<long, bool>();
         var hasBypassClaimByTask = new Dictionary<long, bool>();
         var accessByTask = new Dictionary<long, ResolvedUserTaskAccess>();
+        var attributesByTask = new Dictionary<long, IReadOnlyList<WorkflowAttributeModel>>();
         foreach (var row in paged.Items)
         {
             var taskKey = InboxAuthorizationKey(row);
             var workflow = definitionsById[row.WorkflowDefinitionId];
             var node = GetFlowNode(workflow.Definition, row.CurrentNodeId);
+            attributesByTask[taskKey] = NodeAttributes(workflow, row.CurrentNodeId);
             var task = ToInboxUserTaskRecord(row);
             var access = ResolveProjectedUserTaskAccess(
                 task, actor, row.ActingFor, row.DelegationId);
@@ -851,7 +853,7 @@ public sealed partial class WorkflowEngineService(
             .GroupBy(row => row.MultiInstanceProgress!.Execution.Id)
             .ToDictionary(group => group.Key, group => ToProgress(group.First().MultiInstanceProgress!));
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
-            accessByTask, canActByTask, hasBypassClaimByTask,
+            accessByTask, attributesByTask, canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null,
             includeVariables)).ToList();
         return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
@@ -879,6 +881,7 @@ public sealed partial class WorkflowEngineService(
         string normalizedUser,
         IReadOnlySet<string> normalizedRoles,
         IReadOnlyDictionary<long, ResolvedUserTaskAccess> accessByTask,
+        IReadOnlyDictionary<long, IReadOnlyList<WorkflowAttributeModel>> attributesByTask,
         Dictionary<long, bool>? canActByTask = null,
         Dictionary<long, bool>? hasBypassClaimByTask = null,
         MultiInstanceProgressDto? multiInstance = null,
@@ -958,7 +961,8 @@ public sealed partial class WorkflowEngineService(
             row.InstanceUpdatedAt)
         {
             Variables = includeVariables ? row.Variables : null,
-            DelegatedAccess = access.ToDto()
+            DelegatedAccess = access.ToDto(),
+            Attributes = attributesByTask[authorizationKey]
         };
     }
 
@@ -1703,7 +1707,12 @@ public sealed partial class WorkflowEngineService(
                 executionsById,
                 actorStatesByUser.GetValueOrDefault(access.RepresentedOwner)
                     ?? new Dictionary<long, MultiInstanceActorStateRecord>());
-            items.Add(ToUserTaskDto(task, progress, capabilities, access.ExecutionActor));
+            items.Add(ToUserTaskDto(
+                task,
+                progress,
+                capabilities,
+                NodeAttributes(workflow, task.NodeId),
+                access.ExecutionActor));
         }
         return new PagedResult<UserTaskDto>(items, page, pageSize, paged.TotalCount);
     }
@@ -8713,14 +8722,20 @@ public sealed partial class WorkflowEngineService(
         var progress = task.MultiInstanceExecutionId is long executionId
             ? await BuildProgressAsync(executionId, cancellationToken)
             : null;
-        var capabilities = await BuildUserTaskCapabilitiesAsync(task, actor, cancellationToken);
-        return ToUserTaskDto(task, progress, capabilities, actor);
+        var presentation = await BuildUserTaskPresentationAsync(task, actor, cancellationToken);
+        return ToUserTaskDto(
+            task,
+            progress,
+            presentation.Capabilities,
+            presentation.Attributes,
+            actor);
     }
 
     private static UserTaskDto ToUserTaskDto(
         UserTaskRecord task,
         MultiInstanceProgressDto? progress,
         UserTaskCapabilitiesDto capabilities,
+        IReadOnlyList<WorkflowAttributeModel> attributes,
         ActorContext? actor = null) =>
         new UserTaskDto(task.Id, task.InstanceId, task.TokenId, task.NodeId, task.NodeName,
             task.NodeExternalId, task.Roles, task.RequiresClaim, task.RequiresAssignment, task.Status, task.ClaimedBy,
@@ -8738,10 +8753,15 @@ public sealed partial class WorkflowEngineService(
                 : null,
             CompletionKind = task.CompletionKind,
             CompletionReason = task.CompletionReason,
-            AdministrativeActionBatchId = task.AdministrativeActionBatchId
+            AdministrativeActionBatchId = task.AdministrativeActionBatchId,
+            Attributes = attributes
         };
 
-    private async Task<UserTaskCapabilitiesDto> BuildUserTaskCapabilitiesAsync(
+    private sealed record UserTaskPresentation(
+        UserTaskCapabilitiesDto Capabilities,
+        IReadOnlyList<WorkflowAttributeModel> Attributes);
+
+    private async Task<UserTaskPresentation> BuildUserTaskPresentationAsync(
         UserTaskRecord task,
         ActorContext actor,
         CancellationToken cancellationToken)
@@ -8749,19 +8769,26 @@ public sealed partial class WorkflowEngineService(
         var user = EffectiveUser(actor);
         var claimedByMe = string.Equals(
             task.ClaimedBy, NormalizeUser(actor.User), StringComparison.OrdinalIgnoreCase);
+        var disabled = new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken);
+        var workflow = instance is null
+            ? null
+            : await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
+        var attributes = workflow is null
+            ? []
+            : NodeAttributes(workflow, task.NodeId);
         if (task.Status != UserTaskRecordStatuses.Active)
-            return new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+            return new UserTaskPresentation(disabled, attributes);
 
         await LoadSettingsAsync(cancellationToken);
-        var instance = await runtime.GetInstanceAsync(task.InstanceId, cancellationToken);
         var token = await runtime.GetExecutionTokenAsync(task.TokenId, false, cancellationToken);
         if (instance is null || instance.Status != WorkflowInstanceStatuses.Running
+                             || workflow is null
                              || token is null
                              || token.Status != ExecutionTokenRecordStatuses.Active
                              || token.NodeId != task.NodeId)
-            return new UserTaskCapabilitiesDto(claimedByMe, false, false, false);
+            return new UserTaskPresentation(disabled, attributes);
 
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
         var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
         var executionsById = new Dictionary<long, MultiInstanceExecutionRecord>();
         IReadOnlyDictionary<long, MultiInstanceActorStateRecord> actorStates =
@@ -8780,8 +8807,10 @@ public sealed partial class WorkflowEngineService(
             }
         }
 
-        return BuildUserTaskCapabilities(
-            task, actor, instance, workflow, stored, executionsById, actorStates);
+        return new UserTaskPresentation(
+            BuildUserTaskCapabilities(
+                task, actor, instance, workflow, stored, executionsById, actorStates),
+            attributes);
     }
 
     private UserTaskCapabilitiesDto BuildUserTaskCapabilities(
@@ -8876,7 +8905,8 @@ public sealed partial class WorkflowEngineService(
 
     private static ManagedUserTaskDto ToManagedUserTaskDto(
         ManagedUserTaskRecord task,
-        MultiInstanceProgressDto? progress)
+        MultiInstanceProgressDto? progress,
+        IReadOnlyList<WorkflowAttributeModel> attributes)
     {
         var ownership = task.Assignee is not null
             ? UserTaskOwnershipKinds.Assigned
@@ -8906,7 +8936,10 @@ public sealed partial class WorkflowEngineService(
             progress,
             task.CreatedAt,
             task.UpdatedAt,
-            task.Variables);
+            task.Variables)
+        {
+            Attributes = attributes
+        };
     }
 
     private async Task<PagedResult<ManagedUserTaskDto>> BuildManagedUserTaskPageAsync(
@@ -8919,11 +8952,25 @@ public sealed partial class WorkflowEngineService(
             .Distinct()
             .ToList();
         var progress = await BuildProgressAsync(executionIds, cancellationToken);
+        var definitionIds = paged.Items
+            .Select(item => item.WorkflowDefinitionId)
+            .Distinct()
+            .ToArray();
+        var workflows = await definitions.GetManyAsync(definitionIds, cancellationToken);
+        foreach (var definitionId in definitionIds)
+        {
+            if (!workflows.ContainsKey(definitionId))
+            {
+                throw new WorkflowDomainException(
+                    $"Workflow definition #{definitionId} was not found.");
+            }
+        }
         var items = paged.Items.Select(item => ToManagedUserTaskDto(
             item,
             item.MultiInstanceExecutionId is long executionId
                 ? progress.GetValueOrDefault(executionId)
-                : null)).ToList();
+                : null,
+            NodeAttributes(workflows[item.WorkflowDefinitionId], item.NodeId))).ToList();
         return new PagedResult<ManagedUserTaskDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
@@ -9259,6 +9306,12 @@ public sealed partial class WorkflowEngineService(
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)
         ?? throw new WorkflowDomainException($"Flow node #{nodeId} was not found in workflow '{definition.Name}'.");
+
+    private static IReadOnlyList<WorkflowAttributeModel> NodeAttributes(
+        WorkflowDefinitionRecord workflow,
+        int nodeId) =>
+        workflow.Definition.FlowNodes.SingleOrDefault(node => node.Id == nodeId)?.Attributes
+        ?? [];
 
     private static string StatusForTargetNode(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsErrorEnd(node.Type)

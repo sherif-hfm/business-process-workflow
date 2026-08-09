@@ -117,6 +117,35 @@ public sealed class TaskDistributionModel
 }
 
 /// <summary>
+/// Represents one ordered, user-authored metadata entry attached to a workflow
+/// node or sequence flow.
+/// </summary>
+public sealed class WorkflowAttributeModel
+{
+    /// <summary>
+    /// The case-insensitively unique attribute key within its owning element.
+    /// </summary>
+    [JsonPropertyName("key")]
+    public string Key { get; set; } = null!;
+
+    /// <summary>
+    /// The opaque string value associated with the key.
+    /// </summary>
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = null!;
+}
+
+/// <summary>
+/// Authoring limits for node and sequence-flow attributes.
+/// </summary>
+public static class WorkflowAttributeConstraints
+{
+    public const int MaxCount = 100;
+    public const int MaxKeyLength = 300;
+    public const int MaxValueLength = 4000;
+}
+
+/// <summary>
 /// Represents a swimlane container in a workflow layout.
 /// </summary>
 public sealed class LaneModel
@@ -188,6 +217,12 @@ public sealed class FlowNodeModel
     [JsonPropertyName("externalId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ExternalId { get; set; }
+
+    /// <summary>
+    /// Ordered string metadata attached to this node.
+    /// </summary>
+    [JsonPropertyName("attributes")]
+    public List<WorkflowAttributeModel> Attributes { get; set; } = [];
 
     /// <summary>
     /// The type of the flow node (e.g. userTask, serviceTask, gateway, etc.).
@@ -1120,6 +1155,12 @@ public sealed class SequenceFlowModel
     public string? ExternalId { get; set; }
 
     /// <summary>
+    /// Ordered string metadata attached to this sequence flow.
+    /// </summary>
+    [JsonPropertyName("attributes")]
+    public List<WorkflowAttributeModel> Attributes { get; set; } = [];
+
+    /// <summary>
     /// The ID of the source flow node.
     /// </summary>
     [JsonPropertyName("sourceRef")]
@@ -1391,6 +1432,9 @@ public sealed class LegacyStepModel
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    [JsonPropertyName("attributes")]
+    public List<WorkflowAttributeModel> Attributes { get; set; } = [];
+
     [JsonPropertyName("type")]
     public string Type { get; set; } = "userTask";
 
@@ -1429,6 +1473,9 @@ public sealed class LegacyActionModel
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("attributes")]
+    public List<WorkflowAttributeModel> Attributes { get; set; } = [];
 
     [JsonPropertyName("toStepId")]
     public int ToStepId { get; set; }

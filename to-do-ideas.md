@@ -1,4 +1,3 @@
-- attributes for events task and flows 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
  - add update instances variables single or in batch 
 - receive task
@@ -17,6 +16,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- attributes for nodes and flows (done)
 - chnage instances vesrion in batch (done)
 - batch action by administrator (done)
 - async flow asyncAfter/asyncBefore and  Timers events (done)

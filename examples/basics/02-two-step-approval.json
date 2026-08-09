@@ -9,6 +9,7 @@
       "id": 1,
       "name": "start",
       "externalId": null,
+      "attributes": [],
       "type": "startEvent",
       "laneId": null,
       "x": 100,
@@ -28,6 +29,12 @@
       "id": 2,
       "name": "approval1",
       "externalId": null,
+      "attributes": [
+        {
+          "key": "local.id",
+          "value": "approval1"
+        }
+      ],
       "type": "userTask",
       "asyncBefore": false,
       "asyncAfter": false,
@@ -51,6 +58,12 @@
       "id": 3,
       "name": "approval2",
       "externalId": null,
+      "attributes": [
+        {
+          "key": "local.id",
+          "value": "approval2"
+        }
+      ],
       "type": "userTask",
       "asyncBefore": false,
       "asyncAfter": false,
@@ -74,6 +87,7 @@
       "id": 4,
       "name": "end",
       "externalId": null,
+      "attributes": [],
       "type": "endEvent",
       "laneId": null,
       "x": 1214,
@@ -93,7 +107,14 @@
       "id": 5,
       "name": "approval2 timer",
       "externalId": null,
+      "attributes": [],
       "type": "timerBoundaryEvent",
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "PT1M",
+        "timeCycle": null
+      },
+      "cancelActivity": true,
       "laneId": null,
       "x": 814,
       "y": 113,
@@ -106,14 +127,8 @@
       "inheritAssignmentFromNodeId": null,
       "variables": [],
       "assignee": null,
-      "attachedToRef": 3,
-      "cancelActivity": true,
-      "timer": {
-        "timeDate": null,
-        "timeDuration": "PT1M",
-        "timeCycle": null
-      },
-      "assignments": []
+      "assignments": [],
+      "attachedToRef": 3
     }
   ],
   "sequenceFlows": [
@@ -121,6 +136,7 @@
       "id": 101,
       "name": "",
       "externalId": null,
+      "attributes": [],
       "sourceRef": 1,
       "targetRef": 2,
       "roles": [],
@@ -139,6 +155,7 @@
       "id": 102,
       "name": "approval",
       "externalId": null,
+      "attributes": [],
       "sourceRef": 2,
       "targetRef": 3,
       "roles": [],
@@ -157,6 +174,7 @@
       "id": 103,
       "name": "approval",
       "externalId": null,
+      "attributes": [],
       "sourceRef": 3,
       "targetRef": 4,
       "roles": [],
@@ -175,6 +193,7 @@
       "id": 104,
       "name": "back",
       "externalId": null,
+      "attributes": [],
       "sourceRef": 3,
       "targetRef": 2,
       "roles": [
@@ -194,6 +213,8 @@
     {
       "id": 105,
       "name": "auto-back",
+      "externalId": null,
+      "attributes": [],
       "sourceRef": 5,
       "targetRef": 2,
       "roles": [],
