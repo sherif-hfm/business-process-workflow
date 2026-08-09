@@ -98,6 +98,70 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void TimerBoundaryFlowRoutesOutsideItsAttachedHost()
+    {
+        var engine = CreateEditorEngine();
+        using var route = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'boundary-route',
+                name: 'Boundary route',
+                initialEventId: null,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  {
+                    id: 2,
+                    name: 'First approval',
+                    type: NODE_TYPE.USER_TASK,
+                    laneId: null,
+                    x: 367,
+                    y: 109
+                  },
+                  {
+                    id: 3,
+                    name: 'Second approval',
+                    type: NODE_TYPE.USER_TASK,
+                    laneId: null,
+                    x: 810,
+                    y: 128
+                  },
+                  {
+                    id: 5,
+                    name: 'Second approval timer',
+                    type: NODE_TYPE.TIMER_BOUNDARY_EVENT,
+                    laneId: null,
+                    x: 814,
+                    y: 113,
+                    attachedToRef: 3,
+                    cancelActivity: true,
+                    timer: { timeDuration: 'PT1M' }
+                  }
+                ],
+                sequenceFlows: [{
+                  id: 105,
+                  name: 'auto-back',
+                  sourceRef: 5,
+                  targetRef: 2
+                }]
+              };
+              const flow = model.sequenceFlows[0];
+              const group = { a: 2, b: 5, flows: [flow], laneSpacing: 0 };
+              const geometry = routePairGeometries(group).get(flow.id);
+              const hostBounds = edgeNodeBounds(getNode(3));
+              return JSON.stringify({
+                startsInsideHost: edgePointInsideBox(geometry.start, hostBounds),
+                crossesHost: edgeCurveHitsBox(geometry, hostBounds)
+              });
+            })()
+            """).AsString());
+
+        Assert.False(route.RootElement.GetProperty("startsInsideHost").GetBoolean());
+        Assert.False(route.RootElement.GetProperty("crossesHost").GetBoolean());
+    }
+
+    [Fact]
     public void LoaderPreservesMalformedDurableMetadataForValidation()
     {
         var engine = CreateEditorEngine();

@@ -3946,9 +3946,18 @@ function edgeCurveHitsBox(geometry, box) {
 }
 
 function routePairGeometries(group) {
+  const boundaryHostIds = new Set(
+    [getNode(group.a), getNode(group.b)]
+      .filter(node => node && isBoundaryEventType(node.type) &&
+        Number.isInteger(node.attachedToRef))
+      .map(node => node.attachedToRef)
+  );
   const obstacles = model.flowNodes
     .filter(node => node.id !== group.a && node.id !== group.b && !isBoundaryEventType(node.type))
-    .map(node => edgeNodeBounds(node, 14));
+    // A boundary event overlaps its host border. Padding that one obstacle by
+    // the event radius encloses every possible starting point, so all outward
+    // detours look blocked and the router falls back to a line through the host.
+    .map(node => edgeNodeBounds(node, boundaryHostIds.has(node.id) ? 0 : 14));
   const buildAt = detourOffset => {
     group.detourOffset = detourOffset;
     return new Map(group.flows.map(flow => [flow.id, buildEdgeGeometry(flow, group, null)]));
