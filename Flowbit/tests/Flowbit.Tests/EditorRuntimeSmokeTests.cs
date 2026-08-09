@@ -8,7 +8,167 @@ namespace Flowbit.Tests;
 public sealed class EditorRuntimeSmokeTests
 {
     [Fact]
-    public void ToolbarMenusTrackTheActiveToolAndCloseWithoutChangingEditorState()
+    public void ToolTransitionsFollowFileAndCreationActions()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const startup = {
+                activeTool,
+                svgTool: svg.dataset.activeTool,
+                label: activeToolLabel.textContent,
+                selectPressed: selectToolBtn.getAttribute('aria-pressed'),
+                panPressed: panToolBtn.getAttribute('aria-pressed')
+              };
+
+              model.flowNodes.push({
+                id: 99,
+                name: 'Existing node',
+                type: NODE_TYPE.TASK,
+                laneId: null,
+                x: 100,
+                y: 100,
+                attributes: [],
+                roles: [],
+                variables: []
+              });
+              fileMenu.open = true;
+              document.getElementById('newBtn').onclick();
+              const afterNew = {
+                activeTool,
+                menuClosed: !fileMenu.open,
+                nodesCleared: model.flowNodes.length === 0,
+                connectMode
+              };
+
+              setActiveTool('pan');
+              addMenu.open = true;
+              document.getElementById('addStepBtn').onclick();
+              const afterAddNode = {
+                activeTool,
+                menuClosed: !addMenu.open,
+                selectedKind: selected?.kind,
+                nodeCount: model.flowNodes.length
+              };
+
+              setActiveTool('pan');
+              addMenu.open = true;
+              document.getElementById('addPhaseBtn').onclick();
+              const afterAddLane = {
+                activeTool,
+                menuClosed: !addMenu.open,
+                selectedKind: selected?.kind,
+                laneCount: model.lanes.length
+              };
+
+              setActiveTool('pan');
+              addMenu.open = true;
+              document.getElementById('connectBtn').onclick();
+              const afterConnect = {
+                activeTool,
+                menuClosed: !addMenu.open,
+                connectMode,
+                connectPressed: document.getElementById('connectBtn').getAttribute('aria-pressed')
+              };
+              setConnectMode(false);
+
+              setActiveTool('select');
+              const originalFileReader = FileReader;
+              FileReader = function() {
+                this.readAsText = file => {
+                  this.result = file.contents;
+                  this.onload();
+                };
+              };
+              const fileInput = document.getElementById('fileInput');
+
+              fileInput.files = [];
+              fileInput.onchange({ target: fileInput });
+              const afterCanceledLoad = { activeTool };
+
+              const modelBeforeInvalidLoad = model;
+              fileInput.files = [{ contents: '{ invalid json' }];
+              fileInput.value = 'invalid-workflow.json';
+              fileInput.onchange({ target: fileInput });
+              const afterInvalidLoad = {
+                activeTool,
+                modelUnchanged: model === modelBeforeInvalidLoad,
+                inputReset: fileInput.value === ''
+              };
+
+              fileInput.files = [{ contents: JSON.stringify(newModel()) }];
+              fileInput.value = 'loaded-workflow.json';
+              fileInput.onchange({ target: fileInput });
+              const afterLoad = {
+                activeTool,
+                inputReset: fileInput.value === '',
+                connectMode
+              };
+              FileReader = originalFileReader;
+
+              return JSON.stringify({
+                startup,
+                afterNew,
+                afterAddNode,
+                afterAddLane,
+                afterConnect,
+                afterCanceledLoad,
+                afterInvalidLoad,
+                afterLoad
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var startup = root.GetProperty("startup");
+        Assert.Equal("pan", startup.GetProperty("activeTool").GetString());
+        Assert.Equal("pan", startup.GetProperty("svgTool").GetString());
+        Assert.Equal("Pan", startup.GetProperty("label").GetString());
+        Assert.Equal("false", startup.GetProperty("selectPressed").GetString());
+        Assert.Equal("true", startup.GetProperty("panPressed").GetString());
+
+        var afterNew = root.GetProperty("afterNew");
+        Assert.Equal("select", afterNew.GetProperty("activeTool").GetString());
+        Assert.True(afterNew.GetProperty("menuClosed").GetBoolean());
+        Assert.True(afterNew.GetProperty("nodesCleared").GetBoolean());
+        Assert.False(afterNew.GetProperty("connectMode").GetBoolean());
+
+        var afterAddNode = root.GetProperty("afterAddNode");
+        Assert.Equal("select", afterAddNode.GetProperty("activeTool").GetString());
+        Assert.True(afterAddNode.GetProperty("menuClosed").GetBoolean());
+        Assert.Equal("node", afterAddNode.GetProperty("selectedKind").GetString());
+        Assert.Equal(1, afterAddNode.GetProperty("nodeCount").GetInt32());
+
+        var afterAddLane = root.GetProperty("afterAddLane");
+        Assert.Equal("select", afterAddLane.GetProperty("activeTool").GetString());
+        Assert.True(afterAddLane.GetProperty("menuClosed").GetBoolean());
+        Assert.Equal("lane", afterAddLane.GetProperty("selectedKind").GetString());
+        Assert.Equal(1, afterAddLane.GetProperty("laneCount").GetInt32());
+
+        var afterConnect = root.GetProperty("afterConnect");
+        Assert.Equal("select", afterConnect.GetProperty("activeTool").GetString());
+        Assert.True(afterConnect.GetProperty("menuClosed").GetBoolean());
+        Assert.True(afterConnect.GetProperty("connectMode").GetBoolean());
+        Assert.Equal("true", afterConnect.GetProperty("connectPressed").GetString());
+
+        Assert.Equal(
+            "select",
+            root.GetProperty("afterCanceledLoad").GetProperty("activeTool").GetString());
+
+        var afterInvalidLoad = root.GetProperty("afterInvalidLoad");
+        Assert.Equal("select", afterInvalidLoad.GetProperty("activeTool").GetString());
+        Assert.True(afterInvalidLoad.GetProperty("modelUnchanged").GetBoolean());
+        Assert.True(afterInvalidLoad.GetProperty("inputReset").GetBoolean());
+
+        var afterLoad = root.GetProperty("afterLoad");
+        Assert.Equal("pan", afterLoad.GetProperty("activeTool").GetString());
+        Assert.True(afterLoad.GetProperty("inputReset").GetBoolean());
+        Assert.False(afterLoad.GetProperty("connectMode").GetBoolean());
+    }
+
+    [Fact]
+    public void ToolbarMenusGroupActionsTrackModesAndCloseWithoutChangingSelection()
     {
         var engine = CreateEditorEngine();
         using var result = JsonDocument.Parse(engine.Evaluate(
@@ -18,19 +178,31 @@ public sealed class EditorRuntimeSmokeTests
               setActiveTool('select');
 
               fileMenu.open = true;
+              editMenu.open = true;
+              addMenu.open = true;
               toolMenu.open = true;
+              viewMenu.open = true;
               const helperClosedSibling = closeToolbarMenus(toolMenu);
               const helperState = {
                 fileOpen: fileMenu.open,
-                toolOpen: toolMenu.open
+                editOpen: editMenu.open,
+                addOpen: addMenu.open,
+                toolOpen: toolMenu.open,
+                viewOpen: viewMenu.open
               };
 
               fileMenu.open = true;
+              editMenu.open = true;
+              addMenu.open = true;
               toolMenu.open = true;
+              viewMenu.open = true;
               fileMenu.dispatchEvent({ type: 'toggle', target: fileMenu, bubbles: false });
               const toggleState = {
                 fileOpen: fileMenu.open,
-                toolOpen: toolMenu.open
+                editOpen: editMenu.open,
+                addOpen: addMenu.open,
+                toolOpen: toolMenu.open,
+                viewOpen: viewMenu.open
               };
 
               toolMenu.open = true;
@@ -54,6 +226,78 @@ public sealed class EditorRuntimeSmokeTests
               document.getElementById('loadBtn').onclick();
               const fileActionClosed = !fileMenu.open;
 
+              const nodesBefore = model.flowNodes.length;
+              addMenu.open = true;
+              document.getElementById('addStepBtn').onclick();
+              const addNodeState = {
+                closed: !addMenu.open,
+                added: model.flowNodes.length === nodesBefore + 1
+              };
+
+              const lanesBefore = model.lanes.length;
+              addMenu.open = true;
+              document.getElementById('addPhaseBtn').onclick();
+              const addLaneState = {
+                closed: !addMenu.open,
+                added: model.lanes.length === lanesBefore + 1
+              };
+
+              addMenu.open = true;
+              document.getElementById('connectBtn').onclick();
+              const connectState = {
+                closed: !addMenu.open,
+                enabled: connectMode,
+                pressed: document.getElementById('connectBtn').getAttribute('aria-pressed'),
+                summaryTitle: addMenuSummary.title,
+                summaryLabel: addMenuSummary.getAttribute('aria-label'),
+                selectedTool: activeTool
+              };
+              setConnectMode(false);
+
+              editMenu.open = true;
+              document.getElementById('undoBtn').onclick();
+              const editActionClosed = !editMenu.open;
+
+              viewMenu.open = true;
+              labelModeSelect.value = 'all';
+              labelModeSelect.dispatchEvent({
+                type: 'change', target: labelModeSelect, bubbles: false
+              });
+              const viewControlState = {
+                stayedOpen: viewMenu.open,
+                labelMode
+              };
+              viewMenu.open = false;
+              setActiveTool('pan');
+              selected = { kind: 'node', nodeId: 42 };
+
+              const focusedEditSummary = editMenuSummary;
+              editMenu.contains = target => target === focusedEditSummary;
+              fileMenu.open = true;
+              document.dispatchEvent({
+                type: 'focusin', target: focusedEditSummary, bubbles: false
+              });
+              const focusMovedClosedSibling = !fileMenu.open;
+
+              const historyCountBeforeInputUndo = undoHistory.length;
+              const inputUndo = {
+                type: 'keydown',
+                key: 'z',
+                code: 'KeyZ',
+                target: fakeElement('input'),
+                ctrlKey: true,
+                metaKey: false,
+                altKey: false,
+                shiftKey: false,
+                defaultPrevented: false,
+                preventDefault() { this.defaultPrevented = true; }
+              };
+              window.dispatchEvent(inputUndo);
+              const nativeInputUndoState = {
+                prevented: inputUndo.defaultPrevented,
+                historyUnchanged: undoHistory.length === historyCountBeforeInputUndo
+              };
+
               const insideTarget = document.getElementById('newBtn');
               fileMenu.contains = target => target === insideTarget;
               toolMenu.contains = () => false;
@@ -64,14 +308,14 @@ public sealed class EditorRuntimeSmokeTests
 
               document.dispatchEvent(fakePointerEvent(
                 'pointerdown', fakeElement('div'), 302, 0, 0));
-              const outsidePointerClosedMenus = !fileMenu.open && !toolMenu.open;
+              const outsidePointerClosedMenus = toolbarMenus.every(menu => !menu.open);
 
-              const focusedToolItem = document.getElementById('panToolBtn');
-              let toolSummaryFocused = false;
-              toolMenu.contains = target => target === focusedToolItem;
-              toolMenuSummary.focus = () => { toolSummaryFocused = true; };
-              document.activeElement = focusedToolItem;
-              toolMenu.open = true;
+              const focusedAddItem = document.getElementById('addPhaseBtn');
+              let addSummaryFocused = false;
+              addMenu.contains = target => target === focusedAddItem;
+              addMenuSummary.focus = () => { addSummaryFocused = true; };
+              document.activeElement = focusedAddItem;
+              addMenu.open = true;
               document.getElementById('validation-modal').style.display = 'none';
               const escape = {
                 type: 'keydown',
@@ -94,11 +338,18 @@ public sealed class EditorRuntimeSmokeTests
                 panState,
                 fileActionClosed,
                 fileInputClicked,
+                addNodeState,
+                addLaneState,
+                connectState,
+                editActionClosed,
+                viewControlState,
+                focusMovedClosedSibling,
+                nativeInputUndoState,
                 insidePointerKeptMenuOpen,
                 outsidePointerClosedMenus,
-                escapeClosedMenu: !toolMenu.open,
+                escapeClosedMenu: !addMenu.open,
                 escapePrevented: escape.defaultPrevented,
-                toolSummaryFocused,
+                addSummaryFocused,
                 activeToolAfterEscape: activeTool,
                 selectedAfterEscape: selected
               });
@@ -108,9 +359,15 @@ public sealed class EditorRuntimeSmokeTests
         var root = result.RootElement;
         Assert.True(root.GetProperty("helperClosedSibling").GetBoolean());
         Assert.False(root.GetProperty("helperState").GetProperty("fileOpen").GetBoolean());
+        Assert.False(root.GetProperty("helperState").GetProperty("editOpen").GetBoolean());
+        Assert.False(root.GetProperty("helperState").GetProperty("addOpen").GetBoolean());
         Assert.True(root.GetProperty("helperState").GetProperty("toolOpen").GetBoolean());
+        Assert.False(root.GetProperty("helperState").GetProperty("viewOpen").GetBoolean());
         Assert.True(root.GetProperty("toggleState").GetProperty("fileOpen").GetBoolean());
+        Assert.False(root.GetProperty("toggleState").GetProperty("editOpen").GetBoolean());
+        Assert.False(root.GetProperty("toggleState").GetProperty("addOpen").GetBoolean());
         Assert.False(root.GetProperty("toggleState").GetProperty("toolOpen").GetBoolean());
+        Assert.False(root.GetProperty("toggleState").GetProperty("viewOpen").GetBoolean());
 
         var panState = root.GetProperty("panState");
         Assert.Equal("pan", panState.GetProperty("activeTool").GetString());
@@ -124,11 +381,30 @@ public sealed class EditorRuntimeSmokeTests
 
         Assert.True(root.GetProperty("fileActionClosed").GetBoolean());
         Assert.True(root.GetProperty("fileInputClicked").GetBoolean());
+        Assert.True(root.GetProperty("addNodeState").GetProperty("closed").GetBoolean());
+        Assert.True(root.GetProperty("addNodeState").GetProperty("added").GetBoolean());
+        Assert.True(root.GetProperty("addLaneState").GetProperty("closed").GetBoolean());
+        Assert.True(root.GetProperty("addLaneState").GetProperty("added").GetBoolean());
+
+        var connectState = root.GetProperty("connectState");
+        Assert.True(connectState.GetProperty("closed").GetBoolean());
+        Assert.True(connectState.GetProperty("enabled").GetBoolean());
+        Assert.Equal("true", connectState.GetProperty("pressed").GetString());
+        Assert.Equal("Add menu; connect flow mode active", connectState.GetProperty("summaryTitle").GetString());
+        Assert.Equal("Add menu; connect flow mode active", connectState.GetProperty("summaryLabel").GetString());
+        Assert.Equal("select", connectState.GetProperty("selectedTool").GetString());
+
+        Assert.True(root.GetProperty("editActionClosed").GetBoolean());
+        Assert.True(root.GetProperty("viewControlState").GetProperty("stayedOpen").GetBoolean());
+        Assert.Equal("all", root.GetProperty("viewControlState").GetProperty("labelMode").GetString());
+        Assert.True(root.GetProperty("focusMovedClosedSibling").GetBoolean());
+        Assert.False(root.GetProperty("nativeInputUndoState").GetProperty("prevented").GetBoolean());
+        Assert.True(root.GetProperty("nativeInputUndoState").GetProperty("historyUnchanged").GetBoolean());
         Assert.True(root.GetProperty("insidePointerKeptMenuOpen").GetBoolean());
         Assert.True(root.GetProperty("outsidePointerClosedMenus").GetBoolean());
         Assert.True(root.GetProperty("escapeClosedMenu").GetBoolean());
         Assert.True(root.GetProperty("escapePrevented").GetBoolean());
-        Assert.True(root.GetProperty("toolSummaryFocused").GetBoolean());
+        Assert.True(root.GetProperty("addSummaryFocused").GetBoolean());
         Assert.Equal("pan", root.GetProperty("activeToolAfterEscape").GetString());
         Assert.Equal(42, root.GetProperty("selectedAfterEscape").GetProperty("nodeId").GetInt32());
     }
@@ -343,6 +619,7 @@ public sealed class EditorRuntimeSmokeTests
                 }],
                 sequenceFlows: []
               };
+              setActiveTool('select');
 
               const moveFromOrigin = pointerId => {
                 const node = getNode(1);

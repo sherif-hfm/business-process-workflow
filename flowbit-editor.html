@@ -306,10 +306,15 @@
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
     box-shadow: var(--header-shadow);
-    z-index: 20;
+    position: relative;
+    z-index: 100;
   }
   .toolbar-identity, .toolbar-group { display: flex; align-items: center; gap: 8px; }
-  .toolbar-identity { min-width: min(360px, 100%); flex: 1 1 420px; }
+  .toolbar-identity {
+    min-width: min(360px, 100%);
+    flex: 1 1 420px;
+    flex-wrap: wrap;
+  }
   .toolbar-group {
     padding: 4px;
     border: 1px solid var(--toolbar-group-border);
@@ -369,6 +374,7 @@
     border-radius: 10px;
     box-shadow: var(--floating-shadow);
   }
+  .toolbar-menu:not([open]) > .toolbar-menu-popover { display: none; }
   .toolbar-menu-popover button {
     display: flex;
     align-items: center;
@@ -379,6 +385,31 @@
   }
   .toolbar-menu-popover .button-label { display: inline; }
   .toolbar-menu-popover .button-icon { margin-right: 5px; }
+  .toolbar-menu > summary.active {
+    color: var(--on-strong);
+    background: var(--active-bg);
+    border-color: var(--active-border);
+  }
+  .toolbar-menu-end .toolbar-menu-popover { right: 0; left: auto; }
+  .view-menu-popover {
+    width: min(270px, calc(100vw - 32px));
+    min-width: 0;
+  }
+  .toolbar-menu-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 5px 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .toolbar-menu-field .toolbar-select { width: 100%; }
+  .toolbar-menu-divider {
+    height: 1px;
+    margin: 3px 4px;
+    background: var(--border);
+  }
   .tool-menu-summary[data-active-tool="select"] .tool-summary-pan,
   .tool-menu-summary[data-active-tool="pan"] .tool-summary-select { display: none; }
   .app-mark {
@@ -508,6 +539,16 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
+  .view-menu-popover .toolbar-grid-toggle,
+  .view-menu-popover .toolbar-grid-size,
+  .view-menu-popover .toolbar-opacity {
+    width: 100%;
+    min-height: 36px;
+    padding: 5px 6px;
+  }
+  .view-menu-popover .toolbar-grid-size input { margin-left: auto; }
+  .view-menu-popover .toolbar-opacity input { flex: 1; min-width: 70px; }
+  .view-menu-popover .theme-toggle { justify-content: flex-start; }
   .spacer { flex: 1; }
   input::placeholder, textarea::placeholder {
     color: var(--placeholder);
@@ -1352,6 +1393,36 @@
     .diagram-nav { max-width: 100%; }
     .diagram-nav .compact-hide { display: none; }
     .toolbar-opacity input { width: 68px; }
+    .toolbar-menu-group { max-width: 100%; flex-wrap: wrap; }
+    .toolbar-menu > summary { padding-inline: 9px; }
+    .toolbar-menu-responsive-end .toolbar-menu-popover { right: 0; left: auto; }
+  }
+  @media (max-width: 480px) {
+    .hint {
+      width: 1px;
+      height: 1px;
+      max-width: 1px;
+      padding: 0;
+      border: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      box-shadow: none;
+    }
+  }
+  @media (max-width: 300px) {
+    .toolbar-menu-group { flex-wrap: nowrap; }
+    .toolbar-menu-caret { display: none; }
+    .toolbar-menu .toolbar-menu-popover {
+      position: fixed;
+      top: 100px;
+      right: 16px;
+      left: 16px;
+      width: auto;
+      min-width: 0;
+      max-width: none;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
@@ -1365,9 +1436,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.5"/><rect x="16.5" y="4" width="5" height="5" rx="1"/><rect x="16.5" y="15" width="5" height="5" rx="1"/><path d="M7.5 12h4.5c2.5 0 2-5.5 4.5-5.5M12 12c2.5 0 2 5.5 4.5 5.5"/></svg>
     </div>
     <h1>Flowbit — Workflow Editor</h1>
-    <input id="wfName" class="wf-name" placeholder="Workflow name" aria-label="Workflow name" />
-  </div>
-  <div class="toolbar-group toolbar-menu-group" role="group" aria-label="Editor menus">
+    <div class="toolbar-group toolbar-menu-group" role="group" aria-label="Editor menus">
     <details id="fileMenu" class="toolbar-menu">
       <summary id="fileMenuSummary" title="File actions" aria-label="File actions">
         <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -1391,91 +1460,135 @@
         </button>
       </div>
     </details>
-    <details id="toolMenu" class="toolbar-menu">
-      <summary id="toolMenuSummary" class="tool-menu-summary" data-active-tool="select"
-               title="Current editor tool: Select" aria-label="Current editor tool: Select">
+    <details id="editMenu" class="toolbar-menu">
+      <summary id="editMenuSummary" title="Edit history" aria-label="Edit history">
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/>
+        </svg>
+        <span class="button-label">Edit</span>
+        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
+      </summary>
+      <div class="toolbar-menu-popover" role="group" aria-label="Edit history actions">
+        <button id="undoBtn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/></svg>
+          <span class="button-label">Undo</span>
+        </button>
+        <button id="redoBtn" type="button" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" aria-label="Redo" disabled>
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6"/></svg>
+          <span class="button-label">Redo</span>
+        </button>
+      </div>
+    </details>
+    <details id="addMenu" class="toolbar-menu">
+      <summary id="addMenuSummary" title="Add nodes, lanes, or flows" aria-label="Add nodes, lanes, or flows">
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="button-label">Add</span>
+        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
+      </summary>
+      <div class="toolbar-menu-popover" role="group" aria-label="Authoring actions">
+        <button id="addStepBtn" class="primary" type="button" title="Add a workflow node">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="button-label">Add Node</span>
+        </button>
+        <button id="addPhaseBtn" type="button" title="Add a swimlane">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
+          <span class="button-label">Add Lane</span>
+        </button>
+        <button id="connectBtn" type="button" title="Connect two nodes with a sequence flow" aria-pressed="false">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg>
+          <span class="button-label">Connect Flow</span>
+        </button>
+      </div>
+    </details>
+    <details id="toolMenu" class="toolbar-menu toolbar-menu-responsive-end">
+      <summary id="toolMenuSummary" class="tool-menu-summary" data-active-tool="pan"
+               title="Current editor tool: Pan" aria-label="Current editor tool: Pan">
         <svg class="button-icon tool-summary-select" viewBox="0 0 24 24" aria-hidden="true">
           <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
         </svg>
         <svg class="button-icon tool-summary-pan" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
         </svg>
-        <span class="button-label">Tool: <span id="activeToolLabel">Select</span></span>
+        <span class="button-label">Tool: <span id="activeToolLabel">Pan</span></span>
         <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
       </summary>
       <div class="toolbar-menu-popover" role="group" aria-label="Choose editor tool">
-        <button id="selectToolBtn" class="active" type="button"
+        <button id="selectToolBtn" type="button"
                 title="Select and move workflow items (V)" aria-label="Select and move workflow items"
-                aria-pressed="true">
+                aria-pressed="false">
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
           </svg><span class="button-label">Select and move items</span>
         </button>
-        <button id="panToolBtn" type="button"
+        <button id="panToolBtn" class="active" type="button"
                 title="Pan the workflow canvas without moving items (H)" aria-label="Pan workflow canvas"
-                aria-pressed="false">
+                aria-pressed="true">
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
           </svg><span class="button-label">Pan canvas only</span>
         </button>
       </div>
     </details>
+    <details id="viewMenu" class="toolbar-menu toolbar-menu-end">
+      <summary id="viewMenuSummary" title="View options" aria-label="View options">
+        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/>
+        </svg>
+        <span class="button-label">View</span>
+        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
+      </summary>
+      <div class="toolbar-menu-popover view-menu-popover" role="group" aria-label="View options">
+        <label class="toolbar-menu-field" for="labelModeSelect">
+          <span>Flow label visibility</span>
+          <select id="labelModeSelect" class="toolbar-select"
+                  title="Flow label visibility" aria-label="Flow label visibility">
+            <option value="smart">Labels: Smart</option>
+            <option value="all">Labels: Show</option>
+            <option value="off">Labels: Hide</option>
+          </select>
+        </label>
+        <label class="toolbar-grid-toggle" for="snapToGridInput"
+               title="Align nodes to the nearest grid point while dragging">
+          <input id="snapToGridInput" type="checkbox" />
+          <span>Snap nodes to grid</span>
+        </label>
+        <label class="toolbar-grid-size" for="gridSizeInput"
+               title="Grid spacing in workflow units">
+          <span>Grid size</span>
+          <input id="gridSizeInput" type="number" min="4" max="200" step="1"
+                 value="24" inputmode="numeric" aria-label="Grid size" />
+          <span aria-hidden="true">px</span>
+        </label>
+        <label class="toolbar-opacity" for="traceOpacityInput"
+               title="Opacity of nodes and flows outside the active path">
+          <span>Other items</span>
+          <input id="traceOpacityInput" type="range" min="10" max="100" step="5"
+                 value="100" aria-label="Untraced item opacity" />
+          <output id="traceOpacityValue" for="traceOpacityInput">100%</output>
+        </label>
+        <div class="toolbar-menu-divider" aria-hidden="true"></div>
+        <button id="themeToggleBtn" class="theme-toggle" type="button"
+                title="Switch to light theme" aria-label="Switch to light theme">
+          <svg class="button-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"/>
+          </svg>
+          <svg class="button-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.5"/>
+            <path d="M12 2v2.2M12 19.8V22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2 12h2.2M19.8 12H22M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"/>
+          </svg>
+          <span id="themeToggleLabel" class="button-label">Light theme</span>
+        </button>
+      </div>
+    </details>
   </div>
-  <div class="toolbar-group" aria-label="Authoring actions">
-    <button id="addStepBtn" class="primary" title="Add a workflow node"><svg class="button-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="button-label">Add Node</span></button>
-    <button id="addPhaseBtn" title="Add a swimlane"><svg class="button-icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg><span class="button-label">Add Lane</span></button>
-    <button id="connectBtn" title="Connect two nodes with a sequence flow"><svg class="button-icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg><span class="button-label">Connect Flow</span></button>
-  </div>
-  <div class="toolbar-group" aria-label="Edit history">
-    <button id="undoBtn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg class="button-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/></svg><span class="button-label">Undo</span></button>
-    <button id="redoBtn" type="button" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" aria-label="Redo" disabled><svg class="button-icon" viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6"/></svg><span class="button-label">Redo</span></button>
-  </div>
-  <div class="spacer"></div>
-  <div class="toolbar-group" aria-label="View options">
-    <label class="sr-only" for="labelModeSelect">Flow label visibility</label>
-    <select id="labelModeSelect" class="toolbar-select"
-            title="Flow label visibility" aria-label="Flow label visibility">
-      <option value="smart">Labels: Smart</option>
-      <option value="all">Labels: Show</option>
-      <option value="off">Labels: Hide</option>
-    </select>
-    <label class="toolbar-grid-toggle" for="snapToGridInput"
-           title="Align nodes to the nearest grid point while dragging">
-      <input id="snapToGridInput" type="checkbox" />
-      <span>Snap</span>
-    </label>
-    <label class="toolbar-grid-size" for="gridSizeInput"
-           title="Grid spacing in workflow units">
-      <span>Grid</span>
-      <input id="gridSizeInput" type="number" min="4" max="200" step="1"
-             value="24" inputmode="numeric" aria-label="Grid size" />
-      <span aria-hidden="true">px</span>
-    </label>
-    <label class="toolbar-opacity" for="traceOpacityInput"
-           title="Opacity of nodes and flows outside the active path">
-      <span>Others</span>
-      <input id="traceOpacityInput" type="range" min="10" max="100" step="5"
-             value="100" aria-label="Untraced item opacity" />
-      <output id="traceOpacityValue" for="traceOpacityInput">100%</output>
-    </label>
-    <button id="themeToggleBtn" class="theme-toggle" type="button"
-            title="Switch to light theme" aria-label="Switch to light theme">
-      <svg class="button-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"/>
-      </svg>
-      <svg class="button-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="3.5"/>
-        <path d="M12 2v2.2M12 19.8V22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2 12h2.2M19.8 12H22M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"/>
-      </svg>
-      <span id="themeToggleLabel" class="button-label">Light</span>
-    </button>
+    <input id="wfName" class="wf-name" placeholder="Workflow name" aria-label="Workflow name" />
   </div>
   <input id="fileInput" type="file" accept="application/json,.json" hidden />
 </header>
 
 <main>
   <div class="canvas-wrap">
-    <svg id="svg" role="application" aria-label="Workflow diagram canvas" data-active-tool="select">
+    <svg id="svg" role="application" aria-label="Workflow diagram canvas" data-active-tool="pan">
       <defs>
         <pattern id="gridPattern" width="24" height="24" patternUnits="userSpaceOnUse">
           <circle cx="1" cy="1" r="1" fill="var(--grid-dot)" />
@@ -1520,7 +1633,7 @@
       <g id="connectionPreview"></g>
       <g id="nodes"></g>
     </svg>
-    <div class="hint" id="hint" hidden></div>
+    <div class="hint" id="hint" role="status" aria-live="polite" hidden></div>
     <div class="diagram-tools" id="diagramTools" aria-label="Diagram navigation">
       <button id="diagramToolsHandle" class="diagram-tools-handle" type="button"
               title="Show diagram tools" aria-label="Show diagram tools">
@@ -2354,7 +2467,7 @@ function snapCoordinateToGrid(value, size) {
 
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
-let activeTool = "select";    // viewport-only editor mode: "select" | "pan"
+let activeTool = "pan";       // viewport-only editor mode: "select" | "pan"
 let connectMode = false;
 let connectSource = null;     // node id when picking target
 let connectionDrag = null;    // {pointerId, sourceId, side, start, current, hoverTargetId, invalidTargetId, moved}
@@ -2388,10 +2501,19 @@ const wfNameInput = document.getElementById('wfName');
 const resizer = document.getElementById('sidebar-resizer');
 const fileMenu = document.getElementById('fileMenu');
 const fileMenuSummary = document.getElementById('fileMenuSummary');
+const editMenu = document.getElementById('editMenu');
+const editMenuSummary = document.getElementById('editMenuSummary');
+const addMenu = document.getElementById('addMenu');
+const addMenuSummary = document.getElementById('addMenuSummary');
 const toolMenu = document.getElementById('toolMenu');
 const toolMenuSummary = document.getElementById('toolMenuSummary');
+const viewMenu = document.getElementById('viewMenu');
+const viewMenuSummary = document.getElementById('viewMenuSummary');
 const activeToolLabel = document.getElementById('activeToolLabel');
-const toolbarMenus = [fileMenu, toolMenu];
+const toolbarMenus = [fileMenu, editMenu, addMenu, toolMenu, viewMenu];
+const toolbarMenuSummaries = [
+  fileMenuSummary, editMenuSummary, addMenuSummary, toolMenuSummary, viewMenuSummary
+];
 const selectToolBtn = document.getElementById('selectToolBtn');
 const panToolBtn = document.getElementById('panToolBtn');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
@@ -7732,7 +7854,8 @@ function closeToolbarMenus(except = null, restoreFocus = false) {
       const shouldRestoreFocus = restoreFocus && menu.contains(document.activeElement);
       menu.open = false;
       if (shouldRestoreFocus) {
-        (menu === fileMenu ? fileMenuSummary : toolMenuSummary).focus();
+        const summary = toolbarMenuSummaries[toolbarMenus.indexOf(menu)];
+        if (summary) summary.focus();
       }
       closed = true;
     }
@@ -8257,7 +8380,14 @@ function setConnectMode(on, sourceId = null) {
   if (on && activeTool !== "select") setActiveTool("select");
   connectMode = on;
   connectSource = on ? sourceId : null;
-  document.getElementById("connectBtn").classList.toggle("active", on);
+  const connectBtn = document.getElementById("connectBtn");
+  connectBtn.classList.toggle("active", on);
+  connectBtn.setAttribute("aria-pressed", String(on));
+  addMenuSummary.classList.toggle("active", on);
+  addMenuSummary.title = on
+    ? "Add menu; connect flow mode active"
+    : "Add nodes, lanes, or flows";
+  addMenuSummary.setAttribute("aria-label", addMenuSummary.title);
   if (!on) {
     connectionPreviewG.innerHTML = "";
     connectionPreviewG.classList.remove("invalid");
@@ -10709,18 +10839,43 @@ toolbarMenus.forEach(menu => {
 document.addEventListener("pointerdown", event => {
   if (!toolbarMenus.some(menu => menu.contains(event.target))) closeToolbarMenus();
 }, true);
+document.addEventListener("focusin", event => {
+  const focusedMenu = toolbarMenus.find(menu => menu.contains(event.target)) || null;
+  closeToolbarMenus(focusedMenu);
+});
 selectToolBtn.onclick = () => {
   if (connectMode) setConnectMode(false);
   setActiveTool("select");
 };
 panToolBtn.onclick = () => setActiveTool("pan");
-document.getElementById("addStepBtn").onclick = () => { if (connectMode) setConnectMode(false); addNode(); };
-document.getElementById("addPhaseBtn").onclick = () => { if (connectMode) setConnectMode(false); addLane(); };
-document.getElementById("connectBtn").onclick = () => setConnectMode(!connectMode);
+document.getElementById("addStepBtn").onclick = () => {
+  closeToolbarMenus(null, true);
+  if (connectMode) setConnectMode(false);
+  setActiveTool("select");
+  addNode();
+};
+document.getElementById("addPhaseBtn").onclick = () => {
+  closeToolbarMenus(null, true);
+  if (connectMode) setConnectMode(false);
+  setActiveTool("select");
+  addLane();
+};
+document.getElementById("connectBtn").onclick = () => {
+  const enable = !connectMode;
+  closeToolbarMenus(null, true);
+  setActiveTool("select");
+  setConnectMode(enable);
+};
 themeToggleBtn.onclick = () =>
   setTheme(nextTheme(document.documentElement.dataset.theme), true);
-undoBtn.onclick = undo;
-redoBtn.onclick = redo;
+undoBtn.onclick = () => {
+  closeToolbarMenus(null, true);
+  undo();
+};
+redoBtn.onclick = () => {
+  closeToolbarMenus(null, true);
+  redo();
+};
 document.getElementById("saveBtn").onclick = () => {
   closeToolbarMenus(null, true);
   save();
@@ -10805,6 +10960,8 @@ document.addEventListener("pointerdown", event => {
 document.getElementById("newBtn").onclick = () => {
   closeToolbarMenus(null, true);
   if (confirm("Start a new empty workflow? Unsaved changes will be lost.")) {
+    if (connectMode) setConnectMode(false);
+    setActiveTool("select");
     model = newModel();
     diagramSearchInput.value = "";
     closeDiagramSearchResults();
@@ -10826,6 +10983,7 @@ document.getElementById("fileInput").onchange = (e) => {
       diagramSearchInput.value = "";
       closeDiagramSearchResults();
       loadFromObject(JSON.parse(reader.result));
+      setActiveTool("pan");
     }
     catch (err) { alert("Invalid JSON file: " + err.message); }
   };
@@ -10860,8 +11018,11 @@ document.addEventListener("click", event => {
 window.addEventListener("keydown", (e) => {
   const historyModifier = (e.ctrlKey || e.metaKey) && !e.altKey;
   const historyKey = e.key.toLowerCase();
-  const isScriptEditor = e.target && e.target.id === "js-editor-textarea";
-  if (historyModifier && !isScriptEditor &&
+  const historyTarget = e.target;
+  const nativeHistoryTarget = historyTarget &&
+    (historyTarget.tagName === "INPUT" || historyTarget.tagName === "TEXTAREA" ||
+     historyTarget.isContentEditable);
+  if (historyModifier && !nativeHistoryTarget &&
       (historyKey === "z" || historyKey === "y")) {
     e.preventDefault();
     if (historyKey === "y" || e.shiftKey) redo();
@@ -11000,7 +11161,7 @@ if (typeof ResizeObserver !== "undefined") {
 }
 
 /* ---------- Init ---------- */
-setActiveTool("select");
+setActiveTool("pan");
 resetViewport();
 render();
 resetHistory();
