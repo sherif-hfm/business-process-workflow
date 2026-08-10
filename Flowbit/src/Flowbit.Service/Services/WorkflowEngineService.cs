@@ -26,13 +26,16 @@ public sealed partial class WorkflowEngineService(
     TimeProvider timeProvider,
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
-    ILogger<WorkflowEngineService> logger)
+    ILogger<WorkflowEngineService> logger,
+    IInstanceVariableUpdateRepository? variableUpdates = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor
 {
     private const string InstanceListRequiredRoleSettingKey =
         "WorkflowInstances.RequiredRole";
     private const string DefaultInstanceListRequiredRole = "admin";
+    private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
+        new(JsonSerializerDefaults.Web);
     private Dictionary<string, JsonElement>? _settingsCache;
 
     private async Task LoadSettingsAsync(CancellationToken cancellationToken)
@@ -8138,6 +8141,9 @@ public sealed partial class WorkflowEngineService(
         var variables = await runtime.ListVariablesAsync(id, cancellationToken);
         var history = await runtime.ListHistoryAsync(id, cancellationToken);
         var versionChanges = await BuildVersionChangeAuditDtosAsync(id, cancellationToken);
+        IReadOnlyList<InstanceVariableUpdateAuditDto> variableUpdateAudits = variableUpdates is null
+            ? []
+            : await BuildVariableUpdateAuditDtosAsync(id, cancellationToken);
         var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
         var projection = await BuildExecutionProjectionAsync(
             instance,
@@ -8177,7 +8183,8 @@ public sealed partial class WorkflowEngineService(
                 v.SetAt)
             {
                 ActingFor = v.ActingFor,
-                DelegationId = v.DelegationId
+                DelegationId = v.DelegationId,
+                InstanceVariableUpdateAuditId = v.InstanceVariableUpdateAuditId
             }).ToList(),
             history.Select(h => new InstanceHistoryDto(
                 h.Id,
@@ -8207,8 +8214,33 @@ public sealed partial class WorkflowEngineService(
             GatewayExecutions = projection.GatewayExecutions,
             ComplexGatewayStates = projection.ComplexGatewayStates,
             Completion = projection.Completion,
-            VersionChanges = versionChanges
+            VersionChanges = versionChanges,
+            VariableUpdates = variableUpdateAudits
         };
+    }
+
+    private async Task<IReadOnlyList<InstanceVariableUpdateAuditDto>>
+        BuildVariableUpdateAuditDtosAsync(
+            long instanceId,
+            CancellationToken cancellationToken)
+    {
+        var records = await variableUpdates!.ListByInstanceAsync(
+            instanceId,
+            cancellationToken);
+        return records.Select(record => new InstanceVariableUpdateAuditDto(
+            record.Id,
+            record.InstanceId,
+            record.WorkflowDefinitionId,
+            record.PerformedBy,
+            record.PerformedByRoles,
+            record.Reason,
+            record.Result.Deserialize<
+                IReadOnlyList<InstanceVariableUpdateOutcomeDto>>(
+                    InstanceVariableUpdateJsonOptions) ?? [],
+            record.PerformedAt,
+            record.IdempotencyKey,
+            record.BatchId,
+            record.BatchItemId)).ToArray();
     }
 
     private async Task<InstanceExecutionProjection> BuildExecutionProjectionAsync(

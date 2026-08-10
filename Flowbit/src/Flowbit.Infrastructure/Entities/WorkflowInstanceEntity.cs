@@ -28,6 +28,10 @@ public sealed class WorkflowInstanceEntity
 
     public List<InstanceVariableCurrentValueEntity> CurrentVariableValues { get; set; } = [];
 
+    public List<InstanceVariableUpdateAuditEntity> VariableUpdates { get; set; } = [];
+
+    public List<InstanceVariableUpdateBatchItemEntity> VariableUpdateBatchItems { get; set; } = [];
+
     public List<InstanceHistoryEntity> History { get; set; } = [];
 
     public List<ExecutionTokenEntity> Tokens { get; set; } = [];

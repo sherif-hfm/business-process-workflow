@@ -602,7 +602,8 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken,
         long? nodeExecutionId = null,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        long? instanceVariableUpdateAuditId = null);
 
     Task<IReadOnlyList<InstanceVariableRecord>> ListVariablesAsync(
         long instanceId,

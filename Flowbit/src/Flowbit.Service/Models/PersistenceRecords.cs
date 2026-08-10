@@ -479,7 +479,8 @@ public sealed record InstanceVariableRecord(
     DateTimeOffset SetAt,
     long? NodeExecutionId = null,
     string? ActingFor = null,
-    long? DelegationId = null);
+    long? DelegationId = null,
+    long? InstanceVariableUpdateAuditId = null);
 
 public sealed record InstanceHistoryRecord(
     long Id,

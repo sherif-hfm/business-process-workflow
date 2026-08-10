@@ -26,6 +26,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems =>
         Set<AdministrativeActionBatchItemEntity>();
 
+    public DbSet<InstanceVariableUpdateAuditEntity> InstanceVariableUpdates =>
+        Set<InstanceVariableUpdateAuditEntity>();
+
+    public DbSet<InstanceVariableUpdateBatchEntity> InstanceVariableUpdateBatches =>
+        Set<InstanceVariableUpdateBatchEntity>();
+
+    public DbSet<InstanceVariableUpdateBatchItemEntity> InstanceVariableUpdateBatchItems =>
+        Set<InstanceVariableUpdateBatchItemEntity>();
+
+    public DbSet<InstanceVariableUpdateBatchJobLinkEntity> InstanceVariableUpdateBatchJobLinks =>
+        Set<InstanceVariableUpdateBatchJobLinkEntity>();
+
     public DbSet<WorkflowBusinessKeyScopeEntity> WorkflowBusinessKeyScopes => Set<WorkflowBusinessKeyScopeEntity>();
 
     public DbSet<WorkflowBusinessKeyClaimEntity> WorkflowBusinessKeyClaims => Set<WorkflowBusinessKeyClaimEntity>();
@@ -723,6 +735,21 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.NodeExecutionId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(e => new { e.InstanceVariableUpdateAuditId, e.InstanceId })
+                .HasFilter("\"InstanceVariableUpdateAuditId\" IS NOT NULL");
+            // A history row may only reference an administrative update owned by
+            // the same workflow instance. The composite principal key is
+            // intentionally redundant with the audit PK so PostgreSQL can enforce
+            // that cross-table ownership invariant.
+            entity.HasOne(e => e.InstanceVariableUpdateAudit)
+                .WithMany(e => e.Variables)
+                .HasForeignKey(e => new
+                {
+                    e.InstanceVariableUpdateAuditId,
+                    e.InstanceId
+                })
+                .HasPrincipalKey(e => new { e.Id, e.InstanceId })
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<InstanceVariableCurrentValueEntity>(entity =>
@@ -1143,6 +1170,222 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.TimerSubscriptionId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<InstanceVariableUpdateAuditEntity>(entity =>
+        {
+            entity.ToTable("instance_variable_updates", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_instance_variable_updates_batch_correlation",
+                    "(\"BatchId\" IS NULL AND \"BatchItemId\" IS NULL) OR "
+                    + "(\"BatchId\" IS NOT NULL AND \"BatchItemId\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_updates_requested_variables",
+                    "jsonb_typeof(\"RequestedVariablesJson\") = 'array'");
+            });
+            entity.HasKey(e => e.Id);
+            entity.HasAlternateKey(e => new { e.Id, e.InstanceId });
+            entity.Property(e => e.PerformedBy)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.PerformedByRolesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'[]'::jsonb");
+            entity.Property(e => e.Reason)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxReasonLength);
+            entity.Property(e => e.RequestedVariablesJson)
+                .HasColumnType("jsonb")
+                .IsRequired();
+            entity.Property(e => e.ResultJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'{}'::jsonb");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxIdempotencyKeyLength)
+                .UseCollation("C");
+            entity.Property(e => e.PerformedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.PerformedAt, e.Id });
+            entity.HasIndex(e => e.WorkflowDefinitionId);
+            entity.HasIndex(e => new { e.InstanceId, e.PerformedBy, e.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            entity.HasIndex(e => e.BatchId)
+                .HasFilter("\"BatchId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.BatchItemId, e.BatchId, e.InstanceId })
+                .IsUnique()
+                .HasFilter("\"BatchItemId\" IS NOT NULL");
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.VariableUpdates)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.Updates)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.BatchItem)
+                .WithOne()
+                // BatchItemId is the sole stored operation pointer. Repositories
+                // derive an item's operation id from this audit row, avoiding two
+                // independently mutable one-to-one columns.
+                .HasForeignKey<InstanceVariableUpdateAuditEntity>(e => new
+                {
+                    e.BatchItemId,
+                    e.BatchId,
+                    e.InstanceId
+                })
+                .HasPrincipalKey<InstanceVariableUpdateBatchItemEntity>(e => new
+                {
+                    e.Id,
+                    e.BatchId,
+                    e.InstanceId
+                })
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<InstanceVariableUpdateBatchEntity>(entity =>
+        {
+            entity.ToTable("instance_variable_update_batches", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batches_status",
+                    "\"Status\" IN ('preparing', 'ready', 'queued', 'running', "
+                    + "'completed', 'completedWithIssues', 'cancelled', 'failed')");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batches_counts",
+                    "\"TotalItemCount\" >= 0 AND \"TotalItemCount\" <= 10000 "
+                    + "AND \"EligibleItemCount\" >= 0 AND \"IneligibleItemCount\" >= 0 "
+                    + "AND \"WarningItemCount\" >= 0 AND \"QueuedItemCount\" >= 0 "
+                    + "AND \"SucceededItemCount\" >= 0 AND \"SkippedItemCount\" >= 0 "
+                    + "AND \"FailedItemCount\" >= 0 AND \"CancelledItemCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batches_variables",
+                    "jsonb_typeof(\"VariablesJson\") = 'array' "
+                    + "AND jsonb_array_length(\"VariablesJson\") BETWEEN 1 AND 100");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batches_selection",
+                    "jsonb_typeof(\"SelectionJson\") = 'object'");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxWorkflowKeyLength)
+                .IsRequired();
+            entity.Property(e => e.VariablesJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.SelectionJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.Reason)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxReasonLength);
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.PreparedBy)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxActorNameLength)
+                .IsRequired();
+            entity.Property(e => e.PreparedByRolesJson)
+                .HasColumnType("jsonb")
+                .IsRequired()
+                .HasDefaultValueSql("'[]'::jsonb");
+            entity.Property(e => e.ConfirmedBy)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxActorNameLength);
+            entity.Property(e => e.ConfirmedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IssuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxIdempotencyKeyLength)
+                .UseCollation("C");
+            entity.Property(e => e.CancelledBy)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxActorNameLength);
+            entity.Property(e => e.CancellationReason)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxReasonLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.WorkflowKey, e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.PreparedBy, e.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<InstanceVariableUpdateBatchItemEntity>(entity =>
+        {
+            entity.ToTable("instance_variable_update_batch_items", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batch_items_status",
+                    "\"Status\" IN ('preparing', 'eligible', 'ineligible', 'queued', "
+                    + "'succeeded', 'skipped', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batch_items_identity",
+                    "\"BatchId\" > 0 AND \"InstanceId\" > 0 "
+                    + "AND \"CapturedWorkflowDefinitionId\" > 0");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batch_items_json",
+                    "(\"PlanJson\" IS NULL OR jsonb_typeof(\"PlanJson\") = 'array') "
+                    + "AND (\"WarningsJson\" IS NULL OR jsonb_typeof(\"WarningsJson\") = 'array')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.HasAlternateKey(e => new { e.Id, e.BatchId, e.InstanceId });
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.PlanJson).HasColumnType("jsonb");
+            entity.Property(e => e.WarningsJson).HasColumnType("jsonb");
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorCode)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxErrorCodeLength);
+            entity.Property(e => e.ErrorDescription)
+                .HasMaxLength(InstanceVariableUpdateConstraints.MaxErrorDescriptionLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.BatchId, e.InstanceId }).IsUnique();
+            entity.HasIndex(e => new { e.BatchId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.BatchId, e.CapturedWorkflowDefinitionId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.Items)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.VariableUpdateBatchItems)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.CapturedWorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.CapturedWorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<InstanceVariableUpdateBatchJobLinkEntity>(entity =>
+        {
+            entity.ToTable("instance_variable_update_batch_jobs", table =>
+            {
+                table.HasTrigger("TR_instance_variable_update_batch_jobs_validate_live_job");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batch_jobs_phase",
+                    "\"Phase\" IN ('prepare', 'execute')");
+                table.HasCheckConstraint(
+                    "CK_instance_variable_update_batch_jobs_identity",
+                    "\"BatchId\" > 0 AND \"WorkflowDefinitionId\" > 0 "
+                    + "AND \"OriginalJobId\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Phase).HasMaxLength(16).IsRequired();
+            entity.HasIndex(e => new { e.BatchId, e.WorkflowDefinitionId, e.Phase }).IsUnique();
+            entity.HasIndex(e => e.OriginalJobId).IsUnique();
+            entity.HasIndex(e => e.JobId)
+                .IsUnique()
+                .HasFilter("\"JobId\" IS NOT NULL");
+            entity.HasOne(e => e.Batch)
+                .WithMany(e => e.JobLinks)
+                .HasForeignKey(e => e.BatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Job)
+                .WithMany()
+                .HasForeignKey(e => e.JobId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<WorkflowSettingEntity>(entity =>

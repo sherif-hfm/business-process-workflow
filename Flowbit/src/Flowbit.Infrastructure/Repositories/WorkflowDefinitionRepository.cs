@@ -495,6 +495,14 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 .AnyAsync(item =>
                     item.CapturedSourceWorkflowDefinitionId == id,
                     cancellationToken)
+            || await dbContext.InstanceVariableUpdates.AsNoTracking()
+                .AnyAsync(update => update.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.InstanceVariableUpdateBatchItems.AsNoTracking()
+                .AnyAsync(item =>
+                    item.CapturedWorkflowDefinitionId == id,
+                    cancellationToken)
+            || await dbContext.InstanceVariableUpdateBatchJobLinks.AsNoTracking()
+                .AnyAsync(link => link.WorkflowDefinitionId == id, cancellationToken)
             || await dbContext.WorkflowJobs.AsNoTracking()
                 .AnyAsync(job =>
                     job.InstanceId != null && job.WorkflowDefinitionId == id,
@@ -510,7 +518,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         if (isInUse)
         {
             throw new WorkflowConflictException(
-                "The workflow definition cannot be deleted because runtime or version-change history references it.");
+                "The workflow definition cannot be deleted because runtime or version-change history, including administrative variable-update history, references it.");
         }
 
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()

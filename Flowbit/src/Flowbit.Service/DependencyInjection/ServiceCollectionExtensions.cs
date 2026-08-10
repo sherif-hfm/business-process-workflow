@@ -23,6 +23,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstanceVersionChangeBatchJobProcessor, InstanceVersionChangeBatchJobProcessor>();
         services.AddScoped<IInstanceVersionChangeBatchExecutor>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
+        services.AddScoped<InstanceVariableUpdateService>();
+        services.AddScoped<IInstanceVariableUpdateService>(provider =>
+            provider.GetRequiredService<InstanceVariableUpdateService>());
+        services.AddScoped<IInstanceVariableUpdateExecutor>(provider =>
+            provider.GetRequiredService<InstanceVariableUpdateService>());
+        services.AddScoped<IInstanceVariableUpdateBatchService, InstanceVariableUpdateBatchService>();
+        services.AddScoped<IInstanceVariableUpdateBatchJobProcessor, InstanceVariableUpdateBatchJobProcessor>();
         services.AddScoped<IWorkflowJobProcessor, WorkflowJobProcessorRouter>();
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();

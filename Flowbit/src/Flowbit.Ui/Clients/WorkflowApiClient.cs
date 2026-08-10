@@ -397,6 +397,128 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("The API returned an empty instance version-change batch.");
     }
 
+    public async Task<UpdateInstanceVariablesResultDto> UpdateInstanceVariablesAsync(
+        long instanceId,
+        UpdateInstanceVariablesRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var message = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"/api/instances/{instanceId}/variables")
+        {
+            Content = JsonContent.Create(request)
+        };
+        using var response = await httpClient.SendAsync(message, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UpdateInstanceVariablesResultDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance-variable update result.");
+    }
+
+    public async Task<PagedResult<InstanceVariableUpdateCandidateDto>> SearchInstanceVariableUpdateCandidatesAsync(
+        InstanceVariableUpdateCandidateSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instance-variable-update-batches/candidates/search", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVariableUpdateCandidateDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVariableUpdateCandidateDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<InstanceVariableUpdateBatchDetailDto> CreateInstanceVariableUpdateBatchAsync(
+        CreateInstanceVariableUpdateBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/instance-variable-update-batches", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVariableUpdateBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance-variable update batch.");
+    }
+
+    public async Task<PagedResult<InstanceVariableUpdateBatchSummaryDto>> GetInstanceVariableUpdateBatchesAsync(
+        InstanceVariableUpdateBatchSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var parameters = new List<string>
+        {
+            $"page={request.Page ?? 1}",
+            $"pageSize={request.PageSize ?? 50}"
+        };
+        AddQueryValue(parameters, "workflowKey", request.WorkflowKey);
+        AddQueryValue(parameters, "status", request.Status);
+        AddQueryValue(parameters, "preparedBy", request.PreparedBy);
+
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-variable-update-batches?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVariableUpdateBatchSummaryDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVariableUpdateBatchSummaryDto>([], request.Page ?? 1, request.PageSize ?? 50, 0);
+    }
+
+    public async Task<InstanceVariableUpdateBatchDetailDto?> GetInstanceVariableUpdateBatchAsync(
+        long batchId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-variable-update-batches/{batchId}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVariableUpdateBatchDetailDto>(cancellationToken);
+    }
+
+    public async Task<PagedResult<InstanceVariableUpdateBatchItemDto>> GetInstanceVariableUpdateBatchItemsAsync(
+        long batchId,
+        string? status = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        AddQueryValue(parameters, "status", status);
+        using var response = await httpClient.GetAsync(
+            $"/api/instance-variable-update-batches/{batchId}/items?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceVariableUpdateBatchItemDto>>(cancellationToken)
+            ?? new PagedResult<InstanceVariableUpdateBatchItemDto>([], page, pageSize, 0);
+    }
+
+    public async Task<InstanceVariableUpdateBatchDetailDto> ConfirmInstanceVariableUpdateBatchAsync(
+        long batchId,
+        ConfirmInstanceVariableUpdateBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instance-variable-update-batches/{batchId}/confirm", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVariableUpdateBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance-variable update batch.");
+    }
+
+    public async Task<InstanceVariableUpdateBatchDetailDto> CancelInstanceVariableUpdateBatchAsync(
+        long batchId,
+        CancelInstanceVariableUpdateBatchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instance-variable-update-batches/{batchId}/cancel", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceVariableUpdateBatchDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty instance-variable update batch.");
+    }
+
     public async Task PublishWorkflowAsync(long id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsync($"/api/workflows/{id}/publish", null, cancellationToken);

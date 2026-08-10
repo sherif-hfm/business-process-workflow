@@ -39,6 +39,8 @@ public static class WorkflowJobKinds
     public const string AdministrativeBatchExecute = "administrativeBatchExecute";
     public const string InstanceVersionChangeBatchPrepare = "instanceVersionChangeBatchPrepare";
     public const string InstanceVersionChangeBatchExecute = "instanceVersionChangeBatchExecute";
+    public const string InstanceVariableUpdateBatchPrepare = "instanceVariableUpdateBatchPrepare";
+    public const string InstanceVariableUpdateBatchExecute = "instanceVariableUpdateBatchExecute";
 }
 
 public static class WorkflowJobFailureHandling

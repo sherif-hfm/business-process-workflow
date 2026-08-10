@@ -1,9 +1,7 @@
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
- - add update instances variables single or in batch 
+ 
 - receive task
-- Message events  (Interrupting Boundary/Non-interrupting Boundary/Throw Message)
-- in editor add view tool only so not change item by mistake
- - add Event-Based Gateway
+- add Event-Based Gateway
 - add Workflow runner simulator
 
 
@@ -16,6 +14,8 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- in editor add view tool only so not change item by mistake (done)
+- add update instances variables single or in batch (done)
 - attributes for nodes and flows (done)
 - chnage instances vesrion in batch (done)
 - batch action by administrator (done)

@@ -297,6 +297,7 @@ when they are missing in any environment where migrations are applied:
 | --- | --- | --- |
 | Engine | `Workflow.RequiredRole`, `WorkflowInstances.RequiredRole`, `NodeExecution.RequiredRole`, `WorkflowJobs.RequiredRole`, `Delegation.AdminRoles` | `admin` |
 | Engine | `Workflow.Gateway.MaxActiveTokens`, `Workflow.MultiInstance.MaxInstances`, `Workflow.Async.MaxConsecutiveAutomaticActivations` | `1000` |
+| Engine | `WorkflowVariableUpdates.MaxBatchInstances` | `10000` (hard cap) |
 | Workflow context | `setting.examples.messageClientId` | JSON string `"example-message-client"` |
 | Workflow context | `setting.examples.messageCorrelation` | JSON string `"orders:inbound"` |
 
@@ -355,6 +356,14 @@ and in-flight gateway executions are not migrated.
 - `POST /api/instances/{id}/unclaim`
 - `POST /api/instances/{id}/flows/{flowId}`
 - `POST /api/instances/{id}/cancel`
+- `PATCH /api/instances/{id}/variables` (workflow-admin raw JSON upsert)
+- `POST /api/instance-variable-update-batches/candidates/search`
+- `POST /api/instance-variable-update-batches` (`202`, durable preparation)
+- `GET /api/instance-variable-update-batches`
+- `GET /api/instance-variable-update-batches/{batchId}`
+- `GET /api/instance-variable-update-batches/{batchId}/items`
+- `POST /api/instance-variable-update-batches/{batchId}/confirm`
+- `POST /api/instance-variable-update-batches/{batchId}/cancel`
 - `GET /api/user-tasks/manage` (assignment-manager scoped)
 - `POST /api/user-tasks/{taskId}/assign`
 - `POST /api/user-tasks/{taskId}/unassign`
@@ -364,6 +373,57 @@ and in-flight gateway executions are not migrated.
 - `GET /api/auth/context` (server-resolved workflow actor and roles)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
+
+## Administrative instance-variable updates
+
+`PATCH /api/instances/{id}/variables` synchronously appends one or more raw JSON
+values to a running workflow instance in one locked transaction. The request is
+`{ "variables": [{ "name": "name", "value": ... }], "reason": "...",
+"idempotencyKey": "..." }`. Existing values are never updated in place: every
+request adds variable-history rows and the current-value trigger advances the
+projection. The result reports one administrative update-operation ID, the
+instance timestamp, and each variable's actual `added` or `updated` outcome and
+history-row ID. Instance detail includes the correlated update audits and each
+variable-history row carries its nullable update-operation ID.
+
+These are deliberately administrative **raw JSON** writes. They bypass workflow
+variable declarations, type and array contracts, nullability, and NCalc rules;
+JSON `null` is a value and is not deletion. Names are trimmed, compared
+case-insensitively, limited to 300 Unicode characters, and cannot start with
+`sys.`, `config.`, `setting.`, or `mi.`. When an existing name differs only by
+case, its stored casing is retained. Identical values still create audit rows.
+Only running instances are accepted, and all endpoints require authentication
+plus the dynamic `Workflow.RequiredRole` workflow-administrator policy.
+
+The `/api/instance-variable-update-batches` resource freezes either explicit
+instance IDs or all instances matching an applied family-scoped filter with
+exclusions. Candidate search always enforces `running`, requires one workflow
+key, optionally constrains one immutable version, and supports instance,
+business-key, current-node, advanced current-variable, structured sort, cursor,
+and `includeVariables` options. Only the applied mutation filter is persisted;
+sort, cursor, page, and display options are not part of the frozen selection.
+
+Batch creation returns `202 Accepted` and starts durable preparation. One
+prepare job is created for every represented workflow definition. Preparation
+classifies names as add/update, records active-job warnings, and produces
+eligible/ineligible/warning counts. Confirmation fences those counts and the
+batch timestamp, snapshots the confirming identity and roles, and creates one
+execution job per represented definition. Instances then commit independently,
+while all requested variables for one instance, its administrative audit, and
+its successful batch-item transition commit together. Execution rechecks the
+running/family contract; drift is skipped. Changes made after preparation are
+intentionally overwritten under the instance lock. Cancelling stops only
+unstarted items and never reverses successes.
+
+The API and the standalone `Flowbit.Worker` must both be running for batches to
+progress. Durable leases, retries, incidents, cleanup, and expired-lease
+reconciliation use the shared PostgreSQL worker infrastructure; PostgreSQL
+notifications remain wake-up hints. Active instance jobs do not block an update,
+but the API and UI warn that a job may continue with a previously frozen variable
+snapshot. Limits are 1 MiB per request body, 100 variable rows, 10,000 instances
+per batch (configurable downward with
+`WorkflowVariableUpdates.MaxBatchInstances`), 100,000 expanded writes, and
+100 MiB of expanded serialized values.
 
 ## Node execution activity
 

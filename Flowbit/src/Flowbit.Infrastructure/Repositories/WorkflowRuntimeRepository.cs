@@ -5001,12 +5001,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         CancellationToken cancellationToken,
         long? nodeExecutionId = null,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        long? instanceVariableUpdateAuditId = null)
     {
         dbContext.InstanceVariables.Add(new InstanceVariableEntity
         {
             InstanceId = instanceId,
             NodeExecutionId = nodeExecutionId,
+            InstanceVariableUpdateAuditId = instanceVariableUpdateAuditId,
             VariableName = variableName,
             SourceActionId = sourceActionId,
             SetBy = setBy,
@@ -6090,7 +6092,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             entity.SetAt,
             entity.NodeExecutionId,
             entity.ActingFor,
-            entity.DelegationId);
+            entity.DelegationId,
+            entity.InstanceVariableUpdateAuditId);
 
     private static InstanceHistoryRecord ToRecord(InstanceHistoryEntity entity) =>
         new(

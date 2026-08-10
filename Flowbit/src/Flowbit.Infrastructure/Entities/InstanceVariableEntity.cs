@@ -14,6 +14,10 @@ public sealed class InstanceVariableEntity
 
     public NodeExecutionEntity? NodeExecution { get; set; }
 
+    public long? InstanceVariableUpdateAuditId { get; set; }
+
+    public InstanceVariableUpdateAuditEntity? InstanceVariableUpdateAudit { get; set; }
+
     public string VariableName { get; set; } = string.Empty;
 
     public int? SourceActionId { get; set; }

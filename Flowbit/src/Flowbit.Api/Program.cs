@@ -369,6 +369,8 @@ try
     app.MapUserTaskEndpoints();
     app.MapAdministrativeActionEndpoints();
     app.MapInstanceVersionChangeBatchEndpoints();
+    app.MapInstanceVariableUpdateEndpoints();
+    app.MapInstanceVariableUpdateBatchEndpoints();
     app.MapTaskDistributionEndpoints();
     app.MapMultiInstanceExecutionEndpoints();
     app.MapNodeExecutionEndpoints();

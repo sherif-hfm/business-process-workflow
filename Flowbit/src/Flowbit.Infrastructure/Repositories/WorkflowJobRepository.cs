@@ -382,6 +382,11 @@ public sealed class WorkflowJobRepository(
             transaction,
             ids,
             cancellationToken);
+        await ReconcileExhaustedInstanceVariableUpdateBatchesAsync(
+            connection,
+            transaction,
+            ids,
+            cancellationToken);
 
         await using (var attempts = new NpgsqlCommand(
             """
@@ -678,6 +683,159 @@ public sealed class WorkflowJobRepository(
                     WHEN batch."Status" = 'cancelled'
                         THEN COALESCE(batch."CompletedAt", clock_timestamp())
                     ELSE clock_timestamp()
+                END
+            FROM counts
+            WHERE batch."Id" = counts."BatchId"
+            """,
+            connection,
+            transaction);
+        parents.Parameters.AddWithValue("batchIds", batchIds.ToArray());
+        await parents.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task ReconcileExhaustedInstanceVariableUpdateBatchesAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyCollection<long> exhaustedJobIds,
+        CancellationToken cancellationToken)
+    {
+        var batchIds = new HashSet<long>();
+        await using (var batches = new NpgsqlCommand(
+            """
+            SELECT batch."Id"
+            FROM flowbit.instance_variable_update_batch_jobs AS link
+            INNER JOIN flowbit.instance_variable_update_batches AS batch
+                ON batch."Id" = link."BatchId"
+            WHERE link."JobId" = ANY(@jobIds)
+              AND (
+                    (link."Phase" = 'prepare' AND batch."Status" = 'preparing')
+                    OR
+                    (link."Phase" = 'execute'
+                     AND (batch."Status" IN ('queued', 'running')
+                          OR (batch."Status" = 'cancelled'
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM flowbit.instance_variable_update_batch_items AS pending
+                                  WHERE pending."BatchId" = batch."Id"
+                                    AND pending."Status" = 'queued'))))
+                  )
+            ORDER BY batch."Id"
+            FOR UPDATE OF batch
+            """,
+            connection,
+            transaction))
+        {
+            batches.Parameters.AddWithValue("jobIds", exhaustedJobIds.ToArray());
+            await using var reader = await batches.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                batchIds.Add(reader.GetInt64(0));
+            }
+        }
+        if (batchIds.Count == 0)
+        {
+            return;
+        }
+
+        await using (var items = new NpgsqlCommand(
+            """
+            UPDATE flowbit.instance_variable_update_batch_items AS item
+            SET "Status" = 'failed',
+                "ErrorCode" = 'lease_exhausted',
+                "ErrorDescription" = 'The final permitted worker attempt lost its lease.',
+                "UpdatedAt" = clock_timestamp(),
+                "CompletedAt" = clock_timestamp()
+            FROM flowbit.instance_variable_update_batch_jobs AS link
+            WHERE link."JobId" = ANY(@jobIds)
+              AND item."BatchId" = link."BatchId"
+              AND item."CapturedWorkflowDefinitionId" = link."WorkflowDefinitionId"
+              AND (
+                    (link."Phase" = 'prepare' AND item."Status" = 'preparing')
+                    OR
+                    (link."Phase" = 'execute' AND item."Status" = 'queued')
+                  )
+            """,
+            connection,
+            transaction))
+        {
+            items.Parameters.AddWithValue("jobIds", exhaustedJobIds.ToArray());
+            await items.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var parents = new NpgsqlCommand(
+            """
+            WITH counts AS (
+                SELECT selected."BatchId",
+                       COUNT(item."Id")::integer AS "TotalItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'preparing')::integer
+                           AS "PreparingItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'eligible')::integer
+                           AS "EligibleItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'ineligible')::integer
+                           AS "IneligibleItemCount",
+                       COUNT(*) FILTER (
+                           WHERE item."WarningsJson" IS NOT NULL
+                             AND jsonb_typeof(item."WarningsJson") = 'array'
+                             AND jsonb_array_length(item."WarningsJson") > 0)::integer
+                           AS "WarningItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'queued')::integer
+                           AS "QueuedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'succeeded')::integer
+                           AS "SucceededItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'skipped')::integer
+                           AS "SkippedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'failed')::integer
+                           AS "FailedItemCount",
+                       COUNT(*) FILTER (WHERE item."Status" = 'cancelled')::integer
+                           AS "CancelledItemCount"
+                FROM unnest(@batchIds::bigint[]) AS selected("BatchId")
+                LEFT JOIN flowbit.instance_variable_update_batch_items AS item
+                    ON item."BatchId" = selected."BatchId"
+                GROUP BY selected."BatchId"
+            )
+            UPDATE flowbit.instance_variable_update_batches AS batch
+            SET "Status" = CASE
+                    WHEN batch."Status" = 'cancelled' THEN 'cancelled'
+                    WHEN batch."Status" = 'preparing'
+                         AND counts."PreparingItemCount" = 0
+                         AND counts."EligibleItemCount" > 0 THEN 'ready'
+                    WHEN batch."Status" = 'preparing'
+                         AND counts."PreparingItemCount" = 0 THEN 'completedWithIssues'
+                    WHEN batch."Status" IN ('queued', 'running')
+                         AND counts."QueuedItemCount" = 0 THEN 'completedWithIssues'
+                    ELSE batch."Status"
+                END,
+                "TotalItemCount" = counts."TotalItemCount",
+                "EligibleItemCount" = counts."EligibleItemCount",
+                "IneligibleItemCount" = counts."IneligibleItemCount",
+                "WarningItemCount" = counts."WarningItemCount",
+                "QueuedItemCount" = counts."QueuedItemCount",
+                "SucceededItemCount" = counts."SucceededItemCount",
+                "SkippedItemCount" = counts."SkippedItemCount",
+                "FailedItemCount" = counts."FailedItemCount",
+                "CancelledItemCount" = counts."CancelledItemCount",
+                "IssuesJson" = jsonb_build_array(jsonb_build_object(
+                    'Code', 'lease_exhausted',
+                    'Message', 'A workflow-version phase job exhausted its attempts after its final worker lease expired.')),
+                "PreparedAt" = CASE
+                    WHEN batch."Status" = 'preparing'
+                         AND counts."PreparingItemCount" = 0
+                        THEN COALESCE(batch."PreparedAt", clock_timestamp())
+                    ELSE batch."PreparedAt"
+                END,
+                "UpdatedAt" = clock_timestamp(),
+                "CompletedAt" = CASE
+                    WHEN batch."Status" = 'cancelled'
+                         AND counts."QueuedItemCount" = 0
+                        THEN COALESCE(batch."CompletedAt", clock_timestamp())
+                    WHEN batch."Status" = 'preparing'
+                         AND counts."PreparingItemCount" = 0
+                         AND counts."EligibleItemCount" = 0
+                        THEN clock_timestamp()
+                    WHEN batch."Status" IN ('queued', 'running')
+                         AND counts."QueuedItemCount" = 0
+                        THEN clock_timestamp()
+                    ELSE batch."CompletedAt"
                 END
             FROM counts
             WHERE batch."Id" = counts."BatchId"

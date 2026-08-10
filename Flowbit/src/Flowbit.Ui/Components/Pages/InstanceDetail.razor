@@ -228,6 +228,7 @@ else
         @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
         @if (instance.VersionChanges.Count > 0) { <a class="status-tab text-decoration-none" href="#version-changes" @onclick='() => ScrollToSectionAsync("version-changes")' @onclick:preventDefault>Version changes</a> }
+        @if (instance.VariableUpdates.Count > 0) { <a class="status-tab text-decoration-none" href="#variable-updates" @onclick='() => ScrollToSectionAsync("variable-updates")' @onclick:preventDefault>Variable updates</a> }
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
@@ -530,6 +531,62 @@ else
         </section>
     }
 
+    @if (instance.VariableUpdates.Count > 0)
+    {
+        <section id="variable-updates" class="panel mb-3">
+            <div class="section-heading">
+                <div><h2>Administrative variable updates</h2><p>Raw JSON values appended outside workflow variable contracts</p></div>
+                <span class="mono-id">@instance.VariableUpdates.Count operation@(instance.VariableUpdates.Count == 1 ? null : "s")</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <caption class="visually-hidden">Administrative variable updates for instance #@instance.Id</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">When</th>
+                            <th scope="col">Actor</th>
+                            <th scope="col">Reason</th>
+                            <th scope="col">Variables</th>
+                            <th scope="col">Batch</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var update in instance.VariableUpdates.OrderByDescending(item => item.PerformedAt).ThenByDescending(item => item.Id))
+                        {
+                            <tr>
+                                <td>@update.PerformedAt.ToLocalTime().ToString("g")<span class="data-subtitle">Operation #@update.Id</span></td>
+                                <td>@update.PerformedBy<span class="data-subtitle">@(update.PerformedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", update.PerformedByRoles))</span></td>
+                                <td class="text-break">@(update.Reason ?? "—")</td>
+                                <td>
+                                    <div class="d-grid gap-1">
+                                        @foreach (var outcome in update.Variables)
+                                        {
+                                            <span><code>@outcome.Name</code> <StatusBadge Status="@outcome.Outcome" /> <span class="data-subtitle d-inline">history #@outcome.VariableId · @FormatJson(outcome.Value)</span></span>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (update.BatchId is long batchId)
+                                    {
+                                        <a href="@($"instance-variable-updates?batchId={batchId}")">Batch #@batchId</a>
+                                        @if (update.BatchItemId is long batchItemId)
+                                        {
+                                            <span class="data-subtitle">Item #@batchItemId</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span>&mdash;</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
     <section id="variables" class="panel mb-3">
         <h2 class="h4">Variables</h2>
         @if (instance.Variables.Count == 0)
@@ -546,6 +603,7 @@ else
                         <th scope="col">Flow</th>
                         <th scope="col">Set by</th>
                         <th scope="col">Value</th>
+                        <th scope="col">Update audit</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -556,6 +614,16 @@ else
                             <td>@(variable.SourceFlowId?.ToString() ?? "start")</td>
                             <td>@(variable.SetBy ?? "-")</td>
                             <td><code>@FormatJson(variable.Value)</code></td>
+                            <td>
+                                @if (variable.InstanceVariableUpdateAuditId is long operationId)
+                                {
+                                    <a href="#variable-updates" @onclick='() => ScrollToSectionAsync("variable-updates")' @onclick:preventDefault>#@operationId</a>
+                                }
+                                else
+                                {
+                                    <span>&mdash;</span>
+                                }
+                            </td>
                         </tr>
                     }
                 </tbody>

@@ -515,6 +515,12 @@ public sealed record InstanceDetailDto(
     public CompletionInfoDto? Completion { get; init; }
 
     public IReadOnlyList<InstanceVersionChangeAuditDto> VersionChanges { get; init; } = [];
+
+    /// <summary>
+    /// Append-only administrative variable-update operations applied to this
+    /// instance, including the actor, reason, and correlated history rows.
+    /// </summary>
+    public IReadOnlyList<InstanceVariableUpdateAuditDto> VariableUpdates { get; init; } = [];
 }
 
 /// <summary>The updated instance and audit entry returned after a workflow version change.</summary>
@@ -612,6 +618,9 @@ public sealed record InstanceVariableDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? DelegationId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? InstanceVariableUpdateAuditId { get; init; }
 }
 
 /// <summary>

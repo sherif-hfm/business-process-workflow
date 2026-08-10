@@ -22,7 +22,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(33, mappedTables.Length);
+        Assert.Equal(37, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "instance_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
@@ -43,6 +43,10 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Contains(mappedTables, table => table.Name == "workflow_instance_version_change_batch_items");
         Assert.Contains(mappedTables, table => table.Name == "administrative_action_batches");
         Assert.Contains(mappedTables, table => table.Name == "administrative_action_batch_items");
+        Assert.Contains(mappedTables, table => table.Name == "instance_variable_updates");
+        Assert.Contains(mappedTables, table => table.Name == "instance_variable_update_batches");
+        Assert.Contains(mappedTables, table => table.Name == "instance_variable_update_batch_items");
+        Assert.Contains(mappedTables, table => table.Name == "instance_variable_update_batch_jobs");
 
         var expectedNames = mappedTables
             .Select(table => table.Name!)
