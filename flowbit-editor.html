@@ -11270,6 +11270,9 @@ authoringPalette.addEventListener("focusout", () => {
     if (!authoringPalette.contains(document.activeElement)) closeAuthoringPalette();
   });
 });
+authoringPaletteHandle.addEventListener("pointerenter", () => {
+  setAuthoringPaletteOpen(true);
+});
 authoringPaletteHandle.onclick = () => {
   setAuthoringPaletteOpen(true);
   (connectMode

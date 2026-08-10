@@ -377,6 +377,20 @@ public sealed class EditorRuntimeSmokeTests
                 pinPressed: authoringPalettePin.getAttribute('aria-pressed')
               };
 
+              authoringPaletteHandle.dispatchEvent({
+                type: 'pointerenter', target: authoringPaletteHandle, bubbles: false
+              });
+              const hoverOpened = {
+                openClass: paletteClasses.has('is-open'),
+                expanded: authoringPaletteHandle.getAttribute('aria-expanded')
+              };
+              authoringPaletteHandle.dispatchEvent({
+                type: 'pointerleave', target: authoringPaletteHandle, bubbles: false
+              });
+              const hoverStayedOpen = paletteClasses.has('is-open');
+              selectToolBtn.onclick();
+              const hoverActionClosed = !paletteClasses.has('is-open');
+
               authoringPaletteHandle.onclick();
               const opened = {
                 openClass: paletteClasses.has('is-open'),
@@ -447,6 +461,9 @@ public sealed class EditorRuntimeSmokeTests
 
               return JSON.stringify({
                 initial,
+                hoverOpened,
+                hoverStayedOpen,
+                hoverActionClosed,
                 opened,
                 pinned,
                 pinnedAction,
@@ -460,6 +477,12 @@ public sealed class EditorRuntimeSmokeTests
         var root = result.RootElement;
         Assert.Equal("false", root.GetProperty("initial").GetProperty("expanded").GetString());
         Assert.Equal("false", root.GetProperty("initial").GetProperty("pinPressed").GetString());
+
+        var hoverOpened = root.GetProperty("hoverOpened");
+        Assert.True(hoverOpened.GetProperty("openClass").GetBoolean());
+        Assert.Equal("true", hoverOpened.GetProperty("expanded").GetString());
+        Assert.True(root.GetProperty("hoverStayedOpen").GetBoolean());
+        Assert.True(root.GetProperty("hoverActionClosed").GetBoolean());
 
         var opened = root.GetProperty("opened");
         Assert.True(opened.GetProperty("openClass").GetBoolean());
