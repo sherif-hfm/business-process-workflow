@@ -811,6 +811,8 @@ public sealed class EditorRuntimeSmokeTests
                 panPressed: panToolBtn.getAttribute('aria-pressed'),
                 connectMode,
                 connectSource,
+                hintHidden: hintEl.hidden,
+                hintText: hintEl.innerHTML,
                 panFinished: canvasPan === null,
                 itemDragBlocked: drag === null,
                 clickPrevented: click.defaultPrevented,
@@ -826,6 +828,8 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal("true", root.GetProperty("panPressed").GetString());
         Assert.False(root.GetProperty("connectMode").GetBoolean());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("connectSource").ValueKind);
+        Assert.True(root.GetProperty("hintHidden").GetBoolean());
+        Assert.Equal(string.Empty, root.GetProperty("hintText").GetString());
         Assert.True(root.GetProperty("panFinished").GetBoolean());
         Assert.True(root.GetProperty("itemDragBlocked").GetBoolean());
         Assert.True(root.GetProperty("clickPrevented").GetBoolean());

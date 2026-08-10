@@ -606,6 +606,13 @@ public sealed class EditorNavigationTests
             @"\.authoring-palette\s*\{[^}]*position:\s*absolute;[^}]*left:\s*12px;[^}]*display:\s*flex;",
             html);
         Assert.Matches(
+            @"\.authoring-palette\s*\{[^}]*top:\s*12px;[^}]*align-items:\s*flex-start;",
+            html);
+        Assert.Matches(
+            @"\.authoring-palette-handle\s*\{[^}]*top:\s*0;",
+            html);
+        Assert.DoesNotContain("<b>Pan tool:</b>", html, StringComparison.Ordinal);
+        Assert.Matches(
             @"\.authoring-palette-section\s*\{[^}]*flex-direction:\s*column;",
             html);
         Assert.Contains(

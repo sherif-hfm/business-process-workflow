@@ -625,7 +625,7 @@
     z-index: 16;
     width: min(228px, calc(100% - 24px));
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     pointer-events: none;
   }
   .authoring-palette-content {
@@ -663,7 +663,7 @@
   }
   .authoring-palette-handle {
     position: absolute;
-    top: 50%;
+    top: 0;
     left: 0;
     z-index: 2;
     width: 38px;
@@ -677,11 +677,10 @@
     border-radius: 10px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
-    transform: translateY(-50%);
     pointer-events: auto;
     transition: opacity .12s ease, visibility 0s;
   }
-  .authoring-palette-handle:active { transform: translateY(calc(-50% + 1px)); }
+  .authoring-palette-handle:active { transform: translateY(1px); }
   .authoring-palette-handle .button-icon {
     width: 18px;
     height: 18px;
@@ -4768,9 +4767,6 @@ function renderHint() {
         : "";
       hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
     }
-  } else if (activeTool === "pan") {
-    hintEl.hidden = false;
-    hintEl.innerHTML = "<b>Pan tool:</b> drag anywhere to move the workflow view without moving items. Press <b>V</b> to select items.";
   } else if (activeTool === "rectangle") {
     const count = selectedNodeIds.size;
     hintEl.hidden = false;
