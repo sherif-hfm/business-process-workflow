@@ -474,7 +474,7 @@ public sealed class EditorNavigationTests
     }
 
     [Fact]
-    public void EditorMenus_GroupFileEditAuthoringToolAndViewChoices()
+    public void EditorMenus_KeepFileEditAndViewInHeaderWithVerticalAuthoringPalette()
     {
         var html = ReadEditorSource();
         var menuGroup = Regex.Match(
@@ -486,6 +486,12 @@ public sealed class EditorNavigationTests
         Assert.True(
             headingIndex >= 0 && headingIndex < menuGroup.Index && menuGroup.Index < workflowNameIndex,
             "The editor menus must appear between the brand heading and workflow name.");
+        var headerMarkup = Regex.Match(
+            html,
+            @"<header\b[^>]*>(?<markup>[\s\S]*?)</header>").Groups["markup"].Value;
+        Assert.Equal(3, Regex.Matches(headerMarkup, @"<details\b").Count);
+        Assert.DoesNotContain("id=\"addMenu\"", headerMarkup, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"toolMenu\"", headerMarkup, StringComparison.Ordinal);
 
         var fileMenu = Regex.Match(
             html,
@@ -516,41 +522,35 @@ public sealed class EditorNavigationTests
         Assert.Matches(@"<button(?=[^>]*\bid=""undoBtn"")(?=[^>]*\btype=""button"")[^>]*>", editMarkup);
         Assert.Matches(@"<button(?=[^>]*\bid=""redoBtn"")(?=[^>]*\btype=""button"")[^>]*>", editMarkup);
 
-        var addMenu = Regex.Match(
+        var palette = Regex.Match(
             html,
-            @"<details(?=[^>]*\bid=""addMenu"")(?=[^>]*\bclass=""[^""]*\btoolbar-menu\b[^""]*"")(?<attributes>[^>]*)>(?<markup>[\s\S]*?)</details>");
-        Assert.True(addMenu.Success, "The Add toolbar menu was not found.");
-        Assert.DoesNotMatch(@"\bopen(?:\s*=|\s|$)", addMenu.Groups["attributes"].Value);
+            @"<section(?=[^>]*\bid=""authoringPalette"")(?=[^>]*\bclass=""authoring-palette"")(?=[^>]*\baria-label=""Workflow authoring tools"")[^>]*>(?<markup>[\s\S]*?)</section>");
+        Assert.True(palette.Success, "The vertical authoring palette was not found.");
+        Assert.True(palette.Index > html.IndexOf("</header>", StringComparison.Ordinal));
 
-        var addMarkup = addMenu.Groups["markup"].Value;
+        var paletteMarkup = palette.Groups["markup"].Value;
         Assert.Matches(
-            @"<summary(?=[^>]*\bid=""addMenuSummary"")(?=[^>]*\baria-label=""Add nodes, lanes, or flows"")[^>]*>",
-            addMarkup);
-        Assert.Equal(3, Regex.Matches(addMarkup, @"<button\b").Count);
-        Assert.Matches(@"<button(?=[^>]*\bid=""addStepBtn"")(?=[^>]*\btype=""button"")[^>]*>", addMarkup);
-        Assert.Matches(@"<button(?=[^>]*\bid=""addPhaseBtn"")(?=[^>]*\btype=""button"")[^>]*>", addMarkup);
+            @"<button(?=[^>]*\bid=""authoringPaletteHandle"")(?=[^>]*\bdata-active-tool=""pan"")(?=[^>]*\baria-controls=""authoringPaletteContent"")(?=[^>]*\baria-expanded=""false"")[^>]*>",
+            paletteMarkup);
+        Assert.Matches(
+            @"<button(?=[^>]*\bid=""authoringPalettePin"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
+            paletteMarkup);
+        Assert.Contains("<span class=\"authoring-palette-title\">Tools</span>", paletteMarkup, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tool:", paletteMarkup, StringComparison.Ordinal);
+        Assert.DoesNotContain("activeToolLabel", paletteMarkup, StringComparison.Ordinal);
+        Assert.Equal(7, Regex.Matches(paletteMarkup, @"<button\b").Count);
+        Assert.Matches(@"<button(?=[^>]*\bid=""addStepBtn"")(?=[^>]*\btype=""button"")[^>]*>", paletteMarkup);
+        Assert.DoesNotMatch(@"<button(?=[^>]*\bid=""addStepBtn"")(?=[^>]*\bclass=""[^""]*\bprimary\b)[^>]*>", paletteMarkup);
+        Assert.Matches(@"<button(?=[^>]*\bid=""addPhaseBtn"")(?=[^>]*\btype=""button"")[^>]*>", paletteMarkup);
         Assert.Matches(
             @"<button(?=[^>]*\bid=""connectBtn"")(?=[^>]*\btype=""button"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
-            addMarkup);
-
-        var toolMenu = Regex.Match(
-            html,
-            @"<details(?=[^>]*\bid=""toolMenu"")(?=[^>]*\bclass=""[^""]*\btoolbar-menu\b[^""]*"")(?=[^>]*\bclass=""[^""]*\btoolbar-menu-responsive-end\b[^""]*"")(?<attributes>[^>]*)>(?<markup>[\s\S]*?)</details>");
-        Assert.True(toolMenu.Success, "The Tool toolbar menu was not found.");
-        Assert.DoesNotMatch(@"\bopen(?:\s*=|\s|$)", toolMenu.Groups["attributes"].Value);
-
-        var toolMarkup = toolMenu.Groups["markup"].Value;
+            paletteMarkup);
         Assert.Matches(
-            @"<summary(?=[^>]*\bid=""toolMenuSummary"")(?=[^>]*\bdata-active-tool=""pan"")(?=[^>]*\baria-label=""Current editor tool: Pan"")[^>]*>",
-            toolMarkup);
-        Assert.Contains("id=\"activeToolLabel\">Pan</span>", toolMarkup, StringComparison.Ordinal);
-        Assert.Equal(2, Regex.Matches(toolMarkup, @"<button\b").Count);
+            @"<button(?=[^>]*\bid=""selectToolBtn"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
+            paletteMarkup);
         Assert.Matches(
-            @"<button(?=[^>]*\bid=""selectToolBtn"")(?=[^>]*\btype=""button"")(?=[^>]*\baria-label=""Select and move workflow items"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
-            toolMarkup);
-        Assert.Matches(
-            @"<button(?=[^>]*\bid=""panToolBtn"")(?=[^>]*\btype=""button"")(?=[^>]*\baria-label=""Pan workflow canvas"")(?=[^>]*\baria-pressed=""true"")[^>]*>",
-            toolMarkup);
+            @"<button(?=[^>]*\bid=""panToolBtn"")(?=[^>]*\baria-pressed=""true"")[^>]*>",
+            paletteMarkup);
         Assert.Matches(
             @"<svg(?=[^>]*\bid=""svg"")(?=[^>]*\brole=""application"")(?=[^>]*\baria-label=""Workflow diagram canvas"")(?=[^>]*\bdata-active-tool=""pan"")[^>]*>",
             html);
@@ -592,8 +592,14 @@ public sealed class EditorNavigationTests
         Assert.Matches(
             @"\.toolbar-menu-end\s+\.toolbar-menu-popover\s*\{[^}]*right:\s*0;[^}]*left:\s*auto;",
             html);
+        Assert.Matches(
+            @"\.authoring-palette\s*\{[^}]*position:\s*absolute;[^}]*left:\s*12px;[^}]*display:\s*flex;",
+            html);
+        Assert.Matches(
+            @"\.authoring-palette-section\s*\{[^}]*flex-direction:\s*column;",
+            html);
         Assert.Contains(
-            ".toolbar-menu-responsive-end .toolbar-menu-popover { right: 0; left: auto; }",
+            ".authoring-palette.is-pinned .authoring-palette-content",
             html,
             StringComparison.Ordinal);
         Assert.Matches(
@@ -833,8 +839,18 @@ public sealed class EditorNavigationTests
 
         Assert.Contains("id=\"diagramToolsHandle\"", html, StringComparison.Ordinal);
         Assert.Contains("id=\"diagramToolsPin\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"authoringPaletteHandle\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"authoringPalettePin\"", html, StringComparison.Ordinal);
         Assert.Contains("id=\"inspectorPin\"", html, StringComparison.Ordinal);
         Assert.Contains(".diagram-tools:hover .diagram-tools-content", html, StringComparison.Ordinal);
+        Assert.Contains(
+            ".authoring-palette:hover .authoring-palette-content",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".authoring-palette.is-open .authoring-palette-content",
+            html,
+            StringComparison.Ordinal);
         Assert.Contains(".inspector-dock:not(.is-pinned):hover", html, StringComparison.Ordinal);
         Assert.Contains("main.inspector-revealed .diagram-tools", html, StringComparison.Ordinal);
         Assert.Contains("transform: translateX(calc(100% - 38px));", html, StringComparison.Ordinal);
@@ -845,9 +861,13 @@ public sealed class EditorNavigationTests
             html,
             StringComparison.Ordinal);
         Assert.Contains("\"flowbit.diagramToolsPinned\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"flowbit.authoringPalettePinned\"", html, StringComparison.Ordinal);
         Assert.Contains("\"flowbit.inspectorPinned\"", html, StringComparison.Ordinal);
         Assert.Contains("releaseUnpinnedButtonFocus(inspectorPin, pinned);", html, StringComparison.Ordinal);
         Assert.Contains("releaseUnpinnedButtonFocus(diagramToolsPin, pinned);", html, StringComparison.Ordinal);
+        Assert.Contains("releaseUnpinnedButtonFocus(authoringPalettePin, pinned);", html, StringComparison.Ordinal);
+        Assert.Contains("function setAuthoringPalettePinned(pinned, persist = true)", html, StringComparison.Ordinal);
+        Assert.Contains("function closeAuthoringPalette(restoreFocus = false)", html, StringComparison.Ordinal);
         Assert.Contains("mainEl.classList.toggle(\"inspector-revealed\", revealed);", html, StringComparison.Ordinal);
         Assert.Contains("mainEl.style.setProperty(\"--sidebar-width\"", html, StringComparison.Ordinal);
         Assert.Contains("requestAnimationFrame(applyViewBox);", html, StringComparison.Ordinal);

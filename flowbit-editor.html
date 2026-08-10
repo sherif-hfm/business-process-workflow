@@ -604,6 +604,127 @@
   .canvas-controls button { min-width: 34px; min-height: 32px; padding: 5px 9px; }
   .canvas-controls .zoom-readout { min-width: 62px; color: var(--soft-blue-text); font-variant-numeric: tabular-nums; }
   .canvas-controls .fit-view { min-width: 48px; }
+  .authoring-palette {
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    left: 12px;
+    z-index: 16;
+    width: min(228px, calc(100% - 24px));
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+  }
+  .authoring-palette-content {
+    box-sizing: border-box;
+    width: min(184px, calc(100% - 44px));
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    overflow-y: auto;
+    color: var(--text);
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-8px) scale(.985);
+    transform-origin: center left;
+    pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease, visibility 0s linear .16s;
+  }
+  .authoring-palette:not(.is-pinned) .authoring-palette-content { margin-left: 44px; }
+  .authoring-palette:hover .authoring-palette-content,
+  .authoring-palette-content:focus-within,
+  .authoring-palette.is-open .authoring-palette-content,
+  .authoring-palette.is-pinned .authoring-palette-content {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+  .authoring-palette-handle {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    z-index: 2;
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+    padding: 9px;
+    color: var(--soft-blue-text);
+    background: var(--glass);
+    border-color: var(--control-border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    transform: translateY(-50%);
+    pointer-events: auto;
+    transition: opacity .12s ease, visibility 0s;
+  }
+  .authoring-palette-handle:active { transform: translateY(calc(-50% + 1px)); }
+  .authoring-palette-handle .button-icon {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+  }
+  .authoring-palette.is-pinned .authoring-palette-handle {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .authoring-palette-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 0 1px 5px 5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .authoring-palette-copy {
+    min-width: 0;
+  }
+  .authoring-palette-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .authoring-palette-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .authoring-palette-section-label {
+    padding: 1px 5px;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .authoring-palette-content button:not(.dock-pin) {
+    width: 100%;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  .authoring-palette-content .button-label { display: inline; }
+  .authoring-palette-content .button-icon { flex: 0 0 auto; margin-right: 7px; }
+  .authoring-palette-divider {
+    height: 1px;
+    margin: 0 3px;
+    background: var(--border);
+  }
   .diagram-tools {
     position: absolute;
     top: 10px;
@@ -666,6 +787,7 @@
     pointer-events: auto;
     transition: opacity .12s ease, visibility 0s;
   }
+  .authoring-palette-handle svg,
   .diagram-tools-handle svg,
   .dock-pin svg {
     width: 18px;
@@ -1392,10 +1514,33 @@
     .diagram-search { width: min(290px, 100%); }
     .diagram-nav { max-width: 100%; }
     .diagram-nav .compact-hide { display: none; }
+    .authoring-palette {
+      top: 8px;
+      bottom: 8px;
+      left: 8px;
+      width: min(90px, calc(100% - 8px));
+    }
+    .authoring-palette-content {
+      width: min(52px, calc(100% - 38px));
+      gap: 4px;
+      padding: 3px;
+    }
+    .authoring-palette:not(.is-pinned) .authoring-palette-content { margin-left: 38px; }
+    .authoring-palette-header { justify-content: center; padding: 1px 0 4px; }
+    .authoring-palette-copy,
+    .authoring-palette-section-label,
+    .authoring-palette-content .button-label { display: none; }
+    .authoring-palette-content button:not(.dock-pin) {
+      width: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      justify-content: center;
+      padding: 7px;
+    }
+    .authoring-palette-content .button-icon { width: 18px; height: 18px; margin: 0; }
     .toolbar-opacity input { width: 68px; }
     .toolbar-menu-group { max-width: 100%; flex-wrap: wrap; }
     .toolbar-menu > summary { padding-inline: 9px; }
-    .toolbar-menu-responsive-end .toolbar-menu-popover { right: 0; left: auto; }
   }
   @media (max-width: 480px) {
     .hint {
@@ -1476,56 +1621,6 @@
         <button id="redoBtn" type="button" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" aria-label="Redo" disabled>
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6"/></svg>
           <span class="button-label">Redo</span>
-        </button>
-      </div>
-    </details>
-    <details id="addMenu" class="toolbar-menu">
-      <summary id="addMenuSummary" title="Add nodes, lanes, or flows" aria-label="Add nodes, lanes, or flows">
-        <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="button-label">Add</span>
-        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
-      </summary>
-      <div class="toolbar-menu-popover" role="group" aria-label="Authoring actions">
-        <button id="addStepBtn" class="primary" type="button" title="Add a workflow node">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-          <span class="button-label">Add Node</span>
-        </button>
-        <button id="addPhaseBtn" type="button" title="Add a swimlane">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
-          <span class="button-label">Add Lane</span>
-        </button>
-        <button id="connectBtn" type="button" title="Connect two nodes with a sequence flow" aria-pressed="false">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg>
-          <span class="button-label">Connect Flow</span>
-        </button>
-      </div>
-    </details>
-    <details id="toolMenu" class="toolbar-menu toolbar-menu-responsive-end">
-      <summary id="toolMenuSummary" class="tool-menu-summary" data-active-tool="pan"
-               title="Current editor tool: Pan" aria-label="Current editor tool: Pan">
-        <svg class="button-icon tool-summary-select" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
-        </svg>
-        <svg class="button-icon tool-summary-pan" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
-        </svg>
-        <span class="button-label">Tool: <span id="activeToolLabel">Pan</span></span>
-        <svg class="toolbar-menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>
-      </summary>
-      <div class="toolbar-menu-popover" role="group" aria-label="Choose editor tool">
-        <button id="selectToolBtn" type="button"
-                title="Select and move workflow items (V)" aria-label="Select and move workflow items"
-                aria-pressed="false">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
-          </svg><span class="button-label">Select and move items</span>
-        </button>
-        <button id="panToolBtn" class="active" type="button"
-                title="Pan the workflow canvas without moving items (H)" aria-label="Pan workflow canvas"
-                aria-pressed="true">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
-          </svg><span class="button-label">Pan canvas only</span>
         </button>
       </div>
     </details>
@@ -1633,6 +1728,75 @@
       <g id="connectionPreview"></g>
       <g id="nodes"></g>
     </svg>
+    <section id="authoringPalette" class="authoring-palette"
+             aria-label="Workflow authoring tools">
+      <button id="authoringPaletteHandle"
+              class="authoring-palette-handle tool-menu-summary"
+              type="button" data-active-tool="pan"
+              aria-controls="authoringPaletteContent" aria-expanded="false"
+              title="Show authoring tools; current editor tool: Pan"
+              aria-label="Show authoring tools; current editor tool: Pan">
+        <svg class="button-icon tool-summary-select" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
+        </svg>
+        <svg class="button-icon tool-summary-pan" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
+        </svg>
+      </button>
+      <div id="authoringPaletteContent" class="authoring-palette-content"
+           role="group" aria-label="Workflow authoring actions">
+        <div class="authoring-palette-header">
+          <div class="authoring-palette-copy">
+            <span class="authoring-palette-title">Tools</span>
+          </div>
+          <button id="authoringPalettePin" class="dock-pin" type="button"
+                  title="Pin authoring tools open" aria-label="Pin authoring tools open"
+                  aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m9 4 6 0-.8 5 3.3 3.3v1.2h-11v-1.2L9.8 9 9 4Z"></path>
+              <path d="M12 13.5V21"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="authoring-palette-section" role="group" aria-label="Add workflow items">
+          <span class="authoring-palette-section-label" aria-hidden="true">Add</span>
+          <button id="addStepBtn" type="button"
+                  title="Add a workflow node" aria-label="Add Node">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span class="button-label">Add Node</span>
+          </button>
+          <button id="addPhaseBtn" type="button"
+                  title="Add a swimlane" aria-label="Add Lane">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
+            <span class="button-label">Add Lane</span>
+          </button>
+          <button id="connectBtn" type="button"
+                  title="Connect two nodes with a sequence flow"
+                  aria-label="Connect Flow" aria-pressed="false">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h9M14 9l3 3-3 3"/></svg>
+            <span class="button-label">Connect Flow</span>
+          </button>
+        </div>
+        <div class="authoring-palette-divider" aria-hidden="true"></div>
+        <div class="authoring-palette-section" role="group" aria-label="Choose editor tool">
+          <span class="authoring-palette-section-label" aria-hidden="true">Tool</span>
+          <button id="selectToolBtn" type="button"
+                  title="Select and move workflow items (V)" aria-label="Select and move workflow items"
+                  aria-pressed="false">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
+            </svg><span class="button-label">Select and move</span>
+          </button>
+          <button id="panToolBtn" class="active" type="button"
+                  title="Pan the workflow canvas without moving items (H)" aria-label="Pan workflow canvas"
+                  aria-pressed="true">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
+            </svg><span class="button-label">Pan canvas</span>
+          </button>
+        </div>
+      </div>
+    </section>
     <div class="hint" id="hint" role="status" aria-live="polite" hidden></div>
     <div class="diagram-tools" id="diagramTools" aria-label="Diagram navigation">
       <button id="diagramToolsHandle" class="diagram-tools-handle" type="button"
@@ -2503,17 +2667,17 @@ const fileMenu = document.getElementById('fileMenu');
 const fileMenuSummary = document.getElementById('fileMenuSummary');
 const editMenu = document.getElementById('editMenu');
 const editMenuSummary = document.getElementById('editMenuSummary');
-const addMenu = document.getElementById('addMenu');
-const addMenuSummary = document.getElementById('addMenuSummary');
-const toolMenu = document.getElementById('toolMenu');
-const toolMenuSummary = document.getElementById('toolMenuSummary');
 const viewMenu = document.getElementById('viewMenu');
 const viewMenuSummary = document.getElementById('viewMenuSummary');
-const activeToolLabel = document.getElementById('activeToolLabel');
-const toolbarMenus = [fileMenu, editMenu, addMenu, toolMenu, viewMenu];
-const toolbarMenuSummaries = [
-  fileMenuSummary, editMenuSummary, addMenuSummary, toolMenuSummary, viewMenuSummary
-];
+const toolbarMenus = [fileMenu, editMenu, viewMenu];
+const toolbarMenuSummaries = [fileMenuSummary, editMenuSummary, viewMenuSummary];
+const authoringPalette = document.getElementById('authoringPalette');
+const authoringPaletteContent = document.getElementById('authoringPaletteContent');
+const authoringPaletteHandle = document.getElementById('authoringPaletteHandle');
+const authoringPalettePin = document.getElementById('authoringPalettePin');
+const addStepBtn = document.getElementById('addStepBtn');
+const addPhaseBtn = document.getElementById('addPhaseBtn');
+const connectBtn = document.getElementById('connectBtn');
 const selectToolBtn = document.getElementById('selectToolBtn');
 const panToolBtn = document.getElementById('panToolBtn');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
@@ -7833,17 +7997,24 @@ function finishCanvasPan(e) {
   return true;
 }
 
+function updateAuthoringPaletteHandle() {
+  const activeLabel = activeTool === "select" ? "Select" : "Pan";
+  const label = connectMode
+    ? "Show authoring tools; connect flow mode active"
+    : `Show authoring tools; current editor tool: ${activeLabel}`;
+  authoringPaletteHandle.dataset.activeTool = activeTool;
+  authoringPaletteHandle.classList.toggle("active", connectMode);
+  authoringPaletteHandle.title = label;
+  authoringPaletteHandle.setAttribute("aria-label", label);
+}
+
 function updateEditorToolControls() {
   const selectActive = activeTool === "select";
-  const activeLabel = selectActive ? "Select" : "Pan";
   selectToolBtn.classList.toggle("active", selectActive);
   selectToolBtn.setAttribute("aria-pressed", String(selectActive));
   panToolBtn.classList.toggle("active", !selectActive);
   panToolBtn.setAttribute("aria-pressed", String(!selectActive));
-  activeToolLabel.textContent = activeLabel;
-  toolMenuSummary.dataset.activeTool = activeTool;
-  toolMenuSummary.title = `Current editor tool: ${activeLabel}`;
-  toolMenuSummary.setAttribute("aria-label", `Current editor tool: ${activeLabel}`);
+  updateAuthoringPaletteHandle();
   svg.dataset.activeTool = activeTool;
 }
 
@@ -8380,14 +8551,9 @@ function setConnectMode(on, sourceId = null) {
   if (on && activeTool !== "select") setActiveTool("select");
   connectMode = on;
   connectSource = on ? sourceId : null;
-  const connectBtn = document.getElementById("connectBtn");
   connectBtn.classList.toggle("active", on);
   connectBtn.setAttribute("aria-pressed", String(on));
-  addMenuSummary.classList.toggle("active", on);
-  addMenuSummary.title = on
-    ? "Add menu; connect flow mode active"
-    : "Add nodes, lanes, or flows";
-  addMenuSummary.setAttribute("aria-label", addMenuSummary.title);
+  updateAuthoringPaletteHandle();
   if (!on) {
     connectionPreviewG.innerHTML = "";
     connectionPreviewG.classList.remove("invalid");
@@ -10827,8 +10993,37 @@ function setDiagramToolsPinned(pinned, persist = true) {
   if (persist) writeUiPreference("flowbit.diagramToolsPinned", String(pinned));
 }
 
+function setAuthoringPaletteOpen(open) {
+  const pinned = authoringPalette.classList.contains("is-pinned");
+  authoringPalette.classList.toggle("is-open", Boolean(open) && !pinned);
+  authoringPaletteHandle.setAttribute("aria-expanded", String(Boolean(open) || pinned));
+}
+
+function closeAuthoringPalette(restoreFocus = false) {
+  if (authoringPalette.classList.contains("is-pinned")) return false;
+  const focusedInside = authoringPaletteContent.contains(document.activeElement);
+  const wasOpen = authoringPalette.classList.contains("is-open") || focusedInside;
+  setAuthoringPaletteOpen(false);
+  if (wasOpen) {
+    if (restoreFocus) authoringPaletteHandle.focus();
+    else if (focusedInside) document.activeElement.blur();
+  }
+  return wasOpen;
+}
+
+function setAuthoringPalettePinned(pinned, persist = true) {
+  authoringPalette.classList.toggle("is-pinned", pinned);
+  authoringPalette.classList.remove("is-open");
+  authoringPaletteHandle.setAttribute("aria-expanded", String(pinned));
+  updatePinButton(authoringPalettePin, pinned, "authoring tools");
+  releaseUnpinnedButtonFocus(authoringPalettePin, pinned);
+  if (persist) writeUiPreference("flowbit.authoringPalettePinned", String(pinned));
+}
+
 setInspectorPinned(readUiPreference("flowbit.inspectorPinned") === "true", false);
 setDiagramToolsPinned(readUiPreference("flowbit.diagramToolsPinned") === "true", false);
+setAuthoringPalettePinned(
+  readUiPreference("flowbit.authoringPalettePinned") === "true", false);
 
 /* ---------- Wire up toolbar ---------- */
 toolbarMenus.forEach(menu => {
@@ -10838,33 +11033,52 @@ toolbarMenus.forEach(menu => {
 });
 document.addEventListener("pointerdown", event => {
   if (!toolbarMenus.some(menu => menu.contains(event.target))) closeToolbarMenus();
+  if (!authoringPalette.contains(event.target)) closeAuthoringPalette();
 }, true);
 document.addEventListener("focusin", event => {
   const focusedMenu = toolbarMenus.find(menu => menu.contains(event.target)) || null;
   closeToolbarMenus(focusedMenu);
 });
+authoringPalette.addEventListener("focusout", () => {
+  queueMicrotask(() => {
+    if (!authoringPalette.contains(document.activeElement)) closeAuthoringPalette();
+  });
+});
+authoringPaletteHandle.onclick = () => {
+  setAuthoringPaletteOpen(true);
+  (connectMode ? connectBtn : activeTool === "pan" ? panToolBtn : selectToolBtn).focus();
+};
+authoringPalettePin.onclick = () =>
+  setAuthoringPalettePinned(!authoringPalette.classList.contains("is-pinned"));
 selectToolBtn.onclick = () => {
   if (connectMode) setConnectMode(false);
   setActiveTool("select");
+  closeAuthoringPalette();
 };
-panToolBtn.onclick = () => setActiveTool("pan");
-document.getElementById("addStepBtn").onclick = () => {
+panToolBtn.onclick = () => {
+  setActiveTool("pan");
+  closeAuthoringPalette();
+};
+addStepBtn.onclick = () => {
   closeToolbarMenus(null, true);
   if (connectMode) setConnectMode(false);
   setActiveTool("select");
   addNode();
+  closeAuthoringPalette();
 };
-document.getElementById("addPhaseBtn").onclick = () => {
+addPhaseBtn.onclick = () => {
   closeToolbarMenus(null, true);
   if (connectMode) setConnectMode(false);
   setActiveTool("select");
   addLane();
+  closeAuthoringPalette();
 };
-document.getElementById("connectBtn").onclick = () => {
+connectBtn.onclick = () => {
   const enable = !connectMode;
   closeToolbarMenus(null, true);
   setActiveTool("select");
   setConnectMode(enable);
+  closeAuthoringPalette();
 };
 themeToggleBtn.onclick = () =>
   setTheme(nextTheme(document.documentElement.dataset.theme), true);
@@ -11037,6 +11251,10 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  if (e.key === "Escape" && closeAuthoringPalette(true)) {
+    e.preventDefault();
+    return;
+  }
   const t = e.target;
   if (e.key === "/" && !(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
       || t.tagName === "SELECT" || t.tagName === "BUTTON"
@@ -11057,6 +11275,7 @@ window.addEventListener("keydown", (e) => {
       if (connectMode) setConnectMode(false);
       setActiveTool("select");
     }
+    closeAuthoringPalette();
     return;
   }
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
