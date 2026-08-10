@@ -410,8 +410,12 @@
     margin: 3px 4px;
     background: var(--border);
   }
-  .tool-menu-summary[data-active-tool="select"] .tool-summary-pan,
-  .tool-menu-summary[data-active-tool="pan"] .tool-summary-select { display: none; }
+  .tool-menu-summary .tool-summary-select,
+  .tool-menu-summary .tool-summary-rectangle,
+  .tool-menu-summary .tool-summary-pan { display: none; }
+  .tool-menu-summary[data-active-tool="select"] .tool-summary-select,
+  .tool-menu-summary[data-active-tool="rectangle"] .tool-summary-rectangle,
+  .tool-menu-summary[data-active-tool="pan"] .tool-summary-pan { display: block; }
   .app-mark {
     width: 34px;
     height: 34px;
@@ -565,12 +569,21 @@
 
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
   #svg { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: default; touch-action: none; }
+  #svg[data-active-tool="rectangle"] { cursor: crosshair; }
   #svg[data-active-tool="pan"],
   #svg[data-active-tool="pan"] * { cursor: grab !important; }
   #svg.canvas-panning,
   #svg.canvas-panning *,
   body.is-space-panning #svg,
   body.is-space-panning #svg * { cursor: grabbing !important; }
+  .selection-marquee {
+    fill: color-mix(in srgb, var(--accent) 14%, transparent);
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 7 5;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
 
   .hint {
     position: absolute;
@@ -1247,8 +1260,12 @@
   .node .mi-marker line { stroke: var(--node-status); stroke-width: 1.6; }
   .node .connect-handle { opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; }
   .node:hover .connect-handle,
-  .node.selected .connect-handle,
+  .node.primary-selected .connect-handle,
   .node.connect-source .connect-handle { opacity: 1; pointer-events: all; }
+  #svg[data-active-tool="rectangle"] .node .connect-handle {
+    opacity: 0;
+    pointer-events: none;
+  }
   .node .connect-handle .handle-hit { fill: transparent; stroke: none; cursor: crosshair; }
   .node .connect-handle .handle-dot {
     fill: var(--connect-handle-fill);
@@ -1727,6 +1744,7 @@
       <g id="edges"></g>
       <g id="connectionPreview"></g>
       <g id="nodes"></g>
+      <g id="selectionOverlay" aria-hidden="true"></g>
     </svg>
     <section id="authoringPalette" class="authoring-palette"
              aria-label="Workflow authoring tools">
@@ -1738,6 +1756,10 @@
               aria-label="Show authoring tools; current editor tool: Pan">
         <svg class="button-icon tool-summary-select" viewBox="0 0 24 24" aria-hidden="true">
           <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
+        </svg>
+        <svg class="button-icon tool-summary-rectangle" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2"/>
+          <path d="m8 8 4.5 10 1.5-4 4-1.5L8 8Z"/>
         </svg>
         <svg class="button-icon tool-summary-pan" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M8.5 11V5.5a1.5 1.5 0 0 1 3 0V10M11.5 10V4.5a1.5 1.5 0 0 1 3 0V10M14.5 10V6a1.5 1.5 0 0 1 3 0v5M8.5 9.5a1.5 1.5 0 0 0-3 0v4.2c0 4.6 2.6 7.3 6.8 7.3h.7c4.4 0 6.5-3.1 6.5-7.2V10a1.5 1.5 0 0 0-3 0v1"/>
@@ -1786,6 +1808,14 @@
             <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="m5 3 6.8 16 2.1-6.1L20 10.8 5 3Z"/>
             </svg><span class="button-label">Select and move</span>
+          </button>
+          <button id="rectangleSelectToolBtn" type="button"
+                  title="Rectangle select multiple nodes (R)" aria-label="Rectangle select multiple nodes"
+                  aria-pressed="false">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2"/>
+              <path d="m8 8 4.5 10 1.5-4 4-1.5L8 8Z"/>
+            </svg><span class="button-label">Rectangle select</span>
           </button>
           <button id="panToolBtn" class="active" type="button"
                   title="Pan the workflow canvas without moving items (H)" aria-label="Pan workflow canvas"
@@ -2631,11 +2661,13 @@ function snapCoordinateToGrid(value, size) {
 
 let model = newModel();
 let selected = null;          // {kind:'node'|'flow'|'lane', nodeId, flowId, laneId}
-let activeTool = "pan";       // viewport-only editor mode: "select" | "pan"
+let selectedNodeIds = new Set(); // viewport-only companion selection for grouped node actions
+let activeTool = "pan";       // viewport-only editor mode: "select" | "rectangle" | "pan"
 let connectMode = false;
 let connectSource = null;     // node id when picking target
 let connectionDrag = null;    // {pointerId, sourceId, side, start, current, hoverTargetId, invalidTargetId, moved}
-let drag = null;              // {pointerId, id, dx, dy}
+let drag = null;              // {pointerId, id, startPoint, nodeStarts}
+let rectangleSelection = null; // {pointerId, start, current, clientStartX, clientStartY}
 let laneDrag = null;          // {pointerId, id, dx, dy, nodeOffsets}
 let laneResize = null;        // {pointerId, id, dx, dy}
 let traceMode = "local";
@@ -2656,6 +2688,7 @@ const lanesG = document.getElementById('lanes');
 const nodesG = document.getElementById('nodes');
 const edgesG = document.getElementById('edges');
 const connectionPreviewG = document.getElementById('connectionPreview');
+const selectionOverlayG = document.getElementById('selectionOverlay');
 const inspector = document.getElementById('inspector');
 const inspectorPanel = document.getElementById('inspectorPanel');
 const inspectorDock = document.getElementById('inspectorDock');
@@ -2679,6 +2712,7 @@ const addStepBtn = document.getElementById('addStepBtn');
 const addPhaseBtn = document.getElementById('addPhaseBtn');
 const connectBtn = document.getElementById('connectBtn');
 const selectToolBtn = document.getElementById('selectToolBtn');
+const rectangleSelectToolBtn = document.getElementById('rectangleSelectToolBtn');
 const panToolBtn = document.getElementById('panToolBtn');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
 const zoomResetBtn = document.getElementById('zoomResetBtn');
@@ -2770,6 +2804,7 @@ function selectionStillExists() {
 function restoreHistorySnapshot(snapshot) {
   historyRestoring = true;
   if (connectionDrag) clearConnectionGesture();
+  if (rectangleSelection) cancelRectangleSelection();
   drag = null;
   laneDrag = null;
   laneResize = null;
@@ -2834,7 +2869,7 @@ function getFlow(id) { return model.sequenceFlows.find(f => f.id === id); }
 function outgoingFlows(nodeId) { return model.sequenceFlows.filter(f => f.sourceRef === nodeId); }
 function incomingFlows(nodeId) { return model.sequenceFlows.filter(f => f.targetRef === nodeId); }
 function refreshTraceContext() {
-  activeTraceContext = selected
+  activeTraceContext = selected && selectedNodeIds.size <= 1
     ? buildDiagramTraceContext(model, selected, traceMode)
     : null;
 }
@@ -2860,7 +2895,16 @@ function traceClass(kind, id) {
 function selectedLane() {
   if (!selected) return null;
   if (selected.kind === "lane") return getLane(selected.laneId);
-  if (selected.kind === "node") return getLane(getNode(selected.nodeId)?.laneId);
+  if (selected.kind === "node") {
+    const laneIds = [...selectedNodeIds].map(id => getNode(id)?.laneId ?? null);
+    if (selectedNodeIds.size > 1) {
+      const firstLaneId = laneIds[0];
+      return firstLaneId != null && laneIds.every(id => id === firstLaneId)
+        ? getLane(firstLaneId)
+        : null;
+    }
+    return getLane(getNode(selected.nodeId)?.laneId);
+  }
   if (selected.kind === "flow") {
     const flow = getFlow(selected.flowId);
     const sourceLaneId = getNode(flow?.sourceRef)?.laneId;
@@ -3960,6 +4004,7 @@ function pullPointToward(point, toward, distance) {
 
 /* ---------- Rendering ---------- */
 function render() {
+  syncSelectedNodeIds();
   wfNameInput.value = model.name || "";
   model.flowNodes.forEach(applyTypeInvariants);
   normalizeExclusiveGatewayPriorities();
@@ -4002,8 +4047,10 @@ function renderNodes() {
   nodesG.innerHTML = "";
   for (const node of model.flowNodes) {
     const pos = nodePosition(node);
+    const nodeSelected = isSel('node', node.id);
+    const primarySelected = selected?.kind === 'node' && selected.nodeId === node.id;
     const g = el("g", {
-      class: `node ${node.type} ${isSel('node', node.id) ? 'selected' : ''} ${traceClass('node', node.id)}`,
+      class: `node ${node.type} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
@@ -4724,6 +4771,12 @@ function renderHint() {
   } else if (activeTool === "pan") {
     hintEl.hidden = false;
     hintEl.innerHTML = "<b>Pan tool:</b> drag anywhere to move the workflow view without moving items. Press <b>V</b> to select items.";
+  } else if (activeTool === "rectangle") {
+    const count = selectedNodeIds.size;
+    hintEl.hidden = false;
+    hintEl.innerHTML = count > 0
+      ? `<b>Rectangle select:</b> ${count} node${count === 1 ? "" : "s"} selected. Drag a selected node to move the group.`
+      : "<b>Rectangle select:</b> drag across the canvas to select multiple nodes. Press <b>R</b> anytime to return to this tool.";
   } else {
     hintEl.hidden = true;
     hintEl.innerHTML = "";
@@ -4733,6 +4786,9 @@ function renderHint() {
 /* ---------- Inspector ---------- */
 function renderInspector() {
   inspector.innerHTML = "";
+  if (selected?.kind === 'node' && selectedNodeIds.size > 1) {
+    return renderMultiNodeInspector();
+  }
   if (!selected) {
     inspector.innerHTML = `<h2>Workflow</h2>
       <p class="empty-note">Select a node or flow to edit it.<br><br>
@@ -4750,6 +4806,23 @@ function renderInspector() {
   if (selected.kind === 'lane') return renderLaneInspector();
   if (selected.kind === 'node') return renderNodeInspector();
   return renderFlowInspector();
+}
+
+function renderMultiNodeInspector() {
+  const nodes = [...selectedNodeIds].map(getNode).filter(Boolean);
+  inspector.innerHTML = `<h2>${nodes.length} nodes selected</h2>`;
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Drag any selected node to move the complete group. Select one node to edit its properties.";
+  inspector.appendChild(hint);
+  const list = document.createElement("div");
+  list.className = "inspector-card";
+  nodes.forEach(node => {
+    const row = document.createElement("div");
+    row.textContent = `#${node.id} · ${node.name || typeLabel(node.type)}`;
+    list.appendChild(row);
+  });
+  inspector.appendChild(list);
 }
 
 function addWorkflowRolesSection() {
@@ -7837,8 +7910,8 @@ function fitSelection() {
   if (!selected) return;
   let bounds = null;
   if (selected.kind === "node") {
-    const node = getNode(selected.nodeId);
-    bounds = node ? edgeNodeBounds(node, 10) : null;
+    const nodes = [...selectedNodeIds].map(getNode).filter(Boolean);
+    bounds = combineBounds(nodes.map(node => edgeNodeBounds(node, 10)));
   } else if (selected.kind === "lane") {
     const lane = getLane(selected.laneId);
     bounds = lane ? {
@@ -7998,7 +8071,9 @@ function finishCanvasPan(e) {
 }
 
 function updateAuthoringPaletteHandle() {
-  const activeLabel = activeTool === "select" ? "Select" : "Pan";
+  const activeLabel = activeTool === "select"
+    ? "Select"
+    : activeTool === "rectangle" ? "Rectangle select" : "Pan";
   const label = connectMode
     ? "Show authoring tools; connect flow mode active"
     : `Show authoring tools; current editor tool: ${activeLabel}`;
@@ -8010,10 +8085,14 @@ function updateAuthoringPaletteHandle() {
 
 function updateEditorToolControls() {
   const selectActive = activeTool === "select";
+  const rectangleActive = activeTool === "rectangle";
+  const panActive = activeTool === "pan";
   selectToolBtn.classList.toggle("active", selectActive);
   selectToolBtn.setAttribute("aria-pressed", String(selectActive));
-  panToolBtn.classList.toggle("active", !selectActive);
-  panToolBtn.setAttribute("aria-pressed", String(!selectActive));
+  rectangleSelectToolBtn.classList.toggle("active", rectangleActive);
+  rectangleSelectToolBtn.setAttribute("aria-pressed", String(rectangleActive));
+  panToolBtn.classList.toggle("active", panActive);
+  panToolBtn.setAttribute("aria-pressed", String(panActive));
   updateAuthoringPaletteHandle();
   svg.dataset.activeTool = activeTool;
 }
@@ -8035,9 +8114,13 @@ function closeToolbarMenus(except = null, restoreFocus = false) {
 }
 
 function finishItemGestureForToolSwitch() {
+  if (rectangleSelection) cancelRectangleSelection();
   const activeGestures = [drag, laneDrag, laneResize].filter(Boolean);
   if (!activeGestures.length) return;
-  if (drag) assignNodeLane(drag.id);
+  if (drag) {
+    const movedIds = drag.nodeStarts?.map(start => start.id) || [drag.id];
+    movedIds.forEach(assignNodeLane);
+  }
   activeGestures.forEach(gesture => {
     try { svg.releasePointerCapture(gesture.pointerId); } catch (err) {}
   });
@@ -8049,15 +8132,13 @@ function finishItemGestureForToolSwitch() {
 }
 
 function setActiveTool(tool) {
-  const nextTool = tool === "pan" ? "pan" : "select";
+  const nextTool = ["select", "rectangle", "pan"].includes(tool) ? tool : "select";
   if (nextTool !== activeTool) {
     if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId });
     if (connectionDrag) clearConnectionGesture();
     finishItemGestureForToolSwitch();
   }
-  if (nextTool === "pan") {
-    if (connectMode) setConnectMode(false);
-  }
+  if (nextTool !== "select" && connectMode) setConnectMode(false);
   activeTool = nextTool;
   updateEditorToolControls();
   closeToolbarMenus(null, true);
@@ -8065,32 +8146,62 @@ function setActiveTool(tool) {
 }
 
 /* ---------- Selection ---------- */
+function syncSelectedNodeIds() {
+  if (!selected || selected.kind !== "node") {
+    selectedNodeIds.clear();
+    return;
+  }
+  const validIds = new Set(model.flowNodes.map(node => node.id));
+  selectedNodeIds = new Set([...selectedNodeIds].filter(id => validIds.has(id)));
+  if (validIds.has(selected.nodeId)) {
+    selectedNodeIds.add(selected.nodeId);
+    return;
+  }
+  const replacementId = selectedNodeIds.values().next().value;
+  selected = replacementId == null ? null : { kind: 'node', nodeId: replacementId };
+}
+
 function isSel(kind, id) {
+  if (kind === 'node') return selectedNodeIds.has(id);
   if (!selected || selected.kind !== kind) return false;
   if (kind === 'lane') return selected.laneId === id;
-  if (kind === 'node') return selected.nodeId === id;
   return selected.flowId === id;
 }
 function select(kind, id) {
   if (!isSel(kind, id)) traceMode = "local";
+  selectedNodeIds.clear();
   if (kind === 'lane') selected = { kind, laneId: id };
-  else if (kind === 'node') selected = { kind, nodeId: id };
-  else selected = { kind, flowId: id };
+  else if (kind === 'node') {
+    selected = { kind, nodeId: id };
+    selectedNodeIds.add(id);
+  } else selected = { kind, flowId: id };
+  render();
+}
+function selectNodes(ids, primaryId = null) {
+  const requested = new Set(ids);
+  const validIds = model.flowNodes
+    .filter(node => requested.has(node.id))
+    .map(node => node.id);
+  selectedNodeIds = new Set(validIds);
+  const primary = validIds.includes(primaryId) ? primaryId : validIds[0];
+  selected = primary == null ? null : { kind: 'node', nodeId: primary };
+  traceMode = "local";
   render();
 }
 function clearSelection() {
   selected = null;
+  selectedNodeIds.clear();
   traceMode = "local";
   render();
 }
 function setTraceMode(mode) {
-  if (!selected || selected.kind === "lane" ||
+  if (!selected || selected.kind === "lane" || selectedNodeIds.size > 1 ||
       !["local", "upstream", "downstream", "route"].includes(mode)) return;
   traceMode = mode;
   render();
 }
 function updateDiagramNavigation() {
-  const canTrace = !!selected && selected.kind !== "lane";
+  const canTrace = !!selected && selected.kind !== "lane" && selectedNodeIds.size <= 1;
   traceModeButtons.forEach(button => {
     const active = button.dataset.traceMode === traceMode;
     button.setAttribute("aria-pressed", String(active));
@@ -8105,6 +8216,89 @@ function updateDiagramNavigation() {
   traceOpacityInput.setAttribute("aria-valuetext", `${opacityPercent}%`);
   traceOpacityValue.textContent = `${opacityPercent}%`;
   svg.style.setProperty("--trace-muted-opacity", String(untracedOpacity));
+}
+
+/* ---------- Rectangle selection ---------- */
+function normalizedRectangle(start, end) {
+  return {
+    left: Math.min(start.x, end.x),
+    top: Math.min(start.y, end.y),
+    right: Math.max(start.x, end.x),
+    bottom: Math.max(start.y, end.y)
+  };
+}
+
+function nodeIntersectsRectangle(node, rectangle) {
+  const position = nodePosition(node);
+  const size = nodeSize(node);
+  return position.x <= rectangle.right && position.x + size.w >= rectangle.left &&
+    position.y <= rectangle.bottom && position.y + size.h >= rectangle.top;
+}
+
+function nodesInRectangle(rectangle) {
+  return model.flowNodes
+    .filter(node => !isBoundaryEventType(node.type) && nodeIntersectsRectangle(node, rectangle))
+    .map(node => node.id);
+}
+
+function renderRectangleSelection() {
+  selectionOverlayG.innerHTML = "";
+  if (!rectangleSelection) return;
+  const rectangle = normalizedRectangle(rectangleSelection.start, rectangleSelection.current);
+  selectionOverlayG.appendChild(el("rect", {
+    class: "selection-marquee",
+    x: rectangle.left,
+    y: rectangle.top,
+    width: rectangle.right - rectangle.left,
+    height: rectangle.bottom - rectangle.top,
+    rx: 2,
+    ry: 2
+  }));
+}
+
+function startRectangleSelection(event) {
+  if (rectangleSelection || event.button !== 0) return false;
+  event.preventDefault();
+  const point = svgPoint(event);
+  rectangleSelection = {
+    pointerId: event.pointerId,
+    start: point,
+    current: point,
+    clientStartX: event.clientX,
+    clientStartY: event.clientY
+  };
+  renderRectangleSelection();
+  svg.setPointerCapture(event.pointerId);
+  return true;
+}
+
+function moveRectangleSelection(event) {
+  if (!rectangleSelection || rectangleSelection.pointerId !== event.pointerId) return false;
+  rectangleSelection.current = svgPoint(event);
+  renderRectangleSelection();
+  return true;
+}
+
+function cancelRectangleSelection() {
+  if (!rectangleSelection) return false;
+  const pointerId = rectangleSelection.pointerId;
+  rectangleSelection = null;
+  selectionOverlayG.innerHTML = "";
+  try { svg.releasePointerCapture(pointerId); } catch (err) {}
+  return true;
+}
+
+function finishRectangleSelection(event) {
+  if (!rectangleSelection || rectangleSelection.pointerId !== event.pointerId) return false;
+  rectangleSelection.current = svgPoint(event);
+  const rectangle = normalizedRectangle(rectangleSelection.start, rectangleSelection.current);
+  const moved = Math.hypot(
+    event.clientX - rectangleSelection.clientStartX,
+    event.clientY - rectangleSelection.clientStartY) >= 4;
+  const ids = moved ? nodesInRectangle(rectangle) : [];
+  cancelRectangleSelection();
+  selectNodes(ids);
+  return true;
 }
 
 /* ---------- Node interaction ---------- */
@@ -8281,7 +8475,7 @@ function clearConnectionGesture() {
 
 function onConnectionHandlePointerDown(event, node, side) {
   if (event.button !== 0) return;
-  if (activeTool === "pan") return;
+  if (activeTool !== "select") return;
   event.preventDefault();
   event.stopPropagation();
   if (connectMode && connectSource != null) {
@@ -8370,9 +8564,18 @@ function onNodePointerDown(e, node) {
     return;
   }
   e.stopPropagation();
-  select('node', node.id);
+  if (!selectedNodeIds.has(node.id)) select('node', node.id);
   const pt = svgPoint(e);
-  drag = { pointerId: e.pointerId, id: node.id, dx: pt.x - node.x, dy: pt.y - node.y };
+  const nodeStarts = [...selectedNodeIds]
+    .map(getNode)
+    .filter(candidate => candidate && !isBoundaryEventType(candidate.type))
+    .map(candidate => ({ id: candidate.id, x: candidate.x, y: candidate.y }));
+  drag = {
+    pointerId: e.pointerId,
+    id: node.id,
+    startPoint: pt,
+    nodeStarts
+  };
   svg.setPointerCapture(e.pointerId);
 }
 
@@ -8414,13 +8617,23 @@ function onLaneResizePointerDown(e, lane) {
 svg.addEventListener("pointermove", (e) => {
   if (moveConnectionGesture(e)) return;
   if (moveCanvasPan(e)) return;
+  if (moveRectangleSelection(e)) return;
   const pt = svgPoint(e);
   if (drag) {
-    const node = getNode(drag.id);
-    const nextX = pt.x - drag.dx;
-    const nextY = pt.y - drag.dy;
-    node.x = snapToGrid ? snapCoordinateToGrid(nextX, gridSize) : Math.round(nextX);
-    node.y = snapToGrid ? snapCoordinateToGrid(nextY, gridSize) : Math.round(nextY);
+    const anchorStart = drag.nodeStarts.find(start => start.id === drag.id);
+    if (!anchorStart) return;
+    const proposedX = anchorStart.x + pt.x - drag.startPoint.x;
+    const proposedY = anchorStart.y + pt.y - drag.startPoint.y;
+    const anchorX = snapToGrid ? snapCoordinateToGrid(proposedX, gridSize) : Math.round(proposedX);
+    const anchorY = snapToGrid ? snapCoordinateToGrid(proposedY, gridSize) : Math.round(proposedY);
+    const deltaX = anchorX - anchorStart.x;
+    const deltaY = anchorY - anchorStart.y;
+    drag.nodeStarts.forEach(start => {
+      const candidate = getNode(start.id);
+      if (!candidate) return;
+      candidate.x = start.x + deltaX;
+      candidate.y = start.y + deltaY;
+    });
     renderNodes(); renderEdges();
     return;
   }
@@ -8448,7 +8661,8 @@ svg.addEventListener("pointermove", (e) => {
 svg.addEventListener("pointerup", (e) => {
   if (finishConnectionGesture(e)) return;
   if (finishCanvasPan(e)) return;
-  if (drag) assignNodeLane(drag.id);
+  if (finishRectangleSelection(e)) return;
+  if (drag) drag.nodeStarts.forEach(start => assignNodeLane(start.id));
   drag = null;
   laneDrag = null;
   laneResize = null;
@@ -8461,6 +8675,11 @@ svg.addEventListener("pointercancel", (e) => {
     return;
   }
   if (finishCanvasPan(e)) return;
+  if (rectangleSelection && rectangleSelection.pointerId === e.pointerId) {
+    cancelRectangleSelection();
+    renderHint();
+    return;
+  }
   drag = null;
   laneDrag = null;
   laneResize = null;
@@ -8470,10 +8689,17 @@ svg.addEventListener("pointerdown", (e) => {
       (spacePressed && e.button === 0) || e.button === 1) {
     startCanvasPan(e, false);
     e.stopPropagation();
+    return;
+  }
+  if (activeTool === "rectangle" && e.button === 0 && !connectMode &&
+      !e.target.closest?.(".node")) {
+    startRectangleSelection(e);
+    e.stopPropagation();
   }
 }, true);
 svg.addEventListener("pointerdown", (e) => {
-  if (e.button === 0 && (e.target === svg || e.target === gridSurface) && !connectMode) {
+  if (activeTool === "select" && e.button === 0 &&
+      (e.target === svg || e.target === gridSurface) && !connectMode) {
     startCanvasPan(e, true);
   }
 });
@@ -11046,13 +11272,22 @@ authoringPalette.addEventListener("focusout", () => {
 });
 authoringPaletteHandle.onclick = () => {
   setAuthoringPaletteOpen(true);
-  (connectMode ? connectBtn : activeTool === "pan" ? panToolBtn : selectToolBtn).focus();
+  (connectMode
+    ? connectBtn
+    : activeTool === "pan"
+      ? panToolBtn
+      : activeTool === "rectangle" ? rectangleSelectToolBtn : selectToolBtn).focus();
 };
 authoringPalettePin.onclick = () =>
   setAuthoringPalettePinned(!authoringPalette.classList.contains("is-pinned"));
 selectToolBtn.onclick = () => {
   if (connectMode) setConnectMode(false);
   setActiveTool("select");
+  closeAuthoringPalette();
+};
+rectangleSelectToolBtn.onclick = () => {
+  if (connectMode) setConnectMode(false);
+  setActiveTool("rectangle");
   closeAuthoringPalette();
 };
 panToolBtn.onclick = () => {
@@ -11266,11 +11501,12 @@ window.addEventListener("keydown", (e) => {
   }
   const toolShortcut = e.key.toLowerCase();
   if (!e.ctrlKey && !e.metaKey && !e.altKey &&
-      (toolShortcut === "v" || toolShortcut === "h") &&
+      (toolShortcut === "v" || toolShortcut === "r" || toolShortcut === "h") &&
       !(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
               t.tagName === "SELECT" || t.isContentEditable))) {
     e.preventDefault();
     if (toolShortcut === "h") setActiveTool("pan");
+    else if (toolShortcut === "r") setActiveTool("rectangle");
     else {
       if (connectMode) setConnectMode(false);
       setActiveTool("select");
@@ -11289,6 +11525,7 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     if (connectionDrag) { clearConnectionGesture(); renderHint(); }
+    else if (rectangleSelection) { cancelRectangleSelection(); renderHint(); }
     else if (connectMode) setConnectMode(false);
     else if (activeTool === "pan") setActiveTool("select");
     else clearSelection();
@@ -11313,6 +11550,7 @@ window.addEventListener("blur", () => {
   spacePressed = false;
   document.body.classList.remove("is-space-panning");
   if (connectionDrag) { clearConnectionGesture(); renderHint(); }
+  if (rectangleSelection) { cancelRectangleSelection(); renderHint(); }
 });
 
 /* ---------- Sidebar Resizer ---------- */

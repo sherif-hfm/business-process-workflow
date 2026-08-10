@@ -20,6 +20,7 @@ public sealed class EditorRuntimeSmokeTests
                 handleTool: authoringPaletteHandle.dataset.activeTool,
                 handleExpanded: authoringPaletteHandle.getAttribute('aria-expanded'),
                 selectPressed: selectToolBtn.getAttribute('aria-pressed'),
+                rectanglePressed: rectangleSelectToolBtn.getAttribute('aria-pressed'),
                 panPressed: panToolBtn.getAttribute('aria-pressed')
               };
 
@@ -122,6 +123,7 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal("pan", startup.GetProperty("handleTool").GetString());
         Assert.Equal("false", startup.GetProperty("handleExpanded").GetString());
         Assert.Equal("false", startup.GetProperty("selectPressed").GetString());
+        Assert.Equal("false", startup.GetProperty("rectanglePressed").GetString());
         Assert.Equal("true", startup.GetProperty("panPressed").GetString());
 
         var afterNew = root.GetProperty("afterNew");
@@ -355,7 +357,7 @@ public sealed class EditorRuntimeSmokeTests
               };
               authoringPaletteContent.contains = target =>
                 [authoringPalettePin, addStepBtn, addPhaseBtn, connectBtn,
-                 selectToolBtn, panToolBtn].includes(target);
+                 selectToolBtn, rectangleSelectToolBtn, panToolBtn].includes(target);
 
               let handleFocused = false;
               let pinBlurred = false;
@@ -504,6 +506,227 @@ public sealed class EditorRuntimeSmokeTests
             "true",
             restoredEngine.Evaluate(
                 "authoringPalettePin.getAttribute('aria-pressed')").AsString());
+    }
+
+    [Fact]
+    public void RectangleSelectToolSelectsIntersectingNodesAndMovesThemAsOneUndoableGroup()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'rectangle-select-smoke',
+                name: 'Rectangle select smoke',
+                initialEventId: null,
+                variables: [],
+                lanes: [
+                  { id: 10, name: 'Left', x: 0, y: 0, w: 300, h: 300 },
+                  { id: 20, name: 'Right', x: 300, y: 0, w: 400, h: 300 }
+                ],
+                flowNodes: [
+                  { id: 1, name: 'One', type: NODE_TYPE.TASK, laneId: null, x: 100, y: 100 },
+                  { id: 2, name: 'Two', type: NODE_TYPE.TASK, laneId: null, x: 350, y: 100 },
+                  { id: 3, name: 'Outside', type: NODE_TYPE.TASK, laneId: null, x: 800, y: 500 }
+                ],
+                sequenceFlows: []
+              };
+              viewState = { x: 25, y: 35, zoom: 1.5 };
+              resetHistory();
+              setActiveTool('rectangle');
+
+              const viewBefore = JSON.parse(JSON.stringify(viewState));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerdown', gridSurface, 301, 80, 80));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 301, 600, 250));
+              const previewDrawn = rectangleSelection !== null &&
+                selectionOverlayG.children.length > 0;
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 301, 600, 250));
+
+              const afterSelection = {
+                ids: [...selectedNodeIds],
+                primary: selected,
+                previewCleared: rectangleSelection === null && selectionOverlayG.innerHTML === '',
+                viewUnchanged: JSON.stringify(viewState) === JSON.stringify(viewBefore),
+                canvasPanStopped: canvasPan === null
+              };
+
+              onNodePointerDown(
+                fakePointerEvent('pointerdown', fakeElement('g'), 302, 110, 110),
+                getNode(1));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 302, 160, 150));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 302, 160, 150));
+              commitHistory();
+              const moved = model.flowNodes.map(node => ({
+                id: node.id, x: node.x, y: node.y, laneId: node.laneId
+              }));
+              const oneHistoryEntry = undoHistory.length === 1;
+
+              undo();
+              const undone = model.flowNodes.map(node => ({
+                id: node.id, x: node.x, y: node.y, laneId: node.laneId
+              }));
+              redo();
+              const redone = model.flowNodes.map(node => ({
+                id: node.id, x: node.x, y: node.y, laneId: node.laneId
+              }));
+
+              return JSON.stringify({
+                activeTool,
+                svgTool: svg.dataset.activeTool,
+                selectPressed: selectToolBtn.getAttribute('aria-pressed'),
+                rectanglePressed: rectangleSelectToolBtn.getAttribute('aria-pressed'),
+                panPressed: panToolBtn.getAttribute('aria-pressed'),
+                handleTool: authoringPaletteHandle.dataset.activeTool,
+                handleLabel: authoringPaletteHandle.getAttribute('aria-label'),
+                previewDrawn,
+                afterSelection,
+                moved,
+                oneHistoryEntry,
+                undone,
+                redone,
+                selectedIdsAfterRedo: [...selectedNodeIds]
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("rectangle", root.GetProperty("activeTool").GetString());
+        Assert.Equal("rectangle", root.GetProperty("svgTool").GetString());
+        Assert.Equal("false", root.GetProperty("selectPressed").GetString());
+        Assert.Equal("true", root.GetProperty("rectanglePressed").GetString());
+        Assert.Equal("false", root.GetProperty("panPressed").GetString());
+        Assert.Equal("rectangle", root.GetProperty("handleTool").GetString());
+        Assert.Contains("Rectangle select", root.GetProperty("handleLabel").GetString());
+        Assert.True(root.GetProperty("previewDrawn").GetBoolean());
+
+        var selection = root.GetProperty("afterSelection");
+        Assert.Equal(new[] { 1, 2 }, selection.GetProperty("ids").EnumerateArray().Select(value => value.GetInt32()));
+        Assert.Equal(1, selection.GetProperty("primary").GetProperty("nodeId").GetInt32());
+        Assert.True(selection.GetProperty("previewCleared").GetBoolean());
+        Assert.True(selection.GetProperty("viewUnchanged").GetBoolean());
+        Assert.True(selection.GetProperty("canvasPanStopped").GetBoolean());
+
+        var moved = root.GetProperty("moved").EnumerateArray().ToArray();
+        Assert.Equal((150, 140, 10), (
+            moved[0].GetProperty("x").GetInt32(),
+            moved[0].GetProperty("y").GetInt32(),
+            moved[0].GetProperty("laneId").GetInt32()));
+        Assert.Equal((400, 140, 20), (
+            moved[1].GetProperty("x").GetInt32(),
+            moved[1].GetProperty("y").GetInt32(),
+            moved[1].GetProperty("laneId").GetInt32()));
+        Assert.Equal((800, 500), (
+            moved[2].GetProperty("x").GetInt32(),
+            moved[2].GetProperty("y").GetInt32()));
+        Assert.True(root.GetProperty("oneHistoryEntry").GetBoolean());
+
+        var undone = root.GetProperty("undone").EnumerateArray().ToArray();
+        Assert.Equal((100, 100), (
+            undone[0].GetProperty("x").GetInt32(),
+            undone[0].GetProperty("y").GetInt32()));
+        Assert.Equal((350, 100), (
+            undone[1].GetProperty("x").GetInt32(),
+            undone[1].GetProperty("y").GetInt32()));
+        Assert.Equal(
+            root.GetProperty("moved").GetRawText(),
+            root.GetProperty("redone").GetRawText());
+        Assert.Equal(new[] { 1, 2 }, root.GetProperty("selectedIdsAfterRedo")
+            .EnumerateArray().Select(value => value.GetInt32()));
+    }
+
+    [Fact]
+    public void RectangleSelectShortcutAndGridSnapPreserveGroupSpacing()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const shortcut = {
+                type: 'keydown',
+                key: 'r',
+                code: 'KeyR',
+                target: fakeElement('div'),
+                ctrlKey: false,
+                metaKey: false,
+                altKey: false,
+                shiftKey: false,
+                preventDefault() { this.defaultPrevented = true; }
+              };
+              setActiveTool('pan');
+              window.dispatchEvent(shortcut);
+              const afterShortcut = {
+                activeTool,
+                prevented: shortcut.defaultPrevented === true,
+                rectanglePressed: rectangleSelectToolBtn.getAttribute('aria-pressed')
+              };
+
+              const inputShortcut = {
+                ...shortcut,
+                target: fakeElement('input'),
+                defaultPrevented: false
+              };
+              setActiveTool('pan');
+              window.dispatchEvent(inputShortcut);
+              const editableIgnored = activeTool === 'pan' && !inputShortcut.defaultPrevented;
+
+              model = {
+                id: 'rectangle-grid-smoke',
+                name: 'Rectangle grid smoke',
+                initialEventId: null,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Anchor', type: NODE_TYPE.TASK, laneId: null, x: 101, y: 109 },
+                  { id: 2, name: 'Follower', type: NODE_TYPE.TASK, laneId: null, x: 349, y: 137 }
+                ],
+                sequenceFlows: []
+              };
+              setGridSize(24, false);
+              setSnapToGrid(true, false);
+              selectNodes([1, 2], 1);
+              setActiveTool('rectangle');
+              onNodePointerDown(
+                fakePointerEvent('pointerdown', fakeElement('g'), 311, 111, 119),
+                getNode(1));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 311, 161, 160));
+              const moved = model.flowNodes.map(node => ({ x: node.x, y: node.y }));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 311, 161, 160));
+
+              return JSON.stringify({
+                afterShortcut,
+                editableIgnored,
+                moved,
+                spacing: {
+                  x: model.flowNodes[1].x - model.flowNodes[0].x,
+                  y: model.flowNodes[1].y - model.flowNodes[0].y
+                }
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var shortcut = root.GetProperty("afterShortcut");
+        Assert.Equal("rectangle", shortcut.GetProperty("activeTool").GetString());
+        Assert.True(shortcut.GetProperty("prevented").GetBoolean());
+        Assert.Equal("true", shortcut.GetProperty("rectanglePressed").GetString());
+        Assert.True(root.GetProperty("editableIgnored").GetBoolean());
+
+        var moved = root.GetProperty("moved").EnumerateArray().ToArray();
+        Assert.Equal((144, 144), (
+            moved[0].GetProperty("x").GetInt32(),
+            moved[0].GetProperty("y").GetInt32()));
+        Assert.Equal((392, 172), (
+            moved[1].GetProperty("x").GetInt32(),
+            moved[1].GetProperty("y").GetInt32()));
+        Assert.Equal(248, root.GetProperty("spacing").GetProperty("x").GetInt32());
+        Assert.Equal(28, root.GetProperty("spacing").GetProperty("y").GetInt32());
     }
 
     [Fact]

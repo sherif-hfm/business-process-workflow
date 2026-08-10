@@ -414,6 +414,8 @@ public sealed class EditorNavigationTests
         Assert.DoesNotContain("model.labelPlacements", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.untracedOpacity", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.activeTool", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("model.selectedNodeIds", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("model.rectangleSelection", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.snapToGrid", html, StringComparison.Ordinal);
         Assert.DoesNotContain("model.gridSize", html, StringComparison.Ordinal);
     }
@@ -538,7 +540,7 @@ public sealed class EditorNavigationTests
         Assert.Contains("<span class=\"authoring-palette-title\">Tools</span>", paletteMarkup, StringComparison.Ordinal);
         Assert.DoesNotContain("Tool:", paletteMarkup, StringComparison.Ordinal);
         Assert.DoesNotContain("activeToolLabel", paletteMarkup, StringComparison.Ordinal);
-        Assert.Equal(7, Regex.Matches(paletteMarkup, @"<button\b").Count);
+        Assert.Equal(8, Regex.Matches(paletteMarkup, @"<button\b").Count);
         Assert.Matches(@"<button(?=[^>]*\bid=""addStepBtn"")(?=[^>]*\btype=""button"")[^>]*>", paletteMarkup);
         Assert.DoesNotMatch(@"<button(?=[^>]*\bid=""addStepBtn"")(?=[^>]*\bclass=""[^""]*\bprimary\b)[^>]*>", paletteMarkup);
         Assert.Matches(@"<button(?=[^>]*\bid=""addPhaseBtn"")(?=[^>]*\btype=""button"")[^>]*>", paletteMarkup);
@@ -549,11 +551,19 @@ public sealed class EditorNavigationTests
             @"<button(?=[^>]*\bid=""selectToolBtn"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
             paletteMarkup);
         Assert.Matches(
+            @"<button(?=[^>]*\bid=""rectangleSelectToolBtn"")(?=[^>]*\btitle=""Rectangle select multiple nodes \(R\)"")(?=[^>]*\baria-label=""Rectangle select multiple nodes"")(?=[^>]*\baria-pressed=""false"")[^>]*>",
+            paletteMarkup);
+        Assert.Matches(
             @"<button(?=[^>]*\bid=""panToolBtn"")(?=[^>]*\baria-pressed=""true"")[^>]*>",
             paletteMarkup);
         Assert.Matches(
             @"<svg(?=[^>]*\bid=""svg"")(?=[^>]*\brole=""application"")(?=[^>]*\baria-label=""Workflow diagram canvas"")(?=[^>]*\bdata-active-tool=""pan"")[^>]*>",
             html);
+        Assert.Contains("id=\"selectionOverlay\" aria-hidden=\"true\"", html, StringComparison.Ordinal);
+        Assert.Contains(".tool-summary-rectangle", html, StringComparison.Ordinal);
+        Assert.Contains("data-active-tool=\"rectangle\"", html, StringComparison.Ordinal);
+        Assert.Matches(@"#svg\[data-active-tool=""rectangle""\]\s*\{[^}]*cursor:\s*crosshair;", html);
+        Assert.Matches(@"\.selection-marquee\s*\{[^}]*stroke-dasharray:[^}]*pointer-events:\s*none;", html);
 
         var viewMenu = Regex.Match(
             html,
