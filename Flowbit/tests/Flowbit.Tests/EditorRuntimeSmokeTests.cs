@@ -849,6 +849,485 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void PanToolInspectsNodesAndFlowsWithoutMovingOrDeletingThem()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'pan-inspection-smoke',
+                name: 'Pan inspection smoke',
+                initialEventId: null,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  {
+                    id: 1,
+                    name: 'Review',
+                    type: NODE_TYPE.USER_TASK,
+                    laneId: null,
+                    x: 120,
+                    y: 130
+                  },
+                  {
+                    id: 2,
+                    name: 'Archive',
+                    type: NODE_TYPE.TASK,
+                    laneId: null,
+                    x: 360,
+                    y: 130
+                  }
+                ],
+                sequenceFlows: [{
+                  id: 101,
+                  name: 'Approved',
+                  sourceRef: 1,
+                  targetRef: 2,
+                  attributes: [],
+                  roles: [],
+                  variables: []
+                }]
+              };
+              selected = null;
+              selectedNodeIds.clear();
+              viewState = { x: 20, y: 30, zoom: 2 };
+              render();
+              setActiveTool('pan');
+
+              const descendants = root => [
+                root,
+                ...(root.children || []).flatMap(descendants)
+              ];
+              const latestInspectorButton = text => descendants(inspector)
+                .filter(element => element.textContent === text)
+                .at(-1);
+              const panTarget = (kind, id) => {
+                const group = fakeElement('g');
+                const target = fakeElement(kind === 'node' ? 'rect' : 'path');
+                group.parentNode = svg;
+                target.parentNode = group;
+                if (kind === 'node') group.dataset.id = String(id);
+                else group.dataset.flow = String(id);
+                target.closest = selector => {
+                  if (kind === 'node' && selector === '.node[data-id]') return group;
+                  if (kind === 'flow' && selector === '.edge[data-flow]') return group;
+                  return null;
+                };
+                return target;
+              };
+              const stationaryPanClick = (target, pointerId, x, y, jitter = false) => {
+                target.dispatchEvent(fakePointerEvent(
+                  'pointerdown', target, pointerId, x, y));
+                const endX = x + (jitter ? 2 : 0);
+                const endY = y + (jitter ? 1 : 0);
+                if (jitter) {
+                  svg.dispatchEvent(fakePointerEvent(
+                    'pointermove', svg, pointerId, endX, endY));
+                }
+                svg.dispatchEvent(fakePointerEvent(
+                  'pointerup', svg, pointerId, endX, endY));
+                const click = fakePointerEvent('click', target, pointerId, endX, endY);
+                target.dispatchEvent(click);
+              };
+              const pressDelete = () => {
+                const event = {
+                  type: 'keydown',
+                  key: 'Delete',
+                  code: 'Delete',
+                  target: document.body,
+                  ctrlKey: false,
+                  metaKey: false,
+                  altKey: false,
+                  shiftKey: false,
+                  defaultPrevented: false,
+                  preventDefault() { this.defaultPrevented = true; }
+                };
+                window.dispatchEvent(event);
+                return event;
+              };
+
+              setActiveTool('select');
+              select('flow', 101);
+              const preexistingFlowDeleteButton = latestInspectorButton('Delete flow');
+              const beforeModeSwitchDelete = JSON.stringify({
+                flowNodes: model.flowNodes,
+                sequenceFlows: model.sequenceFlows,
+                selected
+              });
+              const enabledInSelect = !preexistingFlowDeleteButton.disabled;
+              setActiveTool('pan');
+              const disabledAfterSwitchToPan = preexistingFlowDeleteButton.disabled;
+              preexistingFlowDeleteButton.onclick();
+              const modeSwitchProtection = {
+                enabledInSelect,
+                disabledAfterSwitchToPan,
+                deletionProtected: JSON.stringify({
+                  flowNodes: model.flowNodes,
+                  sequenceFlows: model.sequenceFlows,
+                  selected
+                }) === beforeModeSwitchDelete
+              };
+
+              const nodeTarget = panTarget('node', 2);
+              stationaryPanClick(nodeTarget, 201, 400, 180, true);
+              const nodeDeleteButton = latestInspectorButton('Delete node');
+              const beforeNodeDelete = JSON.stringify({
+                flowNodes: model.flowNodes,
+                sequenceFlows: model.sequenceFlows,
+                selected
+              });
+              nodeDeleteButton.onclick();
+              pressDelete();
+              const nodeInspection = {
+                selected,
+                inspectorShowsNode: inspector.innerHTML.includes('<h2>Node #2</h2>'),
+                deleteDisabled: nodeDeleteButton.disabled,
+                deleteProtected: JSON.stringify({
+                  flowNodes: model.flowNodes,
+                  sequenceFlows: model.sequenceFlows,
+                  selected
+                }) === beforeNodeDelete
+              };
+
+              const flowTarget = panTarget('flow', 101);
+              stationaryPanClick(flowTarget, 202, 280, 180);
+              const flowDeleteButton = latestInspectorButton('Delete flow');
+              const beforeFlowDelete = JSON.stringify({
+                flowNodes: model.flowNodes,
+                sequenceFlows: model.sequenceFlows,
+                selected
+              });
+              flowDeleteButton.onclick();
+              pressDelete();
+              const flowInspection = {
+                selected,
+                inspectorShowsFlow: inspector.innerHTML.includes('<h2>Flow #101</h2>'),
+                deleteDisabled: flowDeleteButton.disabled,
+                deleteProtected: JSON.stringify({
+                  flowNodes: model.flowNodes,
+                  sequenceFlows: model.sequenceFlows,
+                  selected
+                }) === beforeFlowDelete
+              };
+
+              const beforeDrag = JSON.stringify({
+                flowNodes: model.flowNodes,
+                sequenceFlows: model.sequenceFlows,
+                selected
+              });
+              const viewBeforeDrag = JSON.stringify(viewState);
+              nodeTarget.dispatchEvent(fakePointerEvent(
+                'pointerdown', nodeTarget, 203, 400, 180));
+              [1, 2, 3, 4, 5].forEach(offset => {
+                svg.dispatchEvent(fakePointerEvent(
+                  'pointermove', svg, 203, 400 + offset, 180));
+              });
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 203, 405, 180));
+              const dragClick = fakePointerEvent('click', nodeTarget, 203, 405, 180);
+              nodeTarget.dispatchEvent(dragClick);
+              const dragResult = {
+                modelAndSelectionPreserved: JSON.stringify({
+                  flowNodes: model.flowNodes,
+                  sequenceFlows: model.sequenceFlows,
+                  selected
+                }) === beforeDrag,
+                viewportMoved: JSON.stringify(viewState) !== viewBeforeDrag,
+                itemDragBlocked: drag === null,
+                clickPrevented: dragClick.defaultPrevented
+              };
+
+              const beforeFlowDrag = JSON.stringify({
+                flowNodes: model.flowNodes,
+                sequenceFlows: model.sequenceFlows,
+                selected
+              });
+              const viewBeforeFlowDrag = JSON.stringify(viewState);
+              flowTarget.dispatchEvent(fakePointerEvent(
+                'pointerdown', flowTarget, 204, 280, 180));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 204, 330, 220));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 204, 330, 220));
+              const flowDragClick = fakePointerEvent('click', flowTarget, 204, 330, 220);
+              flowTarget.dispatchEvent(flowDragClick);
+              const flowDragResult = {
+                modelAndSelectionPreserved: JSON.stringify({
+                  flowNodes: model.flowNodes,
+                  sequenceFlows: model.sequenceFlows,
+                  selected
+                }) === beforeFlowDrag,
+                viewportMoved: JSON.stringify(viewState) !== viewBeforeFlowDrag,
+                itemDragBlocked: drag === null,
+                clickPrevented: flowDragClick.defaultPrevented
+              };
+
+              setActiveTool('select');
+              const selectModeDeleteEnabled = !flowDeleteButton.disabled;
+              flowDeleteButton.onclick();
+              const selectModeDeletion = {
+                flowRemoved: model.sequenceFlows.length === 0,
+                sourceSelected: selected?.kind === 'node' && selected.nodeId === 1
+              };
+
+              return JSON.stringify({
+                activeTool,
+                modeSwitchProtection,
+                nodeInspection,
+                flowInspection,
+                dragResult,
+                flowDragResult,
+                selectModeDeleteEnabled,
+                selectModeDeletion,
+                nodeCount: model.flowNodes.length,
+                flowCount: model.sequenceFlows.length
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+
+        var modeSwitchProtection = root.GetProperty("modeSwitchProtection");
+        Assert.True(modeSwitchProtection.GetProperty("enabledInSelect").GetBoolean());
+        Assert.True(modeSwitchProtection.GetProperty("disabledAfterSwitchToPan").GetBoolean());
+        Assert.True(modeSwitchProtection.GetProperty("deletionProtected").GetBoolean());
+
+        var nodeInspection = root.GetProperty("nodeInspection");
+        Assert.Equal("node", nodeInspection.GetProperty("selected").GetProperty("kind").GetString());
+        Assert.Equal(2, nodeInspection.GetProperty("selected").GetProperty("nodeId").GetInt32());
+        Assert.True(nodeInspection.GetProperty("inspectorShowsNode").GetBoolean());
+        Assert.True(nodeInspection.GetProperty("deleteDisabled").GetBoolean());
+        Assert.True(nodeInspection.GetProperty("deleteProtected").GetBoolean());
+
+        var flowInspection = root.GetProperty("flowInspection");
+        Assert.Equal("flow", flowInspection.GetProperty("selected").GetProperty("kind").GetString());
+        Assert.Equal(101, flowInspection.GetProperty("selected").GetProperty("flowId").GetInt32());
+        Assert.True(flowInspection.GetProperty("inspectorShowsFlow").GetBoolean());
+        Assert.True(flowInspection.GetProperty("deleteDisabled").GetBoolean());
+        Assert.True(flowInspection.GetProperty("deleteProtected").GetBoolean());
+
+        var dragResult = root.GetProperty("dragResult");
+        Assert.True(dragResult.GetProperty("modelAndSelectionPreserved").GetBoolean());
+        Assert.True(dragResult.GetProperty("viewportMoved").GetBoolean());
+        Assert.True(dragResult.GetProperty("itemDragBlocked").GetBoolean());
+        Assert.True(dragResult.GetProperty("clickPrevented").GetBoolean());
+
+        var flowDragResult = root.GetProperty("flowDragResult");
+        Assert.True(flowDragResult.GetProperty("modelAndSelectionPreserved").GetBoolean());
+        Assert.True(flowDragResult.GetProperty("viewportMoved").GetBoolean());
+        Assert.True(flowDragResult.GetProperty("itemDragBlocked").GetBoolean());
+        Assert.True(flowDragResult.GetProperty("clickPrevented").GetBoolean());
+
+        Assert.Equal("select", root.GetProperty("activeTool").GetString());
+        Assert.True(root.GetProperty("selectModeDeleteEnabled").GetBoolean());
+        Assert.True(root.GetProperty("selectModeDeletion").GetProperty("flowRemoved").GetBoolean());
+        Assert.True(root.GetProperty("selectModeDeletion").GetProperty("sourceSelected").GetBoolean());
+        Assert.Equal(2, root.GetProperty("nodeCount").GetInt32());
+        Assert.Equal(0, root.GetProperty("flowCount").GetInt32());
+    }
+
+    [Fact]
+    public void PanToolInspectsLanesAndWorkflowWithoutMovingOrDeletingThem()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              model = {
+                id: 'pan-lane-workflow-smoke',
+                name: 'Pan lane and workflow smoke',
+                initialEventId: null,
+                variables: [],
+                cancelRoles: [],
+                unclaimRoles: [],
+                taskAssignmentRoles: [],
+                lanes: [{ id: 10, name: 'Operations', x: 80, y: 90, w: 640, h: 260 }],
+                flowNodes: [{
+                  id: 1,
+                  name: 'Review',
+                  type: NODE_TYPE.USER_TASK,
+                  laneId: 10,
+                  x: 180,
+                  y: 150
+                }],
+                sequenceFlows: []
+              };
+              selected = { kind: 'node', nodeId: 1 };
+              selectedNodeIds = new Set([1]);
+              viewState = { x: 15, y: 25, zoom: 1.5 };
+              render();
+              setActiveTool('pan');
+
+              const laneGroup = fakeElement('g');
+              laneGroup.dataset.id = '10';
+              laneGroup.parentNode = svg;
+              const laneTarget = fakeElement('rect');
+              laneTarget.parentNode = laneGroup;
+              laneTarget.closest = selector =>
+                selector === '.lane[data-id]' ? laneGroup : null;
+              laneGroup.addEventListener('pointerdown', event =>
+                onLanePointerDown(event, getLane(10)));
+
+              const workflowTarget = fakeElement('rect');
+              workflowTarget.parentNode = svg;
+              workflowTarget.closest = () => null;
+
+              const stationaryPanClick = (target, pointerId, x, y, jitter = false) => {
+                target.dispatchEvent(fakePointerEvent(
+                  'pointerdown', target, pointerId, x, y));
+                const endX = x + (jitter ? 2 : 0);
+                const endY = y + (jitter ? 1 : 0);
+                if (jitter) {
+                  svg.dispatchEvent(fakePointerEvent(
+                    'pointermove', svg, pointerId, endX, endY));
+                }
+                svg.dispatchEvent(fakePointerEvent(
+                  'pointerup', svg, pointerId, endX, endY));
+                target.dispatchEvent(fakePointerEvent(
+                  'click', target, pointerId, endX, endY));
+              };
+              const pressDelete = () => {
+                window.dispatchEvent({
+                  type: 'keydown',
+                  key: 'Delete',
+                  code: 'Delete',
+                  target: document.body,
+                  ctrlKey: false,
+                  metaKey: false,
+                  altKey: false,
+                  shiftKey: false,
+                  defaultPrevented: false,
+                  preventDefault() { this.defaultPrevented = true; }
+                });
+              };
+
+              const modelBeforeLaneClick = JSON.stringify(model);
+              const viewBeforeLaneClick = JSON.stringify(viewState);
+              stationaryPanClick(laneTarget, 301, 260, 180, true);
+              const laneDeleteButton = inspectorItemDeleteButtons.at(-1);
+              const laneInspection = {
+                selectedKind: selected?.kind,
+                selectedId: selected?.laneId,
+                inspectorShowsLane: inspector.innerHTML.includes('<h2>Lane #10</h2>'),
+                deleteDisabled: laneDeleteButton?.disabled === true,
+                modelPreserved: JSON.stringify(model) === modelBeforeLaneClick,
+                viewportPreserved: JSON.stringify(viewState) === viewBeforeLaneClick,
+                itemGesturesBlocked: laneDrag === null && laneResize === null
+              };
+
+              const beforeLaneDelete = JSON.stringify({ model, selected });
+              laneDeleteButton.onclick();
+              pressDelete();
+              const laneDeletionProtected =
+                JSON.stringify({ model, selected }) === beforeLaneDelete;
+
+              const beforeLaneDrag = JSON.stringify({ model, selected });
+              const viewBeforeLaneDrag = JSON.stringify(viewState);
+              laneTarget.dispatchEvent(fakePointerEvent(
+                'pointerdown', laneTarget, 302, 260, 180));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 302, 315, 220));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 302, 315, 220));
+              const laneDragClick = fakePointerEvent(
+                'click', laneTarget, 302, 315, 220);
+              laneTarget.dispatchEvent(laneDragClick);
+              const laneDragResult = {
+                modelAndSelectionPreserved:
+                  JSON.stringify({ model, selected }) === beforeLaneDrag,
+                viewportMoved: JSON.stringify(viewState) !== viewBeforeLaneDrag,
+                itemGesturesBlocked: laneDrag === null && laneResize === null,
+                clickPrevented: laneDragClick.defaultPrevented
+              };
+
+              const beforeWorkflowDrag = JSON.stringify({ model, selected });
+              const viewBeforeWorkflowDrag = JSON.stringify(viewState);
+              workflowTarget.dispatchEvent(fakePointerEvent(
+                'pointerdown', workflowTarget, 303, 800, 520));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointermove', svg, 303, 850, 555));
+              svg.dispatchEvent(fakePointerEvent(
+                'pointerup', svg, 303, 850, 555));
+              const workflowDragClick = fakePointerEvent(
+                'click', workflowTarget, 303, 850, 555);
+              workflowTarget.dispatchEvent(workflowDragClick);
+              const workflowDragResult = {
+                modelAndSelectionPreserved:
+                  JSON.stringify({ model, selected }) === beforeWorkflowDrag,
+                viewportMoved: JSON.stringify(viewState) !== viewBeforeWorkflowDrag,
+                clickPrevented: workflowDragClick.defaultPrevented
+              };
+
+              const modelBeforeWorkflowClick = JSON.stringify(model);
+              const viewBeforeWorkflowClick = JSON.stringify(viewState);
+              stationaryPanClick(workflowTarget, 304, 800, 520, true);
+              const workflowInspection = {
+                selectedCleared: selected === null && selectedNodeIds.size === 0,
+                inspectorShowsWorkflow:
+                  inspector.innerHTML.includes('<h2>Workflow</h2>'),
+                inspectorMentionsLanes:
+                  inspector.innerHTML.includes('node, flow, or lane'),
+                viewportPreserved:
+                  JSON.stringify(viewState) === viewBeforeWorkflowClick,
+                modelPreserved: JSON.stringify(model) === modelBeforeWorkflowClick,
+                noItemDeleteButtons: inspectorItemDeleteButtons.length === 0
+              };
+              pressDelete();
+
+              return JSON.stringify({
+                activeTool,
+                laneInspection,
+                laneDeletionProtected,
+                laneDragResult,
+                workflowDragResult,
+                workflowInspection,
+                workflowDeleteProtected:
+                  selected === null && JSON.stringify(model) === modelBeforeWorkflowClick,
+                laneCount: model.lanes.length,
+                nodeCount: model.flowNodes.length
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+
+        Assert.Equal("pan", root.GetProperty("activeTool").GetString());
+
+        var laneInspection = root.GetProperty("laneInspection");
+        Assert.Equal("lane", laneInspection.GetProperty("selectedKind").GetString());
+        Assert.Equal(10, laneInspection.GetProperty("selectedId").GetInt32());
+        Assert.True(laneInspection.GetProperty("inspectorShowsLane").GetBoolean());
+        Assert.True(laneInspection.GetProperty("deleteDisabled").GetBoolean());
+        Assert.True(laneInspection.GetProperty("modelPreserved").GetBoolean());
+        Assert.True(laneInspection.GetProperty("viewportPreserved").GetBoolean());
+        Assert.True(laneInspection.GetProperty("itemGesturesBlocked").GetBoolean());
+        Assert.True(root.GetProperty("laneDeletionProtected").GetBoolean());
+
+        var laneDragResult = root.GetProperty("laneDragResult");
+        Assert.True(laneDragResult.GetProperty("modelAndSelectionPreserved").GetBoolean());
+        Assert.True(laneDragResult.GetProperty("viewportMoved").GetBoolean());
+        Assert.True(laneDragResult.GetProperty("itemGesturesBlocked").GetBoolean());
+        Assert.True(laneDragResult.GetProperty("clickPrevented").GetBoolean());
+
+        var workflowDragResult = root.GetProperty("workflowDragResult");
+        Assert.True(workflowDragResult.GetProperty("modelAndSelectionPreserved").GetBoolean());
+        Assert.True(workflowDragResult.GetProperty("viewportMoved").GetBoolean());
+        Assert.True(workflowDragResult.GetProperty("clickPrevented").GetBoolean());
+
+        var workflowInspection = root.GetProperty("workflowInspection");
+        Assert.True(workflowInspection.GetProperty("selectedCleared").GetBoolean());
+        Assert.True(workflowInspection.GetProperty("inspectorShowsWorkflow").GetBoolean());
+        Assert.True(workflowInspection.GetProperty("inspectorMentionsLanes").GetBoolean());
+        Assert.True(workflowInspection.GetProperty("viewportPreserved").GetBoolean());
+        Assert.True(workflowInspection.GetProperty("modelPreserved").GetBoolean());
+        Assert.True(workflowInspection.GetProperty("noItemDeleteButtons").GetBoolean());
+        Assert.True(root.GetProperty("workflowDeleteProtected").GetBoolean());
+        Assert.Equal(1, root.GetProperty("laneCount").GetInt32());
+        Assert.Equal(1, root.GetProperty("nodeCount").GetInt32());
+    }
+
+    [Fact]
     public void SwitchingToolsFinishesItemAndCanvasGestures()
     {
         var engine = CreateEditorEngine();
@@ -907,7 +1386,24 @@ public sealed class EditorRuntimeSmokeTests
               const viewBeforeSelect = JSON.parse(JSON.stringify(viewState));
               setActiveTool('select');
               const canvasPanStopped = canvasPan === null;
+              const toolSwitchSuppressCleared = suppressCanvasClick === false;
               svg.dispatchEvent(fakePointerEvent('pointermove', target, 204, 300, 240));
+              const viewAfterSelect = JSON.parse(JSON.stringify(viewState));
+
+              setActiveTool('pan');
+              svg.dispatchEvent(fakePointerEvent('pointerdown', target, 205, 200, 160));
+              svg.dispatchEvent(fakePointerEvent('pointermove', target, 205, 240, 190));
+              window.dispatchEvent({ type: 'blur' });
+              const blurCanvasPanStopped = canvasPan === null;
+              const blurSuppressCleared = suppressCanvasClick === false;
+
+              svg.dispatchEvent(fakePointerEvent('pointerdown', target, 206, 200, 160));
+              svg.dispatchEvent(fakePointerEvent('pointermove', target, 206, 240, 190));
+              svg.dispatchEvent(fakePointerEvent(
+                'lostpointercapture', svg, 206, 240, 190));
+              const lostCaptureCanvasPanStopped = canvasPan === null;
+              const lostCaptureSuppressCleared = suppressCanvasClick === false;
+              setActiveTool('select');
 
               return JSON.stringify({
                 nodeDragStarted,
@@ -920,8 +1416,13 @@ public sealed class EditorRuntimeSmokeTests
                 laneResizeStarted,
                 laneResizeStopped,
                 canvasPanStopped,
+                toolSwitchSuppressCleared,
+                blurCanvasPanStopped,
+                blurSuppressCleared,
+                lostCaptureCanvasPanStopped,
+                lostCaptureSuppressCleared,
                 viewBeforeSelect,
-                viewAfterSelect: viewState,
+                viewAfterSelect,
                 activeTool
               });
             })()
@@ -938,6 +1439,11 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(root.GetProperty("laneResizeStarted").GetBoolean());
         Assert.True(root.GetProperty("laneResizeStopped").GetBoolean());
         Assert.True(root.GetProperty("canvasPanStopped").GetBoolean());
+        Assert.True(root.GetProperty("toolSwitchSuppressCleared").GetBoolean());
+        Assert.True(root.GetProperty("blurCanvasPanStopped").GetBoolean());
+        Assert.True(root.GetProperty("blurSuppressCleared").GetBoolean());
+        Assert.True(root.GetProperty("lostCaptureCanvasPanStopped").GetBoolean());
+        Assert.True(root.GetProperty("lostCaptureSuppressCleared").GetBoolean());
         Assert.Equal("select", root.GetProperty("activeTool").GetString());
         Assert.Equal(
             root.GetProperty("viewBeforeSelect").GetRawText(),

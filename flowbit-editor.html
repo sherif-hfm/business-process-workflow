@@ -2739,6 +2739,7 @@ let viewState = { x: 0, y: 0, zoom: 1 };
 let canvasPan = null;
 let spacePressed = false;
 let suppressCanvasClick = false;
+const PAN_DRAG_THRESHOLD = 4;
 const HISTORY_LIMIT = 100;
 const HISTORY_INPUT_DELAY = 500;
 const undoBtn = document.getElementById("undoBtn");
@@ -4773,15 +4774,33 @@ function renderHint() {
   }
 }
 
+let inspectorItemDeleteButtons = [];
+
+function configureInspectorItemDeleteButton(button, panDisabledTitle) {
+  button.dataset.panDisabledTitle = panDisabledTitle;
+  button.disabled = activeTool === "pan";
+  if (button.disabled) button.title = panDisabledTitle;
+  inspectorItemDeleteButtons.push(button);
+}
+
+function updateInspectorItemDeleteButtons() {
+  inspectorItemDeleteButtons.forEach(button => {
+    button.disabled = activeTool === "pan";
+    if (button.disabled) button.title = button.dataset.panDisabledTitle;
+    else button.removeAttribute("title");
+  });
+}
+
 /* ---------- Inspector ---------- */
 function renderInspector() {
+  inspectorItemDeleteButtons = [];
   inspector.innerHTML = "";
   if (selected?.kind === 'node' && selectedNodeIds.size > 1) {
     return renderMultiNodeInspector();
   }
   if (!selected) {
     inspector.innerHTML = `<h2>Workflow</h2>
-      <p class="empty-note">Select a node or flow to edit it.<br><br>
+      <p class="empty-note">Select a node, flow, or lane to inspect it.<br><br>
       Lanes: <b>${model.lanes.length}</b><br>
       Flow nodes: <b>${model.flowNodes.length}</b><br>
       Sequence flows: <b>${model.sequenceFlows.length}</b></p>`;
@@ -5404,6 +5423,7 @@ function renderNodeInspector() {
   del.textContent = "Delete node";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
+  configureInspectorItemDeleteButton(del, "Switch to Select to delete this node");
   del.onclick = () => deleteNode(node.id);
   inspector.appendChild(del);
 }
@@ -5902,6 +5922,8 @@ function renderErrorBoundarySection(hostNode) {
     delBtn.className = "danger";
     delBtn.style.width = "100%";
     delBtn.style.marginTop = "8px";
+    configureInspectorItemDeleteButton(
+      delBtn, "Switch to Select to remove this boundary event");
     delBtn.onclick = () => deleteNode(existing.id);
     inspector.appendChild(delBtn);
   } else {
@@ -7128,6 +7150,7 @@ function renderLaneInspector() {
   del.textContent = "Delete lane";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
+  configureInspectorItemDeleteButton(del, "Switch to Select to delete this lane");
   del.onclick = () => deleteLane(lane.id);
   inspector.appendChild(del);
 }
@@ -7369,10 +7392,8 @@ function renderFlowInspector() {
   del.textContent = "Delete flow";
   del.className = "danger";
   del.style.cssText = "margin-top:16px;width:100%";
-  del.onclick = () => {
-    model.sequenceFlows = model.sequenceFlows.filter(f => f.id !== flow.id);
-    select('node', flow.sourceRef);
-  };
+  configureInspectorItemDeleteButton(del, "Switch to Select to delete this flow");
+  del.onclick = () => deleteFlow(flow.id, true);
   inspector.appendChild(del);
 }
 
@@ -8022,15 +8043,38 @@ function clearDiagramSearch() {
   diagramSearchInput.focus();
 }
 
-function startCanvasPan(e, clearOnClick) {
+function panInspectionTarget(target) {
+  const nodeElement = target?.closest?.(".node[data-id]");
+  if (nodeElement) {
+    const nodeId = Number(nodeElement.dataset.id ?? nodeElement.getAttribute?.("data-id"));
+    if (getNode(nodeId)) return { kind: "node", id: nodeId };
+  }
+  const flowElement = target?.closest?.(".edge[data-flow]");
+  if (flowElement) {
+    const flowId = Number(flowElement.dataset.flow ?? flowElement.getAttribute?.("data-flow"));
+    if (getFlow(flowId)) return { kind: "flow", id: flowId };
+  }
+  const laneElement = target?.closest?.(".lane[data-id]");
+  if (laneElement) {
+    const laneId = Number(laneElement.dataset.id ?? laneElement.getAttribute?.("data-id"));
+    if (getLane(laneId)) return { kind: "lane", id: laneId };
+  }
+  return null;
+}
+
+function startCanvasPan(e, clearOnClick, inspectionTarget = null) {
   if (canvasPan) return;
   e.preventDefault();
   canvasPan = {
     pointerId: e.pointerId,
-    lastX: e.clientX,
-    lastY: e.clientY,
+    startX: e.clientX,
+    startY: e.clientY,
+    startViewX: viewState.x,
+    startViewY: viewState.y,
+    startZoom: viewState.zoom,
     moved: false,
-    clearOnClick
+    clearOnClick,
+    inspectionTarget
   };
   svg.classList.add("canvas-panning");
   svg.setPointerCapture(e.pointerId);
@@ -8038,25 +8082,34 @@ function startCanvasPan(e, clearOnClick) {
 
 function moveCanvasPan(e) {
   if (!canvasPan || canvasPan.pointerId !== e.pointerId) return false;
-  const dx = e.clientX - canvasPan.lastX;
-  const dy = e.clientY - canvasPan.lastY;
-  if (Math.abs(dx) + Math.abs(dy) > 1) canvasPan.moved = true;
-  viewState.x -= dx / viewState.zoom;
-  viewState.y -= dy / viewState.zoom;
-  canvasPan.lastX = e.clientX;
-  canvasPan.lastY = e.clientY;
+  const dx = e.clientX - canvasPan.startX;
+  const dy = e.clientY - canvasPan.startY;
+  if (!canvasPan.moved && Math.hypot(dx, dy) < PAN_DRAG_THRESHOLD) return true;
+  canvasPan.moved = true;
+  viewState.x = canvasPan.startViewX - dx / canvasPan.startZoom;
+  viewState.y = canvasPan.startViewY - dy / canvasPan.startZoom;
   applyViewBox();
   return true;
 }
 
-function finishCanvasPan(e) {
+function finishCanvasPan(e, finishKind = "cancel") {
   if (!canvasPan || (e.pointerId != null && canvasPan.pointerId !== e.pointerId)) return false;
   const completedPan = canvasPan;
   canvasPan = null;
   svg.classList.remove("canvas-panning");
   try { svg.releasePointerCapture(completedPan.pointerId); } catch (err) {}
-  if (completedPan.moved) suppressCanvasClick = true;
-  else if (completedPan.clearOnClick && !connectMode) clearSelection();
+  const pointerUp = finishKind === "pointerup";
+  suppressCanvasClick = pointerUp && completedPan.moved;
+  if (!completedPan.moved && pointerUp && activeTool === "pan" && !connectMode) {
+    if (completedPan.inspectionTarget) {
+      select(completedPan.inspectionTarget.kind, completedPan.inspectionTarget.id);
+    } else {
+      clearSelection();
+    }
+  } else if (!completedPan.moved && pointerUp &&
+      completedPan.clearOnClick && !connectMode) {
+    clearSelection();
+  }
   return true;
 }
 
@@ -8124,7 +8177,8 @@ function finishItemGestureForToolSwitch() {
 function setActiveTool(tool) {
   const nextTool = ["select", "rectangle", "pan"].includes(tool) ? tool : "select";
   if (nextTool !== activeTool) {
-    if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId });
+    if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId }, "cancel");
+    suppressCanvasClick = false;
     if (connectionDrag) clearConnectionGesture();
     finishItemGestureForToolSwitch();
   }
@@ -8133,6 +8187,7 @@ function setActiveTool(tool) {
   updateEditorToolControls();
   closeToolbarMenus(null, true);
   renderHint();
+  updateInspectorItemDeleteButtons();
 }
 
 /* ---------- Selection ---------- */
@@ -8650,7 +8705,7 @@ svg.addEventListener("pointermove", (e) => {
 });
 svg.addEventListener("pointerup", (e) => {
   if (finishConnectionGesture(e)) return;
-  if (finishCanvasPan(e)) return;
+  if (finishCanvasPan(e, "pointerup")) return;
   if (finishRectangleSelection(e)) return;
   if (drag) drag.nodeStarts.forEach(start => assignNodeLane(start.id));
   drag = null;
@@ -8664,7 +8719,7 @@ svg.addEventListener("pointercancel", (e) => {
     renderHint();
     return;
   }
-  if (finishCanvasPan(e)) return;
+  if (finishCanvasPan(e, "cancel")) return;
   if (rectangleSelection && rectangleSelection.pointerId === e.pointerId) {
     cancelRectangleSelection();
     renderHint();
@@ -8674,10 +8729,18 @@ svg.addEventListener("pointercancel", (e) => {
   laneDrag = null;
   laneResize = null;
 });
+svg.addEventListener("lostpointercapture", (e) => {
+  if (canvasPan && canvasPan.pointerId === e.pointerId) {
+    finishCanvasPan(e, "cancel");
+  }
+});
 svg.addEventListener("pointerdown", (e) => {
   if ((activeTool === "pan" && e.button === 0) ||
       (spacePressed && e.button === 0) || e.button === 1) {
-    startCanvasPan(e, false);
+    const inspectionTarget = activeTool === "pan" && e.button === 0
+      ? panInspectionTarget(e.target)
+      : null;
+    startCanvasPan(e, false, inspectionTarget);
     e.stopPropagation();
     return;
   }
@@ -8808,6 +8871,7 @@ function addNode() {
   select('node', id);
 }
 function deleteNode(id) {
+  if (activeTool === "pan") return false;
   // A boundary event's host is independent; but deleting the host also removes
   // any boundary events attached to it (plus their flows).
   const attachedBoundaries = model.flowNodes.filter(n =>
@@ -8830,11 +8894,23 @@ function deleteNode(id) {
     model.initialEventId = nextDefault?.id ?? null;
   }
   clearSelection();
+  return true;
 }
 function deleteLane(id) {
+  if (activeTool === "pan") return false;
   model.lanes = model.lanes.filter(p => p.id !== id);
   model.flowNodes.forEach(s => { if (s.laneId === id) s.laneId = null; });
   clearSelection();
+  return true;
+}
+function deleteFlow(id, selectSource = false) {
+  if (activeTool === "pan") return false;
+  const flow = getFlow(id);
+  if (!flow) return false;
+  model.sequenceFlows = model.sequenceFlows.filter(candidate => candidate.id !== id);
+  if (selectSource && getNode(flow.sourceRef)) select('node', flow.sourceRef);
+  else clearSelection();
+  return true;
 }
 
 /* ---------- Save / Load ---------- */
@@ -11524,14 +11600,12 @@ window.addEventListener("keydown", (e) => {
     else clearSelection();
     return;
   }
-  if (e.key === "Delete" && selected) {
-    if (selected.kind === 'node') deleteNode(selected.nodeId);
-    else if (selected.kind === 'lane') deleteLane(selected.laneId);
-    else {
-      model.sequenceFlows = model.sequenceFlows.filter(f => f.id !== selected.flowId);
-      clearSelection();
-    }
-    commitHistory();
+  if (e.key === "Delete" && selected && activeTool !== "pan") {
+    let deleted = false;
+    if (selected.kind === 'node') deleted = deleteNode(selected.nodeId);
+    else if (selected.kind === 'lane') deleted = deleteLane(selected.laneId);
+    else deleted = deleteFlow(selected.flowId);
+    if (deleted) commitHistory();
   }
 });
 window.addEventListener("keyup", (e) => {
@@ -11542,6 +11616,7 @@ window.addEventListener("keyup", (e) => {
 window.addEventListener("blur", () => {
   spacePressed = false;
   document.body.classList.remove("is-space-panning");
+  if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId }, "cancel");
   if (connectionDrag) { clearConnectionGesture(); renderHint(); }
   if (rectangleSelection) { cancelRectangleSelection(); renderHint(); }
 });
