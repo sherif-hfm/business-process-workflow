@@ -4767,12 +4767,6 @@ function renderHint() {
         : "";
       hintEl.innerHTML = "<b>Connect mode:</b> now click the <b>target</b> node." + extra;
     }
-  } else if (activeTool === "rectangle") {
-    const count = selectedNodeIds.size;
-    hintEl.hidden = false;
-    hintEl.innerHTML = count > 0
-      ? `<b>Rectangle select:</b> ${count} node${count === 1 ? "" : "s"} selected. Drag a selected node to move the group.`
-      : "<b>Rectangle select:</b> drag across the canvas to select multiple nodes. Press <b>R</b> anytime to return to this tool.";
   } else {
     hintEl.hidden = true;
     hintEl.innerHTML = "";

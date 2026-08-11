@@ -606,6 +606,8 @@ public sealed class EditorRuntimeSmokeTests
                 panPressed: panToolBtn.getAttribute('aria-pressed'),
                 handleTool: authoringPaletteHandle.dataset.activeTool,
                 handleLabel: authoringPaletteHandle.getAttribute('aria-label'),
+                hintHidden: hintEl.hidden,
+                hintText: hintEl.innerHTML,
                 previewDrawn,
                 afterSelection,
                 moved,
@@ -625,6 +627,8 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal("false", root.GetProperty("panPressed").GetString());
         Assert.Equal("rectangle", root.GetProperty("handleTool").GetString());
         Assert.Contains("Rectangle select", root.GetProperty("handleLabel").GetString());
+        Assert.True(root.GetProperty("hintHidden").GetBoolean());
+        Assert.Equal(string.Empty, root.GetProperty("hintText").GetString());
         Assert.True(root.GetProperty("previewDrawn").GetBoolean());
 
         var selection = root.GetProperty("afterSelection");
