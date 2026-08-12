@@ -59,6 +59,42 @@ public sealed class InstanceVariableUpdateUiContractTests
         Assert.Contains("href=\"#variable-updates\"", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task InstanceDetailTreatsHiddenAvailableFlowsAsNoActions()
+    {
+        var instance = InstanceWithAdministrativeUpdate();
+        using var handler = new InstanceHandler(instance, flowsNotFound: true);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new WorkflowApiClient(http));
+        services.AddSingleton(new TokenState());
+        services.AddSingleton<NavigationManager>(new StubNavigationManager());
+        services.AddSingleton<IJSRuntime>(new StubJsRuntime());
+        services.AddSingleton<IWebHostEnvironment>(new StubEnvironment());
+        await using var provider = services.BuildServiceProvider();
+        await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+
+        var html = await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var component = await renderer.RenderComponentAsync<InstanceDetailPage>(
+                ParameterView.FromDictionary(new Dictionary<string, object?>
+                {
+                    [nameof(InstanceDetailPage.InstanceId)] = 42L
+                }));
+            return component.ToHtmlString();
+        });
+
+        Assert.Contains("/api/instances/42", handler.Paths);
+        Assert.Contains("/api/instances/42/flows", handler.Paths);
+        Assert.Contains("Instance #42", html, StringComparison.Ordinal);
+        Assert.Contains("No user actions are available.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Response status code does not indicate success: 404",
+            html,
+            StringComparison.Ordinal);
+    }
+
     private static InstanceDetailDto InstanceWithAdministrativeUpdate()
     {
         var now = DateTimeOffset.Parse("2026-08-10T12:00:00Z");
@@ -118,7 +154,9 @@ public sealed class InstanceVariableUpdateUiContractTests
         };
     }
 
-    private sealed class InstanceHandler(InstanceDetailDto instance) : HttpMessageHandler
+    private sealed class InstanceHandler(
+        InstanceDetailDto instance,
+        bool flowsNotFound = false) : HttpMessageHandler
     {
         public List<string> Paths { get; } = [];
 
@@ -129,6 +167,8 @@ public sealed class InstanceVariableUpdateUiContractTests
             var response = path switch
             {
                 "/api/instances/42" => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(instance) },
+                "/api/instances/42/flows" when flowsNotFound =>
+                    new HttpResponseMessage(HttpStatusCode.NotFound),
                 "/api/instances/42/flows" => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<SequenceFlowModel>()) },
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };

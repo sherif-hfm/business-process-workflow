@@ -1,4 +1,4 @@
-- add user task condition
+
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
  
 - receive task
@@ -15,6 +15,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add user task condition (done)
 - in editor add view tool only so not change item by mistake (done)
 - add update instances variables single or in batch (done)
 - attributes for nodes and flows (done)

@@ -1086,10 +1086,23 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
 
     public async Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
         long id,
-        CancellationToken cancellationToken = default) =>
-        await httpClient.GetFromJsonAsync<IReadOnlyList<SequenceFlowModel>>(
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
             $"/api/instances/{id}/flows",
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            // Inbox visibility deliberately conceals hidden personal actions as
+            // 404. The instance detail page has already loaded the instance, so
+            // render its normal empty-action state instead of a transport error.
+            return [];
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<SequenceFlowModel>>(
             cancellationToken) ?? [];
+    }
 
     public async Task<StartInstanceResultDto?> StartInstanceAsync(
         StartInstanceRequest request,
