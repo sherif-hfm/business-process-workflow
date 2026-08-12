@@ -2400,6 +2400,120 @@ public sealed class EditorRuntimeSmokeTests
         Assert.StartsWith("example-", engine.Evaluate("model.id").AsString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void InboxVisibilityCondition_LoadsEditsPersistsAndClearsWithNodeType()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'inbox-condition-editor',
+                name: 'Inbox condition editor',
+                variables: [
+                  { id: 1, name: 'department', dataType: 'string', isArray: false }
+                ],
+                lanes: [],
+                flowNodes: [
+                  {
+                    id: 1,
+                    name: 'Automatic',
+                    type: 'task',
+                    inboxVisibilityCondition: '[sys.user] == \'must-be-cleared\''
+                  },
+                  {
+                    id: 2,
+                    name: 'Review',
+                    type: 'userTask',
+                    inboxVisibilityCondition: '[sys.claim.department] == [department]'
+                  },
+                  { id: 3, name: 'Legacy review', type: 'userTask' }
+                ],
+                sequenceFlows: []
+              });
+
+              const automatic = getNode(1);
+              const review = getNode(2);
+              const legacy = getNode(3);
+              selected = { kind: 'node', nodeId: review.id };
+              selectedNodeIds.clear();
+              selectedNodeIds.add(review.id);
+              renderInspector();
+
+              const conditionField = inspector.children.find(child =>
+                String(child.innerHTML).includes('Inbox visibility condition'));
+              const input = conditionField.children.find(child => child.tagName === 'TEXTAREA');
+              const status = conditionField.children.find(child => child.tagName === 'P');
+              const initial = {
+                value: input.value,
+                invalid: input.getAttribute('aria-invalid'),
+                status: status.textContent,
+                automaticOmitted: JSON.stringify(automatic).indexOf('inboxVisibilityCondition') < 0,
+                legacyOmitted: JSON.stringify(legacy).indexOf('inboxVisibilityCondition') < 0,
+                helpVisible: inspector.children.some(child =>
+                  String(child.className).includes('expression-help') &&
+                  String(child.innerHTML).includes('PostgreSQL'))
+              };
+
+              input.value = "Contains([department], 'ops')";
+              input.oninput();
+              const invalid = {
+                stored: review.inboxVisibilityCondition,
+                aria: input.getAttribute('aria-invalid'),
+                status: status.textContent
+              };
+
+              input.value = '[sys.claim.department] == [department] && ' +
+                'Number([config.minimum]) > 10';
+              input.oninput();
+              const valid = {
+                stored: review.inboxVisibilityCondition,
+                aria: input.getAttribute('aria-invalid'),
+                persisted: JSON.stringify(model).includes('inboxVisibilityCondition')
+              };
+
+              input.value = '   ';
+              input.oninput();
+              const blankIsNull = review.inboxVisibilityCondition === null;
+
+              review.inboxVisibilityCondition = '[sys.user] == \'alice\'';
+              review.type = NODE_TYPE.TASK;
+              applyTypeInvariants(review);
+
+              return JSON.stringify({
+                initial,
+                invalid,
+                valid,
+                blankIsNull,
+                clearedOnTypeChange: !Object.prototype.hasOwnProperty.call(
+                  review, 'inboxVisibilityCondition')
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var initial = root.GetProperty("initial");
+        Assert.Equal("[sys.claim.department] == [department]",
+            initial.GetProperty("value").GetString());
+        Assert.Equal("false", initial.GetProperty("invalid").GetString());
+        Assert.Equal(string.Empty, initial.GetProperty("status").GetString());
+        Assert.True(initial.GetProperty("automaticOmitted").GetBoolean());
+        Assert.True(initial.GetProperty("legacyOmitted").GetBoolean());
+        Assert.True(initial.GetProperty("helpVisible").GetBoolean());
+
+        var invalid = root.GetProperty("invalid");
+        Assert.Equal("Contains([department], 'ops')", invalid.GetProperty("stored").GetString());
+        Assert.Equal("true", invalid.GetProperty("aria").GetString());
+        Assert.Contains("Number(expr)", invalid.GetProperty("status").GetString(),
+            StringComparison.Ordinal);
+
+        var valid = root.GetProperty("valid");
+        Assert.Equal("false", valid.GetProperty("aria").GetString());
+        Assert.True(valid.GetProperty("persisted").GetBoolean());
+        Assert.True(root.GetProperty("blankIsNull").GetBoolean());
+        Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
     private static Engine CreateEditorEngine(string? beforeMainScript = null)
     {
         var html = ReadEditorSource();

@@ -557,37 +557,31 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         context.ExecutionTokens.Add(token);
         await context.SaveChangesAsync();
 
-        var sourceTask = new UserTaskEntity
-        {
-            InstanceId = instance.Id,
-            TokenId = token.Id,
-            NodeId = 3,
-            NodeName = "Approved work",
-            Status = UserTaskStatuses.Completed,
-            SelectedFlowId = 104,
-            CompletedBy = "legacy-operator",
-            CompletionKind = "administrativeAction",
-            CompletionReason = "legacy correction",
-            CreatedAt = capturedTaskAt,
-            UpdatedAt = capturedTaskAt,
-            CompletedAt = capturedTaskAt
-        };
-        var newTask = new UserTaskEntity
-        {
-            InstanceId = instance.Id,
-            TokenId = token.Id,
-            NodeId = 2,
-            NodeName = "Returned work",
-            Status = UserTaskStatuses.Active,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        context.UserTasks.AddRange(sourceTask, newTask);
-        await context.SaveChangesAsync();
-
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
+        var sourceTaskId = await InsertLegacyUserTaskAsync(
+            connection,
+            transaction,
+            instance.Id,
+            token.Id,
+            nodeId: 3,
+            nodeName: "Approved work",
+            status: UserTaskStatuses.Completed,
+            createdAt: capturedTaskAt,
+            selectedFlowId: 104,
+            completedBy: "legacy-operator",
+            completionKind: "administrativeAction",
+            completionReason: "legacy correction");
+        var newTaskId = await InsertLegacyUserTaskAsync(
+            connection,
+            transaction,
+            instance.Id,
+            token.Id,
+            nodeId: 2,
+            nodeName: "Returned work",
+            status: UserTaskStatuses.Active,
+            createdAt: now);
         var mappingJson = JsonSerializer.Serialize(new[]
         {
             new
@@ -718,8 +712,8 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         addAudit.Parameters.AddWithValue("batch_id", batchId);
         addAudit.Parameters.AddWithValue("instance_id", instance.Id);
         addAudit.Parameters.AddWithValue("definition_id", definition.Id);
-        addAudit.Parameters.AddWithValue("source_task_id", sourceTask.Id);
-        addAudit.Parameters.AddWithValue("new_task_id", newTask.Id);
+        addAudit.Parameters.AddWithValue("source_task_id", sourceTaskId);
+        addAudit.Parameters.AddWithValue("new_task_id", newTaskId);
         addAudit.Parameters.AddWithValue("token_id", token.Id);
         addAudit.Parameters.AddWithValue("captured_instance_at", capturedInstanceAt);
         addAudit.Parameters.AddWithValue("captured_task_at", capturedTaskAt);
@@ -730,9 +724,70 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         return new LegacyAdministrativeBatchSeed(
             batchId,
             definition.Id,
-            sourceTask.Id,
-            newTask.Id,
+            sourceTaskId,
+            newTaskId,
             activationId);
+    }
+
+    private static async Task<long> InsertLegacyUserTaskAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        long instanceId,
+        long tokenId,
+        int nodeId,
+        string nodeName,
+        string status,
+        DateTimeOffset createdAt,
+        int? selectedFlowId = null,
+        string? completedBy = null,
+        string? completionKind = null,
+        string? completionReason = null)
+    {
+        // This fixture intentionally targets the August 4 schema. Seed through
+        // that historical contract instead of today's EF model, which may map
+        // columns introduced by later migrations.
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO flowbit.user_tasks
+            (
+                "InstanceId", "TokenId", "NodeId", "NodeName", "Roles",
+                "RequiresClaim", "RequiresAssignment", "Status",
+                "SelectedFlowId", "CompletedBy", "CompletionKind",
+                "CompletionReason", "CreatedAt", "UpdatedAt", "CompletedAt"
+            )
+            VALUES
+            (
+                @instance_id, @token_id, @node_id, @node_name,
+                ARRAY[]::text[], FALSE, FALSE, @status,
+                @selected_flow_id, @completed_by, @completion_kind,
+                @completion_reason, @created_at, @created_at,
+                CASE WHEN @status = 'completed' THEN @created_at ELSE NULL END
+            )
+            RETURNING "Id"
+            """, connection, transaction);
+        command.Parameters.AddWithValue("instance_id", instanceId);
+        command.Parameters.AddWithValue("token_id", tokenId);
+        command.Parameters.AddWithValue("node_id", nodeId);
+        command.Parameters.AddWithValue("node_name", nodeName);
+        command.Parameters.AddWithValue("status", status);
+        command.Parameters.Add(new NpgsqlParameter("selected_flow_id", NpgsqlDbType.Integer)
+        {
+            Value = (object?)selectedFlowId ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter("completed_by", NpgsqlDbType.Varchar)
+        {
+            Value = (object?)completedBy ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter("completion_kind", NpgsqlDbType.Varchar)
+        {
+            Value = (object?)completionKind ?? DBNull.Value
+        });
+        command.Parameters.Add(new NpgsqlParameter("completion_reason", NpgsqlDbType.Varchar)
+        {
+            Value = (object?)completionReason ?? DBNull.Value
+        });
+        command.Parameters.AddWithValue("created_at", createdAt);
+        return (long)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("The legacy user task was not inserted."));
     }
 
     private static async Task SeedAdministrativeNodeExecutionAsync(

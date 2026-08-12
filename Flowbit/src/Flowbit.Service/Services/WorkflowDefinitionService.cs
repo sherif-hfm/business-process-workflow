@@ -69,6 +69,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredExclusiveGatewayMetadata(definition);
         ValidateAuthoredMessageStartMetadata(definition);
         ValidateAuthoredAsyncTimerMetadata(definition);
+        ValidateAuthoredInboxVisibilityMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         EnsureDurablePublicationAllowed(definition, publish);
@@ -98,6 +99,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredExclusiveGatewayMetadata(definition);
         ValidateAuthoredMessageStartMetadata(definition);
         ValidateAuthoredAsyncTimerMetadata(definition);
+        ValidateAuthoredInboxVisibilityMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         EnsureDurablePublicationAllowed(definition, publish);
@@ -528,6 +530,36 @@ public sealed class WorkflowDefinitionService(
             }
 
             ValidateVariables(node.Variables, $"flow node #{node.Id}");
+        }
+
+        _ = InboxVisibilityConditionCompiler.CompileAll(definition);
+    }
+
+    private static void ValidateAuthoredInboxVisibilityMetadata(WorkflowModel definition)
+    {
+        var invalid = definition.FlowNodes.FirstOrDefault(node =>
+            !BpmnFlowNodeTypes.IsUserTask(node.Type)
+            && !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition));
+        if (invalid is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{invalid.Id} defines inboxVisibilityCondition but is not a user task.");
+        }
+
+        foreach (var node in definition.FlowNodes.Where(node =>
+                     BpmnFlowNodeTypes.IsUserTask(node.Type)
+                     && !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)))
+        {
+            try
+            {
+                InboxVisibilityConditionCompiler.ValidateAuthoredSource(
+                    node.InboxVisibilityCondition);
+            }
+            catch (WorkflowDomainException exception)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} has an invalid inboxVisibilityCondition: {exception.Message}");
+            }
         }
     }
 

@@ -2315,6 +2315,237 @@ public sealed class EditorValidatorTests
         Assert.Contains("Roles restrict who can take this specific action", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void InboxVisibilityCompiler_AcceptsTypedGrammarAndEveryProducerKind()
+    {
+        var engine = CreateValidatorEngine();
+        engine.SetValue("definitionJson", """
+            {
+              "variables": [
+                { "name": "amount", "dataType": "number", "isArray": false },
+                { "name": "dueDate", "dataType": "date", "isArray": false }
+              ],
+              "flowNodes": [
+                {
+                  "id": 2,
+                  "idempotency": {
+                    "headerName": "Idempotency-Key",
+                    "variable": "requestKey"
+                  },
+                  "service": {
+                    "statusVariable": "serviceStatus",
+                    "outputMappings": [
+                      { "variable": "tax", "dataType": "number", "isArray": false }
+                    ]
+                  }
+                },
+                {
+                  "id": 3,
+                  "message": {
+                    "outputMappings": [
+                      { "variable": "approved", "dataType": "boolean", "isArray": false },
+                      { "variable": "receivedAt", "dataType": "datetime", "isArray": false }
+                    ]
+                  }
+                },
+                { "id": 4, "errorVariable": "failureText" }
+              ],
+              "sequenceFlows": [
+                {
+                  "id": 101,
+                  "variables": [
+                    { "name": "department", "dataType": "string", "isArray": false }
+                  ]
+                }
+              ]
+            }
+            """);
+        engine.SetValue("expressionsJson", JsonSerializer.Serialize(new[]
+        {
+            "[sys.claim.department] == [department] and ([amount] + [tax] > Number([config.limit]) or not [approved])",
+            "[amount] < [tax] or [serviceStatus] >= [setting.minimumStatus]",
+            "[dueDate] <= [sys.today] and [receivedAt] < [sys.now]",
+            "[failureText] != '' and [config.key\\]] == 'enabled'",
+            "[requestKey] == 'request-123'",
+            "[sys.user] == 'alice' || !false"
+        }));
+
+        using var results = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(JSON.parse(expressionsJson).map(expression => " +
+            "compileInboxVisibilityCondition(expression, JSON.parse(definitionJson))))")
+            .AsString());
+
+        Assert.All(results.RootElement.EnumerateArray(), result =>
+            Assert.True(result.GetProperty("ok").GetBoolean(),
+                result.TryGetProperty("error", out var error) ? error.GetString() : null));
+        var first = results.RootElement[0];
+        Assert.Equal(new[] { "department", "amount", "tax", "approved" },
+            first.GetProperty("variableReferences").EnumerateArray()
+                .Select(value => value.GetString()).ToArray());
+        Assert.Contains(first.GetProperty("externalReferences").EnumerateArray(), value =>
+            value.GetString() == "sys.claim.department");
+        Assert.Contains(first.GetProperty("externalReferences").EnumerateArray(), value =>
+            value.GetString() == "config.limit");
+    }
+
+    [Fact]
+    public void InboxVisibilityCompiler_RejectsUnsupportedOrIllTypedExpressions()
+    {
+        var engine = CreateValidatorEngine();
+        engine.SetValue("definitionJson", """
+            {
+              "variables": [
+                { "name": "amount", "dataType": "number", "isArray": false },
+                { "name": "department", "dataType": "string", "isArray": false },
+                { "name": "reviewers", "dataType": "string", "isArray": true }
+              ]
+            }
+            """);
+        engine.SetValue("expressionsJson", JsonSerializer.Serialize(new[]
+        {
+            "[department] < 'z'",
+            "[config.limit] + 1 > 2",
+            "[missing] == 1",
+            "[sys.roles] == 'admin'",
+            "Contains([department], 'ops')",
+            "[amount] + 1",
+            "[reviewers] == 'alice'",
+            "[config.bad\\q] == 'x'",
+            "Number([config.limit], 2) > 1",
+            "(not [setting.flag]) + 1 > 0",
+            "([setting.flag] and true) + 1 > 0",
+            "([setting.amount] + 1) == '2'"
+        }));
+
+        using var results = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(JSON.parse(expressionsJson).map(expression => " +
+            "compileInboxVisibilityCondition(expression, JSON.parse(definitionJson))))")
+            .AsString());
+
+        Assert.All(results.RootElement.EnumerateArray(), result =>
+        {
+            Assert.False(result.GetProperty("ok").GetBoolean());
+            Assert.False(string.IsNullOrWhiteSpace(result.GetProperty("error").GetString()));
+        });
+    }
+
+    [Fact]
+    public void InboxVisibilityCompiler_MatchesSharedConformanceCorpus()
+    {
+        var engine = CreateValidatorEngine();
+        engine.SetValue("corpusJson", File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "Fixtures",
+            "inbox-visibility-conformance.json")));
+        engine.SetValue("definitionJson", """
+            {
+              "variables": [
+                { "name": "department", "dataType": "string", "isArray": false },
+                { "name": "amount", "dataType": "number", "isArray": false },
+                { "name": "tax", "dataType": "number", "isArray": false },
+                { "name": "requestedAmount", "dataType": "number", "isArray": false },
+                { "name": "startDate", "dataType": "date", "isArray": false },
+                { "name": "endDate", "dataType": "date", "isArray": false },
+                { "name": "submittedAt", "dataType": "datetime", "isArray": false },
+                { "name": "blocked", "dataType": "boolean", "isArray": false },
+                { "name": "approved", "dataType": "boolean", "isArray": false },
+                { "name": "reviewers", "dataType": "string", "isArray": true },
+                { "name": "payload", "dataType": "json", "isArray": false }
+              ]
+            }
+            """);
+
+        using var results = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(JSON.parse(corpusJson).map(testCase => ({" +
+            "name: testCase.name, expected: testCase.valid, " +
+            "result: compileInboxVisibilityCondition(" +
+            "testCase.expression, JSON.parse(definitionJson))" +
+            "})))").AsString());
+
+        foreach (var item in results.RootElement.EnumerateArray())
+        {
+            var result = item.GetProperty("result");
+            Assert.True(
+                item.GetProperty("expected").GetBoolean()
+                == result.GetProperty("ok").GetBoolean(),
+                $"{item.GetProperty("name").GetString()}: " +
+                (result.TryGetProperty("error", out var error)
+                    ? error.GetString()
+                    : "unexpected acceptance"));
+        }
+    }
+
+    [Fact]
+    public void InboxVisibilityCompiler_RejectsConflictingProducersAndComplexityLimits()
+    {
+        var engine = CreateValidatorEngine();
+        engine.SetValue("conflictingJson", """
+            {
+              "variables": [
+                { "name": "score", "dataType": "number", "isArray": false }
+              ],
+              "sequenceFlows": [
+                {
+                  "id": 101,
+                  "variables": [
+                    { "name": "Score", "dataType": "string", "isArray": false }
+                  ]
+                }
+              ]
+            }
+            """);
+        using var conflict = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(compileInboxVisibilityCondition(" +
+            "'[score] > 0', JSON.parse(conflictingJson)))").AsString());
+        Assert.False(conflict.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains("conflicting", conflict.RootElement.GetProperty("error").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+
+        engine.SetValue("oversized", new string('x', 4097));
+        using var oversized = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(compileInboxVisibilityCondition(" +
+            "oversized, { variables: [] }))").AsString());
+        Assert.False(oversized.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains("4096", oversized.RootElement.GetProperty("error").GetString(),
+            StringComparison.Ordinal);
+
+        engine.SetValue("longLiteral", "'" + new string('x', 513) + "' == 'x'");
+        using var literal = JsonDocument.Parse(engine.Evaluate(
+            "JSON.stringify(compileInboxVisibilityCondition(" +
+            "longLiteral, { variables: [] }))").AsString());
+        Assert.False(literal.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains("512", literal.RootElement.GetProperty("error").GetString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validator_ValidatesInboxVisibilityConditionOnlyOnUserTasks()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var nodes = candidate["flowNodes"]!.AsArray();
+        var userTask = nodes.Select(node => node!.AsObject())
+            .First(node => node["type"]!.GetValue<string>() == "userTask");
+        var otherNode = nodes.Select(node => node!.AsObject())
+            .First(node => node["type"]!.GetValue<string>() != "userTask");
+
+        userTask["inboxVisibilityCondition"] = "[sys.user] == 'alice'";
+        Assert.Empty(ValidateJson(candidate.ToJsonString()));
+
+        userTask["inboxVisibilityCondition"] = "[sys.roles] == 'admin'";
+        Assert.Contains(ValidateJson(candidate.ToJsonString()), error =>
+            error.Contains("inboxVisibilityCondition", StringComparison.Ordinal));
+
+        userTask["inboxVisibilityCondition"] = 5;
+        Assert.Contains(ValidateJson(candidate.ToJsonString()), error =>
+            error.Contains("must be a string", StringComparison.OrdinalIgnoreCase));
+
+        userTask["inboxVisibilityCondition"] = null;
+        otherNode["inboxVisibilityCondition"] = "true";
+        Assert.Contains(ValidateJson(candidate.ToJsonString()), error =>
+            error.Contains("only when type='userTask'", StringComparison.Ordinal));
+    }
+
     private static WorkflowModel CreateTimerStartModel(TimerDefinitionModel timer) => new()
     {
         Id = "timer-start-editor-validation",

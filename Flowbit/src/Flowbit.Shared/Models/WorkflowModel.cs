@@ -441,6 +441,15 @@ public sealed class FlowNodeModel
     public int? InheritAssignmentFromNodeId { get; set; }
 
     /// <summary>
+    /// Optional bounded expression evaluated by PostgreSQL to decide whether
+    /// this user task belongs in a caller's inbox and may be accessed by that
+    /// caller. Blank values normalize to null.
+    /// </summary>
+    [JsonPropertyName("inboxVisibilityCondition")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InboxVisibilityCondition { get; set; }
+
+    /// <summary>
     /// Optional multi-instance loop configuration for a user task.
     /// </summary>
     [JsonPropertyName("multiInstance")]

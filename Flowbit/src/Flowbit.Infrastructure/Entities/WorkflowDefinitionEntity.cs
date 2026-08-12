@@ -43,4 +43,6 @@ public sealed class WorkflowDefinitionEntity
     public List<WorkflowInstanceVersionChangeBatchItemEntity> VersionChangeBatchItems { get; set; } = [];
 
     public List<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems { get; set; } = [];
+
+    public List<WorkflowDefinitionUserTaskConditionEntity> UserTaskInboxVisibilityConditions { get; set; } = [];
 }

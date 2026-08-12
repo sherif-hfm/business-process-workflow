@@ -835,6 +835,35 @@ Invalid or unresolved expressions evaluate to `false`. Task, flow, assignment, c
 
 Inbox membership, ordering, and `TotalCount` come entirely from the database page. Latest variables and multi-instance state are loaded in page-bounded batches, after which flow roles, bypass roles, and conditions refine only the returned task's visible actions and capabilities. If no action is available, the task remains in the page with `canAct=false` and `canClaim=false`; service evaluation never removes or reorders an inbox item.
 
+User tasks can opt into a separate SQL-authoritative membership rule with
+`inboxVisibilityCondition`. For example:
+
+```json
+{
+  "type": "userTask",
+  "inboxVisibilityCondition": "[sys.claim.department] == [department] and [amount] + [tax] <= Number([config.approvalLimit])"
+}
+```
+
+The bounded language supports parentheses, `and`/`or`/`not` (and
+`&&`/`||`/`!`), `== != > >= < <=`, numeric `+ - * / %`, unary `+/-`, scalar
+variable-to-variable comparisons, and `Number(expr)`. References may address
+declared scalar instance variables, supported scalar `sys.*` values,
+allowlisted `sys.claim.*`, and any `config.*` or `setting.*` key. PostgreSQL
+evaluates the compiled rule before one-per-actor selection, count, ordering,
+and paging. Missing/null/wrongly typed values, invalid numeric conversions,
+overflow, and division/modulo by zero are `UNKNOWN`; only exact `TRUE` includes
+the task. Personal task discovery and actions enforce the same database rule,
+while management, distribution, assignment, and administrative operations keep
+their existing privileged scope. This rule is independent of an outgoing
+sequence flow's `condition`, which continues to control only that action.
+
+String equality is case-insensitive without trimming; ordering is limited to
+numbers, `yyyy-MM-dd` dates, and RFC3339 datetimes. Supported fixed context is
+`sys.user`, `sys.actingFor`, `sys.now`, `sys.today`, and the instance/workflow/
+node IDs and names; `sys.roles` and `mi.*` are intentionally unavailable.
+Inside a bracketed reference, write `\]` for `]` and `\\` for `\`.
+
 ### Acting without a claim
 
 An action may set:

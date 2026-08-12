@@ -1,0 +1,177 @@
+[
+  {
+    "name": "claim to variable equality",
+    "expression": "[sys.claim.department] == [department]",
+    "valid": true
+  },
+  {
+    "name": "numeric arithmetic and config conversion",
+    "expression": "[amount] + [tax] > Number([config.approvalLimit])",
+    "valid": true
+  },
+  {
+    "name": "numeric setting established by variable",
+    "expression": "[requestedAmount] <= [setting.approvalLimit]",
+    "valid": true
+  },
+  {
+    "name": "date and datetime ordering",
+    "expression": "[startDate] < [endDate] and [submittedAt] < [sys.now]",
+    "valid": true
+  },
+  {
+    "name": "operator aliases and unary arithmetic",
+    "expression": "![blocked] || -[amount] + +[tax] < 0",
+    "valid": true
+  },
+  {
+    "name": "boolean variable root",
+    "expression": "[approved]",
+    "valid": true
+  },
+  {
+    "name": "dynamic setting boolean root",
+    "expression": "[setting.enabled]",
+    "valid": true
+  },
+  {
+    "name": "dynamic setting equality",
+    "expression": "[setting.department] == [department]",
+    "valid": true
+  },
+  {
+    "name": "numeric dynamic arithmetic",
+    "expression": "[setting.adjustment] + [amount] >= 10",
+    "valid": true
+  },
+  {
+    "name": "date type established for config string",
+    "expression": "[startDate] <= [config.cutoffDate]",
+    "valid": true
+  },
+  {
+    "name": "escaped context key",
+    "expression": "[config.key\\]] == 'enabled'",
+    "valid": true
+  },
+  {
+    "name": "context key preserves spaces",
+    "expression": "[config. limit ] == 'enabled'",
+    "valid": true
+  },
+  {
+    "name": "whitespace-only context key remains authorable",
+    "expression": "[config. ] == 'enabled'",
+    "valid": true
+  },
+  {
+    "name": "leading zero exponent",
+    "expression": "1e0000000 == 1",
+    "valid": true
+  },
+  {
+    "name": "eight redundant groups",
+    "expression": "(((((((([approved]))))))))",
+    "valid": true
+  },
+  {
+    "name": "mixed unary and grouping depth",
+    "expression": "not (not (not (not (not [approved]))))",
+    "valid": true
+  },
+  {
+    "name": "string ordering",
+    "expression": "[department] < 'sales'",
+    "valid": false
+  },
+  {
+    "name": "config string has no implicit numeric conversion",
+    "expression": "[amount] > [config.approvalLimit]",
+    "valid": false
+  },
+  {
+    "name": "two dynamic settings cannot establish ordering type",
+    "expression": "[setting.first] > [setting.second]",
+    "valid": false
+  },
+  {
+    "name": "null literal",
+    "expression": "[department] == null",
+    "valid": false
+  },
+  {
+    "name": "unsupported function",
+    "expression": "Contains([department], 'sales')",
+    "valid": false
+  },
+  {
+    "name": "unsupported roles array",
+    "expression": "[sys.roles] == 'admin'",
+    "valid": false
+  },
+  {
+    "name": "array variable",
+    "expression": "[reviewers] == 'alice'",
+    "valid": false
+  },
+  {
+    "name": "json variable",
+    "expression": "[payload] == 'value'",
+    "valid": false
+  },
+  {
+    "name": "undeclared variable",
+    "expression": "[missing] == 1",
+    "valid": false
+  },
+  {
+    "name": "boolean arithmetic",
+    "expression": "[approved] + 1 > 1",
+    "valid": false
+  },
+  {
+    "name": "numeric truthiness",
+    "expression": "[amount]",
+    "valid": false
+  },
+  {
+    "name": "not result cannot be arithmetic",
+    "expression": "(not [setting.enabled]) + 1 > 0",
+    "valid": false
+  },
+  {
+    "name": "boolean result cannot be arithmetic",
+    "expression": "([setting.enabled] and true) + 1 > 0",
+    "valid": false
+  },
+  {
+    "name": "arithmetic result is numeric not dynamic string",
+    "expression": "([setting.adjustment] + 1) == '2'",
+    "valid": false
+  },
+  {
+    "name": "unicode digit is not invariant numeric syntax",
+    "expression": "١ == ١",
+    "valid": false
+  },
+  {
+    "name": "numeric expansion exceeds canonical bound",
+    "expression": "999999999999999999999999999999e100 == 1",
+    "valid": false
+  },
+  {
+    "name": "reference whitespace is significant",
+    "expression": "[ amount] > 0",
+    "valid": false
+  },
+  {
+    "name": "nine redundant groups exceed depth",
+    "expression": "(((((((([approved])))))))))",
+    "valid": false
+  },
+  {
+    "name": "raw string line break",
+    "expression": "'first\nsecond' == 'value'",
+    "valid": false
+  }
+]

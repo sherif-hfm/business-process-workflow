@@ -59,9 +59,11 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
             seed.AllowedMatchingInstanceId);
 
         var inbox = await runtime.ListInboxAsync(
-            user: "medical-center-user",
-            roles: [seed.ActorRole],
-            asOf: DateTimeOffset.UtcNow.AddMinutes(1),
+            visibilityContext: new InboxVisibilityEvaluationContext(
+                "medical-center-user",
+                [seed.ActorRole],
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                new Dictionary<string, JsonElement>()),
             instanceId: null,
             workflowId: null,
             workflowKey: seed.PrimaryWorkflowKey,
@@ -318,9 +320,11 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
         VariableFilterExpression? variableFilter,
         DateTimeOffset asOf) =>
         repository.ListInboxAsync(
-            user: "medical-center-user",
-            roles: [seed.ActorRole],
-            asOf,
+            visibilityContext: new InboxVisibilityEvaluationContext(
+                "medical-center-user",
+                [seed.ActorRole],
+                asOf,
+                new Dictionary<string, JsonElement>()),
             instanceId: null,
             workflowId: null,
             workflowKey: seed.PrimaryWorkflowKey,

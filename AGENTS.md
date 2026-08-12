@@ -154,6 +154,20 @@ Storage follows the hybrid design:
   flow roles, claim-bypass roles, and stored-state conditions then refine only
   action visibility and `CanAct`/`CanClaim`. A task with no available action
   stays in its SQL page disabled, and no per-task database reads are performed.
+  A user task may additionally define `inboxVisibilityCondition`. This is a
+  separate, bounded expression compiled when the immutable definition is saved
+  and evaluated by PostgreSQL against latest projected variables plus the
+  caller's allowlisted claims, config, workflow settings, and scalar `sys.*`
+  context. It supports Boolean composition, scalar comparisons, numeric
+  arithmetic, variable-to-variable operands, and `Number(expr)`. Only exact
+  `TRUE` is visible; missing/null/wrongly typed values and arithmetic failures
+  fail closed. Unlike outgoing sequence-flow conditions, this predicate is
+  applied before one-per-actor selection, exact count, ordering, and paging.
+  Personal detail, flow discovery, claim/unclaim, take-flow, legacy actions,
+  and multi-instance interrupts re-check the same database predicate under
+  their normal locks and return 404 when hidden. Management, distribution,
+  assignment, and administrative batch surfaces bypass it; configured recovery
+  unclaim roles may bypass it only for unclaim.
   Entering a user task creates an active work item, leaving completes it, and
   cancellation cancels it. Claim/unclaim updates the work item. The migration
   backfills one token and (where applicable) one active user task for existing

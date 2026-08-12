@@ -9,6 +9,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 {
     public DbSet<WorkflowDefinitionEntity> WorkflowDefinitions => Set<WorkflowDefinitionEntity>();
 
+    public DbSet<WorkflowDefinitionUserTaskConditionEntity> WorkflowDefinitionUserTaskConditions =>
+        Set<WorkflowDefinitionUserTaskConditionEntity>();
+
     public DbSet<WorkflowInstanceEntity> WorkflowInstances => Set<WorkflowInstanceEntity>();
 
     public DbSet<WorkflowInstanceVersionChangeEntity> WorkflowInstanceVersionChanges =>
@@ -119,6 +122,42 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             // Supports the cross-version workflowKey instance search.
             entity.HasIndex(e => e.WorkflowKey);
             entity.HasIndex(e => e.Definition).HasMethod("gin");
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionUserTaskConditionEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_user_task_conditions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_definition_user_task_conditions_program_version",
+                    "\"ProgramVersion\" = 1");
+                table.HasCheckConstraint(
+                    "CK_workflow_definition_user_task_conditions_program_shape",
+                    "(jsonb_typeof(\"ProgramJson\") = 'object' "
+                    + "AND jsonb_typeof(\"ProgramJson\" -> 'version') = 'number' "
+                    + "AND \"ProgramJson\" ->> 'version' = \"ProgramVersion\"::text "
+                    + "AND jsonb_typeof(\"ProgramJson\" -> 'variables') = 'array' "
+                    + "AND jsonb_array_length(\"ProgramJson\" -> 'variables') <= 8 "
+                    + "AND jsonb_typeof(\"ProgramJson\" -> 'externalReferences') = 'array' "
+                    + "AND jsonb_array_length(\"ProgramJson\" -> 'externalReferences') <= 16 "
+                    + "AND jsonb_typeof(\"ProgramJson\" -> 'instructions') = 'array' "
+                    + "AND jsonb_array_length(\"ProgramJson\" -> 'instructions') BETWEEN 1 AND 64 "
+                    + "AND octet_length(\"ProgramJson\"::text) <= 32768) IS TRUE");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeExternalId).HasMaxLength(300);
+            entity.Property(e => e.ProgramJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.VariableNames).HasColumnType("text[]").IsRequired();
+            entity.Property(e => e.ExternalReferences).HasColumnType("text[]").IsRequired();
+            entity.Property(e => e.SemanticFingerprint).HasMaxLength(64).UseCollation("C").IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.NodeId }).IsUnique();
+            entity.HasIndex(e => e.SemanticFingerprint);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.UserTaskInboxVisibilityConditions)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<WorkflowInstanceEntity>(entity =>
@@ -378,6 +417,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.Status, e.ItemIndex });
             entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex }).IsUnique();
             entity.HasIndex(e => e.Roles).HasMethod("gin");
+            entity.HasIndex(e => e.InboxVisibilityConditionId);
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.UserTasks)
                 .HasForeignKey(e => e.InstanceId)
@@ -393,6 +433,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.AdministrativeActionBatch)
                 .WithMany(e => e.CompletedUserTasks)
                 .HasForeignKey(e => e.AdministrativeActionBatchId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.InboxVisibilityCondition)
+                .WithMany(e => e.UserTasks)
+                .HasForeignKey(e => e.InboxVisibilityConditionId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

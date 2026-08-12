@@ -177,6 +177,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         }
 
         var createdAt = DateTimeOffset.UtcNow;
+        var compiledInboxConditions = InboxVisibilityConditionCompiler.CompileAll(definition);
         var entity = new WorkflowDefinitionEntity
         {
             Name = name,
@@ -189,6 +190,23 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             DefaultActivatedAt = isDefault && isPublished ? createdAt : null,
             CreatedAt = createdAt
         };
+        foreach (var (nodeId, compilation) in compiledInboxConditions)
+        {
+            var node = definition.FlowNodes.Single(flowNode => flowNode.Id == nodeId);
+            entity.UserTaskInboxVisibilityConditions.Add(
+                new WorkflowDefinitionUserTaskConditionEntity
+                {
+                    NodeId = nodeId,
+                    NodeName = node.Name,
+                    NodeExternalId = node.ExternalId,
+                    ProgramVersion = compilation.ProgramVersion,
+                    ProgramJson = JsonDocument.Parse(compilation.Program.GetRawText()),
+                    VariableNames = compilation.VariableNames.ToList(),
+                    ExternalReferences = compilation.ExternalReferences.ToList(),
+                    SemanticFingerprint = compilation.SemanticFingerprint,
+                    CreatedAt = createdAt
+                });
+        }
 
         dbContext.WorkflowDefinitions.Add(entity);
         if (isDefault && isPublished && hasBusinessKeys && !scopeActive)

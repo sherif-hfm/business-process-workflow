@@ -204,13 +204,13 @@ public static class WorkflowVersionCompatibilityEvaluator
             }
 
             if (!string.Equals(
-                    UserTaskAccessContract(source, sourceNode),
-                    UserTaskAccessContract(target, targetNode),
+                    UserTaskAccessContract(context.SourceDefinition, sourceNode),
+                    UserTaskAccessContract(context.TargetDefinition, targetNode),
                     StringComparison.Ordinal))
             {
                 blockers.Add(Issue(
                     WorkflowVersionCompatibilityCodes.UserTaskContractChanged,
-                    $"Open user task node #{nodeId} changes its role, claim, assignment, or assignee contract.",
+                    $"Open user task node #{nodeId} changes its role, claim, assignment, assignee, or inbox visibility contract.",
                     nodeId));
             }
 
@@ -280,8 +280,8 @@ public static class WorkflowVersionCompatibilityEvaluator
 
             if (!JsonContractEquals(sourceNode.MultiInstance, targetNode.MultiInstance)
                 || !string.Equals(
-                    UserTaskAccessContract(source, sourceNode),
-                    UserTaskAccessContract(target, targetNode),
+                    UserTaskAccessContract(context.SourceDefinition, sourceNode),
+                    UserTaskAccessContract(context.TargetDefinition, targetNode),
                     StringComparison.Ordinal)
                 || !string.Equals(
                     AttachedTimerContract(source, nodeId),
@@ -874,8 +874,16 @@ public static class WorkflowVersionCompatibilityEvaluator
                         || JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script))));
     }
 
-    private static string UserTaskAccessContract(WorkflowModel definition, FlowNodeModel node) =>
-        JsonSerializer.Serialize(new
+    private static string UserTaskAccessContract(
+        WorkflowDefinitionRecord definitionRecord,
+        FlowNodeModel node)
+    {
+        var compilation = InboxVisibilityConditionCompiler.Compile(
+            node.InboxVisibilityCondition,
+            definitionRecord.Definition);
+        var externalReferences = compilation?.ExternalReferences
+            .ToHashSet(StringComparer.Ordinal) ?? [];
+        return JsonSerializer.Serialize(new
         {
             Roles = CanonicalRoles(node.Roles),
             node.RequiresClaim,
@@ -885,9 +893,20 @@ public static class WorkflowVersionCompatibilityEvaluator
             node.RequiresAssignment,
             node.AssignmentMode,
             node.InheritAssignmentFromNodeId,
-            UnclaimRoles = CanonicalRoles(definition.UnclaimRoles),
-            TaskAssignmentRoles = CanonicalRoles(definition.TaskAssignmentRoles)
+            InboxVisibilityConditionFingerprint = compilation?.SemanticFingerprint,
+            InboxVisibilityWorkflowId = externalReferences.Contains("sys.workflowid")
+                ? definitionRecord.Id
+                : (long?)null,
+            InboxVisibilityWorkflowName = externalReferences.Contains("sys.workflowname")
+                ? definitionRecord.Name
+                : null,
+            InboxVisibilityNodeName = externalReferences.Contains("sys.nodename")
+                ? node.Name
+                : null,
+            UnclaimRoles = CanonicalRoles(definitionRecord.Definition.UnclaimRoles),
+            TaskAssignmentRoles = CanonicalRoles(definitionRecord.Definition.TaskAssignmentRoles)
         });
+    }
 
     private static string AttachedTimerContract(WorkflowModel definition, int hostNodeId) =>
         JsonSerializer.Serialize(definition.FlowNodes

@@ -100,7 +100,8 @@ public static class WorkflowInstanceEndpoints
 
         group.MapGet("/{id:long}/flows", GetAvailableFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>(StatusCodes.Status200OK)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
 
         group.MapPost("/{id:long}/claim", ClaimInstance)
             .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
@@ -443,7 +444,9 @@ public static class WorkflowInstanceEndpoints
         IWorkflowEngineService service,
         CancellationToken cancellationToken)
     {
-        return Results.Ok(await service.GetAvailableFlowsAsync(id, actorResolver.Resolve(principal), cancellationToken));
+        var flows = await service.GetAvailableFlowsAsync(
+            id, actorResolver.Resolve(principal), cancellationToken);
+        return flows is null ? Results.NotFound() : Results.Ok(flows);
     }
 
     private static async Task<IResult> ListUserTasks(

@@ -16,7 +16,8 @@ public static class MultiInstanceExecutionEndpoints
 
         group.MapGet("/{executionId:long}/flows", GetInterruptFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>()
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
 
         group.MapPost("/{executionId:long}/flows/{flowId:int}", TakeInterruptFlow)
             .Produces<InstanceDetailDto>()
@@ -33,9 +34,12 @@ public static class MultiInstanceExecutionEndpoints
         ClaimsPrincipal principal,
         IActorContextResolver actorResolver,
         IWorkflowEngineService service,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await service.GetMultiInstanceInterruptFlowsAsync(
-            executionId, actorResolver.Resolve(principal), cancellationToken));
+        CancellationToken cancellationToken)
+    {
+        var flows = await service.GetMultiInstanceInterruptFlowsAsync(
+            executionId, actorResolver.Resolve(principal), cancellationToken);
+        return flows is null ? Results.NotFound() : Results.Ok(flows);
+    }
 
     private static async Task<IResult> TakeInterruptFlow(
         long executionId,

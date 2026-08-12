@@ -2081,6 +2081,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long>("InstanceId")
                         .HasColumnType("bigint");
 
+                    b.Property<long?>("InboxVisibilityConditionId")
+                        .HasColumnType("bigint");
+
                     b.Property<int?>("ItemIndex")
                         .HasColumnType("integer");
 
@@ -2138,6 +2141,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AdministrativeActionBatchId");
+
+                    b.HasIndex("InboxVisibilityConditionId");
 
                     b.HasIndex("Roles");
 
@@ -2268,6 +2273,70 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("workflow_definitions", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_workflow_definitions_default_activation", "(\"IsPublished\" AND \"IsDefault\" AND \"DefaultActivationId\" IS NOT NULL AND \"DefaultActivatedAt\" IS NOT NULL) OR ((NOT \"IsPublished\" OR NOT \"IsDefault\") AND \"DefaultActivationId\" IS NULL AND \"DefaultActivatedAt\" IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.PrimitiveCollection<List<string>>("ExternalReferences")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<string>("NodeExternalId")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("NodeName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<JsonDocument>("ProgramJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("ProgramVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SemanticFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .UseCollation("C");
+
+                    b.PrimitiveCollection<List<string>>("VariableNames")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SemanticFingerprint");
+
+                    b.HasIndex("WorkflowDefinitionId", "NodeId")
+                        .IsUnique();
+
+                    b.ToTable("workflow_definition_user_task_conditions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_definition_user_task_conditions_program_shape", "(jsonb_typeof(\"ProgramJson\") = 'object' AND jsonb_typeof(\"ProgramJson\" -> 'version') = 'number' AND \"ProgramJson\" ->> 'version' = \"ProgramVersion\"::text AND jsonb_typeof(\"ProgramJson\" -> 'variables') = 'array' AND jsonb_array_length(\"ProgramJson\" -> 'variables') <= 8 AND jsonb_typeof(\"ProgramJson\" -> 'externalReferences') = 'array' AND jsonb_array_length(\"ProgramJson\" -> 'externalReferences') <= 16 AND jsonb_typeof(\"ProgramJson\" -> 'instructions') = 'array' AND jsonb_array_length(\"ProgramJson\" -> 'instructions') BETWEEN 1 AND 64 AND octet_length(\"ProgramJson\"::text) <= 32768) IS TRUE");
+
+                            t.HasCheckConstraint("CK_workflow_definition_user_task_conditions_program_version", "\"ProgramVersion\" = 1");
                         });
                 });
 
@@ -3648,6 +3717,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("AdministrativeActionBatchId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", "InboxVisibilityCondition")
+                        .WithMany("UserTasks")
+                        .HasForeignKey("InboxVisibilityConditionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
                         .WithMany("UserTasks")
                         .HasForeignKey("InstanceId")
@@ -3667,11 +3741,24 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Navigation("AdministrativeActionBatch");
 
+                    b.Navigation("InboxVisibilityCondition");
+
                     b.Navigation("Instance");
 
                     b.Navigation("MultiInstanceExecution");
 
                     b.Navigation("Token");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("UserTaskInboxVisibilityConditions")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", b =>
@@ -4012,7 +4099,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Navigation("TargetVersionChanges");
 
+                    b.Navigation("UserTaskInboxVisibilityConditions");
+
                     b.Navigation("VersionChangeBatchItems");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
+                {
+                    b.Navigation("UserTasks");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", b =>

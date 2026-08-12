@@ -427,6 +427,18 @@ public sealed record InboxSortCriterion(
     InboxSortField Field,
     SortDirection Direction);
 
+/// <summary>
+/// Immutable request snapshot used by PostgreSQL when evaluating authored
+/// inbox visibility programs. FixedValues contains canonical lower-case
+/// scalar sys.*, config.*, setting.*, and allowlisted claim values; row-scoped
+/// instance/workflow/node/delegation values are added by the repository.
+/// </summary>
+public sealed record InboxVisibilityEvaluationContext(
+    string User,
+    IReadOnlyCollection<string> Roles,
+    DateTimeOffset AsOf,
+    IReadOnlyDictionary<string, JsonElement> FixedValues);
+
 public sealed record InboxListItem(
     long InstanceId,
     long WorkflowId,

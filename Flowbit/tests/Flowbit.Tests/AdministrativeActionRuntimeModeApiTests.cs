@@ -219,6 +219,8 @@ public sealed class AdministrativeActionRuntimeModeApiTests(PostgresApiFixture f
             "evidence-operator");
 
         await using var db = fixture.CreateDbContext();
+        Assert.NotNull((await db.UserTasks.SingleAsync(task => task.InstanceId == instance.Id))
+            .InboxVisibilityConditionId);
         var occurrence = await db.SequenceFlowOccurrences.SingleAsync(item =>
             item.InstanceId == instance.Id && item.SequenceFlowId == 201);
         Assert.Equal(NodeExecutionCompletionReasons.AdministrativeAction, occurrence.Kind);
@@ -595,6 +597,9 @@ public sealed class AdministrativeActionRuntimeModeApiTests(PostgresApiFixture f
                     Name = "Waiting user task",
                     Type = BpmnFlowNodeTypes.UserTask,
                     Roles = ["Worker"],
+                    // Administrative batch selection/execution deliberately
+                    // bypasses personal inbox visibility.
+                    InboxVisibilityCondition = "false",
                     AsyncAfter = asyncAfter
                 },
                 new FlowNodeModel { Id = 3, Name = "Done", Type = BpmnFlowNodeTypes.EndEvent }

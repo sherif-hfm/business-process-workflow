@@ -37,7 +37,8 @@ public static class UserTaskEndpoints
             .Produces(StatusCodes.Status404NotFound);
         group.MapGet("/{taskId:long}/flows", GetFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>()
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
         group.MapPost("/{taskId:long}/claim", Claim)
             .Produces<UserTaskDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -131,8 +132,12 @@ public static class UserTaskEndpoints
     }
 
     private static async Task<IResult> GetFlows(long taskId, ClaimsPrincipal principal,
-        IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken) =>
-        Results.Ok(await service.GetUserTaskAvailableFlowsAsync(taskId, actorResolver.Resolve(principal), cancellationToken));
+        IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)
+    {
+        var flows = await service.GetUserTaskAvailableFlowsAsync(
+            taskId, actorResolver.Resolve(principal), cancellationToken);
+        return flows is null ? Results.NotFound() : Results.Ok(flows);
+    }
 
     private static async Task<IResult> Claim(long taskId, ClaimsPrincipal principal,
         IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)

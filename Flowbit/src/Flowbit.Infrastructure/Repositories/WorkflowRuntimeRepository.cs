@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
@@ -207,9 +208,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     }
 
     public async Task<PagedResult<InboxListItem>> ListInboxAsync(
-        string user,
-        IReadOnlyCollection<string> roles,
-        DateTimeOffset asOf,
+        InboxVisibilityEvaluationContext visibilityContext,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -222,47 +221,36 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         int pageSize,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(visibilityContext);
+        var user = visibilityContext.User;
+        var roles = visibilityContext.Roles;
+        var asOf = visibilityContext.AsOf;
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
         var (where, args) = BuildInboxWhere(
-            user, roles, asOf, instanceId, workflowId, workflowKey, businessKey,
+            visibilityContext, instanceId, workflowId, workflowKey, businessKey,
             nodeId, nodeExternalId, variableFilter);
         var eligibleOrderBy = BuildInboxOrderBy(sort, "e");
         var pageOrderBy = BuildInboxOrderBy(sort, "page");
         var eligibleCte = $"""
-            WITH eligible AS (
+            WITH base_candidates AS MATERIALIZED (
                 SELECT ut."Id",
                        ut."InstanceId",
                        ut."MultiInstanceExecutionId",
+                       ut."InboxVisibilityConditionId",
                        delegation."Id" AS "DelegationId",
                        delegation."Delegator" AS "ActingFor",
                        ut."CreatedAt" AS "TaskCreatedAt",
                        ut."UpdatedAt" AS "TaskUpdatedAt",
                        w."CreatedAt" AS "InstanceCreatedAt",
                        w."UpdatedAt" AS "InstanceUpdatedAt",
-                       ROW_NUMBER() OVER (
-                           PARTITION BY CASE
-                               WHEN COALESCE(mie."OnePerActor", FALSE) THEN mie."Id"
-                               ELSE -ut."Id"
-                           END,
-                           CASE
-                               WHEN COALESCE(mie."OnePerActor", FALSE)
-                               THEN lower(COALESCE(delegation."Delegator", @user))
-                               ELSE ''
-                           END
-                           ORDER BY
-                               CASE
-                                   WHEN COALESCE(mie."OnePerActor", FALSE)
-                                        AND lower(ut."Assignee") =
-                                            lower(COALESCE(delegation."Delegator", @user)) THEN 0
-                                   WHEN COALESCE(mie."OnePerActor", FALSE)
-                                        AND lower(ut."ClaimedBy") =
-                                            lower(COALESCE(delegation."Delegator", @user)) THEN 1
-                                   ELSE 2
-                               END,
-                               ut."UpdatedAt" DESC,
-                               ut."Id" DESC
-                       ) AS inbox_rank
+                       COALESCE(mie."OnePerActor", FALSE) AS "OnePerActor",
+                       ut."Assignee",
+                       ut."ClaimedBy",
+                       w."WorkflowDefinitionId",
+                       wd."Name" AS "WorkflowName",
+                       ut."NodeId",
+                       ut."NodeName"
                 FROM flowbit.user_tasks ut
                 JOIN flowbit.workflow_instances w ON ut."InstanceId" = w."Id"
                 JOIN flowbit.workflow_definitions wd ON w."WorkflowDefinitionId" = wd."Id"
@@ -281,8 +269,109 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     LIMIT 1
                 ) delegation ON TRUE
                 {where}
+            ),
+            evaluation_targets AS MATERIALIZED (
+                SELECT DISTINCT ON (
+                           candidate."InstanceId",
+                           candidate."InboxVisibilityConditionId",
+                           COALESCE(lower(candidate."ActingFor"), ''))
+                       candidate."InstanceId",
+                       candidate."InboxVisibilityConditionId",
+                       candidate."ActingFor",
+                       candidate."WorkflowDefinitionId",
+                       candidate."WorkflowName",
+                       candidate."NodeId",
+                       candidate."NodeName"
+                FROM base_candidates candidate
+                WHERE candidate."InboxVisibilityConditionId" IS NOT NULL
+                ORDER BY candidate."InstanceId",
+                         candidate."InboxVisibilityConditionId",
+                         COALESCE(lower(candidate."ActingFor"), ''),
+                         candidate."Id"
+            ),
+            visibility_results AS MATERIALIZED (
+                SELECT target."InstanceId",
+                       target."InboxVisibilityConditionId",
+                       target."ActingFor"
+                FROM evaluation_targets target
+                JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
+                  ON inbox_condition."Id" = target."InboxVisibilityConditionId"
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
+                    FROM flowbit.instance_variable_current_values value
+                    WHERE value."InstanceId" = target."InstanceId"
+                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                ) inbox_values ON TRUE
+                WHERE flowbit.evaluate_inbox_visibility_condition(
+                    inbox_condition."ProgramJson",
+                    COALESCE(inbox_values."ValuesJson", jsonb_build_object()),
+                    (@visibilityFixedValues)::jsonb
+                    || jsonb_strip_nulls(jsonb_build_object(
+                        'sys.user', @user,
+                        'sys.actingfor', target."ActingFor",
+                        'sys.instanceid', target."InstanceId",
+                        'sys.workflowid', target."WorkflowDefinitionId",
+                        'sys.workflowname', target."WorkflowName",
+                        'sys.nodeid', target."NodeId",
+                        'sys.nodename', target."NodeName"
+                    ))
+                ) IS TRUE
+            ),
+            visible_candidates AS (
+                SELECT candidate.*
+                FROM base_candidates candidate
+                WHERE candidate."InboxVisibilityConditionId" IS NULL
+                   OR EXISTS (
+                        SELECT 1
+                        FROM visibility_results visible
+                        WHERE visible."InstanceId" = candidate."InstanceId"
+                          AND visible."InboxVisibilityConditionId" = candidate."InboxVisibilityConditionId"
+                          AND lower(visible."ActingFor") IS NOT DISTINCT FROM lower(candidate."ActingFor")
+                   )
+            ),
+            eligible AS (
+                SELECT candidate."Id",
+                       candidate."InstanceId",
+                       candidate."MultiInstanceExecutionId",
+                       candidate."DelegationId",
+                       candidate."ActingFor",
+                       candidate."TaskCreatedAt",
+                       candidate."TaskUpdatedAt",
+                       candidate."InstanceCreatedAt",
+                       candidate."InstanceUpdatedAt",
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CASE
+                               WHEN candidate."OnePerActor" THEN candidate."MultiInstanceExecutionId"
+                               ELSE -candidate."Id"
+                           END,
+                           CASE
+                               WHEN candidate."OnePerActor"
+                               THEN lower(COALESCE(candidate."ActingFor", @user))
+                               ELSE ''
+                           END
+                           ORDER BY
+                               CASE
+                                   WHEN candidate."OnePerActor"
+                                        AND lower(candidate."Assignee") =
+                                            lower(COALESCE(candidate."ActingFor", @user)) THEN 0
+                                   WHEN candidate."OnePerActor"
+                                        AND lower(candidate."ClaimedBy") =
+                                            lower(COALESCE(candidate."ActingFor", @user)) THEN 1
+                                   ELSE 2
+                               END,
+                               candidate."TaskUpdatedAt" DESC,
+                               candidate."Id" DESC
+                       ) AS inbox_rank
+                FROM visible_candidates candidate
             )
             """;
+
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.RepeatableRead,
+                cancellationToken)
+            : null;
 
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
@@ -294,6 +383,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         // so avoid issuing the projection query for an empty inbox.
         if (totalCount == 0)
         {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
             return new PagedResult<InboxListItem>([], page, pageSize, totalCount);
         }
 
@@ -424,6 +517,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToListAsync(cancellationToken);
 
         var items = rows.Select(ToInboxListItem).ToList();
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken);
+        }
         return new PagedResult<InboxListItem>(items, page, pageSize, totalCount);
     }
 
@@ -631,10 +728,22 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             totalCount);
     }
 
+    private static string SerializeFixedVisibilityValues(
+        InboxVisibilityEvaluationContext visibilityContext)
+    {
+        var canonical = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var (key, value) in visibilityContext.FixedValues)
+        {
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                canonical[key.ToLowerInvariant()] = value;
+            }
+        }
+        return JsonSerializer.Serialize(canonical);
+    }
+
     private static (StringBuilder Where, List<(string Name, object Value)> Args) BuildInboxWhere(
-        string user,
-        IReadOnlyCollection<string> roles,
-        DateTimeOffset asOf,
+        InboxVisibilityEvaluationContext visibilityContext,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -643,6 +752,9 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         string? nodeExternalId,
         VariableFilterExpression? variableFilter)
     {
+        var user = visibilityContext.User;
+        var roles = visibilityContext.Roles;
+        var asOf = visibilityContext.AsOf;
         // Roles are matched case-insensitively (mirrors the in-memory role check),
         // so compare lower-cased node roles against lower-cased actor roles.
         var lowerRoles = roles
@@ -712,7 +824,8 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             ("completedTask", UserTaskStatuses.Completed),
             ("user", user),
             ("delegationAsOf", asOf),
-            ("lowerRoles", lowerRoles)
+            ("lowerRoles", lowerRoles),
+            ("visibilityFixedValues", SerializeFixedVisibilityValues(visibilityContext))
         };
 
         AppendInstanceIdFilter(where, args, instanceId);
@@ -3680,6 +3793,111 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         return ToRecord(entity, nodeExecutionId);
     }
 
+    public Task<bool> IsUserTaskVisibleAsync(
+        long taskId,
+        InboxVisibilityEvaluationContext visibilityContext,
+        string? actingFor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(visibilityContext);
+        var args = VisibilityPredicateParameters(visibilityContext, actingFor);
+        args.Add(("taskId", taskId));
+#pragma warning disable EF1002
+        return dbContext.Database.SqlQueryRaw<bool>(
+                """
+                SELECT CASE
+                    WHEN ut."InboxVisibilityConditionId" IS NULL THEN TRUE
+                    ELSE flowbit.evaluate_inbox_visibility_condition(
+                        inbox_condition."ProgramJson",
+                        COALESCE(inbox_values."ValuesJson", jsonb_build_object()),
+                        (@visibilityFixedValues)::jsonb
+                        || jsonb_strip_nulls(jsonb_build_object(
+                            'sys.user', @user,
+                            'sys.actingfor', @actingFor::text,
+                            'sys.instanceid', w."Id",
+                            'sys.workflowid', w."WorkflowDefinitionId",
+                            'sys.workflowname', wd."Name",
+                            'sys.nodeid', ut."NodeId",
+                            'sys.nodename', ut."NodeName"
+                        ))
+                    ) IS TRUE
+                END AS "Value"
+                FROM flowbit.user_tasks ut
+                JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+                JOIN flowbit.workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
+                LEFT JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
+                       ON inbox_condition."Id" = ut."InboxVisibilityConditionId"
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
+                    FROM flowbit.instance_variable_current_values value
+                    WHERE value."InstanceId" = w."Id"
+                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                ) inbox_values ON inbox_condition."Id" IS NOT NULL
+                WHERE ut."Id" = @taskId
+                """,
+                BuildParameters(args))
+            .SingleOrDefaultAsync(cancellationToken);
+#pragma warning restore EF1002
+    }
+
+    public Task<bool> IsUserTaskNodeVisibleAsync(
+        long instanceId,
+        int nodeId,
+        InboxVisibilityEvaluationContext visibilityContext,
+        string? actingFor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(visibilityContext);
+        var args = VisibilityPredicateParameters(visibilityContext, actingFor);
+        args.Add(("instanceId", instanceId));
+        args.Add(("nodeId", nodeId));
+#pragma warning disable EF1002
+        return dbContext.Database.SqlQueryRaw<bool>(
+                """
+                SELECT CASE
+                    WHEN inbox_condition."Id" IS NULL THEN TRUE
+                    ELSE flowbit.evaluate_inbox_visibility_condition(
+                        inbox_condition."ProgramJson",
+                        COALESCE(inbox_values."ValuesJson", jsonb_build_object()),
+                        (@visibilityFixedValues)::jsonb
+                        || jsonb_strip_nulls(jsonb_build_object(
+                            'sys.user', @user,
+                            'sys.actingfor', @actingFor::text,
+                            'sys.instanceid', w."Id",
+                            'sys.workflowid', w."WorkflowDefinitionId",
+                            'sys.workflowname', wd."Name",
+                            'sys.nodeid', @nodeId,
+                            'sys.nodename', inbox_condition."NodeName"
+                        ))
+                    ) IS TRUE
+                END AS "Value"
+                FROM flowbit.workflow_instances w
+                JOIN flowbit.workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
+                LEFT JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
+                       ON inbox_condition."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                      AND inbox_condition."NodeId" = @nodeId
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
+                    FROM flowbit.instance_variable_current_values value
+                    WHERE value."InstanceId" = w."Id"
+                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                ) inbox_values ON inbox_condition."Id" IS NOT NULL
+                WHERE w."Id" = @instanceId
+                """,
+                BuildParameters(args))
+            .SingleOrDefaultAsync(cancellationToken);
+#pragma warning restore EF1002
+    }
+
+    private static List<(string Name, object Value)> VisibilityPredicateParameters(
+        InboxVisibilityEvaluationContext visibilityContext,
+        string? actingFor) =>
+        [
+            ("user", visibilityContext.User),
+            ("actingFor", (object?)actingFor ?? DBNull.Value),
+            ("visibilityFixedValues", SerializeFixedVisibilityValues(visibilityContext))
+        ];
+
     public async Task<UserTaskRecord?> GetActiveUserTaskAsync(
         long instanceId,
         bool forUpdate,
@@ -3787,13 +4005,16 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
     public async Task<PagedResult<UserTaskRecord>> ListUserTasksPageAsync(
         long instanceId,
         string? status,
-        string user,
-        IReadOnlyCollection<string> roles,
-        DateTimeOffset asOf,
+        InboxVisibilityEvaluationContext visibilityContext,
+        bool enforcePersonalAuthorization,
         int page,
         int pageSize,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(visibilityContext);
+        var user = visibilityContext.User;
+        var roles = visibilityContext.Roles;
+        var asOf = visibilityContext.AsOf;
         var lowerRoles = roles
             .Where(role => !string.IsNullOrWhiteSpace(role))
             .Select(role => role.Trim().ToLowerInvariant())
@@ -3801,6 +4022,10 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
             .ToArray();
         var where = new StringBuilder("""
              WHERE ut."InstanceId" = @instanceId
+            """);
+        if (enforcePersonalAuthorization)
+        {
+            where.Append("""
                AND (
                     ut."Assignee" IS NULL
                     OR lower(ut."Assignee") = lower(@user)
@@ -3815,12 +4040,14 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                     )
                )
             """);
+        }
         var args = new List<(string Name, object Value)>
         {
             ("instanceId", instanceId),
             ("user", user),
             ("delegationAsOf", asOf),
-            ("lowerRoles", lowerRoles)
+            ("lowerRoles", lowerRoles),
+            ("visibilityFixedValues", SerializeFixedVisibilityValues(visibilityContext))
         };
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -3829,28 +4056,129 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         }
 
 #pragma warning disable EF1002
-        const string from = """
-            FROM flowbit.user_tasks ut
-            JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
-            LEFT JOIN LATERAL (
-                SELECT d."Id", d."Delegator"
-                FROM flowbit.user_delegations d
-                WHERE d."Delegate" = @user
-                  AND d."Delegator" = COALESCE(ut."Assignee", ut."ClaimedBy")
-                  AND d."WorkflowKey" = w."WorkflowKey"
-                  AND d."RevokedAt" IS NULL
-                  AND d."ValidFrom" <= @delegationAsOf
-                  AND @delegationAsOf < d."ValidUntil"
-                  AND d."AcceptanceState" IN ('notRequired', 'accepted')
-                ORDER BY d."ValidFrom" DESC, d."Id" DESC
-                LIMIT 1
-            ) delegation ON TRUE
+        var eligibleCte = $"""
+            WITH base_candidates AS MATERIALIZED (
+                SELECT ut."Id",
+                       ut."InstanceId",
+                       ut."InboxVisibilityConditionId",
+                       CASE
+                           WHEN delegation."Id" IS NOT NULL
+                                AND (cardinality(ut."Roles") = 0 OR EXISTS (
+                                    SELECT 1 FROM unnest(ut."Roles") AS node_role
+                                    WHERE lower(node_role) = ANY(@lowerRoles)))
+                           THEN delegation."Id"
+                       END AS "DelegationId",
+                       CASE
+                           WHEN delegation."Id" IS NOT NULL
+                                AND (cardinality(ut."Roles") = 0 OR EXISTS (
+                                    SELECT 1 FROM unnest(ut."Roles") AS node_role
+                                    WHERE lower(node_role) = ANY(@lowerRoles)))
+                           THEN delegation."Delegator"
+                       END AS "ActingFor",
+                       w."WorkflowDefinitionId",
+                       wd."Name" AS "WorkflowName",
+                       ut."NodeId",
+                       ut."NodeName"
+                FROM flowbit.user_tasks ut
+                JOIN flowbit.workflow_instances w ON w."Id" = ut."InstanceId"
+                JOIN flowbit.workflow_definitions wd ON wd."Id" = w."WorkflowDefinitionId"
+                LEFT JOIN LATERAL (
+                    SELECT d."Id", d."Delegator"
+                    FROM flowbit.user_delegations d
+                    WHERE d."Delegate" = @user
+                      AND d."Delegator" = COALESCE(ut."Assignee", ut."ClaimedBy")
+                      AND d."WorkflowKey" = w."WorkflowKey"
+                      AND d."RevokedAt" IS NULL
+                      AND d."ValidFrom" <= @delegationAsOf
+                      AND @delegationAsOf < d."ValidUntil"
+                      AND d."AcceptanceState" IN ('notRequired', 'accepted')
+                    ORDER BY d."ValidFrom" DESC, d."Id" DESC
+                    LIMIT 1
+                ) delegation ON TRUE
+                {where}
+            ),
+            evaluation_targets AS MATERIALIZED (
+                SELECT DISTINCT ON (
+                           candidate."InstanceId",
+                           candidate."InboxVisibilityConditionId",
+                           COALESCE(lower(candidate."ActingFor"), ''))
+                       candidate."InstanceId",
+                       candidate."InboxVisibilityConditionId",
+                       candidate."ActingFor",
+                       candidate."WorkflowDefinitionId",
+                       candidate."WorkflowName",
+                       candidate."NodeId",
+                       candidate."NodeName"
+                FROM base_candidates candidate
+                WHERE candidate."InboxVisibilityConditionId" IS NOT NULL
+                ORDER BY candidate."InstanceId",
+                         candidate."InboxVisibilityConditionId",
+                         COALESCE(lower(candidate."ActingFor"), ''),
+                         candidate."Id"
+            ),
+            visibility_results AS MATERIALIZED (
+                SELECT target."InstanceId",
+                       target."InboxVisibilityConditionId",
+                       target."ActingFor"
+                FROM evaluation_targets target
+                JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
+                  ON inbox_condition."Id" = target."InboxVisibilityConditionId"
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
+                    FROM flowbit.instance_variable_current_values value
+                    WHERE value."InstanceId" = target."InstanceId"
+                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                ) inbox_values ON TRUE
+                WHERE flowbit.evaluate_inbox_visibility_condition(
+                    inbox_condition."ProgramJson",
+                    COALESCE(inbox_values."ValuesJson", jsonb_build_object()),
+                    (@visibilityFixedValues)::jsonb
+                    || jsonb_strip_nulls(jsonb_build_object(
+                        'sys.user', @user,
+                        'sys.actingfor', target."ActingFor",
+                        'sys.instanceid', target."InstanceId",
+                        'sys.workflowid', target."WorkflowDefinitionId",
+                        'sys.workflowname', target."WorkflowName",
+                        'sys.nodeid', target."NodeId",
+                        'sys.nodename', target."NodeName"
+                    ))
+                ) IS TRUE
+            ),
+            eligible AS MATERIALIZED (
+                SELECT candidate."Id",
+                       candidate."DelegationId",
+                       candidate."ActingFor"
+                FROM base_candidates candidate
+                WHERE candidate."InboxVisibilityConditionId" IS NULL
+                   OR EXISTS (
+                        SELECT 1
+                        FROM visibility_results visible
+                        WHERE visible."InstanceId" = candidate."InstanceId"
+                          AND visible."InboxVisibilityConditionId" = candidate."InboxVisibilityConditionId"
+                          AND lower(visible."ActingFor") IS NOT DISTINCT FROM lower(candidate."ActingFor")
+                   )
+            )
             """;
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.RepeatableRead,
+                cancellationToken)
+            : null;
         var totalCount = await dbContext.Database
             .SqlQueryRaw<long>(
-                $"SELECT COUNT(*) AS \"Value\" {from} {where}",
+                $"{eligibleCte} SELECT COUNT(*) AS \"Value\" FROM eligible",
                 BuildParameters(args))
             .SingleAsync(cancellationToken);
+        if (totalCount == 0)
+        {
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
+
+            return new PagedResult<UserTaskRecord>([], page, pageSize, totalCount);
+        }
         var pageArgs = new List<(string Name, object Value)>(args)
         {
             ("take", pageSize),
@@ -3859,6 +4187,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         var taskRows = await dbContext.Database
             .SqlQueryRaw<UserTaskPageRow>(
                 $"""
+                {eligibleCte}
                 SELECT ut."Id" AS "Id",
                        ut."InstanceId" AS "InstanceId",
                        ut."TokenId" AS "TokenId",
@@ -3884,18 +4213,23 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
                        ut."UpdatedAt" AS "UpdatedAt",
                        ut."CompletedAt" AS "CompletedAt",
                        node_execution."Id" AS "NodeExecutionId",
-                       delegation."Id" AS "DelegationId",
-                       delegation."Delegator" AS "ActingFor"
-                {from}
+                       eligible."DelegationId" AS "DelegationId",
+                       eligible."ActingFor" AS "ActingFor"
+                FROM eligible
+                JOIN flowbit.user_tasks ut ON ut."Id" = eligible."Id"
                 LEFT JOIN flowbit.node_executions node_execution
                        ON node_execution."UserTaskId" = ut."Id"
-                {where}
                 ORDER BY ut."UpdatedAt" DESC, ut."Id" DESC
                 LIMIT @take OFFSET @skip
                 """,
                 BuildParameters(pageArgs))
             .ToListAsync(cancellationToken);
 #pragma warning restore EF1002
+
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken);
+        }
 
         return new PagedResult<UserTaskRecord>(
             taskRows.Select(ToUserTaskRecord).ToList(), page, pageSize, totalCount);

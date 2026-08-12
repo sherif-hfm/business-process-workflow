@@ -69,9 +69,7 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken);
 
     Task<PagedResult<InboxListItem>> ListInboxAsync(
-        string user,
-        IReadOnlyCollection<string> roles,
-        DateTimeOffset asOf,
+        InboxVisibilityEvaluationContext visibilityContext,
         long? instanceId,
         long? workflowId,
         string? workflowKey,
@@ -437,6 +435,19 @@ public interface IWorkflowRuntimeRepository
 
     Task<UserTaskRecord?> GetUserTaskAsync(long taskId, bool forUpdate, CancellationToken cancellationToken);
 
+    Task<bool> IsUserTaskVisibleAsync(
+        long taskId,
+        InboxVisibilityEvaluationContext visibilityContext,
+        string? actingFor,
+        CancellationToken cancellationToken);
+
+    Task<bool> IsUserTaskNodeVisibleAsync(
+        long instanceId,
+        int nodeId,
+        InboxVisibilityEvaluationContext visibilityContext,
+        string? actingFor,
+        CancellationToken cancellationToken);
+
     Task<UserTaskRecord?> GetActiveUserTaskAsync(
         long instanceId,
         bool forUpdate,
@@ -454,9 +465,8 @@ public interface IWorkflowRuntimeRepository
     Task<PagedResult<UserTaskRecord>> ListUserTasksPageAsync(
         long instanceId,
         string? status,
-        string user,
-        IReadOnlyCollection<string> roles,
-        DateTimeOffset asOf,
+        InboxVisibilityEvaluationContext visibilityContext,
+        bool enforcePersonalAuthorization,
         int page,
         int pageSize,
         CancellationToken cancellationToken);

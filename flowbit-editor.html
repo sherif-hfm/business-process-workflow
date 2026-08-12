@@ -1138,6 +1138,11 @@
   }
   .field input:hover, .field select:hover, .field textarea:hover { border-color: var(--control-border-strong); }
   .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); outline: none; }
+  .field textarea[aria-invalid="true"] { border-color: var(--validation-error); }
+  .field textarea[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--validation-error) 24%, transparent); }
+  .expression-validation { margin: 6px 0 0; color: var(--validation-error); font-size: 12px; line-height: 1.4; }
+  .expression-help { margin-top: -5px; overflow-wrap: anywhere; }
+  .expression-help code { color: var(--text); }
   .inspector-card {
     padding: 11px;
     background: var(--card-bg);
@@ -3304,6 +3309,10 @@ function applyTypeInvariants(node) {
     node.requiresAssignment = false;
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
     node.inheritAssignmentFromNodeId = null;
+    delete node.inboxVisibilityCondition;
+  } else if (typeof node.inboxVisibilityCondition === "string" &&
+      !node.inboxVisibilityCondition.trim()) {
+    node.inboxVisibilityCondition = null;
   }
   if (isErrorEndEventType(node.type)) {
     if (typeof node.errorCode !== "string") node.errorCode = "";
@@ -5136,6 +5145,7 @@ function renderNodeInspector() {
 
   if (isUserTaskType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
+    renderInboxVisibilityConditionField(node);
     if (!node.multiInstance) {
       inspector.appendChild(
         variableCheckbox("Requires direct assignment", node.requiresAssignment, checked => {
@@ -7423,6 +7433,68 @@ function textareaField(label, value, onInput, rows = 3) {
   f.appendChild(input);
   inspector.appendChild(f);
 }
+function renderInboxVisibilityConditionField(node) {
+  const f = document.createElement("div");
+  f.className = "field";
+  f.innerHTML = "<label>Inbox visibility condition (optional)</label>";
+  const input = document.createElement("textarea");
+  input.rows = 4;
+  input.spellcheck = false;
+  input.placeholder = "[sys.claim.department] == [department]";
+  input.value = node.inboxVisibilityCondition ?? "";
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const statusId = "inbox-visibility-status-" + String(node.id);
+  status.id = statusId;
+  input.setAttribute("aria-describedby", statusId);
+  const updateValidation = () => {
+    const compiled = compileInboxVisibilityCondition(
+      node.inboxVisibilityCondition,
+      model);
+    if (compiled.ok) {
+      input.setAttribute("aria-invalid", "false");
+      status.textContent = "";
+    } else {
+      input.setAttribute("aria-invalid", "true");
+      status.textContent = compiled.error;
+    }
+  };
+  input.oninput = () => {
+    node.inboxVisibilityCondition = input.value.trim() ? input.value : null;
+    updateValidation();
+  };
+  f.appendChild(input);
+  f.appendChild(status);
+  inspector.appendChild(f);
+  updateValidation();
+
+  const help = document.createElement("p");
+  help.className = "empty-note expression-help";
+  help.innerHTML =
+    "Evaluated in PostgreSQL before inbox count, ordering, and paging; a missing, " +
+    "invalid, or non-true result hides the task. References use brackets, for example " +
+    "<code>[sys.claim.department] == [department]</code>, " +
+    "<code>[amount] + [tax] &gt; Number([config.approvalLimit])</code>, or " +
+    "<code>[requestedAmount] &lt;= [setting.approvalLimit]</code>. Date/time example: " +
+    "<code>[startDate] &lt; [endDate] and [submittedAt] &lt; [sys.now]</code>. Supports " +
+    "<code>and/or/not</code> (or <code>&amp;&amp;/||/!</code>), comparisons, numeric " +
+    "<code>+ - * / %</code>, parentheses, booleans, strings, and " +
+    "<code>Number(expr)</code>. Strings are not ordered and numeric strings require " +
+    "<code>Number()</code>; string equality is case-insensitive without trimming. " +
+    "Dates use <code>yyyy-MM-dd</code>; datetimes are RFC3339 instants. Supported " +
+    "context is <code>sys.user</code>, <code>sys.actingFor</code>, " +
+    "<code>sys.now</code>, <code>sys.today</code>, instance/workflow/node IDs and " +
+    "names, allowlisted <code>sys.claim.*</code>, and any <code>config.*</code> or " +
+    "<code>setting.*</code> key. <code>sys.roles</code> and <code>mi.*</code> are " +
+    "unsupported. In bracket keys, escape <code>]</code> as <code>\\]</code> and " +
+    "<code>\\</code> as <code>\\\\</code>. Limits: 4 KiB UTF-8 source, depth 8, " +
+    "64 instructions, 16 comparisons, 8 distinct instance-variable references, " +
+    "16 external references, 16 literals, 512-byte string literals, 128-character " +
+    "numeric text, and exponent magnitude 100.";
+  inspector.appendChild(help);
+}
 function selectField(label, options, value, onChange) {
   const f = document.createElement("div");
   f.className = "field";
@@ -8975,6 +9047,599 @@ function ordinalIgnoreCaseAttributeKey(value) {
   }).join("");
 }
 
+const INBOX_VISIBILITY_LIMITS = Object.freeze({
+  sourceBytes: 4096,
+  depth: 8,
+  instructions: 64,
+  comparisons: 16,
+  variableReferences: 8,
+  externalReferences: 16,
+  literals: 16,
+  stringLiteralBytes: 512,
+  numericCharacters: 128,
+  numericExponent: 100
+});
+
+function inboxVisibilityUtf8Length(value) {
+  let length = 0;
+  for (const character of Array.from(String(value))) {
+    const scalar = character.codePointAt(0);
+    if (scalar <= 0x7f) length += 1;
+    else if (scalar <= 0x7ff) length += 2;
+    else if (scalar <= 0xffff) length += 3;
+    else length += 4;
+  }
+  return length;
+}
+
+function buildInboxVisibilitySymbols(definitionOrVariables) {
+  const definition = Array.isArray(definitionOrVariables)
+    ? { variables: definitionOrVariables }
+    : (definitionOrVariables && typeof definitionOrVariables === "object"
+      ? definitionOrVariables
+      : {});
+  const symbols = new Map();
+  const add = (nameValue, dataTypeValue, isArrayValue, producer) => {
+    if (typeof nameValue !== "string" || !nameValue.trim()) return;
+    const name = nameValue.trim();
+    const key = name.toLowerCase();
+    const dataType = typeof dataTypeValue === "string"
+      ? dataTypeValue.trim().toLowerCase()
+      : "";
+    const isArray = isArrayValue === true;
+    const existing = symbols.get(key);
+    if (!existing) {
+      symbols.set(key, {
+        name,
+        dataType,
+        isArray,
+        producer: producer || "definition",
+        conflict: false
+      });
+      return;
+    }
+    if (existing.name !== name || existing.dataType !== dataType ||
+        existing.isArray !== isArray) {
+      existing.conflict = true;
+    }
+  };
+  const addVariables = (variables, producer) => {
+    for (const variable of Array.isArray(variables) ? variables : []) {
+      if (!variable || typeof variable !== "object") continue;
+      add(variable.name, variable.dataType, variable.isArray, producer);
+    }
+  };
+  const addMappings = (mappings, producer) => {
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+      if (!mapping || typeof mapping !== "object") continue;
+      add(mapping.variable, mapping.dataType, mapping.isArray, producer);
+    }
+  };
+
+  addVariables(definition.variables, "process variables");
+  for (const node of Array.isArray(definition.flowNodes) ? definition.flowNodes : []) {
+    if (!node || typeof node !== "object") continue;
+    const nodeProducer = "flow node #" + String(node.id);
+    addVariables(node.variables, nodeProducer);
+    if (node.service && typeof node.service === "object") {
+      addMappings(node.service.outputMappings, nodeProducer + " service output");
+      add(node.service.statusVariable, "number", false, nodeProducer + " service status");
+    }
+    if (node.message && typeof node.message === "object") {
+      addMappings(node.message.outputMappings, nodeProducer + " message output");
+    }
+    add(node.errorVariable, "string", false, nodeProducer + " boundary error");
+    if (node.idempotency && typeof node.idempotency === "object") {
+      add(node.idempotency.variable, "string", false,
+        nodeProducer + " idempotency variable");
+    }
+  }
+  for (const flow of Array.isArray(definition.sequenceFlows) ? definition.sequenceFlows : []) {
+    if (!flow || typeof flow !== "object") continue;
+    addVariables(flow.variables, "sequence flow #" + String(flow.id));
+  }
+  return symbols;
+}
+
+function compileInboxVisibilityCondition(source, definitionOrVariables) {
+  const limits = INBOX_VISIBILITY_LIMITS;
+  const successEmpty = {
+    ok: true,
+    empty: true,
+    instructions: [],
+    variableReferences: [],
+    externalReferences: []
+  };
+  if (source === undefined || source === null) return successEmpty;
+  if (typeof source !== "string") {
+    return { ok: false, error: "Inbox visibility condition must be a string." };
+  }
+  if (!source.trim()) return successEmpty;
+  for (let index = 0; index < source.length; index++) {
+    const code = source.charCodeAt(index);
+    if (code === 0) {
+      return { ok: false, error: "Inbox visibility condition cannot contain the Unicode null character." };
+    }
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = source.charCodeAt(index + 1);
+      if (!(next >= 0xDC00 && next <= 0xDFFF)) {
+        return { ok: false, error: "Inbox visibility condition contains invalid Unicode." };
+      }
+      index++;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      return { ok: false, error: "Inbox visibility condition contains invalid Unicode." };
+    }
+  }
+  if (inboxVisibilityUtf8Length(source) > limits.sourceBytes) {
+    return {
+      ok: false,
+      error: "Inbox visibility condition cannot exceed " +
+        String(limits.sourceBytes) + " UTF-8 bytes."
+    };
+  }
+
+  const fail = (message, position) => {
+    const suffix = Number.isInteger(position)
+      ? " at column " + String(position + 1)
+      : "";
+    const error = new Error(message + suffix + ".");
+    error.inboxVisibilityCondition = true;
+    throw error;
+  };
+  const tokens = [];
+  let cursor = 0;
+  try {
+    while (cursor < source.length) {
+      const character = source[cursor];
+      if (/\s/.test(character)) {
+        cursor++;
+        continue;
+      }
+      const start = cursor;
+      const pair = source.slice(cursor, cursor + 2);
+      if (["&&", "||", "==", "!=", ">=", "<="].includes(pair)) {
+        tokens.push({ kind: "operator", value: pair, start });
+        cursor += 2;
+        continue;
+      }
+      if (["!", ">", "<", "+", "-", "*", "/", "%"].includes(character)) {
+        tokens.push({ kind: "operator", value: character, start });
+        cursor++;
+        continue;
+      }
+      if (character === "(" || character === ")" || character === ",") {
+        tokens.push({ kind: character, value: character, start });
+        cursor++;
+        continue;
+      }
+      if (character === "[") {
+        cursor++;
+        let reference = "";
+        let closed = false;
+        while (cursor < source.length) {
+          const current = source[cursor++];
+          if (current === "]") {
+            closed = true;
+            break;
+          }
+          if (current === "\\") {
+            if (cursor >= source.length) fail("Unterminated reference escape", cursor - 1);
+            const escaped = source[cursor++];
+            if (escaped !== "]" && escaped !== "\\") {
+              fail("References can escape only ']' and '\\'", cursor - 2);
+            }
+            reference += escaped;
+          } else {
+            if (current === "\r" || current === "\n") {
+              fail("References cannot contain a line break", cursor - 1);
+            }
+            reference += current;
+          }
+        }
+        if (!closed) fail("Unterminated reference", start);
+        if (!reference.trim()) fail("A reference name is required", start);
+        tokens.push({ kind: "reference", value: reference, start });
+        continue;
+      }
+      if (character === "'" || character === '"') {
+        const quote = character;
+        cursor++;
+        let value = "";
+        let closed = false;
+        while (cursor < source.length) {
+          const current = source[cursor++];
+          if (current === quote) {
+            if (source[cursor] === quote) {
+              value += quote;
+              cursor++;
+              continue;
+            }
+            closed = true;
+            break;
+          }
+          if (current === "\\") {
+            if (cursor >= source.length) fail("Unterminated string escape", cursor - 1);
+            const escaped = source[cursor++];
+            const escapes = {
+              "\\": "\\", "/": "/", "'": "'", '"': '"',
+              n: "\n", r: "\r", t: "\t", b: "\b", f: "\f"
+            };
+            if (!Object.prototype.hasOwnProperty.call(escapes, escaped)) {
+              fail("Unsupported string escape", cursor - 2);
+            }
+            value += escapes[escaped];
+          } else {
+            if (current === "\r" || current === "\n") {
+              fail("String literals cannot contain a line break", cursor - 1);
+            }
+            value += current;
+          }
+        }
+        if (!closed) fail("Unterminated string literal", start);
+        if (inboxVisibilityUtf8Length(value) > limits.stringLiteralBytes) {
+          fail("A string literal cannot exceed " +
+            String(limits.stringLiteralBytes) + " UTF-8 bytes", start);
+        }
+        tokens.push({ kind: "string", value, start });
+        continue;
+      }
+      if (/[0-9]/.test(character) ||
+          (character === "." && /[0-9]/.test(source[cursor + 1] || ""))) {
+        const match = /^(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?/.exec(
+          source.slice(cursor));
+        const text = match && match[0];
+        if (!text) fail("Invalid numeric literal", start);
+        if (text.length > limits.numericCharacters) {
+          fail("A numeric literal is too long", start);
+        }
+        const exponentMatch = /[eE]([+-]?\d+)$/.exec(text);
+        if (exponentMatch && (!Number.isFinite(Number(exponentMatch[1])) ||
+            Math.abs(Number(exponentMatch[1])) > limits.numericExponent)) {
+          fail("A numeric literal exponent is out of range", start);
+        }
+        const exponentIndex = text.search(/[eE]/);
+        const mantissa = exponentIndex < 0 ? text : text.slice(0, exponentIndex);
+        const exponent = exponentIndex < 0 ? 0 : Number(text.slice(exponentIndex + 1));
+        const decimalIndex = mantissa.indexOf(".");
+        const fractionalDigits = decimalIndex < 0 ? 0 : mantissa.length - decimalIndex - 1;
+        let digits = mantissa.replace(".", "").replace(/^0+/, "");
+        if (digits) {
+          let scale = fractionalDigits - exponent;
+          while (scale > 0 && digits.endsWith("0")) {
+            digits = digits.slice(0, -1);
+            scale--;
+          }
+          const canonicalLength = scale <= 0
+            ? digits.length - scale
+            : scale >= digits.length
+              ? 2 + scale
+              : digits.length + 1;
+          if (canonicalLength > limits.numericCharacters) {
+            fail("A numeric literal expands beyond the supported precision bound", start);
+          }
+        }
+        tokens.push({ kind: "number", value: text, start });
+        cursor += text.length;
+        continue;
+      }
+      if (/[A-Za-z_]/.test(character)) {
+        cursor++;
+        while (cursor < source.length && /[A-Za-z0-9_]/.test(source[cursor])) cursor++;
+        const value = source.slice(start, cursor);
+        const lower = value.toLowerCase();
+        if (lower === "and" || lower === "or" || lower === "not") {
+          tokens.push({ kind: "operator", value: lower, start });
+        } else if (lower === "true" || lower === "false") {
+          tokens.push({ kind: "boolean", value: lower === "true", start });
+        } else {
+          tokens.push({ kind: "identifier", value, start });
+        }
+        continue;
+      }
+      fail("Unexpected character '" + character + "'", start);
+    }
+    tokens.push({ kind: "end", value: "", start: source.length });
+
+    let tokenIndex = 0;
+    let instructionCount = 0;
+    let literalCount = 0;
+    let comparisonCount = 0;
+    let groupDepth = 0;
+    const peek = () => tokens[tokenIndex];
+    const take = () => tokens[tokenIndex++];
+    const makeNode = (kind, properties, position) => {
+      instructionCount++;
+      if (instructionCount > limits.instructions) {
+        fail("Inbox visibility condition cannot exceed " +
+          String(limits.instructions) + " instructions", position);
+      }
+      return Object.assign({ kind, position }, properties || {});
+    };
+    const infix = new Map([
+      ["or", [1, 2]], ["||", [1, 2]],
+      ["and", [3, 4]], ["&&", [3, 4]],
+      ["==", [5, 6]], ["!=", [5, 6]],
+      [">", [5, 6]], [">=", [5, 6]], ["<", [5, 6]], ["<=", [5, 6]],
+      ["+", [7, 8]], ["-", [7, 8]],
+      ["*", [9, 10]], ["/", [9, 10]], ["%", [9, 10]]
+    ]);
+    const canonicalOperator = value => ({
+      "&&": "and", "||": "or", "!": "not"
+    })[value] || value;
+    let parseExpression;
+    const parsePrefix = () => {
+      const token = take();
+      if (token.kind === "reference") {
+        return makeNode("reference", { name: token.value }, token.start);
+      }
+      if (token.kind === "string" || token.kind === "number" ||
+          token.kind === "boolean") {
+        literalCount++;
+        if (literalCount > limits.literals) {
+          fail("Inbox visibility condition cannot exceed " +
+            String(limits.literals) + " literals", token.start);
+        }
+        const literalType = token.kind === "string" ? "string"
+          : token.kind === "number" ? "number" : "boolean";
+        return makeNode("literal", {
+          dataType: literalType,
+          value: token.value
+        }, token.start);
+      }
+      if (token.kind === "operator" &&
+          ["not", "!", "+", "-"].includes(token.value)) {
+        return makeNode("unary", {
+          operator: canonicalOperator(token.value),
+          operand: parseExpression(11)
+        }, token.start);
+      }
+      if (token.kind === "(") {
+        groupDepth++;
+        if (groupDepth > limits.depth) {
+          fail("Inbox visibility condition cannot exceed nesting depth " +
+            String(limits.depth), token.start);
+        }
+        const expression = parseExpression(0);
+        if (peek().kind !== ")") fail("Expected ')'", peek().start);
+        take();
+        groupDepth--;
+        return expression;
+      }
+      if (token.kind === "identifier") {
+        if (token.value.toLowerCase() !== "number") {
+          fail("Only the Number(expr) function is supported", token.start);
+        }
+        if (peek().kind !== "(") fail("Number must be called as Number(expr)", peek().start);
+        take();
+        groupDepth++;
+        if (groupDepth > limits.depth) {
+          fail("Inbox visibility condition cannot exceed nesting depth " +
+            String(limits.depth), token.start);
+        }
+        if (peek().kind === ")") fail("Number requires exactly one argument", peek().start);
+        const argument = parseExpression(0);
+        if (peek().kind === ",") fail("Number requires exactly one argument", peek().start);
+        if (peek().kind !== ")") fail("Expected ')' after Number argument", peek().start);
+        take();
+        groupDepth--;
+        return makeNode("number", { operand: argument }, token.start);
+      }
+      fail("Expected a literal, reference, Number(expr), or parenthesized expression", token.start);
+    };
+    parseExpression = minimumBindingPower => {
+      let left = parsePrefix();
+      while (peek().kind === "operator" && infix.has(peek().value)) {
+        const token = peek();
+        const binding = infix.get(token.value);
+        if (binding[0] < minimumBindingPower) break;
+        take();
+        const operator = canonicalOperator(token.value);
+        if (["==", "!=", ">", ">=", "<", "<="].includes(operator)) {
+          comparisonCount++;
+          if (comparisonCount > limits.comparisons) {
+            fail("Inbox visibility condition cannot exceed " +
+              String(limits.comparisons) + " comparisons", token.start);
+          }
+        }
+        left = makeNode("binary", {
+          operator,
+          left,
+          right: parseExpression(binding[1])
+        }, token.start);
+      }
+      return left;
+    };
+
+    const ast = parseExpression(0);
+    if (peek().kind !== "end") {
+      fail("Unexpected token '" + String(peek().value) + "'", peek().start);
+    }
+    const expressionDepth = node => {
+      if (node.kind === "literal" || node.kind === "reference") return 1;
+      if (node.kind === "unary" || node.kind === "number") {
+        return 1 + expressionDepth(node.operand);
+      }
+      return 1 + Math.max(expressionDepth(node.left), expressionDepth(node.right));
+    };
+    if (expressionDepth(ast) > limits.depth) {
+      fail("Inbox visibility condition cannot exceed expression depth " +
+        String(limits.depth), ast.position);
+    }
+
+    const symbols = buildInboxVisibilitySymbols(definitionOrVariables);
+    const supportedScalarTypes = new Set([
+      "string", "number", "boolean", "date", "datetime"
+    ]);
+    const fixedContext = new Map([
+      ["sys.user", ["sys.user", "string"]],
+      ["sys.actingfor", ["sys.actingfor", "string"]],
+      ["sys.now", ["sys.now", "datetime"]],
+      ["sys.today", ["sys.today", "date"]],
+      ["sys.instanceid", ["sys.instanceid", "number"]],
+      ["sys.workflowid", ["sys.workflowid", "number"]],
+      ["sys.workflowname", ["sys.workflowname", "string"]],
+      ["sys.nodeid", ["sys.nodeid", "number"]],
+      ["sys.nodename", ["sys.nodename", "string"]]
+    ]);
+    const instructions = [];
+    const variableReferences = new Map();
+    const externalReferences = new Map();
+    const typeName = type => type === "dynamic" ? "a scalar setting value" : type;
+    const requireBoolean = (type, owner, position) => {
+      if (type !== "boolean" && type !== "dynamic") {
+        fail(owner + " requires a boolean operand, not " + typeName(type), position);
+      }
+    };
+    const requireNumber = (type, owner, position) => {
+      if (type !== "number" && type !== "dynamic") {
+        fail(owner + " requires a number; use Number(expr) for numeric strings", position);
+      }
+    };
+    const resolveReference = node => {
+      const authored = node.name;
+      const lower = authored.toLowerCase();
+      const fixed = fixedContext.get(lower);
+      if (fixed) {
+        externalReferences.set(fixed[0].toLowerCase(), fixed[0]);
+        return { name: fixed[0], dataType: fixed[1], source: "context" };
+      }
+      for (const prefix of ["sys.claim.", "config.", "setting."]) {
+        if (!lower.startsWith(prefix)) continue;
+        const suffix = authored.slice(prefix.length);
+        if (!suffix.length) fail("Reference '" + prefix + "' requires a key", node.position);
+        const canonical = (prefix + suffix).toLowerCase();
+        externalReferences.set(canonical, canonical);
+        return {
+          name: canonical,
+          dataType: prefix === "setting." ? "dynamic" : "string",
+          source: "context"
+        };
+      }
+      if (lower.startsWith("sys.") || lower.startsWith("mi.")) {
+        fail("Unsupported inbox context reference '[" + authored + "]'", node.position);
+      }
+      const symbol = symbols.get(lower);
+      if (!symbol) {
+        fail("Unknown instance variable '[" + authored + "]'", node.position);
+      }
+      if (symbol.conflict) {
+        fail("Instance variable '[" + authored +
+          "]' has conflicting spelling or type across its producers", node.position);
+      }
+      if (symbol.isArray || !supportedScalarTypes.has(symbol.dataType)) {
+        fail("Instance variable '[" + authored +
+          "]' must be a scalar string, number, boolean, date, or datetime", node.position);
+      }
+      variableReferences.set(lower, symbol.name);
+      return { name: symbol.name, dataType: symbol.dataType, source: "variable" };
+    };
+    const equalityCompatible = (left, right) => {
+      if (left === "dynamic" || right === "dynamic" || left === right) return true;
+      return ((left === "date" || left === "datetime") && right === "string") ||
+        ((right === "date" || right === "datetime") && left === "string");
+    };
+    const orderingCompatible = (left, right) => {
+      const ordered = new Set(["number", "date", "datetime"]);
+      if (left === "dynamic" && right === "dynamic") return false;
+      if (left === "dynamic") return ordered.has(right);
+      if (right === "dynamic") return ordered.has(left);
+      if (left === right && ordered.has(left)) return true;
+      return ((left === "date" || left === "datetime") && right === "string") ||
+        ((right === "date" || right === "datetime") && left === "string");
+    };
+    const analyze = node => {
+      if (node.kind === "literal") {
+        instructions.push({
+          op: "literal",
+          dataType: node.dataType,
+          value: node.value
+        });
+        return node.dataType;
+      }
+      if (node.kind === "reference") {
+        const reference = resolveReference(node);
+        instructions.push({ op: "reference", source: reference.source, name: reference.name });
+        return reference.dataType;
+      }
+      if (node.kind === "number") {
+        const operand = analyze(node.operand);
+        if (!["number", "string", "dynamic"].includes(operand)) {
+          fail("Number(expr) accepts only a number or numeric string", node.position);
+        }
+        instructions.push({ op: "number" });
+        return "number";
+      }
+      if (node.kind === "unary") {
+        const operand = analyze(node.operand);
+        if (node.operator === "not") {
+          requireBoolean(operand, "not", node.position);
+          instructions.push({ op: "not" });
+          return "boolean";
+        }
+        requireNumber(operand, "Unary '" + node.operator + "'", node.position);
+        instructions.push({ op: node.operator === "+" ? "positive" : "negative" });
+        return "number";
+      }
+      const left = analyze(node.left);
+      const right = analyze(node.right);
+      if (node.operator === "and" || node.operator === "or") {
+        requireBoolean(left, node.operator, node.position);
+        requireBoolean(right, node.operator, node.position);
+        instructions.push({ op: node.operator });
+        return "boolean";
+      }
+      if (["+", "-", "*", "/", "%"].includes(node.operator)) {
+        requireNumber(left, "Operator '" + node.operator + "'", node.position);
+        requireNumber(right, "Operator '" + node.operator + "'", node.position);
+        instructions.push({ op: node.operator });
+        return "number";
+      }
+      if (node.operator === "==" || node.operator === "!=") {
+        if (!equalityCompatible(left, right)) {
+          fail("Operator '" + node.operator + "' cannot compare " +
+            typeName(left) + " with " + typeName(right), node.position);
+        }
+        instructions.push({ op: node.operator });
+        return "boolean";
+      }
+      if (!orderingCompatible(left, right)) {
+        fail("Operator '" + node.operator +
+          "' supports only numbers, dates, and datetimes", node.position);
+      }
+      instructions.push({ op: node.operator });
+      return "boolean";
+    };
+
+    const resultType = analyze(ast);
+    if (resultType !== "boolean" && resultType !== "dynamic") {
+      fail("Inbox visibility condition must produce a boolean result", ast.position);
+    }
+    if (variableReferences.size > limits.variableReferences) {
+      fail("Inbox visibility condition cannot reference more than " +
+        String(limits.variableReferences) + " distinct instance variables", ast.position);
+    }
+    if (externalReferences.size > limits.externalReferences) {
+      fail("Inbox visibility condition cannot reference more than " +
+        String(limits.externalReferences) + " distinct context values", ast.position);
+    }
+    return {
+      ok: true,
+      empty: false,
+      dataType: resultType,
+      instructions,
+      variableReferences: Array.from(variableReferences.values()),
+      externalReferences: Array.from(externalReferences.values())
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.message
+        ? error.message
+        : "Invalid inbox visibility condition."
+    };
+  }
+}
+
 function validatorContainsDirectJavaScriptFlowInfoCall(script) {
   if (typeof script !== "string" || !script.trim()) return false;
   const isIdentifierStart = ch => /[A-Za-z_$]/.test(ch || "");
@@ -9643,6 +10308,29 @@ function validateModelForSave(candidate) {
   const userTasksById = new Map(nodes
     .filter(node => node && node.type === "userTask" && Number.isInteger(node.id))
     .map(node => [node.id, node]));
+  for (const node of nodes) {
+    if (!node || node.type !== "userTask") {
+      if (node && node.inboxVisibilityCondition != null &&
+          (typeof node.inboxVisibilityCondition !== "string" ||
+            node.inboxVisibilityCondition.trim())) {
+        errors.push("Flow node #" + String(node.id) +
+          " can define inboxVisibilityCondition only when type='userTask'.");
+      }
+      continue;
+    }
+    if (node.inboxVisibilityCondition == null ||
+        (typeof node.inboxVisibilityCondition === "string" &&
+          !node.inboxVisibilityCondition.trim())) {
+      continue;
+    }
+    const compiledInboxCondition = compileInboxVisibilityCondition(
+      node.inboxVisibilityCondition,
+      candidate);
+    if (!compiledInboxCondition.ok) {
+      errors.push(nodeLabel(node) + " has an invalid inboxVisibilityCondition: " +
+        compiledInboxCondition.error);
+    }
+  }
   for (const node of nodes.filter(node => node && node.type === "userTask")) {
     const label = nodeLabel(node);
     const assignmentMode = node.assignmentMode || assignmentModes.fresh;
@@ -10867,6 +11555,11 @@ async function save() {
     if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
       delete node.variables;
     }
+    if (!isUserTaskType(node.type) ||
+        (typeof node.inboxVisibilityCondition === "string" &&
+          !node.inboxVisibilityCondition.trim())) {
+      delete node.inboxVisibilityCondition;
+    }
   });
   const data = JSON.stringify(canonical, null, 2);
 
@@ -11070,6 +11763,14 @@ function loadFromObject(obj) {
         inheritAssignmentFromNodeId: s.inheritAssignmentFromNodeId ?? null,
         variables: (s.variables || []).map(normalizeVariable),
         assignee: (typeof s.assignee === "string" && s.assignee.trim()) ? s.assignee : null,
+        inboxVisibilityCondition: (s.type ?? "userTask") === "userTask"
+          ? (s.inboxVisibilityCondition === undefined
+              ? undefined
+              : (typeof s.inboxVisibilityCondition === "string" &&
+                  !s.inboxVisibilityCondition.trim()
+                ? null
+                : s.inboxVisibilityCondition))
+          : undefined,
         multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service, loadedProcessVariables) : undefined,
         scriptFormat: isScriptTaskType(s.type)

@@ -199,7 +199,7 @@ public interface IWorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<SequenceFlowModel>> GetAvailableFlowsAsync(
+    Task<IReadOnlyList<SequenceFlowModel>?> GetAvailableFlowsAsync(
         long id,
         ActorContext actor,
         CancellationToken cancellationToken);
@@ -209,7 +209,7 @@ public interface IWorkflowEngineService
     Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken);
 
     Task<UserTaskDto?> GetUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
-    Task<IReadOnlyList<SequenceFlowModel>> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<IReadOnlyList<SequenceFlowModel>?> GetUserTaskAvailableFlowsAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<AdministrativeActionEligibilityDto> PreviewAdministrativeBatchActionAsync(
         AdministrativeActionRequest request,
         ActorContext actor,
@@ -302,7 +302,7 @@ public interface IWorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<SequenceFlowModel>> GetMultiInstanceInterruptFlowsAsync(
+    Task<IReadOnlyList<SequenceFlowModel>?> GetMultiInstanceInterruptFlowsAsync(
         long executionId,
         ActorContext actor,
         CancellationToken cancellationToken);

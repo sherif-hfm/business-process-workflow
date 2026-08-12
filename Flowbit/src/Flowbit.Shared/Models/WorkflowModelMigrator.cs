@@ -458,6 +458,7 @@ public static class WorkflowModelMigrator
             node.RequiresAssignment = false;
             node.AssignmentMode = AssignmentModes.Fresh;
             node.InheritAssignmentFromNodeId = null;
+            node.InboxVisibilityCondition = null;
         }
 
         if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
@@ -712,6 +713,8 @@ public static class WorkflowModelMigrator
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
+            node.InboxVisibilityCondition = TrimToNull(node.InboxVisibilityCondition);
+
             // Tolerant load: older documents have no claimMode.
             if (string.IsNullOrWhiteSpace(node.ClaimMode))
             {
