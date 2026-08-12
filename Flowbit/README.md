@@ -288,6 +288,13 @@ Open:
 - API OpenAPI JSON: `http://localhost:5017/openapi/v1.json`
 - Blazor UI: `http://localhost:5152`
 
+The UI's **Test identity** page can mint a development JWT with a username,
+roles, and custom string claims. A custom claim is available to workflow
+expressions such as `[sys.claim.depId]` only when its name is also configured in
+the API's `WorkflowContext:AllowedClaims` list (and in the Worker configuration
+when durable work evaluates that context). Restart the affected processes after
+changing the allowlist.
+
 In development, the API applies migrations automatically. It does not import
 the root `workflow.json`; import workflow definitions through the UI or API.
 The additive `SeedDefaultSettings` migration inserts these baseline settings

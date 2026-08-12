@@ -23,7 +23,7 @@
     <div class="col-xl-7">
         <section class="panel h-100" aria-labelledby="generate-token-heading">
             <div class="section-heading">
-                <div><h2 id="generate-token-heading">Generate identity</h2><p>Choose a username and the roles you want to exercise.</p></div>
+                <div><h2 id="generate-token-heading">Generate identity</h2><p>Choose a username, roles, and custom string claims to exercise.</p></div>
             </div>
 
             <div class="form-grid">
@@ -69,6 +69,48 @@
                         {
                             <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => AddRole(suggestion)">+ @suggestion</button>
                         }
+                    </div>
+                </div>
+                <div class="full">
+                    <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
+                        <div>
+                            <span class="form-label d-block mb-0">Custom claims</span>
+                            <div id="token-claims-help" class="form-text">
+                                Values are added as strings. Only claim names allowlisted by the API in
+                                <code>WorkflowContext:AllowedClaims</code> are available to expressions such as
+                                <code>[sys.claim.depId]</code>.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" @onclick="AddClaim"
+                                disabled="@(customClaims.Count >= DevTokenClaimRules.MaxClaimCount)">
+                            <AppIcon Name="plus" /> Add claim
+                        </button>
+                    </div>
+
+                    <div class="token-claim-list" aria-describedby="token-claims-help">
+                        @foreach (var claim in customClaims)
+                        {
+                            <div class="token-claim-row" @key="claim.Id">
+                                <div>
+                                    <label class="form-label" for="@($"token-claim-name-{claim.Id}")">Claim name</label>
+                                    <input id="@($"token-claim-name-{claim.Id}")" class="form-control"
+                                           @bind="claim.Name" @bind:event="oninput"
+                                           maxlength="@DevTokenClaimRules.MaxClaimNameLength" placeholder="depId" />
+                                </div>
+                                <div>
+                                    <label class="form-label" for="@($"token-claim-value-{claim.Id}")">Claim value</label>
+                                    <input id="@($"token-claim-value-{claim.Id}")" class="form-control"
+                                           @bind="claim.Value" @bind:event="oninput"
+                                           maxlength="@DevTokenClaimRules.MaxClaimValueLength" placeholder="10" />
+                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-danger token-claim-remove"
+                                        @onclick="() => RemoveClaim(claim)" disabled="@(customClaims.Count == 1)"
+                                        aria-label="Remove custom claim">Remove</button>
+                            </div>
+                        }
+                    </div>
+                    <div class="form-text mt-2">
+                        @customClaims.Count / @DevTokenClaimRules.MaxClaimCount claims. Names are trimmed and compared case-insensitively.
                     </div>
                 </div>
             </div>
@@ -119,6 +161,8 @@
     private int expiresInMinutes = 60;
     private string rawToken = string.Empty;
     private string? error;
+    private readonly List<CustomClaimDraft> customClaims = [new(1)];
+    private int nextClaimId = 2;
 
     protected override void OnInitialized() => rawToken = TokenStore.Token ?? string.Empty;
 
@@ -137,25 +181,49 @@
         roles = string.Join(", ", current);
     }
 
+    private void AddClaim()
+    {
+        if (customClaims.Count < DevTokenClaimRules.MaxClaimCount)
+        {
+            customClaims.Add(new CustomClaimDraft(nextClaimId++));
+        }
+    }
+
+    private void RemoveClaim(CustomClaimDraft claim)
+    {
+        if (customClaims.Count > 1)
+        {
+            customClaims.Remove(claim);
+        }
+    }
+
     private string IdentityLabel => TokenStore.IdentityResolved
         ? TokenStore.CurrentUser ?? "anonymous"
         : "Not resolved";
 
     private async Task Generate()
     {
+        var tokenApplied = false;
         try
         {
             error = null;
             var roleList = roles
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            var token = TokenFactory.Create(user, roleList, expiresInMinutes);
+            var claimList = customClaims
+                .Where(claim => !string.IsNullOrWhiteSpace(claim.Name) || !string.IsNullOrWhiteSpace(claim.Value))
+                .Select(claim => new DevTokenClaim(claim.Name, claim.Value));
+            var token = TokenFactory.Create(user, roleList, expiresInMinutes, claimList);
             TokenStore.Set(token);
+            tokenApplied = true;
             rawToken = token;
             await ResolveIdentityAsync();
         }
         catch (Exception ex)
         {
-            TokenStore.ClearResolvedContext();
+            if (tokenApplied)
+            {
+                TokenStore.ClearResolvedContext();
+            }
             error = ex.Message;
         }
     }
@@ -186,5 +254,12 @@
         error = null;
         TokenStore.Clear();
         rawToken = string.Empty;
+    }
+
+    private sealed class CustomClaimDraft(int id)
+    {
+        public int Id { get; } = id;
+        public string Name { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
     }
 }

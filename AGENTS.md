@@ -876,8 +876,12 @@ Storage follows the hybrid design:
 - Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
   using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
   `/api/instances` group. The Blazor UI mints its own token from the `/token`
-  page (`DevTokenFactory` + `TokenState`) so a tester can switch user/roles on
-  the fly; `AuthTokenHandler` attaches it as a `Bearer` header. For production,
+  page (`DevTokenFactory` + `TokenState`) so a tester can switch user/roles and
+  add bounded custom string claims on the fly; `AuthTokenHandler` attaches it as
+  a `Bearer` header. Custom claims cannot replace the page-owned identity, role,
+  or JWT protocol claims, and only names configured in
+  `WorkflowContext:AllowedClaims` are exposed to workflow expressions as
+  `sys.claim.*`. For production,
   swap `AddJwtBearer` to a real OIDC identity provider and remove the UI minting
   page. The canonical workflow actor may be selected with the process-latched
   `flowbit.engine_settings` row `Authentication.UserIdentityClaim` (namespace

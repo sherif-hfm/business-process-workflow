@@ -1,0 +1,22 @@
+.token-claim-list {
+    display: grid;
+    gap: .75rem;
+}
+
+.token-claim-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, .8fr) minmax(14rem, 1.2fr) auto;
+    gap: .75rem;
+    align-items: start;
+    padding: .8rem;
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+    background: var(--fb-surface-soft);
+}
+
+.token-claim-remove { margin-top: 1.85rem; }
+
+@media (max-width: 760px) {
+    .token-claim-row { grid-template-columns: 1fr; }
+    .token-claim-remove { margin-top: 0; justify-self: start; }
+}
