@@ -8653,13 +8653,19 @@ public sealed partial class WorkflowEngineService(
             return;
         }
 
+        if (workflow.Definition.TaskAssignmentRoles.Any(role =>
+                !string.IsNullOrWhiteSpace(role)))
+        {
+            return;
+        }
+
         var currentDefault = await definitions.GetDefaultByWorkflowKeyAsync(
             workflow.WorkflowKey,
             cancellationToken);
         if (currentDefault?.Definition.TaskDistribution is null)
         {
             throw new WorkflowDomainException(
-                "A workflow containing required-assignment tasks cannot start unless its current default published version configures taskDistribution credentials.");
+                "A workflow containing required-assignment tasks without taskAssignmentRoles cannot start unless its current default published version configures taskDistribution credentials.");
         }
     }
 
@@ -9456,7 +9462,7 @@ public sealed partial class WorkflowEngineService(
                     logger.LogWarning(
                         "User task #{NodeId} assignee expression '{Expression}' did not resolve to a non-empty string of at most {MaxLength} characters for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
                         node.Id, node.AssigneeExpression, UserTaskConstraints.MaxActorNameLength, instanceId,
-                        node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
+                        node.RequiresAssignment ? "hidden assignment queue" : "shared pool");
                 }
             }
             catch (WorkflowDomainException ex)
@@ -9464,14 +9470,14 @@ public sealed partial class WorkflowEngineService(
                 logger.LogWarning(ex,
                     "User task #{NodeId} assignee expression '{Expression}' failed for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
                     node.Id, node.AssigneeExpression, instanceId,
-                    node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
+                    node.RequiresAssignment ? "hidden assignment queue" : "shared pool");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogWarning(ex,
                     "User task #{NodeId} assignee expression '{Expression}' failed unexpectedly for instance {InstanceId}; creating the task in the {AssignmentFallback}.",
                     node.Id, node.AssigneeExpression, instanceId,
-                    node.RequiresAssignment ? "hidden external-assignment queue" : "shared pool");
+                    node.RequiresAssignment ? "hidden assignment queue" : "shared pool");
             }
         }
 

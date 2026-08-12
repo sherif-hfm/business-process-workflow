@@ -221,6 +221,7 @@ public sealed class EditorValidatorTests
     public void Validator_RequiresCompleteTaskDistributionCredentialsWhenEnabled()
     {
         var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.TaskAssignmentRoles = ["AssignmentManager"];
         model.TaskDistribution = new TaskDistributionModel
         {
             ClientId = "${setting.taskDistribution.clientId}",
@@ -228,6 +229,8 @@ public sealed class EditorValidatorTests
         };
         Assert.Empty(Validate(model));
 
+        // Configuring the optional distributor remains an all-or-nothing contract,
+        // even when the workflow can also be managed through /task-management.
         model.TaskDistribution.ClientSecret = "";
         Assert.Contains(Validate(model), error =>
             error.Contains("taskDistribution", StringComparison.OrdinalIgnoreCase)
@@ -270,11 +273,20 @@ public sealed class EditorValidatorTests
         };
         Assert.Empty(Validate(model));
 
+        model.TaskDistribution = null;
+        model.TaskAssignmentRoles = ["  AssignmentManager  ", "assignmentmanager", ""];
+        Assert.Empty(Validate(model));
+
+        model.TaskAssignmentRoles = ["  "];
+        var missingChannelErrors = Validate(model);
+        Assert.Contains(missingChannelErrors, error =>
+            error.Contains("taskAssignmentRoles", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("taskDistribution", StringComparison.OrdinalIgnoreCase));
+
         task.RequiresClaim = true;
         task.AssigneeExpression = "'alice'";
-        model.TaskDistribution = null;
+        model.TaskAssignmentRoles = ["AssignmentManager"];
         var errors = Validate(model);
-        Assert.Contains(errors, error => error.Contains("taskDistribution", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(errors, error => error.Contains("requiresClaim", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(errors, error => error.Contains("assignee expression", StringComparison.OrdinalIgnoreCase));
     }
@@ -2577,8 +2589,13 @@ public sealed class EditorValidatorTests
             html,
             @"// BEGIN WORKFLOW SAVE VALIDATOR(?<code>[\s\S]*?)// END WORKFLOW SAVE VALIDATOR");
         Assert.True(match.Success, "The marked workflow save validator was not found.");
+        var normalizeRoles = Regex.Match(
+            html,
+            @"function normalizeRoles\(roles\) \{[\s\S]*?(?=function normalizeAttributesForLoad)");
+        Assert.True(normalizeRoles.Success, "The role-normalization helper was not found.");
 
         var engine = new Engine();
+        engine.Execute(normalizeRoles.Value);
         engine.Execute(match.Groups["code"].Value);
         return engine;
     }

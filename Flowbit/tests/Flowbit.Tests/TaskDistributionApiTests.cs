@@ -172,6 +172,29 @@ public sealed class TaskDistributionApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task ManagerOnlyRequiredAssignmentAllowsDefaultChangeAndOlderVersionStart()
+    {
+        var model = CreateSimpleModel("manager-required-assignment-family", ClientId, ClientSecret);
+        model.TaskDistribution = null;
+        model.TaskAssignmentRoles = ["AssignmentManager"];
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
+        var managerVersion = await CreateWorkflowAsync(model);
+
+        var running = await StartAsync(managerVersion.Id);
+
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = false;
+        model.TaskAssignmentRoles = [];
+        var versionWithoutAssignmentChannel = await CreateVersionAsync(managerVersion.Id, model);
+
+        await SetDefaultAsync(versionWithoutAssignmentChannel.Id);
+        var second = await StartAsync(managerVersion.Id);
+
+        Assert.NotEqual(running.Id, second.Id);
+        Assert.Null(second.Workflow.Definition.TaskDistribution);
+        Assert.Equal(new[] { "AssignmentManager" }, second.Workflow.Definition.TaskAssignmentRoles);
+    }
+
+    [Fact]
     public async Task DistributorListsVariablesMutatesAndAuditsWithoutJwtRoles()
     {
         var workflow = await CreateWorkflowAsync(CreateSimpleModel(

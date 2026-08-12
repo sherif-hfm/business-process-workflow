@@ -796,18 +796,23 @@ Storage follows the hybrid design:
   node and flow roles still apply. Missing/unresolvable/non-string results log a
   warning and create a shared-pool task using the node's `requiresClaim` setting,
   unless the node also uses `requiresAssignment`, in which case the unassigned
-  task remains hidden for distribution.
+  task remains hidden pending assignment.
   Assignment matching is case-insensitive and is enforced by inbox, flow, claim,
   and task action endpoints. Existing collection multi-instance assignment is
   unchanged; assignee expressions are rejected on every multi-instance task.
 - **Required assignment and assignment inheritance.** A normal `userTask` may set
   `requiresAssignment=true`. While its active work item has no `Assignee`, regular
   inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
-  assignment managers and the external distributor can still list and assign it.
-  Unassigning hides it again and does not rerun automatic ownership resolution.
-  This mode is separate from claiming and cannot be combined with `requiresClaim`,
-  non-fresh `claimMode`, or a multi-instance target. The workflow must configure
-  top-level `taskDistribution` credentials.
+  assignment managers and, when configured, the external distributor can still
+  list and assign it. Unassigning hides it again and does not rerun automatic
+  ownership resolution. This mode is separate from claiming and cannot be
+  combined with `requiresClaim`, non-fresh `claimMode`, or a multi-instance
+  target. The workflow must configure at least one top-level
+  `taskAssignmentRoles` entry after trimming, blank removal, and case-insensitive
+  deduplication, or complete `taskDistribution` credentials. A configured
+  `taskDistribution` always requires both fields, even when manager roles exist.
+  Assignee expressions and inheritance do not satisfy that definition-level
+  assignment-channel requirement.
   `assignmentMode` is `fresh` (default), `previous`, or `fromNode` with
   `inheritAssignmentFromNodeId`. Fresh mode may use the normal `assignee`
   expression. Previous/fromNode mode evaluates once on entry and selects the most
@@ -816,20 +821,24 @@ Storage follows the hybrid design:
   row has neither, the task remains hidden rather than scanning older rows.
   Successful inheritance writes a `taskAssignment` audit row performed by
   `system` with `authority=assignmentInheritance` and source/candidate metadata.
-  Starts and default-version changes are guarded so running required-assignment
-  work cannot be stranded without current family distributor credentials.
+  Manager-enabled definitions can start without family distributor credentials.
+  For distributor-only definitions, starts require credentials on the current
+  published default; default changes and default deletion are guarded while
+  running distributor-dependent instances would otherwise be stranded.
 - **Manager-controlled task assignment.** A workflow definition may declare
   top-level `taskAssignmentRoles`. An authenticated actor holding at least one
-  configured role can list every active work item for that workflow through the
-  task-management API and directly assign, reassign, or unassign it. This applies
-  to normal user tasks and active multi-instance children. Assigning snapshots a
-  case-insensitive actor id in `user_tasks.Assignee`, clears any claim, and makes
-  the item directly assigned; the manager does not need the task's node role.
+  configured role on the immutable workflow version that owns a task can list
+  its active work items through the task-management API and directly assign,
+  reassign, or unassign them. This applies to normal user tasks and active
+  multi-instance children. Assigning snapshots a case-insensitive actor id in
+  `user_tasks.Assignee`, clears any claim, and makes the item directly assigned;
+  the manager does not need the task's node role.
   Unassigning clears both assignee and claimant and restores the authored node's
   `requiresClaim` behavior without re-evaluating an assignee expression, claim
   inheritance, or assignment inheritance. A required-assignment task therefore
-  returns to the hidden distributor queue. Mutations require the task's expected `UpdatedAt`; stale writes
-  return 409, while an exact desired-state retry is an unchanged 200 response.
+  returns to the hidden assignment queue. Mutations require the task's expected
+  `UpdatedAt`; stale writes return 409, while an exact desired-state retry is an
+  unchanged 200 response.
   Each real change writes a `taskAssignment` instance-history row with the
   manager, previous/new ownership, and optional reason. A missing or empty
   `taskAssignmentRoles` list disables management for that workflow version.
@@ -855,14 +864,16 @@ Storage follows the hybrid design:
   real performer and add nullable `ActingFor`/`DelegationId` attribution.
   Multi-instance `onePerActor` and later claim/assignment inheritance use the
   represented identity (`ActingFor ?? actual user`).
-- **External task distribution.** A workflow definition may declare top-level
-  `taskDistribution: { clientId, clientSecret }`. These values may be literals
-  or `${setting.*}` / `${config.*}` templates; literal secrets are retained in
-  the immutable definition JSON and should be avoided in production. The
-  anonymous `/api/task-distribution/workflows/{workflowKey}/tasks` API validates
+- **External task distribution.** A workflow definition may optionally declare
+  top-level `taskDistribution: { clientId, clientSecret }`. These values may be
+  literals or `${setting.*}` / `${config.*}` templates; literal secrets are
+  retained in the immutable definition JSON and should be avoided in production.
+  The anonymous `/api/task-distribution/workflows/{workflowKey}/tasks` API validates
   `X-Client-Id` / `X-Client-Secret` against the current published default
   definition, then lists or mutates active tasks from every version sharing that
-  stable workflow key. Credential templates resolve only against trusted
+  stable workflow key. This family-wide, current-default authority is independent
+  of manager authority, which remains tied to each task's immutable version.
+  Credential templates resolve only against trusted
   configuration/settings, never caller data, instance variables, or `sys.*`.
   The external client needs neither `taskAssignmentRoles` nor node roles.
   Assignment mutations reuse the manager transaction, stale-write protection,

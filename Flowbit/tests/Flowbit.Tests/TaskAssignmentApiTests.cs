@@ -17,15 +17,11 @@ public sealed class TaskAssignmentApiTests(PostgresApiFixture fixture)
     public async Task AssignmentManagerCanSeeAndAssignTaskHiddenFromRegularInboxes()
     {
         var model = CreateSimpleModel("manager-required-assignment");
-        model.TaskDistribution = new TaskDistributionModel
-        {
-            ClientId = "distributor",
-            ClientSecret = "secret"
-        };
         model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
         var workflowId = await CreateWorkflowAsync(model);
         var instance = await StartAsync(workflowId);
 
+        Assert.Null(instance.Workflow.Definition.TaskDistribution);
         Assert.Empty((await GetInboxAsync(instance.Id, "alice", "Worker")).Items);
         var hidden = Assert.Single((await GetManagedAsync(instance.Id)).Items);
         Assert.True(hidden.RequiresAssignment);

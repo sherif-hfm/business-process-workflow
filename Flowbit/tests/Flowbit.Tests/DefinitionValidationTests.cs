@@ -401,14 +401,10 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task CreateAsync_AcceptsFreshRequiredAssignmentWithAssigneeExpression()
+    public async Task CreateAsync_AcceptsManagerOnlyRequiredAssignmentWithAssigneeExpression()
     {
         var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
-        model.TaskDistribution = new TaskDistributionModel
-        {
-            ClientId = "distributor",
-            ClientSecret = "secret"
-        };
+        model.TaskAssignmentRoles = ["  AssignmentManager  ", "assignmentmanager", ""];
         var task = model.FlowNodes.Single(node => node.Id == 2);
         task.RequiresAssignment = true;
         task.AssignmentMode = AssignmentModes.Fresh;
@@ -420,10 +416,12 @@ public sealed class DefinitionValidationTests
         Assert.True(saved.RequiresAssignment);
         Assert.Equal(AssignmentModes.Fresh, saved.AssignmentMode);
         Assert.Equal("'alice'", saved.AssigneeExpression);
+        Assert.Null(repository.Added.Definition.TaskDistribution);
+        Assert.Equal(new[] { "AssignmentManager" }, repository.Added.Definition.TaskAssignmentRoles);
     }
 
     [Theory]
-    [InlineData("missingDistribution")]
+    [InlineData("missingAssignmentChannel")]
     [InlineData("claimConflict")]
     [InlineData("assigneeConflict")]
     [InlineData("multiInstance")]
@@ -442,7 +440,7 @@ public sealed class DefinitionValidationTests
 
         switch (invalid)
         {
-            case "missingDistribution": model.TaskDistribution = null; break;
+            case "missingAssignmentChannel": model.TaskDistribution = null; break;
             case "claimConflict": task.RequiresClaim = true; break;
             case "assigneeConflict":
                 task.AssignmentMode = AssignmentModes.Previous;
@@ -463,6 +461,27 @@ public sealed class DefinitionValidationTests
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
         Assert.Contains("assignment", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("clientId")]
+    [InlineData("clientSecret")]
+    public async Task CreateAsync_RejectsIncompleteTaskDistributionEvenWithAssignmentManagers(string missingField)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.TaskAssignmentRoles = ["AssignmentManager"];
+        model.TaskDistribution = new TaskDistributionModel
+        {
+            ClientId = missingField == "clientId" ? "" : "distributor",
+            ClientSecret = missingField == "clientSecret" ? "" : "secret"
+        };
+        model.FlowNodes.Single(node => node.Id == 2).RequiresAssignment = true;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("taskDistribution", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(missingField, error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

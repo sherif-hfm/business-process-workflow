@@ -2365,7 +2365,7 @@ const CLAIM_MODE_OPTIONS = [
 ];
 const ASSIGNMENT_MODE = { FRESH: "fresh", PREVIOUS: "previous", FROM_NODE: "fromNode" };
 const ASSIGNMENT_MODE_OPTIONS = [
-  { value: ASSIGNMENT_MODE.FRESH, label: "Fresh (external assignment)" },
+  { value: ASSIGNMENT_MODE.FRESH, label: "Fresh (new assignment)" },
   { value: ASSIGNMENT_MODE.PREVIOUS, label: "Previous (last completed task)" },
   { value: ASSIGNMENT_MODE.FROM_NODE, label: "From node (specific task)" }
 ];
@@ -5168,7 +5168,7 @@ function renderNodeInspector() {
     if (node.requiresAssignment) {
       const assignmentHint = document.createElement("p");
       assignmentHint.className = "empty-note";
-      assignmentHint.textContent = "Until an assignee is resolved or supplied by the external distributor, this active task is hidden from every regular inbox.";
+      assignmentHint.textContent = "Until an assignee is resolved or supplied by an assignment manager or the optional external distributor, this active task is hidden from every regular inbox.";
       inspector.appendChild(assignmentHint);
       selectField("Assignment mode", ASSIGNMENT_MODE_OPTIONS,
         node.assignmentMode || ASSIGNMENT_MODE.FRESH, v => {
@@ -5217,7 +5217,7 @@ function renderNodeInspector() {
       const assigneeHint = document.createElement("p");
       assigneeHint.className = "empty-note";
       assigneeHint.textContent = node.requiresAssignment
-        ? "Optional NCalc expression resolved once when the task is created. A missing or invalid result leaves the task hidden for the external distributor."
+        ? "Optional NCalc expression resolved once when the task is created. A missing or invalid result leaves the task hidden for an assignment manager or the optional external distributor."
         : "Optional NCalc expression resolved once when the task is created. Use a variable name such as approverUser, or a quoted literal such as 'alice'. A runtime resolution failure creates a shared-pool task.";
       inspector.appendChild(assigneeHint);
       field("Assignee expression", "text", node.assignee ?? "", v => {
@@ -10344,8 +10344,9 @@ function validateModelForSave(candidate) {
       }
       continue;
     }
-    if (candidate.taskDistribution == null) {
-      errors.push(label + " requires workflow taskDistribution credentials.");
+    if (normalizeRoles(candidate.taskAssignmentRoles).length === 0 &&
+        candidate.taskDistribution == null) {
+      errors.push(label + " requires workflow taskAssignmentRoles or taskDistribution credentials.");
     }
     if (node.multiInstance) {
       errors.push(label + " cannot require assignment while multi-instance is enabled.");

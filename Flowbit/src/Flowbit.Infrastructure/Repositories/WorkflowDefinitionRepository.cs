@@ -382,10 +382,12 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         if (isDefault)
         {
             if (entity.Definition.TaskDistribution is null
-                && await HasRunningRequiredAssignmentInstancesAsync(entity.WorkflowKey, cancellationToken))
+                && await HasRunningDistributorDependentRequiredAssignmentInstancesAsync(
+                    entity.WorkflowKey,
+                    cancellationToken))
             {
                 throw new WorkflowDomainException(
-                    "Cannot set this version as default while running instances contain required-assignment tasks because it has no taskDistribution credentials.");
+                    "Cannot set this version as default while running instances contain required-assignment tasks without taskAssignmentRoles because it has no taskDistribution credentials.");
             }
 
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
@@ -542,7 +544,9 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
             .AnyAsync(scope => scope.WorkflowKey == workflowKey, cancellationToken);
         var requiresDistributor = entity.IsDefault
-            && await HasRunningRequiredAssignmentInstancesAsync(workflowKey, cancellationToken);
+            && await HasRunningDistributorDependentRequiredAssignmentInstancesAsync(
+                workflowKey,
+                cancellationToken);
         long? successorId = null;
 
         List<WorkflowDefinitionEntity>? successorCandidates = null;
@@ -568,7 +572,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             if (requiresDistributor && successorCandidates.All(candidate => !candidate.IsPublished))
             {
                 throw new WorkflowDomainException(
-                    "Cannot delete the default version while running instances contain required-assignment tasks unless another published version configures taskDistribution credentials.");
+                    "Cannot delete the default version while running instances contain required-assignment tasks without taskAssignmentRoles unless another published version configures taskDistribution credentials.");
             }
         }
 
@@ -706,7 +710,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 cancellationToken);
     }
 
-    private async Task<bool> HasRunningRequiredAssignmentInstancesAsync(
+    private async Task<bool> HasRunningDistributorDependentRequiredAssignmentInstancesAsync(
         string workflowKey,
         CancellationToken cancellationToken)
     {
@@ -725,8 +729,12 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             .Where(definition => definitionIds.Contains(definition.Id))
             .Select(definition => definition.Definition)
             .ToListAsync(cancellationToken);
-        return activeDefinitions.Any(definition => definition.FlowNodes.Any(node =>
-            BpmnFlowNodeTypes.IsUserTask(node.Type) && node.RequiresAssignment));
+        return activeDefinitions.Any(definition =>
+            (definition.TaskAssignmentRoles is null
+                || !definition.TaskAssignmentRoles.Any(role =>
+                    !string.IsNullOrWhiteSpace(role)))
+            && definition.FlowNodes.Any(node =>
+                BpmnFlowNodeTypes.IsUserTask(node.Type) && node.RequiresAssignment));
     }
 
     private void InvalidateDefinition(long id, string _)

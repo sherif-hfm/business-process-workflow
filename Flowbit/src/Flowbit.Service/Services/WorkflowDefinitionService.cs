@@ -2112,10 +2112,11 @@ public sealed class WorkflowDefinitionService(
                 $"User task #{node.Id} requiresAssignment must use requiresClaim=false and claimMode='fresh'.");
         }
 
-        if (definition.TaskDistribution is null)
+        if (definition.TaskAssignmentRoles.Count == 0
+            && definition.TaskDistribution is null)
         {
             throw new WorkflowDomainException(
-                $"User task #{node.Id} requiresAssignment requires workflow taskDistribution credentials.");
+                $"User task #{node.Id} requiresAssignment requires workflow taskAssignmentRoles or taskDistribution credentials.");
         }
 
         if (mode != AssignmentModes.Fresh && !string.IsNullOrWhiteSpace(node.AssigneeExpression))

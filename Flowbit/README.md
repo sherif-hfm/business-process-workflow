@@ -51,16 +51,24 @@ expected result, and any API, Worker, or trusted configuration prerequisites.
   DTOs do not project a task claimant.
 - Node and sequence-flow roles are enforced from the authenticated actor's JWT.
 - Workflow-level `taskAssignmentRoles` authorize assignment managers to assign,
-  reassign, and unassign active normal or multi-instance user-task work items.
-- Optional workflow-level `taskDistribution` credentials authorize an external
-  distributor across every active version of the stable workflow key. Credential
-  values may be literal or `${setting.*}` / `${config.*}` references; prefer
-  references because literal secrets are visible in versioned definition JSON.
+  reassign, and unassign active normal or multi-instance user-task work items
+  owned by that immutable workflow version.
+- Optional workflow-level `taskDistribution` credentials enable the external
+  distributor API. It authenticates against the current published default and
+  may manage tasks across every active version of the stable workflow key.
+  Credential values may be literal or `${setting.*}` / `${config.*}` references;
+  prefer references because literal secrets are visible in versioned definition
+  JSON.
 - A normal user task with `requiresAssignment=true` is stored as active but is
   omitted from regular inbox/task reads until it has an assignee. Assignment
-  managers and the external distributor can still see it. `assignmentMode`
-  supports `fresh`, `previous`, and `fromNode` ownership inheritance; this gate
-  is intentionally separate from `requiresClaim` and cannot be combined with it.
+  managers and, when configured, the external distributor can still see it.
+  Such a definition must provide at least one `taskAssignmentRoles` entry after
+  trimming, blank removal, and case-insensitive deduplication, or complete
+  `taskDistribution` credentials. Whenever `taskDistribution` is present, both
+  fields are required even when manager roles are also configured.
+  `assignmentMode` supports `fresh`, `previous`, and `fromNode` ownership
+  inheritance; this gate is intentionally separate from `requiresClaim` and
+  cannot be combined with it.
 - `flowbit.instance_variables` remains the append-only variable audit history.
   An `AFTER INSERT` trigger transactionally upserts the newest row per
   `(InstanceId, VariableName)` into `flowbit.instance_variable_current_values`.
@@ -533,22 +541,33 @@ Task assignment mutations use `expectedUpdatedAt` for optimistic concurrency and
 accept an optional audit reason. Assignment clears any existing claim and creates
 direct ownership; unassignment clears both ownership fields and restores the
 node's authored `requiresClaim` setting. For `requiresAssignment` tasks, unassign
-returns the work item to the hidden external-assignment queue without rerunning
+returns the work item to the hidden assignment queue without rerunning
 inheritance. Every real assignment change is recorded as an instance-history
-audit entry. Workflows without `taskAssignmentRoles` expose no manageable
-tasks.
+audit entry. Manager authorization comes from the task's immutable workflow
+version: workflows without `taskAssignmentRoles` expose no tasks through the
+manager endpoints or `/task-management`.
 
-The task-distribution endpoints are machine-facing and do not use JWT roles.
+The optional task-distribution endpoints are machine-facing and do not use JWT
+roles.
 They authenticate `X-Client-Id` / `X-Client-Secret` against `taskDistribution`
 on the current published default definition, while listing and mutating tasks
 across all versions of that workflow family. They preserve the same optimistic
 concurrency and audit behavior as manager actions. The list is minimal by
 default; `includeVariables=true` adds latest instance variables for the returned
-page. Missing configuration disables external distribution. Production callers
-must use TLS and should be rate-limited at the gateway. The distributor list is
-also the authoritative queue for unassigned `requiresAssignment` tasks; regular
-users cannot discover, claim, or act on those tasks. Instance detail responses
-redact `taskDistribution.clientSecret`.
+page. Missing configuration disables only external distribution; configured
+assignment managers can continue using the manager endpoints and
+`/task-management`. Production callers must use TLS and should be rate-limited
+at the gateway. Both assignment surfaces include the unassigned
+`requiresAssignment` tasks they are authorized to manage; regular inbox users
+cannot discover, claim, or act on those tasks. Instance detail responses redact
+`taskDistribution.clientSecret`.
+
+A manager-enabled required-assignment definition can start without family
+distribution credentials. A distributor-only definition instead depends on the
+current published default's credentials. Starting that version is rejected when
+the credentials are unavailable, and default-version changes or deletion of the
+default are guarded while running distributor-dependent instances would
+otherwise lose their external assignment channel.
 
 Example configuration:
 
