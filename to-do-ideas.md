@@ -1,6 +1,8 @@
 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
-- add Conditional events  
+- add Conditional events (Intermediate conditional catch)  
+- add Conditional events (Interrupting conditional boundary)  
+- add Conditional events (Non-interrupting boundaries)  
 - receive task
 - add Event-Based Gateway
 - add Workflow runner simulator
