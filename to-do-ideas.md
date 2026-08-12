@@ -1,6 +1,6 @@
 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
- 
+- add Conditional events  
 - receive task
 - add Event-Based Gateway
 - add Workflow runner simulator
