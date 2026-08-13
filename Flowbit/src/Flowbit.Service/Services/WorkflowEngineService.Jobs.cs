@@ -33,7 +33,14 @@ public sealed partial class WorkflowEngineService
         string? ActingFor,
         long? DelegationId,
         int? SelectedFlowId = null,
-        AdministrativeActionRequest? AdministrativeAction = null);
+        AdministrativeActionRequest? AdministrativeAction = null,
+        IReadOnlyList<string>? TriggeringVariableNames = null);
+
+    private sealed record ConditionalWakeLatchRequest(
+        ExecutionTokenRecord Token,
+        FlowNodeModel Node,
+        SequenceFlowModel SelectedFlow,
+        IReadOnlyList<string> TriggeringVariableNames);
 
     private sealed record StagedServiceInvocation(
         string Method,
@@ -151,6 +158,113 @@ public sealed partial class WorkflowEngineService
         {
             throw new WorkflowConflictException(
                 "The execution token changed while its async-after job was being created.");
+        }
+    }
+
+    private async Task LatchConditionalWakesAsync(
+        WorkflowInstanceRecord instance,
+        IReadOnlyList<ConditionalWakeLatchRequest> requests,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        if (requests.Count == 0)
+        {
+            return;
+        }
+
+        var tokenIds = new HashSet<long>();
+        foreach (var request in requests)
+        {
+            if (request.Token.InstanceId != instance.Id
+                || !string.Equals(
+                    request.Token.Status,
+                    ExecutionTokenRecordStatuses.Active,
+                    StringComparison.Ordinal)
+                || request.Token.NodeId != request.Node.Id
+                || !string.Equals(request.Token.NodeType, request.Node.Type, StringComparison.Ordinal)
+                || !BpmnFlowNodeTypes.IsConditionalCatch(request.Node.Type)
+                || request.Node.Conditional?.EffectiveDeliveryMode
+                   != ConditionalEventDeliveryModes.DurableAsync
+                || request.SelectedFlow.SourceRef != request.Node.Id)
+            {
+                throw new WorkflowJobInvariantException(
+                    "A conditional-wake latch does not match its active token and selected flow.");
+            }
+            if (!tokenIds.Add(request.Token.Id))
+            {
+                throw new WorkflowJobInvariantException(
+                    $"Conditional-wake token #{request.Token.Id} was selected more than once in one evaluation wave.");
+            }
+            EnsureTokenCanEnterWait(request.Token);
+        }
+
+        var dueAt = timeProvider.GetUtcNow();
+        var creates = requests.Select(request => BuildJobCreate(
+                instance,
+                request.Token,
+                request.Node,
+                WorkflowJobKinds.ConditionalWake,
+                WorkflowJobKinds.ConditionalWake,
+                actor,
+                dueAt,
+                selectedFlowId: request.SelectedFlow.Id,
+                triggeringVariableNames: request.TriggeringVariableNames) with
+            {
+                QueueClass = WorkflowJobClasses.Control
+            })
+            .ToArray();
+        var created = await EnqueueInstanceJobsAsync(creates, cancellationToken);
+        if (created.Count != requests.Count)
+        {
+            throw new WorkflowJobInvariantException(
+                "The conditional-wake batch did not create every requested durable job.");
+        }
+
+        for (var index = 0; index < requests.Count; index++)
+        {
+            var request = requests[index];
+            var job = created[index];
+            if (job.TokenId != request.Token.Id
+                || job.ActivationId != request.Token.ActivationId
+                || job.Kind != WorkflowJobKinds.ConditionalWake)
+            {
+                throw new WorkflowJobInvariantException(
+                    "A persisted conditional-wake job does not match its token activation.");
+            }
+            if (!await runtime.SetExecutionTokenWaitAsync(
+                    request.Token.Id,
+                    request.Token.ActivationId,
+                    ExecutionTokenWaitStates.ConditionalWake,
+                    job.Id,
+                    null,
+                    cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The execution token changed while its conditional wake was being latched.");
+            }
+
+            await runtime.AddTokenHistoryAsync(
+                instance.Id,
+                request.Token.Id,
+                null,
+                request.Node.Id,
+                request.Node.Id,
+                actor.User,
+                ConditionalHistoryPayload(
+                    ConditionalEventDeliveryModes.DurableAsync,
+                    request.SelectedFlow.Id,
+                    request.TriggeringVariableNames,
+                    job.Id),
+                InstanceHistoryNotes.ConditionalLatched,
+                cancellationToken,
+                actor.ActingFor,
+                actor.DelegationId);
+            logger.LogInformation(
+                "Conditional event latched for instance {InstanceId}, token {TokenId}, node {NodeId}, job {JobId}.",
+                instance.Id,
+                request.Token.Id,
+                request.Node.Id,
+                job.Id);
         }
     }
 
@@ -315,7 +429,8 @@ public sealed partial class WorkflowEngineService
         int? selectedFlowId = null,
         long? multiInstanceExecutionId = null,
         long? userTaskId = null,
-        AdministrativeBatchFlowContext? administrativeBatch = null)
+        AdministrativeBatchFlowContext? administrativeBatch = null,
+        IReadOnlyList<string>? triggeringVariableNames = null)
     {
         var retryDelays = ResolveRetryDelays(node);
         return new WorkflowJobCreateRecord
@@ -353,7 +468,8 @@ public sealed partial class WorkflowEngineService
                     actor.ActingFor,
                     actor.DelegationId,
                     selectedFlowId,
-                    administrativeBatch?.Request))
+                    administrativeBatch?.Request,
+                    triggeringVariableNames))
         };
     }
 
@@ -466,6 +582,48 @@ public sealed partial class WorkflowEngineService
         }
 
         return await jobs.EnqueueAsync(create, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<WorkflowJobRecord>> EnqueueInstanceJobsAsync(
+        IReadOnlyList<WorkflowJobCreateRecord> creates,
+        CancellationToken cancellationToken)
+    {
+        if (creates.Count == 0)
+        {
+            return [];
+        }
+        if (creates[0].InstanceId is not long instanceId
+            || creates.Any(create => create.InstanceId != instanceId))
+        {
+            throw new WorkflowJobInvariantException(
+                "A conditional-wake batch must belong to exactly one workflow instance.");
+        }
+
+        // The caller already owns the instance row lock, so one count protects
+        // the complete wave from racing another API or worker replica.
+        var configured = await engineSettings.GetByKeyAsync(
+            "Workflow.MultiInstance.MaxInstances",
+            cancellationToken);
+        var limit = WorkflowJobCapacity.ResolveOpenJobLimit(configured?.Value);
+        var openJobs = await jobs.CountOpenByInstanceAsync(instanceId, cancellationToken);
+        var completingCredit = _processingJobId is not null
+                               && _processingJobInstanceId == instanceId
+            ? 1
+            : 0;
+        if (WorkflowJobCapacity.WouldExceed(
+                openJobs,
+                limit,
+                completingCredit,
+                creates.Count))
+        {
+            throw new WorkflowJobCapacityExceededException(
+                instanceId,
+                openJobs,
+                limit,
+                $"Workflow instance #{instanceId} cannot add {creates.Count} conditional-wake jobs without exceeding its open-job limit of {limit}.");
+        }
+
+        return await jobs.EnqueueManyAsync(creates, cancellationToken);
     }
 
     private static bool IsGuardedAutomaticActivity(FlowNodeModel node) =>
@@ -1186,6 +1344,17 @@ public sealed partial class WorkflowEngineService
         else if (job.Kind == WorkflowJobKinds.TimerBoundary)
         {
             await FireTimerBoundaryAsync(instance, token, job, node, workflow.Definition, actor, cancellationToken);
+        }
+        else if (job.Kind == WorkflowJobKinds.ConditionalWake)
+        {
+            await FireConditionalWakeAsync(
+                instance,
+                token,
+                job,
+                node,
+                workflow.Definition,
+                actor,
+                cancellationToken);
         }
         else
         {
@@ -1919,6 +2088,7 @@ public sealed partial class WorkflowEngineService
             WorkflowJobKinds.AsyncBefore => ExecutionTokenWaitStates.AsyncBefore,
             WorkflowJobKinds.AsyncAfter => ExecutionTokenWaitStates.AsyncAfter,
             WorkflowJobKinds.Timer => ExecutionTokenWaitStates.TimerCatch,
+            WorkflowJobKinds.ConditionalWake => ExecutionTokenWaitStates.ConditionalWake,
             _ => null
         };
         if (expectedWait is not null
@@ -1944,6 +2114,7 @@ public sealed partial class WorkflowEngineService
             WorkflowJobKinds.Timer
                 or WorkflowJobKinds.TimerBoundary
                 or WorkflowJobKinds.TimerStart => WorkflowJobKinds.Timer,
+            WorkflowJobKinds.ConditionalWake => WorkflowJobKinds.ConditionalWake,
             _ => null
         };
         if (job.Id != fence.JobId
@@ -2144,6 +2315,113 @@ public sealed partial class WorkflowEngineService
         public long InstanceId { get; } = instanceId;
         public long OpenJobs { get; } = openJobs;
         public long Limit { get; } = limit;
+    }
+
+    private async Task FireConditionalWakeAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord token,
+        WorkflowJobRecord job,
+        FlowNodeModel node,
+        WorkflowModel definition,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        if (!BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+            || node.Conditional?.EffectiveDeliveryMode
+               != ConditionalEventDeliveryModes.DurableAsync
+            || job.TimerSubscriptionId is not null)
+        {
+            throw new WorkflowJobInvariantException(
+                "The conditional-wake job shape is invalid.");
+        }
+        var payload = ReadJobPayload(job);
+        if (payload?.SelectedFlowId is not int selectedFlowId)
+        {
+            throw new WorkflowJobInvariantException(
+                "The conditional-wake job has no latched sequence flow.");
+        }
+        var outgoing = OutgoingFlows(
+            instance.WorkflowDefinitionId,
+            definition,
+            node.Id).Take(2).ToList();
+        if (outgoing.Count != 1
+            || outgoing[0].Id != selectedFlowId
+            || outgoing[0].SourceRef != node.Id)
+        {
+            throw new WorkflowJobInvariantException(
+                $"Conditional-wake job #{job.Id} no longer matches the event's sole outgoing sequence flow.");
+        }
+        if (!await runtime.ClearExecutionTokenWaitAsync(
+                token.Id,
+                token.ActivationId,
+                ExecutionTokenWaitStates.ConditionalWake,
+                job.Id,
+                null,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The conditional-wake job no longer owns the token wait.");
+        }
+
+        // The truth transition was durably latched by the variable writer. Do
+        // not evaluate it again here: a later write may legitimately have made
+        // the expression false before this worker acquired the instance lock.
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var flowInfo = await LoadSequenceFlowInfoAsync(instance.Id, definition, cancellationToken);
+        var queue = new Queue<long>();
+        await jobs.CancelOtherJobsByTokenIdsAsync(
+            instance.Id,
+            [token.Id],
+            job.Id,
+            "conditionalWakeCompleted",
+            cancellationToken);
+        await AdvanceAutomaticTokenAsync(
+            instance,
+            token,
+            token.GatewayBranchId,
+            node,
+            outgoing[0],
+            InstanceHistoryNotes.ConditionalTriggered,
+            definition,
+            actor,
+            stored,
+            flowInfo,
+            queue,
+            cancellationToken,
+            historyPayload: ConditionalHistoryPayload(
+                ConditionalEventDeliveryModes.DurableAsync,
+                outgoing[0].Id,
+                payload.TriggeringVariableNames ?? [],
+                job.Id));
+        logger.LogInformation(
+            "Durable conditional event triggered for instance {InstanceId}, token {TokenId}, node {NodeId}, job {JobId}.",
+            instance.Id,
+            token.Id,
+            node.Id,
+            job.Id);
+
+        if (await IsInstanceRunningAsync(instance.Id, cancellationToken))
+        {
+            var resumed = await runtime.GetInstanceAsync(instance.Id, cancellationToken)
+                ?? instance;
+            resumed = await ResolvePassThroughAsync(
+                resumed,
+                definition,
+                actor,
+                flowInfo,
+                token.Id,
+                cancellationToken,
+                forceDurableActivities: true);
+            await EnsureMultiInstanceInitializedAsync(
+                resumed,
+                definition,
+                actor,
+                cancellationToken);
+            _ = await ApplyUserTaskOwnershipInheritanceAsync(
+                resumed,
+                definition,
+                cancellationToken);
+        }
     }
 
     private async Task FireTimerCatchAsync(

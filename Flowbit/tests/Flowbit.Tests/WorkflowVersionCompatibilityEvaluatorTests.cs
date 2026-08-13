@@ -437,6 +437,72 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         AssertCodes(result, WorkflowVersionCompatibilityCodes.OpenTimerContractChanged);
     }
 
+    [Fact]
+    public void Active_conditional_catch_blocks_expression_or_delivery_contract_changes()
+    {
+        var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateConditionalCatchEvent);
+        sourceModel.FlowNodes.Single(node => node.Id == 2).Conditional =
+            new ConditionalDefinitionModel
+            {
+                Condition = "approved == true",
+                DeliveryMode = ConditionalEventDeliveryModes.Atomic
+            };
+        var targetModel = Clone(sourceModel);
+        targetModel.FlowNodes.Single(node => node.Id == 2).Conditional =
+            new ConditionalDefinitionModel
+            {
+                Condition = "approved == false",
+                DeliveryMode = ConditionalEventDeliveryModes.DurableAsync
+            };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(
+                Definition(11, 1, sourceModel),
+                Definition(12, 2, targetModel)));
+
+        AssertCodes(
+            result,
+            WorkflowVersionCompatibilityCodes.ConditionalCatchContractChanged);
+    }
+
+    [Fact]
+    public void Open_conditional_wake_requires_durable_mode_and_exact_job_contract()
+    {
+        var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateConditionalCatchEvent);
+        sourceModel.FlowNodes.Single(node => node.Id == 2).Conditional =
+            new ConditionalDefinitionModel
+            {
+                Condition = "approved == true",
+                DeliveryMode = ConditionalEventDeliveryModes.DurableAsync
+            };
+        var source = Definition(11, 1, sourceModel);
+        var target = Definition(12, 2, Clone(sourceModel));
+        var compatibleContext = Context(source, target) with
+        {
+            OpenJobs = [ConditionalWakeJob(source)]
+        };
+
+        var compatible = WorkflowVersionCompatibilityEvaluator.Evaluate(compatibleContext);
+        Assert.True(compatible.IsCompatible);
+
+        var changed = Clone(sourceModel);
+        changed.FlowNodes.Single(node => node.Id == 2).Conditional!.DeliveryMode =
+            ConditionalEventDeliveryModes.Atomic;
+        var blocked = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, Definition(13, 3, changed)) with
+            {
+                OpenJobs = [ConditionalWakeJob(source)]
+            });
+
+        Assert.Contains(
+            blocked.Blockers,
+            issue => issue.Code == WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
+        Assert.Contains(
+            blocked.Blockers,
+            issue => issue.Code
+                     == WorkflowVersionCompatibilityCodes.ConditionalCatchContractChanged);
+    }
+
     private static WorkflowVersionCompatibilityContext Context(
         WorkflowDefinitionRecord source,
         WorkflowDefinitionRecord target,
@@ -690,6 +756,18 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             UpdatedAt: Now,
             StartedAt: null,
             CompletedAt: null);
+
+    private static WorkflowJobRecord ConditionalWakeJob(
+        WorkflowDefinitionRecord source) =>
+        Job(source) with
+        {
+            NodeName = "Wait for approval",
+            NodeType = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
+            Kind = WorkflowJobKinds.ConditionalWake,
+            QueueClass = WorkflowJobClasses.Control,
+            Phase = WorkflowJobKinds.ConditionalWake,
+            Payload = JsonSerializer.SerializeToElement(new { selectedFlowId = 20 })
+        };
 
     private static TimerSubscriptionRecord Timer(WorkflowDefinitionRecord source) =>
         new(

@@ -22,7 +22,8 @@ public static class WorkflowJobCapacity
     public static bool WouldExceed(
         long currentOpenJobs,
         long openJobLimit,
-        int completingJobCredits = 0)
+        int completingJobCredits = 0,
+        int additionalJobs = 1)
     {
         if (currentOpenJobs < 0)
         {
@@ -36,8 +37,13 @@ public static class WorkflowJobCapacity
         {
             throw new ArgumentOutOfRangeException(nameof(completingJobCredits));
         }
+        if (additionalJobs < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(additionalJobs));
+        }
 
         var effectiveOpenJobs = Math.Max(0, currentOpenJobs - completingJobCredits);
-        return effectiveOpenJobs >= openJobLimit;
+        return additionalJobs > openJobLimit
+               || effectiveOpenJobs > openJobLimit - additionalJobs;
     }
 }

@@ -75,6 +75,62 @@ expected result, and any API, Worker, or trusted configuration prerequisites.
   Search and latest-value enrichment read that bounded projection; execution
   detail and audit reads continue to use history.
 
+## Intermediate conditional catch events
+
+An `intermediateConditionalCatchEvent` is a persisted wait whose condition can
+observe declared instance variables. Its node JSON uses this shape:
+
+```json
+{
+  "type": "intermediateConditionalCatchEvent",
+  "conditional": {
+    "condition": "approved == true",
+    "deliveryMode": "durableAsync"
+  }
+}
+```
+
+`conditional.condition` is required and is limited to 4,000 Unicode scalar
+values. It uses NCalc built-ins and Flowbit's pure string helpers, must reference
+1-64 declared stored variables, and cannot use undeclared variables, unknown
+functions, `FlowInfo`, gateway/multi-instance helpers, or non-observable
+`sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*` context. The node must
+have at least one incoming flow and exactly one unconditional outgoing flow; it
+cannot carry task, role, variable, async-job, or another event type's metadata.
+`deliveryMode` accepts `atomic` or `durableAsync`; omission means `atomic`, and
+the editor omits the field for that default.
+
+The engine evaluates the condition when a token enters the event. If it is
+false, the active token rests there. Thereafter every runtime variable producer
+records its writes, and a complete transactional write batch considers only
+waiting events whose extracted dependency set intersects the changed names.
+Each authored condition is evaluated once against the same post-batch
+PostgreSQL current-variable snapshot, then a true result is applied to all of
+that node's active wait activations. Evaluation and wake selection occur while
+the writer holds the instance row lock and transaction.
+
+- `atomic` advances each still-active matching token through its fixed outgoing
+  flow in that writer transaction.
+- `durableAsync` persists a `conditionalWake` control job and the token's exact
+  activation/job wait fence in that transaction. A leased worker later advances
+  the latched flow without re-evaluating the condition, so a subsequent write
+  cannot retract an already durable wake.
+
+Tokens, latches, jobs, variables, and immutable definition IDs are PostgreSQL
+state. Worker leases and activation fences make delivery safe across API/worker
+restarts and multiple replicas; notifications are only wake-up hints and
+polling remains authoritative. Extracted dependency plans are bounded
+per-process caches keyed by immutable definition ID and rebuild deterministically
+after restart or eviction, so they are not correctness state. A running instance
+may switch versions at an active conditional wait only when its normalized
+condition, effective delivery mode, and outgoing-flow contract remain
+compatible; compatible open jobs are rebound under the instance lock.
+
+Deploy this feature by applying the additive migration first, upgrading every
+API and Worker replica, and only then publishing or starting definitions that
+contain conditional events. Mixed conditional-aware and legacy replicas are not
+supported.
+
 ## Gateways and scoped interruption
 
 Gateway direction is inferred from topology. A split has exactly one incoming
@@ -203,7 +259,9 @@ recorded after deployment.
 
 `task`, `serviceTask`, `scriptTask`, and `userTask` support `asyncBefore` and
 `asyncAfter`. A multi-instance user task applies those flags to its parent
-execution, not to every child item. Definitions may also use
+execution, not to every child item. Conditional catches may use
+`conditional.deliveryMode: "durableAsync"` to enqueue control work. Definitions
+may also use
 `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with
 exactly one fixed ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule.
 Timer boundaries may be interrupting or noninterrupting and may recur.
@@ -244,8 +302,9 @@ the nearest due time.
 
 For an additive rollout, first deploy the schema and API with
 `WorkflowDurableProcessing:PublicationEnabled=false`. Draft definitions may
-still be saved, but publishing or making an async/timer definition the default
-is rejected. Start at least one worker and confirm `/health/ready` returns 200
+still be saved, but publishing or making an async, timer, or durable-conditional
+definition the default is rejected. Start at least one worker and confirm
+`/health/ready` returns 200
 after its first successful durable-queue query, then set the gate to `true`.
 Existing definitions and running instances remain synchronous and require no
 backfill.
@@ -456,10 +515,11 @@ produces one execution per child work item and deliberately has no duplicate
 parent execution row. Execution kind is `node` for a token visit and
 `userTaskItem` for a multi-instance child. The supported lifecycle statuses are
 `pending`, `active`, `completed`, `cancelled`, `faulted`, and `merged`;
-completion reasons distinguish
-normal/user/message/multi-instance work, gateway firing/interruption behavior,
+completion reasons distinguish normal/user/message/conditional/multi-instance
+work, gateway firing/interruption behavior,
 caught errors, scoped or instance cancellation, and terminal end behavior. The
 reason values are `normal`, `userAction`, `messageDelivery`,
+`conditionalTriggered`,
 `multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
 `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
 `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,

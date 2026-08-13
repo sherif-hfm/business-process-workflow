@@ -13,9 +13,14 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new DurableProcessingOptions());
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<IConditionalEventDefinitionAnalyzer, ConditionalEventDefinitionAnalyzer>();
+        services.TryAddSingleton<IConditionalEventDependencyPlanCache, ConditionalEventDependencyPlanCache>();
+        services.AddScoped<IInstanceVariableMutationTracker, InstanceVariableMutationTracker>();
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<WorkflowEngineService>();
         services.AddScoped<IWorkflowEngineService>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
+        services.AddScoped<IConditionalEventRuntimeCoordinator>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IAdministrativeActionBatchService, AdministrativeActionBatchService>();
         services.AddScoped<IAdministrativeActionBatchJobProcessor, AdministrativeActionBatchJobProcessor>();

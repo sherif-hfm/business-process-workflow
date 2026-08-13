@@ -12,6 +12,74 @@ namespace Flowbit.Tests;
 public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
 {
     [Fact]
+    public async Task EnqueueManyPersistsConditionalWakeWaveInInputOrder()
+    {
+        var suffix = $"conditional-wave-{Guid.NewGuid():N}";
+        try
+        {
+            long definitionId;
+            long instanceId;
+            await using (var setup = fixture.CreateDbContext())
+            {
+                var definition = NewDefinition(suffix);
+                setup.WorkflowDefinitions.Add(definition);
+                await setup.SaveChangesAsync();
+                var instance = NewInstance(definition, suffix);
+                setup.WorkflowInstances.Add(instance);
+                await setup.SaveChangesAsync();
+                definitionId = definition.Id;
+                instanceId = instance.Id;
+            }
+
+            var dueAt = DateTimeOffset.UtcNow;
+            var creates = Enumerable.Range(1, 3)
+                .Select(index => new WorkflowJobCreateRecord
+                {
+                    InstanceId = instanceId,
+                    WorkflowDefinitionId = definitionId,
+                    WorkflowKey = suffix,
+                    ActivationId = Guid.NewGuid(),
+                    NodeId = index,
+                    NodeName = $"condition-{index}",
+                    NodeType = "intermediateConditionalCatchEvent",
+                    Kind = WorkflowJobKinds.ConditionalWake,
+                    QueueClass = WorkflowJobClasses.Control,
+                    Phase = WorkflowJobKinds.ConditionalWake,
+                    DueAt = dueAt,
+                    Payload = JsonSerializer.SerializeToElement(new
+                    {
+                        selectedFlowId = index + 100
+                    })
+                })
+                .ToArray();
+
+            await using var db = fixture.CreateDbContext();
+            var repository = new WorkflowJobRepository(db, fixture.DataSource);
+            var created = await repository.EnqueueManyAsync(creates, CancellationToken.None);
+
+            Assert.Equal(creates.Select(item => item.NodeId), created.Select(item => item.NodeId));
+            Assert.All(created, job =>
+            {
+                Assert.Equal(WorkflowJobKinds.ConditionalWake, job.Kind);
+                Assert.Equal(WorkflowJobClasses.Control, job.QueueClass);
+                Assert.Equal(WorkflowJobStatuses.Queued, job.Status);
+                Assert.True(job.Id > 0);
+            });
+            Assert.Equal(
+                created.Select(job => job.Id),
+                await db.WorkflowJobs
+                    .Where(job => job.InstanceId == instanceId)
+                    .OrderBy(job => job.Id)
+                    .Select(job => job.Id)
+                    .ToArrayAsync());
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(suffix);
+        }
+    }
+
+    [Fact]
     public async Task AcquisitionSelectsOneFairCandidatePerInstanceBeforeLimit()
     {
         var suffix = $"fair-instance-{Guid.NewGuid():N}";

@@ -47,6 +47,13 @@ public static class WorkflowVersionCompatibilityEvaluator
             sourceNodes,
             targetNodes,
             warnings);
+        ValidateActiveConditionalCatches(
+            activeNodeIds,
+            source,
+            target,
+            sourceNodes,
+            targetNodes,
+            blockers);
         ValidateActiveMultiInstance(
             context,
             source,
@@ -249,6 +256,37 @@ public static class WorkflowVersionCompatibilityEvaluator
                 warnings.Add(Issue(
                     WorkflowVersionCompatibilityCodes.MessageCatchContractChanged,
                     $"Active message catch node #{nodeId} changes its delivery contract; the target contract applies immediately after the version change.",
+                    nodeId));
+            }
+        }
+    }
+
+    private static void ValidateActiveConditionalCatches(
+        IEnumerable<int> activeNodeIds,
+        WorkflowModel source,
+        WorkflowModel target,
+        IReadOnlyDictionary<int, FlowNodeModel> sourceNodes,
+        IReadOnlyDictionary<int, FlowNodeModel> targetNodes,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        foreach (var nodeId in activeNodeIds.OrderBy(id => id))
+        {
+            if (!sourceNodes.TryGetValue(nodeId, out var sourceNode)
+                || !targetNodes.TryGetValue(nodeId, out var targetNode)
+                || !IsConditionalCatch(sourceNode)
+                || !IsConditionalCatch(targetNode))
+            {
+                continue;
+            }
+
+            if (!string.Equals(
+                    ConditionalNodeContract(source, sourceNode),
+                    ConditionalNodeContract(target, targetNode),
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.ConditionalCatchContractChanged,
+                    $"Active conditional catch node #{nodeId} changes its expression, delivery mode, or outgoing-flow contract.",
                     nodeId));
             }
         }
@@ -672,6 +710,7 @@ public static class WorkflowVersionCompatibilityEvaluator
             WorkflowJobKinds.Timer => BpmnFlowNodeTypes.IsTimerCatch(targetNode.Type),
             WorkflowJobKinds.TimerBoundary => BpmnFlowNodeTypes.IsTimerBoundary(targetNode.Type),
             WorkflowJobKinds.TimerStart => BpmnFlowNodeTypes.IsTimerStart(targetNode.Type),
+            WorkflowJobKinds.ConditionalWake => IsDurableConditionalCatch(targetNode),
             _ => false
         };
         if (!kindMatches)
@@ -686,6 +725,7 @@ public static class WorkflowVersionCompatibilityEvaluator
             WorkflowJobKinds.Timer
                 or WorkflowJobKinds.TimerBoundary
                 or WorkflowJobKinds.TimerStart => WorkflowJobKinds.Timer,
+            WorkflowJobKinds.ConditionalWake => WorkflowJobKinds.ConditionalWake,
             _ => null
         };
         if (expectedPhase is null
@@ -938,6 +978,30 @@ public static class WorkflowVersionCompatibilityEvaluator
             Node = CanonicalNode(node),
             Outgoing = OutgoingFlowContracts(definition, node.Id)
         });
+
+    private static string ConditionalNodeContract(
+        WorkflowModel definition,
+        FlowNodeModel node) =>
+        JsonSerializer.Serialize(new
+        {
+            Condition = ConditionalDefinitionRules.NormalizeCondition(
+                node.Conditional?.Condition),
+            DeliveryMode = node.Conditional?.EffectiveDeliveryMode,
+            Outgoing = OutgoingFlowContracts(definition, node.Id)
+        });
+
+    private static bool IsConditionalCatch(FlowNodeModel node) =>
+        BpmnFlowNodeTypes.IsConditionalCatch(node.Type);
+
+    private static bool IsDurableConditionalCatch(FlowNodeModel node)
+    {
+        if (!IsConditionalCatch(node))
+        {
+            return false;
+        }
+        return node.Conditional?.EffectiveDeliveryMode
+               == ConditionalEventDeliveryModes.DurableAsync;
+    }
 
     private static IReadOnlyList<string> BoundaryContracts(
         WorkflowModel definition,

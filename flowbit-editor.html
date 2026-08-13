@@ -1229,6 +1229,8 @@
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .node.intermediateTimerCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .node.intermediateTimerCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .node.intermediateConditionalCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .node.intermediateConditionalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .node { transition: filter .15s, opacity .15s; }
   .node:hover { filter: drop-shadow(0 6px 10px var(--node-hover-shadow)); }
@@ -1252,6 +1254,7 @@
   .node.startEvent .node-icon { color: var(--node-start-icon); }
   .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon,
   .node.timerStartEvent .node-icon, .node.intermediateTimerCatchEvent .node-icon,
+  .node.intermediateConditionalCatchEvent .node-icon,
   .node.timerBoundaryEvent .node-icon { color: var(--node-message-icon); }
   .node.endEvent .node-icon, .node.errorEndEvent .node-icon, .node.terminateEndEvent .node-icon,
   .node.scopedInterruptEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
@@ -1739,6 +1742,7 @@
         <symbol id="icon-terminate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="currentColor"/></symbol>
         <symbol id="icon-message" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-timer" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3.5 2M9 2h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-conditional" viewBox="0 0 24 24"><path d="M6.5 3.5h8l3 3v14h-11zM14.5 3.5v4h3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 11h6M9 14h6M9 17h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
         <symbol id="icon-error-throw" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
         <symbol id="icon-error-catch" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-assignee" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.3 2.4-5 5.5-5 1.4 0 2.6.3 3.5 1M15 16l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -1981,6 +1985,7 @@ const NODE_TYPE = {
   TIMER_BOUNDARY_EVENT: "timerBoundaryEvent",
   MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
   TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
+  CONDITIONAL_CATCH_EVENT: "intermediateConditionalCatchEvent",
   MESSAGE_START_EVENT: "messageStartEvent"
 };
 const NODE_TYPE_OPTIONS = [
@@ -2000,6 +2005,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
   { value: NODE_TYPE.TIMER_CATCH_EVENT, label: "Timer Catch Event (delay)" },
+  { value: NODE_TYPE.CONDITIONAL_CATCH_EVENT, label: "Conditional Catch Event (wait for condition)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" }
 ];
 
@@ -2155,7 +2161,8 @@ function searchDiagram(candidate, query, limit = 20) {
     errorBoundaryEvent: "Error Boundary Event",
     timerBoundaryEvent: "Timer Boundary Event",
     intermediateMessageCatchEvent: "Message Catch Event",
-    intermediateTimerCatchEvent: "Timer Catch Event"
+    intermediateTimerCatchEvent: "Timer Catch Event",
+    intermediateConditionalCatchEvent: "Conditional Catch Event"
   };
   const candidates = [];
   const addCandidate = (kind, id, label, detail, rawFields) => {
@@ -2374,6 +2381,11 @@ const SCRIPT_FORMAT_OPTIONS = [
   { value: SCRIPT_FORMAT.NCALC, label: "NCalc assignments" },
   { value: SCRIPT_FORMAT.JAVASCRIPT, label: "JavaScript (execution API)" }
 ];
+const CONDITIONAL_DELIVERY_MODE = { ATOMIC: "atomic", DURABLE_ASYNC: "durableAsync" };
+const CONDITIONAL_DELIVERY_MODE_OPTIONS = [
+  { value: CONDITIONAL_DELIVERY_MODE.ATOMIC, label: "Atomic (move in the variable writer transaction)" },
+  { value: CONDITIONAL_DELIVERY_MODE.DURABLE_ASYNC, label: "Durable async (latch, then move in a worker)" }
+];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime", "json"];
 const MULTI_INSTANCE_MODE_OPTIONS = [
   { value: "parallel", label: "Parallel" },
@@ -2397,6 +2409,24 @@ function canonicalizeKnownValue(value, supported, fallback) {
   const canonical = supported.find(candidate =>
     candidate.toLowerCase() === value.toLowerCase());
   return canonical ?? value;
+}
+function normalizeConditionalDefinition(value) {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "object" || Array.isArray(value)) return value;
+  const deliveryMode = canonicalizeKnownValue(
+    value.deliveryMode,
+    [CONDITIONAL_DELIVERY_MODE.ATOMIC, CONDITIONAL_DELIVERY_MODE.DURABLE_ASYNC],
+    undefined);
+  const normalized = {
+    condition: value.condition === undefined ? null : value.condition
+  };
+  // Atomic is the compatibility/default behavior and is represented by an
+  // omitted property. Preserve unsupported imported values for save validation.
+  if (deliveryMode !== undefined && deliveryMode !== null &&
+      deliveryMode !== CONDITIONAL_DELIVERY_MODE.ATOMIC) {
+    normalized.deliveryMode = deliveryMode;
+  }
+  return normalized;
 }
 function normalizeMultiInstanceForLoad(source) {
   const mode = canonicalizeKnownValue(source.mode, ["parallel", "sequential"], "parallel");
@@ -2955,7 +2985,8 @@ function isEventType(type) {
     type === NODE_TYPE.ERROR_END_EVENT || type === NODE_TYPE.TERMINATE_END_EVENT ||
     type === NODE_TYPE.SCOPED_INTERRUPT_EVENT ||
     type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT ||
-    type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT;
+    type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT ||
+    type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -3005,6 +3036,9 @@ function isMessageStartEventType(type) {
 }
 function isTimerCatchEventType(type) {
   return type === NODE_TYPE.TIMER_CATCH_EVENT;
+}
+function isConditionalCatchEventType(type) {
+  return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
 }
 function isTimerEventType(type) {
   return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
@@ -3214,6 +3248,7 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.TIMER_BOUNDARY_EVENT
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
     || type === NODE_TYPE.TIMER_CATCH_EVENT
+    || type === NODE_TYPE.CONDITIONAL_CATCH_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT;
 }
 function typeLabel(type) {
@@ -3305,6 +3340,7 @@ function applyTypeInvariants(node) {
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
   if (!isComplexGatewayType(node.type)) delete node.activationCondition;
   if (!isScopedInterruptEventType(node.type)) delete node.gatewayRef;
+  if (node.type !== "intermediateConditionalCatchEvent") delete node.conditional;
   if (!isUserTaskType(node.type)) {
     node.requiresAssignment = false;
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
@@ -3476,6 +3512,25 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     node.message = normalizeMessage(node.message, false, model.variables);
+  } else if (node.type === "intermediateConditionalCatchEvent") {
+    // A conditional catch rests until its NCalc predicate becomes true. It has
+    // no user-action metadata; delivery policy lives only in node.conditional.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    delete node.message;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    if (node.conditional !== undefined && node.conditional !== null) {
+      node.conditional = normalizeConditionalDefinition(node.conditional);
+    }
   } else if (isMessageStartEventType(node.type)) {
     // A message start event is an entry point started by an external system via
     // POST /api/workflows/{workflowKey}/message-start. Its typed output mappings
@@ -3722,6 +3777,7 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.TIMER_BOUNDARY_EVENT]: "icon-timer",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
   [NODE_TYPE.TIMER_CATCH_EVENT]: "icon-timer",
+  [NODE_TYPE.CONDITIONAL_CATCH_EVENT]: "icon-conditional",
   [NODE_TYPE.USER_TASK]: "icon-user",
   [NODE_TYPE.TASK]: "icon-task",
   [NODE_TYPE.SERVICE_TASK]: "icon-service",
@@ -4074,7 +4130,8 @@ function renderNodes() {
     } else if (isEventType(node.type)) {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
-      if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type)) {
+      if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type) ||
+          isConditionalCatchEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
       if (isScopedInterruptEventType(node.type)) {
@@ -4995,6 +5052,9 @@ function renderNodeInspector() {
       if (isTimerEventType(v) && !isTimerEventType(previousType)) {
         node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
       }
+      if (isConditionalCatchEventType(v) && !isConditionalCatchEventType(previousType)) {
+        node.conditional = { condition: "" };
+      }
       if (changesGatewaySemantics) {
         outgoingFlows(node.id).forEach(flow => {
           flow.isDefault = false;
@@ -5091,6 +5151,10 @@ function renderNodeInspector() {
     activationHint.className = "empty-note";
     activationHint.innerHTML = "Required NCalc expression. Use <code>IncomingCount(301)</code> with a literal incoming flow id and <code>TotalIncomingCount()</code>. Outgoing conditions may inspect <code>[gateway.waitingForStart]</code> to distinguish activation from reset.";
     inspector.appendChild(activationHint);
+  }
+
+  if (isConditionalCatchEventType(node.type)) {
+    renderConditionalSection(node);
   }
 
   if (isScopedInterruptEventType(node.type)) {
@@ -5751,6 +5815,66 @@ function renderServiceSection(node) {
     renderInspector();
   };
   inspector.appendChild(addMappingBtn);
+}
+
+function renderConditionalSection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Conditional wait";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+
+  const conditional = node.conditional && typeof node.conditional === "object" &&
+    !Array.isArray(node.conditional) ? node.conditional : null;
+  if (!conditional) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "The imported conditional configuration is missing or malformed.";
+    inspector.appendChild(warning);
+
+    const repair = document.createElement("button");
+    repair.type = "button";
+    repair.textContent = "Replace with a conditional configuration";
+    repair.onclick = () => {
+      node.conditional = { condition: "" };
+      renderInspector();
+    };
+    inspector.appendChild(repair);
+    return;
+  }
+
+  textareaField(
+    "Condition (NCalc)",
+    typeof conditional.condition === "string" ? conditional.condition : "",
+    value => { conditional.condition = value; },
+    4);
+
+  const currentMode = conditional.deliveryMode == null
+    ? CONDITIONAL_DELIVERY_MODE.ATOMIC
+    : conditional.deliveryMode;
+  const options = CONDITIONAL_DELIVERY_MODE_OPTIONS.slice();
+  if (!options.some(option => option.value === currentMode)) {
+    options.push({
+      value: String(currentMode),
+      label: String(currentMode) + " (unsupported imported value)"
+    });
+  }
+  selectField("Delivery mode", options, currentMode, value => {
+    if (value === CONDITIONAL_DELIVERY_MODE.ATOMIC) {
+      delete conditional.deliveryMode;
+    } else {
+      conditional.deliveryMode = value;
+    }
+  });
+
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.innerHTML =
+    "The event waits until this NCalc expression becomes true. <b>Atomic</b> evaluates " +
+    "and moves the token in the variable writer transaction. <b>Durable async</b> " +
+    "persists a latch in that transaction, then a worker moves the token. Atomic is " +
+    "the default and is omitted from saved JSON.";
+  inspector.appendChild(hint);
 }
 
 function renderMessageSection(node) {
@@ -10868,6 +10992,38 @@ function validateModelForSave(candidate) {
     }
   }
 
+  for (const node of nodes.filter(candidate => candidate &&
+      candidate.type === "intermediateConditionalCatchEvent")) {
+    const label = "Conditional catch event #" + String(node.id);
+    const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
+    const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
+    if (incoming.length === 0) {
+      errors.push(label + " must have at least one incoming sequence flow.");
+    }
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0]) ||
+        outgoing[0].conditionPriority != null) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+
+    const conditional = node.conditional && typeof node.conditional === "object" &&
+      !Array.isArray(node.conditional) ? node.conditional : null;
+    if (!conditional) {
+      errors.push(label + " must have a conditional configuration.");
+      continue;
+    }
+    if (!hasText(conditional.condition)) {
+      errors.push(label + " condition must not be blank.");
+    }
+    if (conditional.deliveryMode !== undefined && conditional.deliveryMode !== null &&
+        conditional.deliveryMode !== "atomic" &&
+        conditional.deliveryMode !== "durableAsync") {
+      errors.push(label + " deliveryMode must be atomic or durableAsync.");
+    }
+  }
+
   const messageStarts = nodes.filter(candidate => candidate && candidate.type === "messageStartEvent");
   if (messageStarts.length > 1) {
     const externalIds = new Set();
@@ -10974,7 +11130,8 @@ function validateModelForSave(candidate) {
     "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
     "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
     "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent",
-    "intermediateMessageCatchEvent", "intermediateTimerCatchEvent"
+    "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
+    "intermediateConditionalCatchEvent"
   ]);
   for (const node of nodes.filter(Boolean)) {
     if (!supportedNodeTypes.has(node.type)) {
@@ -10992,6 +11149,10 @@ function validateModelForSave(candidate) {
     if (node.type !== "complexGateway" && node.activationCondition != null) {
       errors.push("Flow node #" + String(node.id) +
         " can define activationCondition only when its type is complexGateway.");
+    }
+    if (node.type !== "intermediateConditionalCatchEvent" && node.conditional != null) {
+      errors.push("Flow node #" + String(node.id) +
+        " can define conditional only when its type is intermediateConditionalCatchEvent.");
     }
   }
   const gatewayTypes = new Set([
@@ -11512,6 +11673,9 @@ async function save() {
     if (isMessageCatchEventType(node.type)) {
       node.message = normalizeMessage(node.message, false, model.variables);
     }
+    if (isConditionalCatchEventType(node.type) && node.conditional != null) {
+      node.conditional = normalizeConditionalDefinition(node.conditional);
+    }
     if (isScriptTaskType(node.type)) {
       node.scriptFormat = canonicalizeKnownValue(
         node.scriptFormat, [SCRIPT_FORMAT.NCALC, SCRIPT_FORMAT.JAVASCRIPT], undefined);
@@ -11560,6 +11724,10 @@ async function save() {
         (typeof node.inboxVisibilityCondition === "string" &&
           !node.inboxVisibilityCondition.trim())) {
       delete node.inboxVisibilityCondition;
+    }
+    if (isConditionalCatchEventType(node.type) && node.conditional &&
+        node.conditional.deliveryMode === CONDITIONAL_DELIVERY_MODE.ATOMIC) {
+      delete node.conditional.deliveryMode;
     }
   });
   const data = JSON.stringify(canonical, null, 2);
@@ -11800,6 +11968,8 @@ function loadFromObject(obj) {
           : JSON.parse(JSON.stringify(s.joinCancellation)),
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
+        conditional: s.type === "intermediateConditionalCatchEvent"
+          ? normalizeConditionalDefinition(s.conditional) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
           ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,
         idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined

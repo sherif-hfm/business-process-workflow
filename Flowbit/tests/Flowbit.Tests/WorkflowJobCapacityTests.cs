@@ -35,4 +35,21 @@ public sealed class WorkflowJobCapacityTests
     {
         Assert.Equal(expected, WorkflowJobCapacity.WouldExceed(current, limit, credit));
     }
+
+    [Theory]
+    [InlineData(1997, 2000, 0, 3, false)]
+    [InlineData(1998, 2000, 0, 3, true)]
+    [InlineData(2000, 2000, 1, 1, false)]
+    [InlineData(2000, 2000, 1, 2, true)]
+    public void Conditional_wake_wave_is_capacity_checked_as_one_batch(
+        long current,
+        long limit,
+        int credit,
+        int additional,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            WorkflowJobCapacity.WouldExceed(current, limit, credit, additional));
+    }
 }

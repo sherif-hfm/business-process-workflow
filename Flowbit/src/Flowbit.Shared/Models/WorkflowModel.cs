@@ -263,6 +263,14 @@ public sealed class FlowNodeModel
     public TimerDefinitionModel? Timer { get; set; }
 
     /// <summary>
+    /// Intermediate conditional catch event only: the observable stored-variable
+    /// predicate and the delivery contract used when the predicate becomes true.
+    /// </summary>
+    [JsonPropertyName("conditional")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ConditionalDefinitionModel? Conditional { get; set; }
+
+    /// <summary>
     /// Timer boundary event only: true interrupts the attached activity; false
     /// creates a sibling reminder/escalation branch while the activity keeps waiting.
     /// Missing legacy values normalize to true.
@@ -568,6 +576,71 @@ public sealed class TimerDefinitionModel
     [JsonPropertyName("timeCycle")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TimeCycle { get; set; }
+}
+
+/// <summary>
+/// Defines an intermediate conditional catch event. The condition is an NCalc
+/// expression over statically declared, persisted instance variables. A missing
+/// delivery mode has the same meaning as <c>atomic</c> and remains omitted in JSON.
+/// </summary>
+public sealed class ConditionalDefinitionModel
+{
+    [JsonPropertyName("condition")]
+    public string Condition { get; set; } = string.Empty;
+
+    [JsonPropertyName("deliveryMode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeliveryMode { get; set; }
+
+    [JsonIgnore]
+    public string EffectiveDeliveryMode =>
+        ConditionalEventDeliveryModes.GetEffective(DeliveryMode);
+}
+
+public static class ConditionalEventDeliveryModes
+{
+    public const string Atomic = "atomic";
+    public const string DurableAsync = "durableAsync";
+
+    public static string GetEffective(string? deliveryMode)
+    {
+        if (string.IsNullOrWhiteSpace(deliveryMode)
+            || string.Equals(deliveryMode, Atomic, StringComparison.OrdinalIgnoreCase))
+        {
+            return Atomic;
+        }
+
+        return string.Equals(deliveryMode, DurableAsync, StringComparison.OrdinalIgnoreCase)
+            ? DurableAsync
+            : deliveryMode.Trim();
+    }
+}
+
+public static class ConditionalDefinitionRules
+{
+    public const int MaxConditionLength = 4000;
+    public const int MaxDependencies = 64;
+
+    /// <summary>
+    /// Applies the same whitespace and optional ${...} compatibility handling as
+    /// sequence-flow condition evaluation.
+    /// </summary>
+    public static string? NormalizeCondition(string? condition)
+    {
+        if (string.IsNullOrWhiteSpace(condition))
+        {
+            return null;
+        }
+
+        var expression = condition.Trim();
+        if (expression.StartsWith("${", StringComparison.Ordinal)
+            && expression.EndsWith('}'))
+        {
+            expression = expression[2..^1].Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(expression) ? null : expression;
+    }
 }
 
 /// <summary>
@@ -1531,6 +1604,9 @@ public static class BpmnFlowNodeTypes
     // down its single outgoing flow. Async integration / webhook / callback step.
     public const string IntermediateMessageCatchEvent = "intermediateMessageCatchEvent";
     public const string IntermediateTimerCatchEvent = "intermediateTimerCatchEvent";
+    // Intermediate catch event that rests until its stored-variable condition
+    // becomes true, then follows its single unconditional outgoing flow.
+    public const string IntermediateConditionalCatchEvent = "intermediateConditionalCatchEvent";
     // Entry event started by an external system via
     // POST /api/workflows/{workflowKey}/message-start. Typed outputMappings on its
     // message config are the start-variable declarations. Optional transport
@@ -1608,6 +1684,9 @@ public static class BpmnFlowNodeTypes
     public static bool IsTimerCatch(string type) =>
         string.Equals(type, IntermediateTimerCatchEvent, StringComparison.Ordinal);
 
+    public static bool IsConditionalCatch(string type) =>
+        string.Equals(type, IntermediateConditionalCatchEvent, StringComparison.Ordinal);
+
     public static bool IsMessageStart(string type) =>
         string.Equals(type, MessageStartEvent, StringComparison.Ordinal);
 
@@ -1640,7 +1719,8 @@ public static class BpmnFlowNodeTypes
             or ExclusiveGateway or ParallelGateway or InclusiveGateway or ComplexGateway
             or ScopedInterruptEvent
             or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent or TimerBoundaryEvent
-            or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent or MessageStartEvent;
+            or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent
+            or IntermediateConditionalCatchEvent or MessageStartEvent;
 }
 
 public static class WorkflowVariableTypes

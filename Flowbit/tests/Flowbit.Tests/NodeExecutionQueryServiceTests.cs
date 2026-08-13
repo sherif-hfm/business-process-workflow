@@ -57,9 +57,9 @@ public sealed class NodeExecutionQueryServiceTests
         await service.SearchAsync(
             new NodeExecutionSearchRequest
             {
-                NodeTypes = ["USERTASK", "endEvent"],
+                NodeTypes = ["USERTASK", "endEvent", "INTERMEDIATECONDITIONALCATCHEVENT"],
                 Statuses = ["ACTIVE", "completed"],
-                CompletionReasons = ["USERACTION"],
+                CompletionReasons = ["USERACTION", "CONDITIONALTRIGGERED"],
                 CreatedFrom = from,
                 CreatedTo = to,
                 Variables = ["decision:APPROVED"],
@@ -70,9 +70,13 @@ public sealed class NodeExecutionQueryServiceTests
             CancellationToken.None);
 
         var query = Assert.IsType<NodeExecutionQuery>(repository.Query);
-        Assert.Equal(["userTask", "endEvent"], query.NodeTypes);
+        Assert.Equal(
+            ["userTask", "endEvent", "intermediateConditionalCatchEvent"],
+            query.NodeTypes);
         Assert.Equal(["active", "completed"], query.Statuses);
-        Assert.Equal(["userAction"], query.CompletionReasons);
+        Assert.Equal(
+            ["userAction", "conditionalTriggered"],
+            query.CompletionReasons);
         Assert.Equal(TimeSpan.Zero, query.CreatedFrom!.Value.Offset);
         Assert.Equal(TimeSpan.Zero, query.CreatedTo!.Value.Offset);
         var variableFilter = Assert.IsType<VariableFilterComparisonExpression>(query.VariableFilter);

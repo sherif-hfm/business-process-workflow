@@ -8,7 +8,7 @@ edges), attach typed **variables**, and save/load the whole model as JSON.
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`,
 `inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
-`scopedInterruptEvent`, and
+`intermediateConditionalCatchEvent`, `scopedInterruptEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
 rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
@@ -383,15 +383,60 @@ Storage follows the hybrid design:
   `exclusiveGateway`, `parallelGateway`, `inclusiveGateway`, `complexGateway`,
   `scopedInterruptEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
-  transaction until the instance rests on a `userTask` or
-  `intermediateMessageCatchEvent`, or reaches an end event. A per-token hop limit
-  (`flowNodes.Count + 1`) guards against cycles. History rows are
+  transaction until the instance rests on a `userTask`,
+  `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`, or
+  `intermediateConditionalCatchEvent`, or reaches an end event. A per-token hop
+  limit (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
   `gateway`, `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
   `complexActivation`, `complexReset`, `scopedInterrupt`,
   `scopedInterruptSkipped`, `boundary`, `error`, or `message` note. Gateway history also stores
   the selected sequence-flow id; automatic gateway rows are excluded from
   previous-actor claim inheritance even though that audit id is populated.
+- **Intermediate conditional catch events.** An
+  `intermediateConditionalCatchEvent` is a persisted resting position with at
+  least one incoming flow and exactly one unconditional outgoing flow. Its
+  node-level configuration is:
+  ```json
+  {
+    "conditional": {
+      "condition": "approved == true",
+      "deliveryMode": "durableAsync"
+    }
+  }
+  ```
+  `condition` is an NCalc expression (maximum 4,000 Unicode scalar values) over
+  declared, persisted instance variables. It must reference at least one and at
+  most 64 stored variables. Definition analysis extracts those dependencies from
+  NCalc's parsed AST and rejects undeclared variables, unknown functions, and
+  non-observable `sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*`
+  context. Built-in NCalc functions and Flowbit's pure string helpers are
+  available; `FlowInfo` and gateway/multi-instance helpers are not.
+  The condition is evaluated against the transaction's complete PostgreSQL
+  current-variable snapshot when the token enters the event, and thereafter only
+  when a complete transactional variable-write batch changes one of its
+  extracted dependencies. All runtime variable producers use the same mutation
+  tracker; administrative single/batch updates explicitly invoke the same
+  coordinator.
+  Evaluation and wake selection occur while the writer still holds the instance
+  row lock and transaction, so competing API replicas cannot advance the same
+  activation twice.
+  A missing `deliveryMode` means `atomic`; the editor omits the field for that
+  default.
+  `atomic` evaluates and advances the token in the writer's transaction.
+  `durableAsync` evaluates and atomically persists both a `conditionalWake` job
+  and the token's exact job/activation wait fence; a PostgreSQL-leased worker later
+  advances the already-latched flow without re-evaluating truth, even if a later
+  write makes the expression false. The token, latch, job, history, and immutable
+  workflow-definition id are database state; per-definition dependency plans are
+  bounded rebuildable caches keyed by immutable definition id. Consequently API
+  or worker restarts, cache eviction, and multiple replicas do not lose a wait or
+  a latched wake. Active version changes require an identical normalized
+  condition, effective delivery mode, and outgoing-flow contract; compatible
+  open jobs are rebound to the target immutable definition in the locked switch.
+  Deployment is additive but ordered: apply the migration, upgrade every API and
+  Worker replica, then allow conditional definitions to be published or started.
+  Mixed conditional-aware and legacy replicas are unsupported.
 - **Service tasks** select a connector through `service.type`; `rest` is the only
   connector implemented today, while the explicit discriminator keeps the model
   and editor dropdown extensible. REST calls run during the pass-through hop
@@ -1216,7 +1261,8 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
-`errorBoundaryEvent`, `intermediateMessageCatchEvent`, or `messageStartEvent`.
+`errorBoundaryEvent`, `intermediateMessageCatchEvent`,
+`intermediateConditionalCatchEvent`, or `messageStartEvent`.
 
 ```jsonc
 {
@@ -1226,7 +1272,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "attributes": [              // ordered, non-secret client metadata
     { "key": "form", "value": "purchase-request" }
   ],
-  "type": "startEvent",        // startEvent | userTask | task | serviceTask | scriptTask | exclusiveGateway | endEvent | errorEndEvent | errorBoundaryEvent | intermediateMessageCatchEvent | messageStartEvent
+  "type": "startEvent",        // includes intermediateConditionalCatchEvent; see node-type sections below
   "laneId": 1,                 // owning lane id, or null
   "x": 69, "y": 155,           // top-left position on canvas
   "roles": [ "Requester" ],    // free-text candidate roles (userTask / user-initiated startEvent)
@@ -1244,9 +1290,28 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "script": null,              // scriptTask + scriptFormat "javascript" only (see below)
   "attachedToRef": null,       // errorBoundaryEvent only: host serviceTask/scriptTask id
   "errorVariable": null,       // errorBoundaryEvent only, optional: captures the failure reason
-  "message": { /* MessageCatchConfig */ } // intermediateMessageCatchEvent only (see MessageCatchConfig)
+  "message": { /* MessageCatchConfig */ }, // intermediateMessageCatchEvent only (see MessageCatchConfig)
+  "conditional": { /* ConditionalDefinition */ } // intermediateConditionalCatchEvent only
 }
 ```
+
+### ConditionalDefinition
+
+Configuration for an `intermediateConditionalCatchEvent`. A missing delivery
+mode means `atomic`; the editor serializes the field only for `durableAsync`.
+
+```jsonc
+{
+  "condition": "approved == true", // required NCalc over declared stored variables
+  "deliveryMode": "durableAsync"   // optional: atomic | durableAsync
+}
+```
+
+The event requires at least one incoming sequence flow and exactly one
+unconditional outgoing flow. The condition must reference 1-64 declared stored
+instance variables and cannot depend on `sys.*`, `config.*`, `setting.*`, `mi.*`,
+`gateway.*`, `FlowInfo`, or gateway/multi-instance functions, because only
+stored-variable writes can wake it.
 
 ### Assignment
 An ordered variable write performed by a `scriptTask` node during its pass-through
@@ -1357,6 +1422,14 @@ Node kinds and their outgoing-flow rules:
   `outputMappings`, and the engine advances down the flow. No user
   action. Correlation is by instance id only (no cross-instance signal/message
   matching). No timeout escape hatch yet.
+- **`intermediateConditionalCatchEvent`**: a resting conditional event; a thin
+  double-ring circle with the BPMN conditional/document glyph. Carries a required
+  `conditional.condition` over declared stored variables and optional
+  `conditional.deliveryMode`. It evaluates on entry and after dependency-changing
+  variable batches, then follows exactly one unconditional outgoing flow.
+  `atomic` (the omitted default) advances in the writer transaction;
+  `durableAsync` latches a PostgreSQL job in that transaction and lets a worker
+  advance later without re-evaluating the latched truth.
 - **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
   single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
@@ -1735,6 +1808,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. Simplified: no cross-instance message-name/signal matching and no timeout escape hatch (a future timer boundary could address). |
+| `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted variables only, evaluates on entry and dependency-changing write batches, and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -1758,12 +1832,12 @@ when extending the model so new features stay close to BPMN terminology.
   synchronously during the pass-through hop with a bounded timeout and no
   retries, incidents, or async job execution; other BPMN implementations
   (connectors, expressions, message/send-receive) are out of scope.
-- **Error events, one message catch event, and one message start event (no timer/signal yet).** Plain
-  (none) start and end events plus `errorEndEvent` and `errorBoundaryEvent`
-  (catch-all, no error codes), `intermediateMessageCatchEvent` (correlation
-  by instance id only, no cross-instance signal/message matching, no timeout),
-  and `messageStartEvent` (instance-less system-only entry with optional
-  database-claimed workflow-family idempotency); no timer/signal events yet.
+- **A bounded event subset.** Flowbit supports none/message/timer starts,
+  message/timer/conditional intermediate catches, timer and error boundaries,
+  and none/error/terminate ends. Conditional catches observe persisted variables
+  rather than arbitrary engine context. Message correlation remains instance
+  scoped, and signal, escalation, compensation, and event-based gateways remain
+  out of scope.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -1841,6 +1915,10 @@ when extending the model so new features stay close to BPMN terminology.
   unconditional outgoing flow, drawn as a solid (non-dashed) edge since the node
   rests (it is not pass-through). The engine advances down it on message
   delivery, logged with a `message` history note.
+- **Conditional catch flow**: an `intermediateConditionalCatchEvent` owns one
+  unconditional solid outgoing flow. It rests while false; an observed true
+  condition records `conditionalTriggered`, while `durableAsync` first records
+  `conditionalLatched` and persists the job/token wait fence.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` plus
   unique positive `conditionPriority`, or the required `isDefault` marker. The
   editor shows priority/default metadata beneath the edge and enforces exactly

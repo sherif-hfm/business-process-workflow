@@ -35,6 +35,7 @@ public static class WorkflowJobKinds
     public const string Timer = "timer";
     public const string TimerStart = "timerStart";
     public const string TimerBoundary = "timerBoundary";
+    public const string ConditionalWake = "conditionalWake";
     public const string AdministrativeBatchPrepare = "administrativeBatchPrepare";
     public const string AdministrativeBatchExecute = "administrativeBatchExecute";
     public const string InstanceVersionChangeBatchPrepare = "instanceVersionChangeBatchPrepare";

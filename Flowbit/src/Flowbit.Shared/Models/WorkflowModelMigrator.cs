@@ -403,6 +403,26 @@ public static class WorkflowModelMigrator
             node.Timer = null;
         }
 
+        if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+        {
+            node.Conditional ??= new ConditionalDefinitionModel();
+            node.Conditional.Condition =
+                ConditionalDefinitionRules.NormalizeCondition(node.Conditional.Condition)
+                ?? string.Empty;
+            node.Conditional.DeliveryMode = TrimToNull(node.Conditional.DeliveryMode);
+            if (node.Conditional.DeliveryMode is not null)
+            {
+                node.Conditional.DeliveryMode = CanonicalizeKnown(
+                    node.Conditional.DeliveryMode,
+                    ConditionalEventDeliveryModes.Atomic,
+                    ConditionalEventDeliveryModes.DurableAsync);
+            }
+        }
+        else
+        {
+            node.Conditional = null;
+        }
+
         if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
         {
             node.CancelActivity ??= true;
@@ -677,6 +697,23 @@ public static class WorkflowModelMigrator
         }
         else if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
         {
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
+        }
+        else if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+        {
+            // Conditional catch events are durable wait positions whose only
+            // authored event data lives under node.Conditional.
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;

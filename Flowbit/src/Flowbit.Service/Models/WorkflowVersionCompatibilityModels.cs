@@ -114,6 +114,7 @@ public static class WorkflowVersionCompatibilityCodes
     public const string UserTaskContractChanged = "user_task_contract_changed";
     public const string AttachedTimerContractChanged = "attached_timer_contract_changed";
     public const string MessageCatchContractChanged = "message_catch_contract_changed";
+    public const string ConditionalCatchContractChanged = "conditional_catch_contract_changed";
     public const string MultiInstanceContractChanged = "multi_instance_contract_changed";
     public const string MultiInstanceOutcomeChanged = "multi_instance_outcome_changed";
 

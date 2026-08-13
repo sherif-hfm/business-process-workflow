@@ -217,7 +217,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
-            entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.NodeType).HasMaxLength(64).IsRequired();
             entity.Property(e => e.FaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
             entity.Property(e => e.FaultDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
             entity.Property(e => e.TerminationReason).HasMaxLength(64);
@@ -301,7 +301,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', "
                     + "'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', "
                     + "'complexActivation', 'complexReset', 'scopedInterrupt', "
-                    + "'scopedInterruptSkipped', 'timerFired')))");
+                    + "'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
                     "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
@@ -324,7 +324,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
-            entity.Property(e => e.NodeType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.NodeType).HasMaxLength(64).IsRequired();
             entity.Property(e => e.ExecutionKind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CompletionReason).HasMaxLength(64);

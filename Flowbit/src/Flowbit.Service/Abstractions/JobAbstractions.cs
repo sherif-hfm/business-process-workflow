@@ -10,6 +10,23 @@ public interface IWorkflowJobRepository
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Creates a group of jobs with one persistence flush and one PostgreSQL
+    /// wake-up notification. Instance-owned callers must already hold the
+    /// owning instance and token locks.
+    /// </summary>
+    async Task<IReadOnlyList<WorkflowJobRecord>> EnqueueManyAsync(
+        IReadOnlyList<WorkflowJobCreateRecord> creates,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<WorkflowJobRecord>(creates.Count);
+        foreach (var create in creates)
+        {
+            result.Add(await EnqueueAsync(create, cancellationToken));
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Creates a non-runnable job and its open incident atomically. Instance-
     /// owned callers must already hold the owning instance and token locks.
     /// This is used when work must be paused before it is ever leased.

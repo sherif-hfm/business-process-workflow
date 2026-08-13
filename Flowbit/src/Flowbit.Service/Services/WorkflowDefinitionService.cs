@@ -15,11 +15,15 @@ public sealed class WorkflowDefinitionService(
     IScriptEvaluator scriptEvaluator,
     ServiceTaskOptions serviceTaskOptions,
     ILogger<WorkflowDefinitionService> logger,
-    DurableProcessingOptions? durableProcessingOptions = null)
+    DurableProcessingOptions? durableProcessingOptions = null,
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
+    IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null)
     : IWorkflowDefinitionService
 {
     private readonly DurableProcessingOptions durableProcessing =
         durableProcessingOptions ?? new DurableProcessingOptions();
+    private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
+        conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
     private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
@@ -70,11 +74,13 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredMessageStartMetadata(definition);
         ValidateAuthoredAsyncTimerMetadata(definition);
         ValidateAuthoredInboxVisibilityMetadata(definition);
+        ValidateAuthoredConditionalEventMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
+        _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
         logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, created.Version, publish, created.IsDefault);
         return ToDetail(created);
     }
@@ -100,11 +106,13 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredMessageStartMetadata(definition);
         ValidateAuthoredAsyncTimerMetadata(definition);
         ValidateAuthoredInboxVisibilityMetadata(definition);
+        ValidateAuthoredConditionalEventMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
+        _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
         logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, created.Version, sourceWorkflowId, publish, created.IsDefault);
         return ToDetail(created);
     }
@@ -176,14 +184,17 @@ public sealed class WorkflowDefinitionService(
                 || node.AsyncAfter
                 || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                 || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
-                || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)))
+                || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                || (BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+                    && node.Conditional?.EffectiveDeliveryMode
+                        == ConditionalEventDeliveryModes.DurableAsync)))
         {
             return;
         }
 
         throw new WorkflowDomainException(
             $"{DurableProcessingOptions.SectionName}:PublicationEnabled is false; "
-            + "async and timer definitions cannot be published until the durable worker is ready.");
+            + "async, timer, and durable conditional definitions cannot be published until the durable worker is ready.");
     }
 
     public async Task<bool> DeleteAsync(long id, CancellationToken cancellationToken)
@@ -191,6 +202,7 @@ public sealed class WorkflowDefinitionService(
         var deleted = await definitions.DeleteAsync(id, cancellationToken);
         if (deleted)
         {
+            conditionalEventPlanCache?.Remove(id);
             logger.LogInformation("Workflow definition {WorkflowId} deleted.", id);
         }
         else
@@ -402,6 +414,7 @@ public sealed class WorkflowDefinitionService(
                     || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
                     || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
                     || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
                     || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                     || BpmnFlowNodeTypes.IsMessageStart(node.Type))
                 && outgoing.Count != 1)
@@ -420,6 +433,8 @@ public sealed class WorkflowDefinitionService(
                                     ? "Message catch event"
                                     : BpmnFlowNodeTypes.IsTimerCatch(node.Type)
                                         ? "Timer catch event"
+                                        : BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+                                            ? "Conditional catch event"
                                         : BpmnFlowNodeTypes.IsTimerStart(node.Type)
                                             ? "Timer start event"
                                     : BpmnFlowNodeTypes.IsMessageStart(node.Type)
@@ -457,6 +472,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
             {
                 ValidateTimerCatch(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+            {
+                ValidateConditionalCatch(node, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -533,6 +553,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         _ = InboxVisibilityConditionCompiler.CompileAll(definition);
+        _ = conditionalAnalyzer.Analyze(definition);
     }
 
     private static void ValidateAuthoredInboxVisibilityMetadata(WorkflowModel definition)
@@ -559,6 +580,63 @@ public sealed class WorkflowDefinitionService(
             {
                 throw new WorkflowDomainException(
                     $"User task #{node.Id} has an invalid inboxVisibilityCondition: {exception.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects conditional-event data on other node types and metadata that the
+    /// tolerant migrator would otherwise discard from a conditional catch event.
+    /// </summary>
+    private static void ValidateAuthoredConditionalEventMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+            {
+                if (node.Conditional is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines conditional metadata but is not an intermediate conditional catch event.");
+                }
+                continue;
+            }
+
+            if (node.Conditional is not null
+                && !string.IsNullOrWhiteSpace(node.Conditional.DeliveryMode)
+                && ConditionalEventDeliveryModes.GetEffective(node.Conditional.DeliveryMode)
+                    is not (ConditionalEventDeliveryModes.Atomic
+                        or ConditionalEventDeliveryModes.DurableAsync))
+            {
+                throw new WorkflowDomainException(
+                    $"Conditional catch event #{node.Id} has unsupported deliveryMode '{node.Conditional.DeliveryMode}'.");
+            }
+
+            if (node.AsyncBefore || node.AsyncAfter || node.Job is not null
+                || node.Timer is not null || node.CancelActivity is not null
+                || node.Roles is { Count: > 0 } || node.RequiresClaim
+                || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
+                || node.InheritClaimFromNodeId is not null
+                || node.Variables is { Count: > 0 } || node.Service is not null
+                || node.Message is not null || node.BusinessKey is not null
+                || node.Idempotency is not null
+                || !string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.OrdinalIgnoreCase)
+                || node.Assignments is { Count: > 0 }
+                || !string.IsNullOrWhiteSpace(node.Script) || node.UsesFlowInfo is not null
+                || !string.IsNullOrWhiteSpace(node.AssigneeExpression)
+                || node.RequiresAssignment
+                || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
+                || node.InheritAssignmentFromNodeId is not null
+                || !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)
+                || node.MultiInstance is not null || node.AttachedToRef is not null
+                || !string.IsNullOrWhiteSpace(node.ErrorVariable)
+                || !string.IsNullOrWhiteSpace(node.ErrorCode)
+                || !string.IsNullOrWhiteSpace(node.ErrorDescription)
+                || !string.IsNullOrWhiteSpace(node.ActivationCondition)
+                || node.GatewayRef is not null || node.JoinCancellation is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Conditional catch event #{node.Id} cannot define task, role, variable, async, or other event metadata.");
             }
         }
     }
@@ -2219,6 +2297,24 @@ public sealed class WorkflowDefinitionService(
         {
             throw new WorkflowDomainException(
                 $"Timer catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateConditionalCatch(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Conditional catch event #{node.Id} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Conditional catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
     }
 

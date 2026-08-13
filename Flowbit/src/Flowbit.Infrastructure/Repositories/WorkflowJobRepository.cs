@@ -26,35 +26,7 @@ public sealed class WorkflowJobRepository(
     {
         ArgumentOutOfRangeException.ThrowIfNegative(create.AutomaticActivationCount);
         var now = DateTimeOffset.UtcNow;
-        var entity = new WorkflowJobEntity
-        {
-            InstanceId = create.InstanceId,
-            WorkflowDefinitionId = create.WorkflowDefinitionId,
-            WorkflowKey = create.WorkflowKey,
-            TokenId = create.TokenId,
-            MultiInstanceExecutionId = create.MultiInstanceExecutionId,
-            UserTaskId = create.UserTaskId,
-            TimerSubscriptionId = create.TimerSubscriptionId,
-            ActivationId = create.ActivationId,
-            AutomaticActivationCount = create.AutomaticActivationCount,
-            NodeId = create.NodeId,
-            NodeName = create.NodeName,
-            NodeType = create.NodeType,
-            Kind = create.Kind,
-            QueueClass = create.QueueClass,
-            Phase = create.Phase,
-            Status = WorkflowJobStatuses.Queued,
-            Priority = create.Priority,
-            MaxAttempts = create.MaxAttempts,
-            FailureHandling = create.FailureHandling,
-            RetryDelays = create.RetryDelays.ToArray(),
-            DueAt = create.DueAt,
-            ScheduledOccurrenceAt = create.ScheduledOccurrenceAt,
-            PayloadJson = CloneDocument(create.Payload),
-            SnapshotId = create.SnapshotId,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
+        var entity = CreateEntity(create, now);
 
         dbContext.WorkflowJobs.Add(entity);
         try
@@ -82,6 +54,34 @@ public sealed class WorkflowJobRepository(
             "SELECT pg_notify('flowbit_jobs', '')",
             cancellationToken);
         return MapJob(entity);
+    }
+
+    public async Task<IReadOnlyList<WorkflowJobRecord>> EnqueueManyAsync(
+        IReadOnlyList<WorkflowJobCreateRecord> creates,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(creates);
+        if (creates.Count == 0)
+        {
+            return [];
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var entities = new WorkflowJobEntity[creates.Count];
+        for (var index = 0; index < creates.Count; index++)
+        {
+            var create = creates[index]
+                ?? throw new ArgumentException("A workflow job batch cannot contain a null item.", nameof(creates));
+            ArgumentOutOfRangeException.ThrowIfNegative(create.AutomaticActivationCount);
+            entities[index] = CreateEntity(create, now);
+        }
+
+        dbContext.WorkflowJobs.AddRange(entities);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "SELECT pg_notify('flowbit_jobs', '')",
+            cancellationToken);
+        return entities.Select(MapJob).ToArray();
     }
 
     public async Task<WorkflowJobRecord> EnqueueIncidentAsync(
@@ -1912,6 +1912,17 @@ public sealed class WorkflowJobRepository(
             throw new WorkflowConflictException(
                 "The automatic-loop incident no longer owns the token's exact durable wait.");
         }
+        if (job.Kind == WorkflowJobKinds.ConditionalWake
+            && (lockedToken is null
+                || lockedToken.WaitingJobId != job.Id
+                || !string.Equals(
+                    lockedToken.WaitState,
+                    ExecutionTokenWaitStates.ConditionalWake,
+                    StringComparison.Ordinal)))
+        {
+            throw new WorkflowConflictException(
+                "The conditional-wake incident no longer owns the token's exact durable wait.");
+        }
 
         TimerSubscriptionEntity? pausedSubscription = null;
         if (job.TimerSubscriptionId is long subscriptionId)
@@ -2614,6 +2625,39 @@ public sealed class WorkflowJobRepository(
         job.LeaseExpiresAt = null;
         job.HeartbeatAt = null;
     }
+
+    private static WorkflowJobEntity CreateEntity(
+        WorkflowJobCreateRecord create,
+        DateTimeOffset now) =>
+        new()
+        {
+            InstanceId = create.InstanceId,
+            WorkflowDefinitionId = create.WorkflowDefinitionId,
+            WorkflowKey = create.WorkflowKey,
+            TokenId = create.TokenId,
+            MultiInstanceExecutionId = create.MultiInstanceExecutionId,
+            UserTaskId = create.UserTaskId,
+            TimerSubscriptionId = create.TimerSubscriptionId,
+            ActivationId = create.ActivationId,
+            AutomaticActivationCount = create.AutomaticActivationCount,
+            NodeId = create.NodeId,
+            NodeName = create.NodeName,
+            NodeType = create.NodeType,
+            Kind = create.Kind,
+            QueueClass = create.QueueClass,
+            Phase = create.Phase,
+            Status = WorkflowJobStatuses.Queued,
+            Priority = create.Priority,
+            MaxAttempts = create.MaxAttempts,
+            FailureHandling = create.FailureHandling,
+            RetryDelays = create.RetryDelays.ToArray(),
+            DueAt = create.DueAt,
+            ScheduledOccurrenceAt = create.ScheduledOccurrenceAt,
+            PayloadJson = CloneDocument(create.Payload),
+            SnapshotId = create.SnapshotId,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
 
     private static WorkflowJobRecord MapJob(WorkflowJobEntity entity) =>
         new(

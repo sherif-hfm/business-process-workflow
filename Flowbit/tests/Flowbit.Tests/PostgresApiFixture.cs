@@ -342,10 +342,20 @@ public sealed class ServiceInvocationBlock
 public sealed class ApiDbCommandCounter : DbCommandInterceptor
 {
     private int _readerCommands;
+    private int _captureReaderCommandTexts;
+    private readonly ConcurrentQueue<string> _readerCommandTexts = new();
 
     public int ReaderCommands => Volatile.Read(ref _readerCommands);
+    public IReadOnlyList<string> ReaderCommandTexts => _readerCommandTexts.ToArray();
 
-    public void Reset() => Interlocked.Exchange(ref _readerCommands, 0);
+    public void Reset(bool captureReaderCommandTexts = false)
+    {
+        Interlocked.Exchange(ref _readerCommands, 0);
+        _readerCommandTexts.Clear();
+        Volatile.Write(
+            ref _captureReaderCommandTexts,
+            captureReaderCommandTexts ? 1 : 0);
+    }
 
     public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
         DbCommand command,
@@ -354,6 +364,10 @@ public sealed class ApiDbCommandCounter : DbCommandInterceptor
         CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _readerCommands);
+        if (Volatile.Read(ref _captureReaderCommandTexts) != 0)
+        {
+            _readerCommandTexts.Enqueue(command.CommandText);
+        }
         return ValueTask.FromResult(result);
     }
 }

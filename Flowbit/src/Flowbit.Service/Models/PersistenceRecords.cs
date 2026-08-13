@@ -631,6 +631,7 @@ public static class ExecutionTokenWaitStates
     public const string AsyncAfter = "asyncAfter";
     public const string TimerCatch = "timerCatch";
     public const string TimerBoundary = "timerBoundary";
+    public const string ConditionalWake = "conditionalWake";
 }
 
 public static class NodeExecutionRecordKinds
@@ -674,6 +675,13 @@ public static class NodeExecutionCompletionReasons
     public const string ScopedInterrupt = "scopedInterrupt";
     public const string ScopedInterruptSkipped = "scopedInterruptSkipped";
     public const string TimerFired = "timerFired";
+    public const string ConditionalTriggered = "conditionalTriggered";
+}
+
+public static class InstanceHistoryNotes
+{
+    public const string ConditionalLatched = "conditionalLatched";
+    public const string ConditionalTriggered = "conditionalTriggered";
 }
 
 public static class ExecutionTokenTerminationReasons

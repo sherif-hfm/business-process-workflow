@@ -15,7 +15,10 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Infrastructure.Repositories;
 
-public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflowRuntimeRepository
+public sealed class WorkflowRuntimeRepository(
+    AppDbContext dbContext,
+    IInstanceVariableMutationTracker? variableMutationTracker = null)
+    : IWorkflowRuntimeRepository
 {
     private readonly HashSet<long> loadedSequenceFlowSummaryInstances = [];
 
@@ -5338,6 +5341,7 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long? delegationId = null,
         long? instanceVariableUpdateAuditId = null)
     {
+        variableMutationTracker?.Record(instanceId, variableName);
         dbContext.InstanceVariables.Add(new InstanceVariableEntity
         {
             InstanceId = instanceId,
@@ -5558,20 +5562,23 @@ public sealed class WorkflowRuntimeRepository(AppDbContext dbContext) : IWorkflo
         long instanceId,
         CancellationToken cancellationToken)
     {
-        var latestIds = dbContext.InstanceVariables
-            .Where(variable => variable.InstanceId == instanceId)
-            .GroupBy(variable => variable.VariableName)
-            .Select(group => group.Max(variable => variable.Id));
-        var entities = await dbContext.InstanceVariables
+        var entities = await dbContext.InstanceVariableCurrentValues
             .AsNoTracking()
-            .Where(variable => latestIds.Contains(variable.Id))
-            .OrderBy(variable => variable.VariableName)
+            .Where(variable => variable.InstanceId == instanceId)
             .ToListAsync(cancellationToken);
         return entities
+            .GroupBy(
+                variable => variable.VariableName,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(variable => variable.SourceVariableId)
+                .ThenBy(variable => variable.VariableName, StringComparer.Ordinal)
+                .First())
+            .OrderBy(variable => variable.VariableName, StringComparer.OrdinalIgnoreCase)
             .Select(variable => new InstanceVariableVersionRecord(
                 variable.VariableName,
                 variable.ValueJson.RootElement.Clone(),
-                variable.Id))
+                variable.SourceVariableId))
             .ToArray();
     }
 

@@ -10,7 +10,8 @@ public sealed class InstanceVariableUpdateService(
     IWorkflowJobRepository jobs,
     IInstanceVariableUpdateRepository updates,
     IInstanceVariableUpdateBatchRepository batches,
-    IUnitOfWork unitOfWork)
+    IUnitOfWork unitOfWork,
+    IConditionalEventRuntimeCoordinator conditionalEvents)
     : IInstanceVariableUpdateService, IInstanceVariableUpdateExecutor
 {
     private static readonly JsonSerializerOptions JsonOptions =
@@ -257,6 +258,11 @@ public sealed class InstanceVariableUpdateService(
                         CompletedAt: updatedAt),
                     cancellationToken);
             }
+
+            await conditionalEvents.ResumeForVariableChangesAsync(
+                instance,
+                actor,
+                cancellationToken);
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);

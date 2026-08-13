@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -27,9 +28,11 @@ public sealed partial class WorkflowEngineService(
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger,
-    IInstanceVariableUpdateRepository? variableUpdates = null)
+    IInstanceVariableUpdateRepository? variableUpdates = null,
+    IInstanceVariableMutationTracker? variableMutationTracker = null,
+    IConditionalEventDependencyPlanCache? conditionalEventPlans = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
-      IInstanceVersionChangeBatchExecutor
+      IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator
 {
     private const string InstanceListRequiredRoleSettingKey =
         "WorkflowInstances.RequiredRole";
@@ -46,6 +49,330 @@ public sealed partial class WorkflowEngineService(
         }
 
         _settingsCache = (Dictionary<string, JsonElement>)await settings.LoadAllAsync(cancellationToken);
+    }
+
+    public async Task ResumeForVariableChangesAsync(
+        WorkflowInstanceRecord instance,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        if (variableMutationTracker is null || conditionalEventPlans is null)
+        {
+            variableMutationTracker?.Clear(instance.Id);
+            return;
+        }
+
+        var changedNames = variableMutationTracker.Consume(instance.Id);
+        if (changedNames.Count == 0
+            || !string.Equals(
+                instance.Status,
+                WorkflowInstanceStatuses.Running,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        // Flush staged variable history so the trigger-maintained current-value
+        // projection and the condition evaluation observe exactly the same batch.
+        // This remains inside the caller's ambient transaction.
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        var workflow = await GetWorkflowAsync(
+            instance.WorkflowDefinitionId,
+            cancellationToken);
+        var plan = conditionalEventPlans.GetOrAdd(
+            workflow.Id,
+            workflow.Definition);
+        if (plan.EventsByNodeId.Count == 0)
+        {
+            return;
+        }
+        if (!changedNames.Any(name => plan.NodeIdsByVariable.ContainsKey(name)))
+        {
+            ConditionalEventRuntimeTelemetry.RecordWave(0, TimeSpan.Zero);
+            return;
+        }
+
+        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var flowInfo = await LoadSequenceFlowInfoAsync(
+            instance.Id,
+            workflow.Definition,
+            cancellationToken);
+        var triggered = new Queue<long>();
+        var conditionallyTriggeredTokenIds = new HashSet<long>();
+        _ = await TriggerConditionalWaitsAsync(
+            instance,
+            workflow.Definition,
+            plan,
+            actor,
+            stored,
+            flowInfo,
+            changedNames,
+            triggered,
+            conditionallyTriggeredTokenIds,
+            maxTriggers: 10_000,
+            cancellationToken);
+
+        while (triggered.Count > 0
+               && await IsInstanceRunningAsync(instance.Id, cancellationToken))
+        {
+            var tokenId = triggered.Dequeue();
+            var fresh = await runtime.GetInstanceAsync(instance.Id, cancellationToken)
+                ?? throw new WorkflowConflictException(
+                    "The workflow instance disappeared during conditional routing.");
+            _ = await ResolvePassThroughAsync(
+                fresh,
+                workflow.Definition,
+                actor,
+                flowInfo,
+                tokenId,
+                cancellationToken,
+                forceDurableActivities: true);
+        }
+    }
+
+    private async Task<int> TriggerConditionalWaitsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        ConditionalEventDependencyPlan plan,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        IReadOnlyCollection<string> changedNames,
+        Queue<long> routingQueue,
+        ISet<long> forceDurableTokenIds,
+        long maxTriggers,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        if (changedNames.Count == 0 || plan.EventsByNodeId.Count == 0)
+        {
+            return 0;
+        }
+
+        var candidateNodeIds = new SortedSet<int>();
+        foreach (var name in changedNames)
+        {
+            if (plan.NodeIdsByVariable.TryGetValue(name, out var nodeIds))
+            {
+                candidateNodeIds.UnionWith(nodeIds);
+            }
+        }
+        if (candidateNodeIds.Count == 0)
+        {
+            ConditionalEventRuntimeTelemetry.RecordWave(
+                0,
+                Stopwatch.GetElapsedTime(started));
+            return 0;
+        }
+
+        var activeTokens = await runtime.ListExecutionTokensAsync(
+            instance.Id,
+            ExecutionTokenRecordStatuses.Active,
+            cancellationToken);
+        var tokensByNode = activeTokens
+            .Where(token => candidateNodeIds.Contains(token.NodeId)
+                            && BpmnFlowNodeTypes.IsConditionalCatch(token.NodeType)
+                            && token.WaitState is null
+                            && token.WaitingJobId is null)
+            .GroupBy(token => token.NodeId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(token => token.Id).ToArray());
+
+        var durable = new List<ConditionalWakeLatchRequest>();
+        var atomic = new List<(ExecutionTokenRecord Token,
+            FlowNodeModel Node,
+            SequenceFlowModel Flow,
+            IReadOnlyList<string> TriggerNames)>();
+
+        // Evaluate once per authored node against one stable post-batch snapshot,
+        // then fan the result out to all activations waiting on that node.
+        foreach (var nodeId in candidateNodeIds)
+        {
+            if (!tokensByNode.TryGetValue(nodeId, out var tokens)
+                || !plan.EventsByNodeId.TryGetValue(nodeId, out var eventPlan))
+            {
+                continue;
+            }
+
+            var matched = SequenceFlowConditionEvaluator.Evaluate(
+                eventPlan.Condition,
+                ConditionalParameters(eventPlan, storedOverlay));
+            ConditionalEventRuntimeTelemetry.RecordEvaluation(
+                matched,
+                "variableWrite");
+            if (!matched)
+            {
+                continue;
+            }
+
+            var node = GetFlowNode(definition, nodeId);
+            var flow = OutgoingFlows(instance.WorkflowDefinitionId, definition, nodeId)
+                .Single();
+            var triggerNames = eventPlan.Dependencies
+                .Where(dependency => changedNames.Contains(
+                    dependency,
+                    StringComparer.OrdinalIgnoreCase))
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (var token in tokens)
+            {
+                if (eventPlan.DeliveryMode == ConditionalEventDeliveryModes.DurableAsync)
+                {
+                    durable.Add(new ConditionalWakeLatchRequest(
+                        token,
+                        node,
+                        flow,
+                        triggerNames));
+                }
+                else
+                {
+                    atomic.Add((token, node, flow, triggerNames));
+                }
+            }
+        }
+
+        var triggerCount = durable.Count + atomic.Count;
+        if (triggerCount > maxTriggers)
+        {
+            throw new WorkflowDomainException(
+                "Conditional-event routing work limit reached.");
+        }
+
+        // Latch every durable activation before an inline continuation can
+        // mutate data or structurally cancel sibling work.
+        await LatchConditionalWakesAsync(
+            instance,
+            durable.OrderBy(item => item.Token.Id).ToArray(),
+            actor,
+            cancellationToken);
+        foreach (var _ in durable)
+        {
+            ConditionalEventRuntimeTelemetry.RecordTrigger(
+                ConditionalEventDeliveryModes.DurableAsync,
+                "variableWrite");
+        }
+
+        var actualAtomicTriggers = 0;
+        foreach (var item in atomic.OrderBy(item => item.Token.Id))
+        {
+            var currentToken = await runtime.GetExecutionTokenAsync(
+                item.Token.Id,
+                false,
+                cancellationToken);
+            if (currentToken is null
+                || currentToken.Status != ExecutionTokenRecordStatuses.Active
+                || currentToken.ActivationId != item.Token.ActivationId
+                || currentToken.NodeId != item.Node.Id
+                || currentToken.WaitState is not null)
+            {
+                // An earlier continuation in the same wave structurally
+                // cancelled or moved this activation; cancellation wins.
+                continue;
+            }
+            ConditionalEventRuntimeTelemetry.RecordTrigger(
+                ConditionalEventDeliveryModes.Atomic,
+                "variableWrite");
+            forceDurableTokenIds.Add(currentToken.Id);
+            await AdvanceAutomaticTokenAsync(
+                instance,
+                currentToken,
+                currentToken.GatewayBranchId,
+                item.Node,
+                item.Flow,
+                InstanceHistoryNotes.ConditionalTriggered,
+                definition,
+                actor,
+                storedOverlay,
+                flowInfo,
+                routingQueue,
+                cancellationToken,
+                historyPayload: ConditionalHistoryPayload(
+                    ConditionalEventDeliveryModes.Atomic,
+                    item.Flow.Id,
+                    item.TriggerNames));
+            logger.LogInformation(
+                "Atomic conditional event triggered for instance {InstanceId}, token {TokenId}, node {NodeId}.",
+                instance.Id,
+                currentToken.Id,
+                item.Node.Id);
+            actualAtomicTriggers++;
+        }
+
+        ConditionalEventRuntimeTelemetry.RecordWave(
+            candidateNodeIds.Count,
+            Stopwatch.GetElapsedTime(started));
+
+        return durable.Count + actualAtomicTriggers;
+    }
+
+    private async Task<int> DrainConditionalVariableChangesAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        ConditionalEventDependencyPlan plan,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> routingQueue,
+        ISet<long> forceDurableTokenIds,
+        long maxTriggers,
+        CancellationToken cancellationToken)
+    {
+        if (variableMutationTracker is null
+            || !variableMutationTracker.HasPending(instance.Id))
+        {
+            return 0;
+        }
+
+        var changedNames = variableMutationTracker.Consume(instance.Id);
+        return await TriggerConditionalWaitsAsync(
+            instance,
+            definition,
+            plan,
+            actor,
+            storedOverlay,
+            flowInfo,
+            changedNames,
+            routingQueue,
+            forceDurableTokenIds,
+            maxTriggers,
+            cancellationToken);
+    }
+
+    private static Dictionary<string, JsonElement> ConditionalHistoryPayload(
+        string deliveryMode,
+        int selectedFlowId,
+        IReadOnlyCollection<string> triggerNames,
+        long? jobId = null)
+    {
+        var payload = new Dictionary<string, JsonElement>
+        {
+            ["deliveryMode"] = JsonSerializer.SerializeToElement(deliveryMode),
+            ["selectedFlowId"] = JsonSerializer.SerializeToElement(selectedFlowId),
+            ["triggerVariables"] = JsonSerializer.SerializeToElement(triggerNames)
+        };
+        if (jobId is long id)
+        {
+            payload["jobId"] = JsonSerializer.SerializeToElement(id);
+        }
+        return payload;
+    }
+
+    private static Dictionary<string, JsonElement> ConditionalParameters(
+        ConditionalEventPlanEntry eventPlan,
+        IReadOnlyDictionary<string, JsonElement> storedOverlay)
+    {
+        var parameters = new Dictionary<string, JsonElement>(
+            eventPlan.Dependencies.Length,
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var dependency in eventPlan.Dependencies)
+        {
+            if (storedOverlay.TryGetValue(dependency, out var value))
+            {
+                parameters[dependency] = value;
+            }
+        }
+        return parameters;
     }
 
     private async Task RefreshSettingsAsync(CancellationToken cancellationToken)
@@ -2319,6 +2646,15 @@ public sealed partial class WorkflowEngineService(
                 instance.Id,
                 [token.Id],
                 cancellationToken);
+            // The result variable (and, for direct/admin interrupts, flow
+            // variables) was written before this async-after wait was staged.
+            // Drain those tracked writes now, while this transaction still owns
+            // the instance lock, so an already-waiting sibling conditional event
+            // cannot miss the committed change.
+            await ResumeForVariableChangesAsync(
+                waitingInstance,
+                actor,
+                cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return await runtime.GetInstanceAsync(instance.Id, cancellationToken)
                 ?? waitingInstance;
@@ -2385,6 +2721,15 @@ public sealed partial class WorkflowEngineService(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
             await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
+            if (remaining.Count > 0)
+            {
+                // A normal end only completes this token. Sibling conditional
+                // waits remain eligible for the result/input variable batch.
+                await ResumeForVariableChangesAsync(
+                    lockedInstance,
+                    actor,
+                    cancellationToken);
+            }
         }
         else
         {
@@ -2730,6 +3075,13 @@ public sealed partial class WorkflowEngineService(
                 instance.Id,
                 [token.Id],
                 cancellationToken);
+            // Flow variables are already staged, but async-after deliberately
+            // skips the normal pass-through loop that otherwise drains the
+            // conditional mutation tracker.
+            await ResumeForVariableChangesAsync(
+                taskInstance,
+                executionActor,
+                cancellationToken);
             if (administrativeBatch is not null)
             {
                 await CompleteAdministrativeBatchItemAsync(
@@ -2808,6 +3160,13 @@ public sealed partial class WorkflowEngineService(
                         instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
                 }
                 await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
+                if (remaining.Count > 0)
+                {
+                    await ResumeForVariableChangesAsync(
+                        taskInstance,
+                        executionActor,
+                        cancellationToken);
+                }
             }
             else
             {
@@ -3110,6 +3469,13 @@ public sealed partial class WorkflowEngineService(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
             await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
+            if (remaining.Count > 0)
+            {
+                await ResumeForVariableChangesAsync(
+                    tokenInstance,
+                    actor,
+                    cancellationToken);
+            }
         }
         else
         {
@@ -4123,6 +4489,7 @@ public sealed partial class WorkflowEngineService(
     {
         var queue = new Queue<long>();
         queue.Enqueue(startingTokenId);
+        var conditionalDurableTokenIds = new HashSet<long>();
         var tokenHops = new Dictionary<long, int>();
         var maxHops = definition.FlowNodes.Count + 1;
         // The per-token guard catches ordinary automatic cycles, but a gateway
@@ -4138,7 +4505,29 @@ public sealed partial class WorkflowEngineService(
             (long)maxHops * Math.Max(maxHops, definition.SequenceFlows.Count + 1));
         long routingSteps = 0;
         var pendingAdministrativeTraversal = administrativeInitialTraversal;
+        if (variableMutationTracker?.HasPending(instance.Id) == true)
+        {
+            // Some callers enter routing immediately after staging a complete
+            // mapping/output batch. Flush inside their ambient transaction so
+            // the current-value projection and conditional snapshot include it.
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
         var storedOverlay = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var conditionalPlan = conditionalEventPlans?.GetOrAdd(
+                instance.WorkflowDefinitionId,
+                definition)
+            ?? ConditionalEventDependencyPlan.Empty;
+        routingSteps += await DrainConditionalVariableChangesAsync(
+            instance,
+            definition,
+            conditionalPlan,
+            actor,
+            storedOverlay,
+            flowInfo,
+            queue,
+            conditionalDurableTokenIds,
+            maxRoutingSteps - routingSteps,
+            cancellationToken);
 
         while (true)
         {
@@ -4195,7 +4584,9 @@ public sealed partial class WorkflowEngineService(
                     || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
                 var requiresDurableEntry = currentNode.AsyncBefore
                     || isExternalOrCpuActivity
-                       && (currentNode.AsyncAfter || forceDurableActivities);
+                       && (currentNode.AsyncAfter
+                           || forceDurableActivities
+                           || conditionalDurableTokenIds.Contains(token.Id));
                 var resumesCurrentDurablePhase = resumesCurrentActivation
                     && resume!.Phase is WorkflowJobKinds.AsyncBefore
                         or WorkflowJobKinds.AsyncAfter;
@@ -4235,6 +4626,86 @@ public sealed partial class WorkflowEngineService(
                         definition,
                         actor,
                         cancellationToken);
+                    continue;
+                }
+
+                if (BpmnFlowNodeTypes.IsConditionalCatch(currentNode.Type))
+                {
+                    // A durable latch already captured truth and is owned by its
+                    // exact job/activation fence. It must never be reevaluated.
+                    if (token.WaitState == ExecutionTokenWaitStates.ConditionalWake
+                        && token.WaitingJobId is not null)
+                    {
+                        continue;
+                    }
+                    if (!conditionalPlan.EventsByNodeId.TryGetValue(
+                            currentNode.Id,
+                            out var eventPlan))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Conditional catch event #{currentNode.Id} has no dependency plan.");
+                    }
+                    var conditionMatched = SequenceFlowConditionEvaluator.Evaluate(
+                        eventPlan.Condition,
+                        ConditionalParameters(eventPlan, storedOverlay));
+                    ConditionalEventRuntimeTelemetry.RecordEvaluation(
+                        conditionMatched,
+                        "entry");
+                    if (!conditionMatched)
+                    {
+                        continue;
+                    }
+
+                    var conditionalFlow = OutgoingFlows(
+                            instance.WorkflowDefinitionId,
+                            definition,
+                            currentNode.Id)
+                        .Single();
+                    if (eventPlan.DeliveryMode
+                        == ConditionalEventDeliveryModes.DurableAsync)
+                    {
+                        ConditionalEventRuntimeTelemetry.RecordTrigger(
+                            ConditionalEventDeliveryModes.DurableAsync,
+                            "entry");
+                        await LatchConditionalWakesAsync(
+                            instance,
+                            [new ConditionalWakeLatchRequest(
+                                token,
+                                currentNode,
+                                conditionalFlow,
+                                [])],
+                            actor,
+                            cancellationToken);
+                    }
+                    else
+                    {
+                        ConditionalEventRuntimeTelemetry.RecordTrigger(
+                            ConditionalEventDeliveryModes.Atomic,
+                            "entry");
+                        conditionalDurableTokenIds.Add(token.Id);
+                        await AdvanceAutomaticTokenAsync(
+                            instance,
+                            token,
+                            token.GatewayBranchId,
+                            currentNode,
+                            conditionalFlow,
+                            InstanceHistoryNotes.ConditionalTriggered,
+                            definition,
+                            actor,
+                            storedOverlay,
+                            flowInfo,
+                            queue,
+                            cancellationToken,
+                            historyPayload: ConditionalHistoryPayload(
+                                ConditionalEventDeliveryModes.Atomic,
+                                conditionalFlow.Id,
+                                []));
+                        logger.LogInformation(
+                            "Atomic conditional event triggered on entry for instance {InstanceId}, token {TokenId}, node {NodeId}.",
+                            instance.Id,
+                            token.Id,
+                            currentNode.Id);
+                    }
                     continue;
                 }
 
@@ -4281,6 +4752,39 @@ public sealed partial class WorkflowEngineService(
                     variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
                 }
 
+                routingSteps += await DrainConditionalVariableChangesAsync(
+                    instance,
+                    definition,
+                    conditionalPlan,
+                    actor,
+                    storedOverlay,
+                    flowInfo,
+                    queue,
+                    conditionalDurableTokenIds,
+                    maxRoutingSteps - routingSteps,
+                    cancellationToken);
+                if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+                {
+                    queue.Clear();
+                    break;
+                }
+
+                var currentTokenAfterConditionalDrain =
+                    await runtime.GetExecutionTokenAsync(
+                        token.Id,
+                        false,
+                        cancellationToken);
+                if (!IsSameRunnableActivation(
+                        token,
+                        currentTokenAfterConditionalDrain))
+                {
+                    // A conditional continuation can interrupt, merge, or move a
+                    // sibling token while this service/script hop is unwinding.
+                    // Never continue from the stale pre-drain token snapshot.
+                    continue;
+                }
+                token = currentTokenAfterConditionalDrain!;
+
             if (outcome is { Success: false })
             {
                 var boundary = FindErrorBoundary(definition, currentNode.Id);
@@ -4304,6 +4808,38 @@ public sealed partial class WorkflowEngineService(
                         actor.DelegationId);
                     storedOverlay[boundary.ErrorVariable!] = errorValue;
                 }
+
+                routingSteps += await DrainConditionalVariableChangesAsync(
+                    instance,
+                    definition,
+                    conditionalPlan,
+                    actor,
+                    storedOverlay,
+                    flowInfo,
+                    queue,
+                    conditionalDurableTokenIds,
+                    maxRoutingSteps - routingSteps,
+                    cancellationToken);
+                if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
+                {
+                    queue.Clear();
+                    break;
+                }
+
+                currentTokenAfterConditionalDrain =
+                    await runtime.GetExecutionTokenAsync(
+                        token.Id,
+                        false,
+                        cancellationToken);
+                if (!IsSameRunnableActivation(
+                        token,
+                        currentTokenAfterConditionalDrain))
+                {
+                    // The error/status variable can itself release a conditional
+                    // sibling that invalidates this host activation.
+                    continue;
+                }
+                token = currentTokenAfterConditionalDrain!;
 
                 await runtime.AddTokenHistoryAsync(
                     instance.Id,
@@ -4393,13 +4929,14 @@ public sealed partial class WorkflowEngineService(
                         await ForkGatewayTokenAsync(
                             instance, token, token.GatewayBranchId, currentNode, outgoing,
                             "parallelFork", null, null,
-                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken);
+                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken,
+                            conditionalDurableTokenIds);
                     }
                     else
                     {
                         await TryReleaseParallelJoinAsync(
                             instance, token, currentNode, definition, actor, storedOverlay, flowInfo, queue,
-                            cancellationToken);
+                            conditionalDurableTokenIds, cancellationToken);
                     }
                 }
                 else if (BpmnFlowNodeTypes.IsInclusiveGateway(currentNode.Type))
@@ -4410,20 +4947,21 @@ public sealed partial class WorkflowEngineService(
                         await ForkGatewayTokenAsync(
                             instance, token, token.GatewayBranchId, currentNode, selected,
                             "inclusiveSplit", null, null,
-                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken);
+                            definition, actor, storedOverlay, flowInfo, queue, cancellationToken,
+                            conditionalDurableTokenIds);
                     }
                     else
                     {
                         await TryReleaseInclusiveJoinAsync(
                             instance, currentNode, definition, actor, storedOverlay, flowInfo, queue,
-                            cancellationToken);
+                            conditionalDurableTokenIds, cancellationToken);
                     }
                 }
                 else
                 {
                     await TryProcessComplexGatewayAsync(
                         instance, token, currentNode, definition, actor, storedOverlay, flowInfo, queue,
-                        cancellationToken);
+                        conditionalDurableTokenIds, cancellationToken);
                 }
                 continue;
             }
@@ -4486,6 +5024,17 @@ public sealed partial class WorkflowEngineService(
                 administrativeBatch: administrativeTraversal?.AdministrativeBatch);
             }
 
+            routingSteps += await DrainConditionalVariableChangesAsync(
+                instance,
+                definition,
+                conditionalPlan,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                conditionalDurableTokenIds,
+                maxRoutingSteps - routingSteps,
+                cancellationToken);
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
             {
                 break;
@@ -4498,6 +5047,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                conditionalDurableTokenIds,
                 cancellationToken);
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
             {
@@ -4510,6 +5060,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                conditionalDurableTokenIds,
                 cancellationToken);
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
             {
@@ -4536,6 +5087,17 @@ public sealed partial class WorkflowEngineService(
         await runtime.GetInstanceStatusAsync(instanceId, cancellationToken)
         == WorkflowInstanceStatuses.Running;
 
+    private static bool IsSameRunnableActivation(
+        ExecutionTokenRecord expected,
+        ExecutionTokenRecord? current) =>
+        current is not null
+        && current.Status == ExecutionTokenRecordStatuses.Active
+        && current.ActivationId == expected.ActivationId
+        && current.NodeId == expected.NodeId
+        && current.WaitState is null
+        && current.WaitingJobId is null
+        && current.WaitingTimerSubscriptionId is null;
+
     private async Task<GatewayExecutionRecord> ForkGatewayTokenAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
@@ -4550,7 +5112,8 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ISet<long>? forceDurableTokenIds = null)
     {
         var selectedOutgoing = outgoing.OrderBy(flow => flow.Id).ToList();
         var configured = await engineSettings.GetByKeyAsync(
@@ -4591,6 +5154,13 @@ public sealed partial class WorkflowEngineService(
                 WorkflowAutomaticActivationGuard.InheritForFork(
                     token.AutomaticActivationCount),
             automaticActivationStateIds: token.AutomaticActivationStateIds);
+        if (forceDurableTokenIds?.Contains(token.Id) == true)
+        {
+            foreach (var spawnedToken in spawnedTokens)
+            {
+                forceDurableTokenIds.Add(spawnedToken.Id);
+            }
+        }
         var work = new List<(ExecutionTokenRecord Token, GatewayBranchRecord Branch, SequenceFlowModel Flow)>();
         for (var index = 0; index < selectedOutgoing.Count; index++)
         {
@@ -4685,6 +5255,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, join.Id);
@@ -4729,7 +5300,8 @@ public sealed partial class WorkflowEngineService(
                 selected,
                 actor,
                 cancellationToken,
-                scopeSnapshot);
+                scopeSnapshot,
+                forceDurableTokenIds: forceDurableTokenIds);
             if (cancellationScope is not null)
             {
                 commonBranchId = await ApplyJoinCancellationAsync(
@@ -4785,6 +5357,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, join.Id);
@@ -4835,7 +5408,8 @@ public sealed partial class WorkflowEngineService(
                 selected,
                 actor,
                 cancellationToken,
-                scopeSnapshot);
+                scopeSnapshot,
+                forceDurableTokenIds: forceDurableTokenIds);
             if (cancellationScope is not null)
             {
                 commonBranchId = await ApplyJoinCancellationAsync(
@@ -4928,6 +5502,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         var nodeById = definition.FlowNodes.ToDictionary(node => node.Id);
@@ -4958,6 +5533,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                forceDurableTokenIds,
                 cancellationToken);
         }
         return released;
@@ -4972,6 +5548,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         var incoming = IncomingFlows(instance.WorkflowDefinitionId, definition, gateway.Id);
@@ -5052,6 +5629,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                forceDurableTokenIds,
                 cancellationToken);
             return;
         }
@@ -5120,7 +5698,8 @@ public sealed partial class WorkflowEngineService(
             actor,
             cancellationToken,
             scopeSnapshot,
-            priorCycleParents);
+            priorCycleParents,
+            forceDurableTokenIds);
         if (cancellationScope is not null)
         {
             var activationCycle = state.Cycle;
@@ -5167,6 +5746,7 @@ public sealed partial class WorkflowEngineService(
                 flowInfo,
                 queue,
                 cancellationToken,
+                forceDurableTokenIds,
                 completionReason: "joinCancellation");
 
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
@@ -5261,7 +5841,8 @@ public sealed partial class WorkflowEngineService(
             storedOverlay,
             flowInfo,
             queue,
-            cancellationToken);
+            cancellationToken,
+            forceDurableTokenIds);
 
         if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
         {
@@ -5295,6 +5876,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                forceDurableTokenIds,
                 cancellationToken);
         }
         await CloseInactiveGatewayScopesAsync(
@@ -5312,6 +5894,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         if (state.Phase != ComplexGatewayStateRecordPhases.WaitingForReset)
@@ -5375,7 +5958,8 @@ public sealed partial class WorkflowEngineService(
                 selectedTokens,
                 actor,
                 cancellationToken,
-                reconcileWithBranchIds: [activationExecution.ParentBranchId]);
+                reconcileWithBranchIds: [activationExecution.ParentBranchId],
+                forceDurableTokenIds: forceDurableTokenIds);
         }
         else
         {
@@ -5500,7 +6084,8 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
-                cancellationToken);
+                cancellationToken,
+                forceDurableTokenIds);
         }
         else
         {
@@ -5571,6 +6156,7 @@ public sealed partial class WorkflowEngineService(
         Dictionary<string, JsonElement> storedOverlay,
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
+        ISet<long> forceDurableTokenIds,
         CancellationToken cancellationToken)
     {
         var states = await runtime.ListComplexGatewayStatesAsync(
@@ -5591,6 +6177,7 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
+                forceDurableTokenIds,
                 cancellationToken);
         }
         return completed;
@@ -5611,6 +6198,7 @@ public sealed partial class WorkflowEngineService(
         SequenceFlowInfoSnapshot? flowInfo,
         Queue<long> queue,
         CancellationToken cancellationToken,
+        ISet<long>? forceDurableTokenIds = null,
         string? completionReason = null)
     {
         var authoredOutgoingCount = OutgoingFlows(
@@ -5633,7 +6221,8 @@ public sealed partial class WorkflowEngineService(
                 storedOverlay,
                 flowInfo,
                 queue,
-                cancellationToken);
+                cancellationToken,
+                forceDurableTokenIds);
         }
 
         var execution = await runtime.AddGatewayExecutionAsync(
@@ -5676,9 +6265,15 @@ public sealed partial class WorkflowEngineService(
             ActorContext actor,
             CancellationToken cancellationToken,
             GatewayScopeSnapshot? scopeSnapshot = null,
-            IReadOnlyCollection<long?>? reconcileWithBranchIds = null)
+            IReadOnlyCollection<long?>? reconcileWithBranchIds = null,
+            ISet<long>? forceDurableTokenIds = null)
     {
         var survivor = selected.OrderBy(token => token.Id).First();
+        if (forceDurableTokenIds is not null
+            && selected.Any(token => forceDurableTokenIds.Contains(token.Id)))
+        {
+            forceDurableTokenIds.Add(survivor.Id);
+        }
         var drainStateIds = selected
             .SelectMany(token => token.ComplexDrainStateIds)
             .Distinct()
@@ -6358,7 +6953,8 @@ public sealed partial class WorkflowEngineService(
         long? administrativeUserTaskId = null,
         long? administrativeMultiInstanceExecutionId = null,
         Dictionary<string, JsonElement>? administrativeValues = null,
-        AdministrativeBatchFlowContext? administrativeBatch = null)
+        AdministrativeBatchFlowContext? administrativeBatch = null,
+        Dictionary<string, JsonElement>? historyPayload = null)
     {
         var nextNode = GetFlowNode(definition, flow.TargetRef);
         await RecordSequenceFlowOccurrenceAsync(
@@ -6387,7 +6983,7 @@ public sealed partial class WorkflowEngineService(
             currentNode.Id,
             nextNode.Id,
             actor.User,
-            null,
+            historyPayload,
             note,
             cancellationToken,
             actor.ActingFor,
@@ -6429,6 +7025,8 @@ public sealed partial class WorkflowEngineService(
             "scopedInterruptSkipped" => NodeExecutionCompletionReasons.ScopedInterruptSkipped,
             "messageStart" => NodeExecutionCompletionReasons.MessageDelivery,
             "timer" => NodeExecutionCompletionReasons.TimerFired,
+            InstanceHistoryNotes.ConditionalTriggered =>
+                NodeExecutionCompletionReasons.ConditionalTriggered,
             NodeExecutionCompletionReasons.AdministrativeAction =>
                 NodeExecutionCompletionReasons.AdministrativeAction,
             _ => NodeExecutionCompletionReasons.Normal
@@ -6789,6 +7387,11 @@ public sealed partial class WorkflowEngineService(
                 await EnsureMultiInstanceInitializedForTokenAsync(
                     instance, token, node, definition, actor, cancellationToken);
             }
+        }
+
+        if (variableMutationTracker?.HasPending(instance.Id) == true)
+        {
+            await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
         }
     }
 
